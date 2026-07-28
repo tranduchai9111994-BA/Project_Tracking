@@ -3481,13 +3481,27 @@ function fullscreenChart(chartId) {
     if (!source) return;
     const modal = document.getElementById("fullscreenModal");
     const canvas = document.getElementById("fullscreenCanvas");
-    modal.classList.remove("hidden");
     if (fullscreenChartInstance) fullscreenChartInstance.destroy();
-    fullscreenChartInstance = new Chart(canvas.getContext("2d"), {
-        type: source.config.type,
-        data: JSON.parse(JSON.stringify(source.data)),
-        options: Object.assign({}, source.options, { maintainAspectRatio: false }),
-    });
+    // QUAN TRỌNG: dùng source.config.data / source.config.options (raw user config)
+    // thay vì source.data / source.options (đã bị Chart.js v4 wrap qua Proxy scriptable
+    // resolver). Nếu truyền source.options thẳng vào new Chart(), internal resolver
+    // sẽ throw "t.startsWith is not a function" ở tầng _scriptable → modal mở ra
+    // nhưng canvas rỗng, chỉ hiện nút Đóng.
+    try {
+        fullscreenChartInstance = new Chart(canvas.getContext("2d"), {
+            type: source.config.type,
+            data: JSON.parse(JSON.stringify(source.config.data)),
+            options: Object.assign({}, source.config.options || {}, { maintainAspectRatio: false }),
+        });
+        modal.classList.remove("hidden");
+    } catch (e) {
+        // Fail-safe: nếu chart nào có config lỗi thì báo user, không để modal
+        // treo lơ lửng với overlay đen mà không có content.
+        console.error("[fullscreenChart] Không mở được fullscreen cho", chartId, ":", e);
+        if (typeof showToast === "function") {
+            showToast(`Không mở được phóng to biểu đồ này (${e.message})`, "red");
+        }
+    }
 }
 
 function closeFullscreen() {
