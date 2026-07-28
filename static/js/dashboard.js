@@ -1395,16 +1395,38 @@ function renderPhaseMatrix() {
 function renderPhaseStackedChart() {
     const d = metricsData.phase_progress_stacked;
     const ctx = getCanvas("chartPhaseStacked");
+    // Bug 6 fix: override global Chart.defaults.datasets.bar.borderRadius=4.
+    // Trong stacked bar, borderRadius trên MỌI segment làm segment nhỏ bị "nuốt"
+    // → user chỉ thấy segment lớn nhất (Closed) sau khi filter, các status khác
+    // (Assigned, In-progress...) bị mất tích dù data đúng.
+    // Đặt borderRadius=0 và borderSkipped=false để mọi segment đều render đủ.
     const datasets = d.statuses.map(status => ({
         label: status,
         data: d.phases.map(ph => d.data[ph]?.[status] || 0),
         backgroundColor: STATUS_COLORS[status] || "#94a3b8",
+        borderWidth: 0,
+        borderRadius: 0,
+        borderSkipped: false,
+        stack: "phase_status",  // explicit stack group cho tường minh
     }));
 
     createChart(ctx, "bar", { labels: d.phases, datasets }, {
         plugins: {
-            legend: { position: "top", labels: { font: { size: 10 } } },
-            tooltip: { callbacks: { footer: () => "💡 Click để xem chi tiết" } },
+            legend: {
+                position: "top",
+                labels: { font: { size: 10 }, padding: 10, boxWidth: 10, usePointStyle: true },
+            },
+            tooltip: {
+                callbacks: {
+                    label: (c) => {
+                        const total = (c.chart.data.datasets || [])
+                            .reduce((s, ds) => s + (Number(ds.data[c.dataIndex]) || 0), 0);
+                        const pct = total ? Math.round((c.parsed.y / total) * 100) : 0;
+                        return `${c.dataset.label}: ${c.parsed.y}  (${pct}% của phase)`;
+                    },
+                    footer: () => "💡 Click để xem chi tiết",
+                },
+            },
             datalabels: _labelsForStackedBar(5),
         },
         scales: {
