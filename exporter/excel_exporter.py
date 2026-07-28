@@ -296,8 +296,8 @@ def export_full_report(
     duration_items = metrics.get("duration_analysis", {}).get("items", [])
     stalled_items = metrics.get("stalled_tasks", {}).get("items", [])
     risk_scores = metrics.get("risk_scores", [])
-    # Chỉ lấy top 100 high-risk có score >= 30
-    high_risk = [r for r in risk_scores if r["risk_score"] >= 30][:100]
+    # Rule V4: xuất ALL high-risk có score >= 30, KHÔNG cắt top 100 như trước
+    high_risk = [r for r in risk_scores if r["risk_score"] >= 30]
 
     # === Sheet 1: Summary ===
     ws = wb.create_sheet("Summary")
@@ -1344,7 +1344,8 @@ def export_chart(
 
     elif chart == "risk":
         ws.title = "High_Risk"
-        items = [r for r in (metrics.get("risk_scores") or []) if (r.get("risk_score") or 0) >= 30][:100]
+        # Rule V4: xuất ALL high-risk items (score >= 30), không cắt top 100
+        items = [r for r in (metrics.get("risk_scores") or []) if (r.get("risk_score") or 0) >= 30]
         columns = [
             ("STT", 6), ("Risk Score", 12), ("Mã CN", 14), ("Tên chức năng", 40),
             ("Module", 10), ("Priority", 12), ("Complexity", 12), ("Risk Factors", 45),
@@ -1591,6 +1592,384 @@ def export_audit_report(
     os.makedirs(output_dir, exist_ok=True)
     filename = f"Audit_Report_{date.today().strftime('%Y%m%d')}.xlsx"
     filepath = os.path.join(output_dir, filename)
+    wb.save(filepath)
+    wb.close()
+    return filepath
+
+
+# ======================================================================
+# PHASE 4/5 EXPORTS: SLA / Capacity / Slow / Baseline
+# Rule (V4): XEM THÌ PHÂN TRANG NHƯNG XUẤT LÀ XUẤT ALL RECORD
+# ======================================================================
+
+
+def _severity_fill(sev: str) -> Optional[PatternFill]:
+    """Highlight theo severity: critical=đỏ, warning=cam."""
+    s = (sev or "").lower()
+    if s == "critical":
+        return RED_FILL
+    if s == "warning":
+        return ORANGE_FILL
+    return None
+
+
+def _filter_subtitle(filters: Optional[dict]) -> str:
+    """Build subtitle chuẩn: 'Ngày xuất: dd/mm/yyyy  |  Bộ lọc: Module=..., Quy trình=..., PIC=...'."""
+    date_part = f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+    if not filters:
+        return date_part
+    parts = []
+    for key, label in [("modules", "Module"), ("processes", "Quy trình"), ("pics", "PIC")]:
+        vals = filters.get(key) or filters.get(key.rstrip("s")) or []
+        if isinstance(vals, str):
+            vals = [vals] if vals else []
+        if vals:
+            parts.append(f"{label}=[{', '.join(vals)}]")
+    return f"{date_part}  |  Bộ lọc: {' · '.join(parts)}" if parts else date_part
+
+
+def export_sla_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+    filters: Optional[dict] = None,
+) -> str:
+    """
+    Xuất báo cáo SLA vi phạm deadline theo Priority.
+
+    Args:
+        payload: kết quả compute_sla_violations {items, total, critical_count,
+                 warning_count, thresholds}
+        output_dir: thư mục lưu file
+        filters: dict global filter đã áp trước khi compute (chỉ để in vào subtitle)
+
+    Rule V4: XUẤT ALL items, không cắt theo pagination FE.
+    """
+    items = list(payload.get("items") or [])
+    thresholds = payload.get("thresholds") or {}
+    critical_count = payload.get("critical_count", 0)
+    warning_count = payload.get("warning_count", 0)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SLA_Violations"
+
+    subtitle = _filter_subtitle(filters)
+    subtitle += (f"  |  Must-have quá {thresholds.get('must_have_days', '?')}d / "
+                 f"Should-have quá {thresholds.get('should_have_days', '?')}d → critical")
+    subtitle += f"  |  Critical: {critical_count} · Warning: {warning_count}"
+
+    _write_sheet(
+        ws,
+        title="BÁO CÁO SLA — VI PHẠM DEADLINE",
+        columns=[
+            ("STT", 6),
+            ("Severity", 12),
+            ("Mã CN", 14),
+            ("Tên chức năng", 40),
+            ("Module", 10),
+            ("Priority", 14),
+            ("Phase", 16),
+            ("End (deadline)", 14),
+            ("Số ngày trễ", 12),
+            ("Ngưỡng (d)", 12),
+            ("Status", 12),
+            ("PIC", 24),
+        ],
+        data_rows=[
+            [
+                idx + 1,
+                (i.get("severity") or "").upper(),
+                i.get("ma_cn", ""),
+                i.get("ten_cn", ""),
+                i.get("module", ""),
+                i.get("priority", ""),
+                i.get("phase", ""),
+                i.get("end_date", ""),
+                i.get("days_late", 0),
+                i.get("threshold_days", 0),
+                i.get("status", ""),
+                ", ".join(i.get("pics") or []),
+            ]
+            for idx, i in enumerate(items)
+        ],
+        row_fill_fn=lambda _ri, idx: _severity_fill(items[idx].get("severity")),
+        subtitle=subtitle,
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"SLA_Violations_{date.today().strftime('%Y%m%d')}.xlsx")
+    wb.save(filepath)
+    wb.close()
+    return filepath
+
+
+def _overload_fill(overload: bool) -> Optional[PatternFill]:
+    return RED_FILL if overload else None
+
+
+def export_capacity_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+    filters: Optional[dict] = None,
+) -> str:
+    """
+    Xuất báo cáo Capacity PIC — remaining MH vs công suất tuần.
+
+    Args:
+        payload: kết quả compute_capacity_load {by_pic, default_md_per_week, overload_count}
+
+    Rule V4: XUẤT ALL PIC rows.
+    """
+    rows = list(payload.get("by_pic") or [])
+    default_md = payload.get("default_md_per_week")
+    overload_count = payload.get("overload_count", 0)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Capacity_PIC"
+
+    subtitle = _filter_subtitle(filters)
+    if default_md:
+        subtitle += f"  |  Default: {default_md} MD/tuần"
+    subtitle += f"  |  Overload: {overload_count}"
+
+    _write_sheet(
+        ws,
+        title="BÁO CÁO CAPACITY PIC",
+        columns=[
+            ("STT", 6),
+            ("PIC", 20),
+            ("Remaining (MH)", 15),
+            ("Closed (MH)", 15),
+            ("Capacity (MH/tuần)", 18),
+            ("Số tuần cần", 14),
+            ("Overload?", 12),
+        ],
+        data_rows=[
+            [
+                idx + 1,
+                r.get("pic", ""),
+                r.get("remaining_mh", 0),
+                r.get("closed_mh", 0),
+                r.get("capacity_mh_per_week", 0),
+                r.get("weeks_needed") if r.get("weeks_needed") is not None else "",
+                "OVERLOAD" if r.get("overload") else "",
+            ]
+            for idx, r in enumerate(rows)
+        ],
+        row_fill_fn=lambda _ri, idx: _overload_fill(bool(rows[idx].get("overload"))),
+        subtitle=subtitle,
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"Capacity_PIC_{date.today().strftime('%Y%m%d')}.xlsx")
+    wb.save(filepath)
+    wb.close()
+    return filepath
+
+
+def _slow_cell_fill(count: int) -> Optional[PatternFill]:
+    """Highlight ô heatmap theo số phase-record trễ."""
+    if count >= 10:
+        return RED_FILL
+    if count >= 5:
+        return ORANGE_FILL
+    if count >= 1:
+        return YELLOW_FILL
+    return None
+
+
+def export_slow_heatmap_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+    filters: Optional[dict] = None,
+) -> str:
+    """
+    Xuất báo cáo "Ai đang chậm" — Heatmap PIC × Phase.
+
+    Sheet 1: Matrix PIC × Phase (highlight theo count).
+    Sheet 2: Flat list (chỉ ô > 0) — dễ pivot.
+
+    Rule V4: XUẤT ALL PIC × Phase records.
+    """
+    pics = list(payload.get("pics") or [])
+    phases = list(payload.get("phases") or [])
+    heatmap = payload.get("heatmap") or {}
+    total_slow = payload.get("total_slow", 0)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Heatmap_PIC_x_Phase"
+
+    subtitle = _filter_subtitle(filters) + f"  |  Tổng phase-record trễ: {total_slow}"
+
+    # === Sheet 1: matrix ===
+    n_cols = 1 + len(phases) + 1  # cột PIC + N phases + Σ
+    last_col_letter = get_column_letter(n_cols)
+    ws.merge_cells(f"A1:{last_col_letter}1")
+    tc = ws["A1"]
+    tc.value = "HEATMAP PIC × PHASE — Task đang chậm"
+    tc.font = Font(name="Arial", bold=True, size=14, color="1F4E79")
+    tc.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+    ws.merge_cells(f"A2:{last_col_letter}2")
+    sc = ws["A2"]
+    sc.value = subtitle
+    sc.font = Font(name="Arial", size=10, italic=True, color="666666")
+    sc.alignment = Alignment(horizontal="center")
+
+    hdr_row = 4
+    cells = ["PIC"] + phases + ["Σ"]
+    widths = [22] + [max(12, len(ph) + 2) for ph in phases] + [10]
+    for c_idx, (name, w) in enumerate(zip(cells, widths), 1):
+        cell = ws.cell(row=hdr_row, column=c_idx, value=name)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = HEADER_ALIGN
+        cell.border = THIN_BORDER
+        ws.column_dimensions[get_column_letter(c_idx)].width = w
+    ws.row_dimensions[hdr_row].height = 25
+
+    for row_offset, pic in enumerate(pics):
+        r_idx = hdr_row + 1 + row_offset
+        row_data = heatmap.get(pic) or {}
+        row_sum = 0
+        pic_cell = ws.cell(row=r_idx, column=1, value=pic)
+        pic_cell.font = Font(name="Arial", bold=True, size=10)
+        pic_cell.border = THIN_BORDER
+        pic_cell.alignment = BODY_ALIGN
+        for ph_idx, ph in enumerate(phases, 2):
+            v = int(row_data.get(ph) or 0)
+            row_sum += v
+            cell = ws.cell(row=r_idx, column=ph_idx, value=v if v > 0 else "")
+            cell.font = BODY_FONT
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = THIN_BORDER
+            fill = _slow_cell_fill(v)
+            if fill:
+                cell.fill = fill
+        sum_cell = ws.cell(row=r_idx, column=n_cols, value=row_sum)
+        sum_cell.font = Font(name="Arial", bold=True, size=10)
+        sum_cell.alignment = Alignment(horizontal="center")
+        sum_cell.border = THIN_BORDER
+
+    if pics:
+        total_row = hdr_row + len(pics) + 2
+        ws.merge_cells(f"A{total_row}:{last_col_letter}{total_row}")
+        s = ws.cell(row=total_row, column=1)
+        s.value = (f"Tổng: {len(pics)} PIC × {len(phases)} phase | "
+                   f"{total_slow} phase-record trễ | "
+                   f"Xuất ngày {date.today().strftime('%d/%m/%Y')}")
+        s.font = Font(name="Arial", bold=True, size=10, color="1F4E79")
+    ws.freeze_panes = f"B{hdr_row + 1}"
+
+    # === Sheet 2: flat list ===
+    ws2 = wb.create_sheet("Flat_List")
+    flat_rows = []
+    for pic in pics:
+        row_data = heatmap.get(pic) or {}
+        for ph in phases:
+            v = int(row_data.get(ph) or 0)
+            if v > 0:
+                flat_rows.append([len(flat_rows) + 1, pic, ph, v])
+    _write_sheet(
+        ws2,
+        title="FLAT LIST — PIC × Phase với count > 0",
+        columns=[
+            ("STT", 6),
+            ("PIC", 22),
+            ("Phase", 20),
+            ("Số phase-record trễ", 18),
+        ],
+        data_rows=flat_rows,
+        row_fill_fn=lambda _ri, idx: _slow_cell_fill(flat_rows[idx][3]),
+        subtitle=subtitle,
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"Slow_Heatmap_{date.today().strftime('%Y%m%d')}.xlsx")
+    wb.save(filepath)
+    wb.close()
+    return filepath
+
+
+def _variance_fill(days: int) -> Optional[PatternFill]:
+    """Highlight theo variance ngày (trễ hoặc sớm nhiều đều đáng để ý)."""
+    a = abs(int(days or 0))
+    if a >= 14:
+        return RED_FILL
+    if a >= 7:
+        return ORANGE_FILL
+    if a >= 3:
+        return YELLOW_FILL
+    return None
+
+
+def export_baseline_variance_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+    filters: Optional[dict] = None,
+    all_items: Optional[list[dict]] = None,
+) -> str:
+    """
+    Xuất báo cáo Baseline vs Actual variance ngày.
+
+    Args:
+        payload: kết quả compute_baseline_variance {items (max 200), total_compared, ...}
+        all_items: OPTIONAL — full list khi caller cần bỏ giới hạn 200 của FE.
+                   Nếu None thì dùng payload["items"] (đã bị cắt 200).
+
+    Rule V4: XUẤT ALL items — caller (endpoint) nên truyền `all_items` để bỏ giới hạn.
+    """
+    items = list(all_items) if all_items is not None else list(payload.get("items") or [])
+    total_compared = payload.get("total_compared", len(items))
+    late_count = payload.get("late_count", sum(1 for i in items if i.get("late")))
+    avg_var = payload.get("avg_variance_days", 0)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Baseline_vs_Actual"
+
+    subtitle = _filter_subtitle(filters)
+    subtitle += (f"  |  So sánh: {total_compared} · Trễ: {late_count} · "
+                 f"Avg variance: {avg_var}d")
+
+    _write_sheet(
+        ws,
+        title="BÁO CÁO BASELINE vs ACTUAL — VARIANCE NGÀY",
+        columns=[
+            ("STT", 6),
+            ("Mã CN", 14),
+            ("Tên chức năng", 40),
+            ("Module", 10),
+            ("Phase", 16),
+            ("Plan date", 14),
+            ("Actual date", 14),
+            ("Variance (ngày)", 14),
+            ("Trễ?", 8),
+            ("Status", 12),
+        ],
+        data_rows=[
+            [
+                idx + 1,
+                i.get("ma_cn", ""),
+                i.get("ten_cn", ""),
+                i.get("module", ""),
+                i.get("phase", ""),
+                i.get("plan_date", ""),
+                i.get("actual_date", ""),
+                i.get("variance_days", 0),
+                "YES" if i.get("late") else "",
+                i.get("status", ""),
+            ]
+            for idx, i in enumerate(items)
+        ],
+        row_fill_fn=lambda _ri, idx: _variance_fill(items[idx].get("variance_days", 0)),
+        subtitle=subtitle,
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"Baseline_Variance_{date.today().strftime('%Y%m%d')}.xlsx")
     wb.save(filepath)
     wb.close()
     return filepath

@@ -298,13 +298,17 @@ def compute_dependency_blockers(data: ParsedData) -> dict[str, Any]:
     }
 
 
-def compute_baseline_variance(data: ParsedData) -> dict[str, Any]:
+def compute_baseline_variance(data: ParsedData, top: Optional[int] = 200) -> dict[str, Any]:
     """
     Variance ngày: actual − plan.
     Plan = End (hoặc Planned trong extra nếu có).
     Actual = Actual trong extra / attributes proxy qua note không có —
               dùng last_updated khi Closed, hoặc end_date nếu chỉ có 1 mốc.
     Parser hiện map End/Actual cùng estimate_mh path; PhaseData.extra có thể chứa Planned/Actual.
+
+    Args:
+        top: cắt items ở top N sau khi sort theo |variance| desc.
+             Truyền None hoặc 0 để lấy ALL items (dùng cho Excel export — rule V4).
     """
     items: list[dict] = []
     for row in data.rows:
@@ -330,8 +334,10 @@ def compute_baseline_variance(data: ParsedData) -> dict[str, Any]:
 
     items.sort(key=lambda x: -abs(x["variance_days"]))
     late = [i for i in items if i["late"]]
+    # top=None/0 → không cắt (rule V4 xuất ALL); top>0 → cắt top N cho FE render.
+    trimmed = items[:top] if (top and top > 0) else items
     return {
-        "items": items[:200],
+        "items": trimmed,
         "total_compared": len(items),
         "late_count": len(late),
         "avg_variance_days": round(sum(i["variance_days"] for i in items) / len(items), 1) if items else 0,

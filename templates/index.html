@@ -1163,10 +1163,13 @@
         <section id="section-sla" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap">
                         🚨 SLA — vi phạm deadline theo Priority
                         <span class="help-tip"
                               title="ĐỊNH NGHĨA vi phạm SLA:&#10;&#10;Một phase-record được coi là vi phạm SLA khi thỏa MỌI điều kiện:&#10;  1. Có End (hoặc To) date&#10;  2. End &lt; ngày hôm nay (đã trễ)&#10;  3. Status ≠ Closed VÀ ≠ Cancelled (chưa đóng)&#10;&#10;→ Nghĩa là: 'đã qua hạn nhưng vẫn chưa xong / chưa hủy'.&#10;&#10;PHÂN LOẠI severity theo Priority:&#10;  • Must-have + trễ ≥ N ngày (default 3) → CRITICAL&#10;  • Should-have + trễ ≥ M ngày (default 7) → CRITICAL&#10;  • Còn lại → WARNING&#10;&#10;⚙️ Có thể chỉnh N, M ở Cài đặt project (banner cấu hình).">?</span>
+                        <button onclick="exportSection('sla')"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel — áp bộ lọc hiện tại, xuất TẤT CẢ record (không phân trang)">📥 Xuất Excel</button>
                     </h3>
                     <p class="text-xs text-gray-500 mt-0.5">
                         Định nghĩa: End date đã qua &amp; status chưa Closed/Cancelled.
@@ -1186,7 +1189,12 @@
         <section id="section-capacity" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">👥 Capacity PIC — remaining MH vs công suất</h3>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap">
+                        👥 Capacity PIC — remaining MH vs công suất
+                        <button onclick="exportSection('capacity')"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel — áp bộ lọc hiện tại, xuất TẤT CẢ record">📥 Xuất Excel</button>
+                    </h3>
                     <p class="text-xs text-gray-500 mt-0.5">Default <b id="capDefaultMD">5</b> MD/tuần · Overload nếu remaining > 4 tuần công việc</p>
                 </div>
                 <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200 text-xs">
@@ -1201,7 +1209,12 @@
         <section id="section-slow" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">🐌 Ai đang chậm — Heatmap PIC × Phase</h3>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap">
+                        🐌 Ai đang chậm — Heatmap PIC × Phase
+                        <button onclick="exportSection('slow')"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel — 2 sheet: matrix + flat list. Xuất TẤT CẢ PIC/Phase.">📥 Xuất Excel</button>
+                    </h3>
                     <p class="text-xs text-gray-500 mt-0.5">Số phase-record trễ (End &lt; today, chưa Closed) của mỗi PIC ở mỗi phase</p>
                 </div>
                 <span class="text-xs bg-orange-50 text-orange-700 px-3 py-1.5 rounded border border-orange-200">
@@ -1251,7 +1264,12 @@
         <section id="section-baseline" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">📐 Baseline vs Actual — variance ngày</h3>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap">
+                        📐 Baseline vs Actual — variance ngày
+                        <button onclick="exportSection('baseline')"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel — áp bộ lọc, xuất TẤT CẢ record (FE chỉ hiện top 200 nhưng Excel xuất đầy đủ)">📥 Xuất Excel</button>
+                    </h3>
                     <p class="text-xs text-gray-500 mt-0.5">Auto-detect <code>Planned</code>/<code>Actual</code> trong phase; fallback End vs Last Updated khi Closed</p>
                 </div>
                 <div class="flex items-center gap-3 text-xs">

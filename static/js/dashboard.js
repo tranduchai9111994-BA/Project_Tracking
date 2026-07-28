@@ -3336,6 +3336,65 @@ async function exportAuditReport() {
     );
 }
 
+/**
+ * Xuất Excel cho 4 section Phase 4/5 (Vấn đề 3).
+ *
+ * section ∈ { "sla", "capacity", "slow", "baseline" }
+ * Áp global filter hiện tại (module/process/pic) — backend luôn xuất ALL record
+ * (rule V4: XEM PHÂN TRANG NHƯNG XUẤT ALL).
+ *
+ * Dùng POST body JSON để tránh URL quá dài khi filter có nhiều quy trình.
+ */
+async function exportSection(section) {
+    if (!metricsData) {
+        showToast("Chưa có dữ liệu — hãy upload file", "red");
+        return;
+    }
+    const ALLOWED = { sla: 1, capacity: 1, slow: 1, baseline: 1 };
+    if (!ALLOWED[section]) {
+        showToast(`Section không hỗ trợ: ${section}`, "red");
+        return;
+    }
+    // POST body chứa filter → tránh URL length limit + không phụ thuộc encoding query
+    const body = {
+        module: globalFilters.modules,
+        process: globalFilters.processes,
+        pic: globalFilters.pics,
+    };
+    try {
+        const url = `/api/projects/${currentProjectSlug}/export-${section}`;
+        const resp = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            showToast("Lỗi: " + (err.error || "Không thể xuất file"), "red");
+            return;
+        }
+        const blob = await resp.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const cd = resp.headers.get("Content-Disposition") || "";
+        const nameMatch = cd.match(/filename[^;=\n]*=([^;\n]*)/);
+        const defaultName = {
+            sla: "SLA_Violations.xlsx",
+            capacity: "Capacity_PIC.xlsx",
+            slow: "Slow_Heatmap.xlsx",
+            baseline: "Baseline_Variance.xlsx",
+        }[section];
+        const filename = nameMatch ? nameMatch[1].replace(/["']/g, "").trim() : defaultName;
+        const a = document.createElement("a");
+        a.href = objUrl;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(objUrl);
+        showToast("Đã tải file: " + filename);
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
+}
+
 // ========================================================================
 // V2: SEARCH
 // ========================================================================

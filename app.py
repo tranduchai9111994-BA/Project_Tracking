@@ -45,6 +45,10 @@ from exporter.excel_exporter import (
     export_portfolio_compare,
     export_chart,
     export_audit_report,
+    export_sla_report,
+    export_capacity_report,
+    export_slow_heatmap_report,
+    export_baseline_variance_report,
     SUPPORTED_EXPORT_CHARTS,
 )
 
@@ -1751,6 +1755,147 @@ def project_baseline_variance(slug: str):
         return err
     data = _filtered_data_from_request(state)
     return jsonify(compute_baseline_variance(data))
+
+
+# ==========================================================================
+# Excel exports cho 4 section Phase 4/5 (Vấn đề 3 + Rule V4 "xuất ALL").
+# Accept GET (dùng query string) và POST (body JSON) — cả 2 đều đọc global
+# filter từ query string (?module=, ?process=, ?pic=) để tương thích form-submit
+# cũ. FE mới nên POST JSON body {module: [], process: [], pic: []} → convert
+# sang args-like dict để reuse _filtered_data_from_request contract.
+# ==========================================================================
+
+
+def _filter_state_from_body_or_args(state):
+    """
+    Đọc filter từ (a) POST body JSON hoặc (b) query args, apply _filter_parsed_data.
+
+    Body JSON format: {"module": ["A","B"], "process": ["X"], "pic": ["Y"]}
+    Query args: module=A,B&process=X&pic=Y (repeated hoặc comma-separated).
+    Return (filtered_data, filters_dict_for_subtitle).
+    """
+    body = request.get_json(silent=True) or {} if request.method == "POST" else {}
+
+    def _as_list(v) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [x.strip() for x in v.split(",") if x.strip()]
+        if isinstance(v, list):
+            out = []
+            for it in v:
+                out.extend(_as_list(it))
+            return out
+        return []
+
+    # Ưu tiên body, fallback về query args
+    fmods = _as_list(body.get("module") or body.get("modules")) or _parse_multi_arg("module")
+    fprocs = _as_list(body.get("process") or body.get("processes")) or _parse_multi_arg("process")
+    fpics = _as_list(body.get("pic") or body.get("pics")) or _parse_multi_arg("pic")
+
+    if not (fmods or fprocs or fpics):
+        return state["data"], {"modules": [], "processes": [], "pics": []}
+    filtered = _filter_parsed_data(
+        state["data"],
+        modules=fmods,
+        processes=fprocs,
+        pics=fpics,
+    )
+    return filtered, {"modules": fmods, "processes": fprocs, "pics": fpics}
+
+
+@app.route("/api/projects/<slug>/export-sla", methods=["GET", "POST"])
+def export_sla(slug: str):
+    """Xuất Excel SLA — vi phạm deadline theo Priority. Áp global filter."""
+    from analyzer import project_store as ps
+    from analyzer.advanced_metrics import compute_sla_violations
+    state, err = _require_state(slug)
+    if err:
+        return err
+    try:
+        data, filters = _filter_state_from_body_or_args(state)
+        settings = ps.load_project_settings(_project_dir_for(slug))
+        sla_cfg = settings.get("sla") or {}
+        payload = compute_sla_violations(
+            data,
+            must_have_days=int(sla_cfg.get("must_have_days", 3)),
+            should_have_days=int(sla_cfg.get("should_have_days", 7)),
+        )
+        filepath = export_sla_report(
+            payload=payload,
+            output_dir=_project_mgr.get_export_dir(slug),
+            filters=filters,
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất SLA: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-capacity", methods=["GET", "POST"])
+def export_capacity(slug: str):
+    """Xuất Excel Capacity PIC — remaining MH vs công suất."""
+    from analyzer import project_store as ps
+    from analyzer.advanced_metrics import compute_capacity_load
+    state, err = _require_state(slug)
+    if err:
+        return err
+    try:
+        data, filters = _filter_state_from_body_or_args(state)
+        cap = ps.load_capacity(_project_dir_for(slug))
+        payload = compute_capacity_load(data, cap)
+        filepath = export_capacity_report(
+            payload=payload,
+            output_dir=_project_mgr.get_export_dir(slug),
+            filters=filters,
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Capacity: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-slow", methods=["GET", "POST"])
+def export_slow(slug: str):
+    """Xuất Excel Slow Heatmap — Ai đang chậm (PIC × Phase)."""
+    from analyzer.advanced_metrics import compute_slow_heatmap
+    state, err = _require_state(slug)
+    if err:
+        return err
+    try:
+        data, filters = _filter_state_from_body_or_args(state)
+        payload = compute_slow_heatmap(data)
+        filepath = export_slow_heatmap_report(
+            payload=payload,
+            output_dir=_project_mgr.get_export_dir(slug),
+            filters=filters,
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Slow Heatmap: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-baseline", methods=["GET", "POST"])
+def export_baseline(slug: str):
+    """
+    Xuất Excel Baseline vs Actual — variance ngày.
+    Rule V4: dùng top=None để compute trả ALL items, KHÔNG cắt 200 như API JSON.
+    """
+    from analyzer.advanced_metrics import compute_baseline_variance
+    state, err = _require_state(slug)
+    if err:
+        return err
+    try:
+        data, filters = _filter_state_from_body_or_args(state)
+        # top=None → không cắt top 200 (rule "xuất ALL record" cho Excel)
+        full_payload = compute_baseline_variance(data, top=None)
+        filepath = export_baseline_variance_report(
+            payload=full_payload,
+            output_dir=_project_mgr.get_export_dir(slug),
+            filters=filters,
+            all_items=full_payload.get("items"),
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Baseline: {str(e)}"}), 500
 
 
 # ==========================================================================
