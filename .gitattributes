@@ -1,0 +1,27 @@
+# Windows batch/shell scripts BẮT BUỘC phải CRLF, nếu LF thì CMD parse sai
+# và cửa sổ tự văng ngay khi double-click. Ép CRLF cho mọi editor / git.
+*.bat        text eol=crlf
+*.cmd        text eol=crlf
+*.ps1        text eol=crlf
+
+# Shell scripts Unix bắt buộc LF (dùng cho start.sh / macOS / Linux)
+*.sh         text eol=lf
+
+# Nguồn Python / web — không ép, để git tự normalize
+*.py         text
+*.html       text
+*.css        text
+*.js         text
+*.json       text
+*.md         text
+*.txt        text
+
+# Binary — không convert
+*.xlsx       binary
+*.xls        binary
+*.png        binary
+*.jpg        binary
+*.jpeg       binary
+*.gif        binary
+*.pkl        binary
+*.zip        binary

@@ -1,0 +1,101 @@
+# Cursor Rules — iHRP Function List Tracker
+
+## Vai trò
+Bạn đang xây dựng một ứng dụng dashboard local cho PM/BA dự án triển khai phần mềm HRIS (iHRP).
+App nhận file Excel "Function List" và tự sinh các biểu đồ tracking đa chiều.
+
+## Nguyên tắc QUAN TRỌNG NHẤT
+
+### 1. KHÔNG HARDCODE CỘT — phải auto-detect
+File Function List có thể thay đổi cột bất cứ lúc nào. Code PHẢI:
+- Đọc header row 1 để biết có những cột nào
+- Tự phát hiện "Phase Groups" bằng pattern: "PhaseName - Attribute"
+  VD: "Analysis - Start", "Analysis - End", "Analysis - Status", "Analysis - PIC"
+  → Nhóm "Analysis" có 4 attribute: Start, End, Status, PIC
+- Tự phát hiện cột meta: tìm header chứa keyword
+  - Module/Phân hệ: cột có header chứa "Module" hoặc "Phân hệ"
+  - Priority: header chứa "Priority"
+  - Complexity: header chứa "Complexity"
+  - FIT/GAP: header chứa "FIT" hoặc "GAP"
+  - Giai đoạn: header chứa "Giai đoạn" hoặc "Phase" (nếu chưa có " - ")
+  - Tên chức năng: header chứa "Tên chức năng" hoặc "Function Name"
+  - Mã CN: header chứa "Mã CN" hoặc "Code"
+  - Quy trình: header chứa "Quy trình" hoặc "Process"
+
+### 2. Overdue logic
+Một task được coi là OVERDUE khi:
+- Có End date (hoặc "To" date) ở bất kỳ phase nào
+- End date < ngày hiện tại (today)
+- Status của phase đó KHÔNG phải "Closed" hoặc "Cancelled"
+- Lưu ý date format có thể là: datetime object, hoặc string "dd/MM/yyyy", hoặc "yyyy-MM-dd"
+
+### 3. Status chuẩn hóa
+Các status hợp lệ: Open, Assigned, In-progress, Resolved, Closed, Pending, Cancelled
+Nếu gặp giá trị số (1, 2, 8...) ở cột Status → bỏ qua (lỗi dữ liệu, đó là Estimate MH bị lệch cột)
+
+### 4. PIC parsing
+Một ô PIC có thể chứa nhiều người, cách nhau bởi: dấu phẩy, dấu chấm phẩy, xuống dòng (\n)
+VD: "BaoLQ31+ NhiVN", "CuongNM129;\nTungTT83"
+
+## Kiến trúc
+
+```
+ihrp-tracker/
+├── start.bat                 # Windows launcher
+├── start.sh                  # Linux/Mac launcher
+├── requirements.txt          # pip dependencies
+├── app.py                    # Flask server chính
+├── parser/
+│   ├── __init__.py
+│   └── excel_parser.py       # Auto-detect & parse Function List
+├── analyzer/
+│   ├── __init__.py
+│   └── dashboard_engine.py   # Tính toán các metrics
+├── exporter/
+│   ├── __init__.py
+│   └── excel_exporter.py     # Xuất overdue report
+├── templates/
+│   └── index.html            # Single-page dashboard
+├── static/
+│   ├── css/
+│   │   └── style.css
+│   └── js/
+│       └── dashboard.js      # Chart rendering + interactions
+├── uploads/                  # Temp folder cho file upload
+└── docs/
+    ├── ARCHITECTURE.md       # Giải thích kiến trúc
+    ├── DATA_MODEL.md         # Cấu trúc dữ liệu sau khi parse
+    └── DASHBOARD_SPEC.md     # Spec chi tiết từng biểu đồ
+```
+
+## API Endpoints
+
+```
+POST /api/upload              → Upload Excel, trả về parsed data + all metrics
+GET  /api/dashboard           → Lấy metrics từ file đã upload
+GET  /api/overdue             → Lấy danh sách task trễ, hỗ trợ filter
+GET  /api/export-overdue      → Download Excel overdue report
+POST /api/export-overdue      → Download với filter (module, pic, phase)
+```
+
+## Frontend
+
+- Single page, không cần router
+- Dùng Chart.js CDN cho biểu đồ
+- Dùng Tailwind CDN cho styling
+- Các section dashboard:
+  1. Upload zone (drag & drop)
+  2. Summary cards (tổng function, % done, overdue count)
+  3. Module overview table (giống bảng A trong hình)
+  4. Phase × Status matrix (giống bảng II trong hình)
+  5. Progress by công việc (Phân tích, Lập trình, Config+Test, UAT, Golive)
+  6. PIC workload chart (bar chart)
+  7. Overdue list (filterable table + export button)
+  8. Priority/Complexity pie charts
+  9. Phase progress stacked bar chart
+
+## Coding Style
+- Python: type hints, docstrings
+- JS: vanilla ES6, no framework (giữ đơn giản)
+- Tất cả text hiển thị: tiếng Việt
+- Comment code: tiếng Việt

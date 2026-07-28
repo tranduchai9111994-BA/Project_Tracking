@@ -1,0 +1,1330 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iHRP Function List Tracker V3</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Bật dark mode class-based
+        tailwind.config = { darkMode: 'class' };
+        // Apply saved theme early để tránh flash
+        (function () {
+            const saved = localStorage.getItem('theme');
+            if (saved === 'dark') document.documentElement.classList.add('dark');
+        })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <!-- Plugin hiển thị data label ngay trên chart (số / % ở đỉnh cột, giữa segment…) -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="bg-slate-50 min-h-screen">
+
+<!-- ============ SIDEBAR NAV (fixed, scrollable) ============ -->
+<!-- Nút toggle luôn visible khi có data; sidebar dùng class hidden (chưa data) vs collapsed (user ẩn) -->
+<button type="button" id="btnToggleSidebar" class="sidebar-toggle-btn no-print hidden"
+        title="Ẩn/hiện menu section" aria-expanded="true" aria-controls="sidebarNav">◀</button>
+<nav id="sidebarNav" class="sidebar-nav no-print hidden">
+    <a href="#section-summary">Summary</a>
+    <a href="#section-compare">So sánh</a>
+    <a href="#section-module">Module</a>
+    <a href="#section-tasktype">Công việc</a>
+    <a href="#section-matrix">Phase Matrix</a>
+    <a href="#section-phase">Phase Stack</a>
+    <a href="#section-pic">PIC</a>
+    <a href="#section-priority">Priority</a>
+    <a href="#section-giaidoan">Giai đoạn</a>
+    <a href="#section-unassigned">Chưa PIC</a>
+    <a href="#section-duration">Duration</a>
+    <a href="#section-stalled">Stalled</a>
+    <a href="#section-risk">Risk Score</a>
+    <a href="#section-effort">Effort MH</a>
+    <a href="#section-process">Quy trình</a>
+    <a href="#section-gantt">Timeline</a>
+    <a href="#section-burndown">Burndown</a>
+    <a href="#section-sla">SLA</a>
+    <a href="#section-capacity">Capacity</a>
+    <a href="#section-slow">PIC chậm</a>
+    <a href="#section-deps">Dependency</a>
+    <a href="#section-baseline">Baseline</a>
+    <a href="#section-overdue">Overdue</a>
+    <a href="#section-digest">Weekly Digest</a>
+    <a href="#section-history">Upload history</a>
+</nav>
+
+<!-- ============ HEADER ============ -->
+<header class="bg-gradient-to-r from-blue-800 to-blue-600 text-white shadow-lg no-print sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+        <div>
+            <h1 class="text-xl font-bold">📊 iHRP Function List Tracker <span class="text-xs bg-white/20 px-2 py-0.5 rounded ml-1">V3</span></h1>
+            <p class="text-blue-200 text-xs mt-0.5">Dashboard theo dõi tiến độ dự án triển khai (multi-project · drill-down · global filter)</p>
+        </div>
+
+        <!-- Search box (local — trong project hiện tại) -->
+        <div class="relative flex-1 max-w-md hidden" id="searchWrap">
+            <input id="searchBox" type="text" placeholder="🔍 Tìm trong dự án này…"
+                   class="w-full px-3 py-1.5 rounded-lg text-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                   autocomplete="off">
+            <div id="searchResults" class="search-dropdown hidden"></div>
+        </div>
+
+        <!-- Portfolio search (Level 1: global — trên tất cả dự án) -->
+        <div class="relative flex-1 max-w-md" id="portfolioSearchWrap">
+            <input id="portfolioSearchBox" type="text"
+                   placeholder="🌐 Tìm chức năng / mã CN / PIC / process — trên tất cả dự án"
+                   class="w-full px-3 py-1.5 rounded-lg text-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-300 border border-emerald-300"
+                   autocomplete="off">
+            <div id="portfolioSearchResults" class="search-dropdown hidden"></div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+            <!-- Project Selector -->
+            <div class="flex items-center gap-1 bg-white/10 rounded-lg px-2 py-1" title="Chọn project để làm việc">
+                <span class="text-xs text-blue-200">🗂️</span>
+                <select id="projectSelector" onchange="switchProject(this.value)"
+                        class="bg-transparent text-white text-sm focus:outline-none cursor-pointer"
+                        style="min-width: 130px;">
+                    <option value="default">Đang tải…</option>
+                </select>
+                <button onclick="openProjectManager()" title="Quản lý project"
+                        class="text-white/80 hover:text-white text-sm px-1">⚙️</button>
+            </div>
+
+            <div id="fileInfo" class="text-right text-xs hidden">
+                <div class="text-blue-200">File: <span id="fileName" class="text-white font-medium"></span></div>
+                <div class="text-blue-200">Tổng: <span id="rowCount" class="text-white font-medium"></span> chức năng</div>
+                <div class="text-blue-200">Upload: <span id="uploadTime" class="text-white"></span></div>
+            </div>
+            <button id="btnTheme" onclick="toggleTheme()"
+                    class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm">
+                <span id="themeIcon">🌙</span>
+            </button>
+        </div>
+    </div>
+</header>
+
+<!-- ============ PROJECT MANAGER MODAL ============ -->
+<div id="projectManagerModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print" onclick="if(event.target===this)closeProjectManager()">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between px-5 py-4 border-b dark:border-slate-700">
+            <h2 class="text-lg font-bold text-gray-800 dark:text-gray-100">🗂️ Quản lý Project</h2>
+            <button onclick="closeProjectManager()" class="text-gray-500 hover:text-gray-800 dark:hover:text-white text-2xl leading-none">×</button>
+        </div>
+        <div class="p-5 space-y-5">
+            <!-- Tạo project mới -->
+            <div class="bg-blue-50 dark:bg-slate-700 border border-blue-200 dark:border-slate-600 rounded-lg p-4">
+                <h3 class="font-semibold text-blue-900 dark:text-blue-100 mb-2">➕ Tạo project mới</h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <input id="newProjectName" placeholder="Tên project (VD: Minh Phú 2026)" class="border rounded px-3 py-2 text-sm md:col-span-2" />
+                    <input id="newProjectDesc" placeholder="Mô tả (tùy chọn)" class="border rounded px-3 py-2 text-sm" />
+                </div>
+                <button onclick="createNewProject()" class="mt-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm">
+                    Tạo
+                </button>
+            </div>
+
+            <!-- Danh sách project -->
+            <div>
+                <h3 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">📋 Danh sách project</h3>
+                <div id="projectList" class="space-y-2 text-sm">
+                    <div class="text-gray-400 text-center py-4">Đang tải…</div>
+                </div>
+            </div>
+
+            <!-- Portfolio (Level 2 + 3) -->
+            <div class="border-t dark:border-slate-700 pt-4">
+                <h3 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">🌐 Portfolio (đa dự án)</h3>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <button onclick="openPortfolioCompareModal()"
+                            class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm">
+                        📊 So sánh dự án (2-4)
+                    </button>
+                    <button onclick="openPortfolioRollup()"
+                            class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded text-sm">
+                        🌐 Portfolio Dashboard
+                    </button>
+                    <span class="text-xs text-gray-500">Cần ≥ 2 dự án để so sánh</span>
+                </div>
+            </div>
+
+            <!-- Import/Export -->
+            <div class="border-t dark:border-slate-700 pt-4">
+                <h3 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">🔄 Backup / Restore</h3>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <button onclick="exportCurrentProject()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded text-sm">
+                        📦 Xuất project hiện tại (.zip)
+                    </button>
+                    <label class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded text-sm cursor-pointer">
+                        📥 Import project từ .zip
+                        <input type="file" accept=".zip" class="hidden" onchange="importProjectFromZip(this.files[0])">
+                    </label>
+                    <span class="text-xs text-gray-500">Backup 1 project = 1 file zip, khôi phục sang máy khác OK.</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ PORTFOLIO COMPARE MODAL (Level 2) ============ -->
+<div id="portfolioCompareModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"
+     onclick="if(event.target===this)closePortfolioCompareModal()">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between px-5 py-4 border-b dark:border-slate-700">
+            <h2 class="text-lg font-bold text-gray-800 dark:text-gray-100">📊 So sánh dự án (Portfolio Compare)</h2>
+            <button onclick="closePortfolioCompareModal()" class="text-gray-500 hover:text-gray-800 dark:hover:text-white text-2xl leading-none">×</button>
+        </div>
+        <div class="p-5 space-y-4">
+            <!-- Chọn project -->
+            <div id="pfCompareProjectPicker" class="bg-indigo-50 dark:bg-slate-700 border border-indigo-200 dark:border-slate-600 rounded-lg p-4">
+                <h3 class="font-semibold text-indigo-900 dark:text-indigo-100 mb-2">Chọn 2-4 dự án để so sánh</h3>
+                <div id="pfCompareCheckboxes" class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                    <div class="text-gray-400 text-center py-2">Đang tải danh sách project…</div>
+                </div>
+                <div class="flex items-center gap-2 mt-3">
+                    <button id="pfCompareRunBtn" onclick="runPortfolioCompare()"
+                            class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm">
+                        So sánh
+                    </button>
+                    <button id="pfCompareExportBtn" onclick="exportPortfolioCompare()" disabled
+                            class="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded text-sm">
+                        📥 Xuất Excel
+                    </button>
+                    <span id="pfCompareHint" class="text-xs text-gray-500 ml-auto">Chưa chọn dự án nào</span>
+                </div>
+            </div>
+
+            <!-- Bảng so sánh -->
+            <div id="pfCompareResult" class="hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm border border-gray-200 dark:border-slate-600" id="pfCompareTable">
+                        <thead id="pfCompareTableHead"></thead>
+                        <tbody id="pfCompareTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="flex items-center gap-4 mt-3 text-xs text-gray-500">
+                    <span class="flex items-center gap-1">
+                        <span class="inline-block w-3 h-3 rounded bg-green-200 border border-green-400"></span>
+                        Tốt nhất
+                    </span>
+                    <span class="flex items-center gap-1">
+                        <span class="inline-block w-3 h-3 rounded bg-red-200 border border-red-400"></span>
+                        Cần cải thiện
+                    </span>
+                </div>
+                <div id="pfCompareSkipped" class="mt-3 text-xs text-amber-700"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ PORTFOLIO ROLLUP SECTION (Level 3) — hidden by default ============ -->
+<div id="portfolioRollupModal" class="fixed inset-0 bg-black/60 z-50 hidden items-start justify-center p-4 overflow-y-auto no-print"
+     onclick="if(event.target===this)closePortfolioRollup()">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-7xl mt-4 mb-8">
+        <div class="sticky top-0 bg-gradient-to-r from-teal-700 to-cyan-700 text-white px-5 py-4 rounded-t-xl flex items-center justify-between z-10">
+            <div>
+                <h2 class="text-lg font-bold">🌐 Portfolio Dashboard — Aggregated View</h2>
+                <p id="pfRollupSubtitle" class="text-xs text-teal-100 mt-0.5">Đang tổng hợp…</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <button id="pfRollupProjectFilterBtn" onclick="openPfRollupProjectPicker()"
+                        class="bg-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded text-sm">
+                    🎯 Chọn dự án
+                </button>
+                <button onclick="closePortfolioRollup()"
+                        class="text-white/80 hover:text-white text-2xl leading-none px-2">×</button>
+            </div>
+        </div>
+
+        <div class="p-5 space-y-5">
+            <!-- Project picker sub-panel (ẩn mặc định) -->
+            <div id="pfRollupProjectPicker" class="hidden bg-teal-50 dark:bg-slate-700 border border-teal-200 dark:border-slate-600 rounded-lg p-4">
+                <h3 class="font-semibold text-teal-900 dark:text-teal-100 mb-2">Chọn subset dự án để rollup</h3>
+                <div id="pfRollupCheckboxes" class="grid grid-cols-1 md:grid-cols-3 gap-2 text-sm mb-3"></div>
+                <div class="flex gap-2">
+                    <button onclick="applyPfRollupFilter()"
+                            class="bg-teal-600 hover:bg-teal-700 text-white px-3 py-1.5 rounded text-sm">
+                        Áp dụng
+                    </button>
+                    <button onclick="clearPfRollupFilter()"
+                            class="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-sm">
+                        Tất cả dự án
+                    </button>
+                </div>
+            </div>
+
+            <!-- Summary cards -->
+            <section id="pfRollupSummary" class="grid grid-cols-2 md:grid-cols-6 gap-3"></section>
+
+            <!-- 2 chart mới: Progress theo project + Overdue theo project -->
+            <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-gray-50 dark:bg-slate-700 rounded-lg p-4">
+                    <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-100 mb-2">📈 Progress theo dự án</h3>
+                    <div class="chart-box h-64"><canvas id="pfRollupProgressChart"></canvas></div>
+                </div>
+                <div class="bg-gray-50 dark:bg-slate-700 rounded-lg p-4">
+                    <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-100 mb-2">⚠️ Overdue vs On-time theo dự án</h3>
+                    <div class="chart-box h-64"><canvas id="pfRollupOverdueChart"></canvas></div>
+                </div>
+            </section>
+
+            <!-- Bảng per-project detail -->
+            <section class="bg-gray-50 dark:bg-slate-700 rounded-lg p-4">
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-100 mb-2">📋 Chi tiết theo dự án</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="bg-teal-700 text-white">
+                                <th class="px-2 py-2 text-left">Dự án</th>
+                                <th class="px-2 py-2 text-right">Tổng</th>
+                                <th class="px-2 py-2 text-right">Tiến độ (%)</th>
+                                <th class="px-2 py-2 text-right">Overdue</th>
+                                <th class="px-2 py-2 text-right">Chưa PIC</th>
+                                <th class="px-2 py-2 text-right">High risk</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pfRollupTable"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Skipped projects (nếu có) -->
+            <div id="pfRollupSkipped" class="text-xs text-amber-700"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ DRILL-DOWN MODAL (mở rộng tối đa + filter bar) ============ -->
+<div id="drillDownModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-2 no-print" onclick="if(event.target===this)closeDrillDown()">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-[98vw] h-[96vh] flex flex-col">
+        <!-- Header -->
+        <div class="flex items-center justify-between px-5 py-3 border-b dark:border-slate-700 shrink-0">
+            <div class="min-w-0">
+                <h2 class="text-lg font-bold text-gray-800 dark:text-gray-100 truncate" id="drillTitle">Chi tiết</h2>
+                <p class="text-xs text-gray-500 dark:text-gray-400" id="drillSubtitle">—</p>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+                <button onclick="exportDrillDown()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm font-medium">
+                    📥 Xuất Excel
+                </button>
+                <button onclick="closeDrillDown()" class="text-gray-500 hover:text-gray-800 dark:hover:text-white text-2xl leading-none px-2">×</button>
+            </div>
+        </div>
+
+        <!-- Filter bar: chức năng, status, PIC, ngày Start/End -->
+        <div class="px-5 py-3 border-b dark:border-slate-700 bg-gray-50 dark:bg-slate-900/50 shrink-0">
+            <div class="flex flex-wrap items-end gap-3">
+                <!-- Search chức năng -->
+                <div class="flex flex-col gap-1">
+                    <label class="text-[10px] font-semibold text-gray-600 dark:text-gray-400 uppercase">🔍 Chức năng</label>
+                    <input id="drillSearch" placeholder="Mã CN, tên chức năng…"
+                           class="border dark:bg-slate-700 dark:border-slate-600 rounded px-3 py-1.5 text-sm w-52"
+                           oninput="applyDrillFilters()" />
+                </div>
+
+                <!-- Status multi-select -->
+                <div class="flex flex-col gap-1">
+                    <label class="text-[10px] font-semibold text-gray-600 dark:text-gray-400 uppercase">📊 Trạng thái</label>
+                    <div class="relative">
+                        <button type="button" onclick="_toggleDrillStatusMenu(event)"
+                                id="drillStatusBtn"
+                                class="border dark:bg-slate-700 dark:border-slate-600 rounded px-3 py-1.5 text-sm w-40 text-left flex items-center justify-between">
+                            <span id="drillStatusLabel">Tất cả</span>
+                            <span class="text-gray-400 text-xs">▼</span>
+                        </button>
+                        <div id="drillStatusMenu"
+                             class="hidden absolute z-20 mt-1 bg-white dark:bg-slate-700 border dark:border-slate-600 rounded shadow-lg w-52 max-h-64 overflow-auto p-2 text-sm">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PIC search -->
+                <div class="flex flex-col gap-1">
+                    <label class="text-[10px] font-semibold text-gray-600 dark:text-gray-400 uppercase">👤 PIC</label>
+                    <input id="drillPicFilter" placeholder="Tên PIC…"
+                           class="border dark:bg-slate-700 dark:border-slate-600 rounded px-3 py-1.5 text-sm w-44"
+                           oninput="applyDrillFilters()" />
+                </div>
+
+                <!-- Date range -->
+                <div class="flex flex-col gap-1">
+                    <label class="text-[10px] font-semibold text-gray-600 dark:text-gray-400 uppercase">📅 Ngày (Start hoặc End)</label>
+                    <div class="flex items-center gap-1">
+                        <input id="drillDateFrom" type="date"
+                               class="border dark:bg-slate-700 dark:border-slate-600 rounded px-2 py-1.5 text-sm"
+                               oninput="applyDrillFilters()" />
+                        <span class="text-gray-400 text-xs">→</span>
+                        <input id="drillDateTo" type="date"
+                               class="border dark:bg-slate-700 dark:border-slate-600 rounded px-2 py-1.5 text-sm"
+                               oninput="applyDrillFilters()" />
+                    </div>
+                </div>
+
+                <!-- Overdue only -->
+                <div class="flex flex-col gap-1">
+                    <label class="text-[10px] font-semibold text-gray-600 dark:text-gray-400 uppercase">⚠️ Lọc nhanh</label>
+                    <label class="inline-flex items-center gap-1.5 text-sm cursor-pointer border rounded px-3 py-1.5 dark:border-slate-600 dark:bg-slate-700">
+                        <input id="drillOverdueOnly" type="checkbox" onchange="applyDrillFilters()"
+                               class="w-4 h-4 accent-red-600" />
+                        Chỉ trễ
+                    </label>
+                </div>
+
+                <!-- Reset -->
+                <button onclick="resetDrillFilters()"
+                        class="ml-auto bg-gray-200 hover:bg-gray-300 dark:bg-slate-600 dark:hover:bg-slate-500 dark:text-gray-100 text-gray-700 rounded px-3 py-1.5 text-sm font-medium">
+                    ↺ Reset filter
+                </button>
+            </div>
+            <!-- Status filter summary -->
+            <div id="drillActiveFilters" class="mt-2 text-xs text-gray-500 dark:text-gray-400"></div>
+        </div>
+
+        <!-- Body -->
+        <div class="p-4 overflow-auto grow" id="drillBody">
+            <div class="text-gray-400 text-center py-10">Đang tải…</div>
+        </div>
+
+        <!-- Footer -->
+        <div class="px-5 py-2 border-t dark:border-slate-700 text-xs text-gray-500 dark:text-gray-400 flex items-center justify-between shrink-0">
+            <span id="drillFooter">—</span>
+            <span class="text-gray-400">Click cột header để sort · Filter kết hợp AND</span>
+        </div>
+    </div>
+</div>
+
+<main class="max-w-7xl mx-auto px-4 py-6">
+
+    <!-- ============ REFRESH REMINDER BANNER ============ -->
+    <div id="refreshBanner" class="hidden bg-amber-100 border-l-4 border-amber-500 text-amber-900 px-4 py-3 rounded-lg mb-4 no-print">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+                ⚠️ Dữ liệu đã được upload từ <span id="dataAge" class="font-semibold"></span>.
+                Cân nhắc upload file Function List mới để dashboard chính xác.
+            </div>
+            <button onclick="document.getElementById('refreshBanner').classList.add('hidden')"
+                    class="text-amber-700 hover:text-amber-900 font-bold px-2">✕</button>
+        </div>
+    </div>
+
+    <!-- ============ UPLOAD ZONE ============ -->
+    <div id="uploadZone" class="bg-white dashboard-card rounded-xl shadow-md p-8 mb-6 border-2 border-dashed border-blue-300 text-center hover:border-blue-500 cursor-pointer no-print">
+        <div class="text-5xl mb-3">📁</div>
+        <h2 class="text-xl font-semibold text-gray-700 mb-2">Kéo thả file Function List vào đây</h2>
+        <p class="text-gray-500 text-sm mb-1">
+            File sẽ được lưu vào project: <b id="uploadTargetProject" class="text-blue-700">Default</b>
+            — <a href="#" onclick="openProjectManager(); return false;" class="text-blue-600 underline hover:text-blue-800">đổi project</a>
+        </p>
+        <p class="text-gray-500 mb-4">Chọn file (.xlsx). Mỗi lần upload sẽ tự lưu snapshot để so sánh sau này.</p>
+        <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden">
+        <button onclick="document.getElementById('fileInput').click()"
+                class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition">
+            Chọn file Excel
+        </button>
+        <div id="uploadProgress" class="hidden mt-4">
+            <div class="w-64 mx-auto bg-gray-200 rounded-full h-2">
+                <div class="bg-blue-600 h-2 rounded-full animate-pulse" style="width: 100%"></div>
+            </div>
+            <p class="text-gray-500 text-sm mt-2">Đang xử lý...</p>
+        </div>
+    </div>
+
+    <!-- ============ DASHBOARD ============ -->
+    <div id="dashboard" class="hidden">
+
+        <!-- ==== SECTION: SUMMARY ====
+             Header nhỏ (S1) để gắn nút ? — grid cards giữ id section-summary cho anchor. -->
+        <div id="section-summary-header" class="flex items-center gap-2 mb-2">
+            <h3 class="text-base font-semibold text-gray-700 dark:text-gray-200" data-help="section-summary">📋 Tổng quan dự án</h3>
+        </div>
+        <!-- Mỗi card có thể click để scroll xuống section chi tiết tương ứng.
+             Icon 🔍 (chỉ hiện khi hover) mở drill-down modal chi tiết.
+             cardTotal + cardModules không có action ngoài hover feedback. -->
+        <section id="section-summary" class="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-blue-500" title="Tổng số chức năng trong file Function List">
+                <div class="text-2xl">📋</div>
+                <div id="cardTotal" class="text-2xl font-bold text-gray-800">0</div>
+                <div class="text-gray-500 text-xs">Tổng chức năng</div>
+                <div id="cardTotalSub" class="summary-sub"></div>
+            </div>
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-green-500 summary-card-clickable"
+                 title="% function đã Closed ở phase cuối cùng — click để xem tiến độ theo công việc"
+                 onclick="scrollToSection('section-tasktype')">
+                <div class="text-2xl">✅</div>
+                <div id="cardProgress" class="text-2xl font-bold text-green-600">0%</div>
+                <div class="text-gray-500 text-xs" id="cardProgressLabel">Closed phase cuối</div>
+                <div id="cardProgressSub" class="summary-sub"></div>
+            </div>
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-red-500 summary-card-clickable"
+                 title="Click để cuộn đến danh sách chi tiết"
+                 onclick="scrollToSection('section-overdue')">
+                <button class="card-drilldown-btn"
+                        onclick="event.stopPropagation(); openOverdueDrillDown();"
+                        title="Xem chi tiết trong modal">🔍</button>
+                <div class="text-2xl">⚠️</div>
+                <div id="cardOverdue" class="text-2xl font-bold text-red-600">0</div>
+                <div class="text-gray-500 text-xs">Function trễ deadline <span id="cardOverdueRecords" class="text-red-400"></span></div>
+                <div id="cardOverdueSub" class="summary-sub"></div>
+            </div>
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-orange-500 summary-card-clickable"
+                 title="Click để cuộn đến danh sách task chưa có PIC"
+                 onclick="scrollToSection('section-unassigned')">
+                <div class="text-2xl">🚨</div>
+                <div id="cardUnassigned" class="text-2xl font-bold text-orange-600">0</div>
+                <div class="text-gray-500 text-xs">Function chưa PIC <span id="cardUnassignedRecords" class="text-orange-400"></span></div>
+                <div id="cardUnassignedSub" class="summary-sub"></div>
+            </div>
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-rose-500 summary-card-clickable"
+                 title="Function có Risk Score ≥ 50 điểm — click để xem top 20"
+                 onclick="scrollToSection('section-risk')">
+                <div class="text-2xl">⚡</div>
+                <div id="cardHighRisk" class="text-2xl font-bold text-rose-600">0</div>
+                <div class="text-gray-500 text-xs">High-risk (≥50 điểm)</div>
+                <div id="cardHighRiskSub" class="summary-sub"></div>
+            </div>
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-purple-500" title="Tổng số Module (Phân hệ) unique trong file Function List">
+                <div class="text-2xl">📦</div>
+                <div id="cardModules" class="text-2xl font-bold text-purple-600">0</div>
+                <div class="text-gray-500 text-xs">Số Module</div>
+                <div id="cardModulesSub" class="summary-sub"></div>
+            </div>
+        </section>
+
+        <!-- ==== GLOBAL FILTER (Module / Quy trình / PIC) — apply cho toàn dashboard ==== -->
+        <!-- Wave 2: multi-select — mỗi chiều 1 dropdown checkbox tự viết (không dùng
+             <select multiple> vì UX kém trên desktop). Các div phía dưới là placeholder
+             cho component createMultiSelect() render vào. -->
+        <section id="section-globalfilter" class="bg-white dashboard-card rounded-xl shadow-md p-4 mb-6 no-print">
+            <div class="flex items-center flex-wrap gap-3">
+                <span class="text-sm font-semibold text-gray-700 shrink-0">🎯 Phân tích theo:</span>
+                <div id="globalFilterModule" class="ms-container" data-label="Module"></div>
+                <div id="globalFilterProcess" class="ms-container" data-label="Quy trình"></div>
+                <div id="globalFilterPIC" class="ms-container" data-label="PIC"></div>
+                <!-- Saved views (Phase 3): ẩn cho đến khi wire xong FE để tránh
+                     ReferenceError khi click. Bỏ hidden khi implement xong. -->
+                <div id="savedViewsWrap" class="hidden flex items-center gap-2">
+                    <select id="savedViewSelect" onchange="applySavedView(this.value)"
+                            class="border rounded px-2 py-1 text-xs bg-white max-w-[160px]"
+                            title="View đã lưu">
+                        <option value="">📂 View đã lưu…</option>
+                    </select>
+                    <button type="button" onclick="saveCurrentView()"
+                            class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded text-xs"
+                            title="Lưu bộ lọc hiện tại">💾 Lưu</button>
+                    <button type="button" onclick="deleteCurrentSavedView()"
+                            class="bg-gray-400 hover:bg-gray-500 text-white px-2 py-1 rounded text-xs"
+                            title="Xóa view đang chọn">🗑</button>
+                </div>
+                <button id="globalFilterClear" onclick="clearGlobalFilters()"
+                        class="hidden bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs shrink-0">
+                    ✕ Bỏ tất cả
+                </button>
+                <span id="globalFilterStatus" class="text-xs text-blue-600 font-medium ml-auto"></span>
+            </div>
+            <!-- Reminder upload cũ (Phase 6 #21) -->
+            <div id="uploadReminderBanner"
+                 class="hidden mt-3 bg-sky-50 border-l-4 border-sky-500 text-sky-900 px-4 py-2 rounded text-sm">
+                ⏰ <span id="uploadReminderText">File Function List đã lâu chưa cập nhật.</span>
+                Hãy upload lại để dashboard phản ánh tiến độ mới.
+            </div>
+            <!-- Banner cảnh báo khi filter trả về 0 function (ẩn mặc định).
+                 Hiển thị khi backend trả row_count = 0 → giúp user hiểu vì sao
+                 tất cả biểu đồ trống thay vì tưởng bug. -->
+            <div id="globalFilterEmptyBanner"
+                 class="hidden mt-3 bg-amber-50 border-l-4 border-amber-500 text-amber-900 px-4 py-3 rounded">
+                <div class="font-semibold">⚠️ Không có function nào khớp bộ lọc này</div>
+                <div class="text-xs mt-1">
+                    Combination Module + Quy trình + PIC có thể không tồn tại trong dữ liệu.
+                    Thử bỏ bớt điều kiện hoặc
+                    <a href="#" class="underline font-semibold" onclick="clearGlobalFilters(); return false;">bỏ tất cả bộ lọc</a>.
+                </div>
+            </div>
+        </section>
+
+        <!-- ==== ACTION TOOLBAR ==== -->
+        <section class="bg-white dashboard-card rounded-xl shadow-md p-4 mb-6 flex flex-wrap items-center gap-3 no-print">
+            <span class="text-sm font-semibold text-gray-700">📥 Xuất báo cáo:</span>
+            <button onclick="downloadFullReport()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm">
+                Full Report (nhiều sheet)
+            </button>
+            <!-- Bug 4 (screenshot 2): trước đây dropdown chỉ có label "Anh Tuấn"
+                 khiến user không biết filter gì. Đổi option đầu thành mô tả rõ,
+                 kèm subtitle bên cạnh giải thích output. Disable khi chưa upload
+                 để tránh action rỗng (không ẩn hẳn — user vẫn thấy feature). -->
+            <div class="flex items-center gap-2">
+                <div class="flex flex-col">
+                    <select id="picExportSelect" disabled
+                            class="border rounded px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-400">
+                        <option value="">📥 Chọn PIC để xuất báo cáo riêng</option>
+                    </select>
+                    <span class="text-[10px] text-gray-500 mt-0.5">
+                        File Excel gồm 3 sheet: Info · Overdue · Active của PIC được chọn
+                    </span>
+                </div>
+                <button onclick="downloadPicReport()"
+                        class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">
+                    Xuất theo PIC
+                </button>
+            </div>
+            <span class="border-l h-6 mx-2"></span>
+            <label class="text-sm text-gray-700">⏱️ Ngưỡng duration (ngày):</label>
+            <input id="durationThreshold" type="number" value="3" min="1" max="30"
+                   class="w-16 border rounded px-2 py-1 text-sm" />
+            <button onclick="applyThreshold()" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-sm">
+                Áp dụng
+            </button>
+
+            <span class="border-l h-6 mx-2"></span>
+            <!-- Data-quality: nút xem PIC bị blacklist khỏi parser.
+                 Trạng thái:
+                 - Rỗng → chip xanh "🟢 PIC sạch"
+                 - Có N item → nút vàng "🔍 PIC bị bỏ (N)"
+                 Click → mở modal + có thể xuất Excel. -->
+            <button id="picBlacklistBtn"
+                    onclick="openPicBlacklistModal()"
+                    class="hidden bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded text-sm"
+                    title="Xem PIC bị parser bỏ do lệch cột Status">
+                🔍 PIC bị bỏ (<span id="picBlacklistCount">0</span>)
+            </button>
+            <span id="picBlacklistClean"
+                  class="hidden bg-green-100 text-green-700 px-3 py-1.5 rounded text-sm border border-green-200"
+                  title="Không có token PIC nào bị parser blacklist — dữ liệu PIC sạch">
+                🟢 PIC sạch
+            </span>
+
+            <span class="border-l h-6 mx-2"></span>
+            <!-- Report Đánh giá (audit) — scope all|filtered -->
+            <select id="auditScopeSelect" class="border rounded px-2 py-1 text-sm" title="Phạm vi xuất audit">
+                <option value="all">Toàn bộ dữ liệu</option>
+                <option value="filtered">Theo bộ lọc hiện tại</option>
+            </select>
+            <button onclick="exportAuditReport()"
+                    class="bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded text-sm"
+                    title="Xuất Report Đánh giá chất lượng dữ liệu (11 sheet)">
+                📋 Xuất Report Đánh giá
+            </button>
+        </section>
+
+        <!-- ==== PIC BLACKLIST MODAL ==== -->
+        <div id="picBlacklistModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"
+             onclick="if(event.target===this)closePicBlacklistModal()">
+            <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col">
+                <div class="flex items-center justify-between px-5 py-3 border-b dark:border-slate-700 shrink-0">
+                    <div class="min-w-0">
+                        <h2 class="text-lg font-bold text-gray-800 dark:text-gray-100">
+                            🔍 PIC bị blacklist khỏi kết quả parse
+                        </h2>
+                        <p class="text-xs text-gray-500 dark:text-gray-400" id="picBlacklistSubtitle">
+                            Danh sách token PIC bị parser bỏ do trùng tên với 1 status
+                            hợp lệ — dấu hiệu cột Status bị lệch qua cột PIC.
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <button onclick="downloadPicBlacklist()"
+                                class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm font-medium">
+                            📥 Xuất Excel
+                        </button>
+                        <button onclick="closePicBlacklistModal()"
+                                class="text-gray-500 hover:text-gray-800 dark:hover:text-white text-2xl leading-none px-2">×</button>
+                    </div>
+                </div>
+                <div class="px-5 py-2 bg-amber-50 dark:bg-slate-700 border-b dark:border-slate-600 text-xs text-amber-900 dark:text-amber-100">
+                    ℹ️ Blacklist keywords: <span id="picBlacklistKeywords" class="font-mono"></span>.
+                    Các token này bị bỏ vì trùng tên với 1 status hợp lệ (VD user paste sai cột).
+                    Kiểm tra Excel row/cột được liệt kê bên dưới để sửa dữ liệu gốc.
+                </div>
+                <div class="p-4 overflow-auto grow" id="picBlacklistBody">
+                    <div class="text-gray-400 text-center py-10">⏳ Đang tải…</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==== SECTION: COMPARE ==== -->
+        <section id="section-compare" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex items-center justify-between flex-wrap gap-3 mb-2">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-compare">📊 So sánh với snapshot trước</h3>
+                    <!-- Wave 3: Task 2 audit — section này INTENTIONALLY dùng snapshot full,
+                         không áp global filter. Badge cảnh báo giúp user không confuse "sao
+                         số overdue ở đây khác card summary?". -->
+                    <span class="inline-block bg-slate-100 text-slate-600 text-[11px] px-2 py-0.5 rounded border border-slate-200 mt-1"
+                          title="So sánh luôn dùng full snapshot để đo velocity chuẩn — không lọc theo Module/PIC hiện tại">
+                        🔒 So sánh KHÔNG áp dụng global filter (luôn dùng full snapshot)
+                    </span>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <select id="compareOld" class="text-sm border rounded px-2 py-1"></select>
+                    <span class="text-gray-500">→</span>
+                    <select id="compareNew" class="text-sm border rounded px-2 py-1"></select>
+                    <button onclick="doCompare()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">
+                        So sánh
+                    </button>
+                    <button onclick="downloadCompareReport()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm">
+                        📥 Xuất Excel
+                    </button>
+                    <label class="cursor-pointer bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1.5 rounded text-sm">
+                        Upload file cũ
+                        <input type="file" id="compareUpload" accept=".xlsx" class="hidden">
+                    </label>
+                </div>
+            </div>
+            <div id="compareContent" class="hidden">
+                <div id="deltaCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
+                    <div>
+                        <h4 class="text-sm font-semibold text-gray-700 mb-2">Module Delta (% Closed)</h4>
+                        <div class="chart-box h-64"><canvas id="chartModuleDelta"></canvas></div>
+                    </div>
+                    <div>
+                        <h4 class="text-sm font-semibold text-gray-700 mb-2">Status Transitions</h4>
+                        <div id="statusFlow" class="text-sm"></div>
+                    </div>
+                </div>
+                <div id="newFunctionsWrap" class="mt-4"></div>
+            </div>
+            <div id="compareEmpty" class="text-center py-6 text-gray-500 text-sm">
+                Chưa có snapshot nào để so sánh. Snapshot được tạo tự động mỗi lần upload.
+            </div>
+        </section>
+
+        <!-- ==== SECTION: WEEKLY DIGEST ==== -->
+        <section id="section-digest" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex items-center justify-between mb-4 no-print">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-digest">📈 Weekly Digest (Báo cáo tuần)</h3>
+                <button onclick="window.print()" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-sm">
+                    🖨️ In / Xuất PDF
+                </button>
+            </div>
+            <div id="weeklyDigest" class="text-sm"></div>
+        </section>
+
+        <!-- ==== ROW: MODULE + TASK TYPE ==== -->
+        <section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div id="section-module" class="bg-white dashboard-card rounded-xl shadow-md p-5">
+                <div class="flex items-center justify-between gap-2 mb-1">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-module">📊 Tổng quan theo Module</h3>
+                    <button onclick="exportChartData('module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+                <p class="chart-scope"></p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="bg-blue-800 text-white">
+                                <th class="px-2 py-2 text-left">#</th>
+                                <th class="px-2 py-2 text-left">Module</th>
+                                <th class="px-2 py-2 text-center">SL</th>
+                                <th class="px-2 py-2 text-center">QT</th>
+                                <th class="px-2 py-2 text-center">Tiến độ</th>
+                                <th class="px-2 py-2 text-center">Đang ở</th>
+                                <th class="px-2 py-2 text-center">Trễ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="moduleTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="section-tasktype" class="bg-white dashboard-card rounded-xl shadow-md p-5 relative">
+                <button class="fs-btn no-print" onclick="fullscreenChart('chartTaskType')">⛶</button>
+                <div class="flex items-center justify-between gap-2 pr-8">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-tasktype">📈 Tiến độ theo công việc</h3>
+                    <button onclick="exportChartData('task_type')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+                <p class="chart-subtitle">% function Closed trung bình theo loại công việc (click cột để xem chi tiết)</p>
+                <p class="chart-scope"></p>
+                <div class="chart-box h-72"><canvas id="chartTaskType"></canvas></div>
+            </div>
+        </section>
+
+        <!-- ==== PHASE MATRIX ==== -->
+        <section id="section-matrix" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <h3 class="text-lg font-semibold text-gray-800 mb-4" data-help="section-matrix">🔥 Chi tiết Phase × Module (% Closed)</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm" id="matrixTable">
+                    <thead id="matrixHead"></thead>
+                    <tbody id="matrixBody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- ==== PHASE STACK + PIC ==== -->
+        <section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div id="section-phase" class="bg-white dashboard-card rounded-xl shadow-md p-5 relative">
+                <button class="fs-btn no-print" onclick="fullscreenChart('chartPhaseStacked')">⛶</button>
+                <div class="flex items-center justify-between gap-2 pr-8">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-phase">📊 Tiến độ theo Phase</h3>
+                    <button onclick="exportChartData('phase_stacked')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+                <p class="chart-subtitle">Số function ở mỗi status, gộp theo từng phase — click để xem chi tiết</p>
+                <p class="chart-scope"></p>
+                <div class="chart-box h-80"><canvas id="chartPhaseStacked"></canvas></div>
+            </div>
+            <div id="section-pic" class="bg-white dashboard-card rounded-xl shadow-md p-5 relative">
+                <button class="fs-btn no-print" onclick="fullscreenChart('chartPIC')">⛶</button>
+                <div class="flex items-start justify-between gap-2 flex-wrap">
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                            <h3 class="text-lg font-semibold text-gray-800" data-help="section-pic">👥 Workload theo PIC (Top 15)</h3>
+                            <button onclick="exportChartData('pic_workload')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                        </div>
+                        <p class="chart-subtitle">Số phase-record được giao cho mỗi PIC, phân theo status</p>
+                        <p class="chart-scope"></p>
+                    </div>
+                    <!-- Wave 2: filter theo phase — chọn "Tất cả phase" (mặc định)
+                         hoặc 1 phase cụ thể để thấy PIC làm việc chính ở phase đó. -->
+                    <div class="flex items-center gap-1 no-print shrink-0">
+                        <label for="picChartPhaseSelector" class="text-xs text-gray-500">Xem theo phase:</label>
+                        <select id="picChartPhaseSelector"
+                                onchange="renderPICChart()"
+                                class="text-xs border rounded px-2 py-1 min-w-[130px]">
+                            <option value="">Tất cả phase</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="chart-box h-80"><canvas id="chartPIC"></canvas></div>
+            </div>
+        </section>
+
+        <!-- ==== PRIORITY / COMPLEXITY / FITGAP ==== -->
+        <section id="section-priority" class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-5">
+                <div class="flex items-center justify-between gap-2">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-priority">🎯 Priority</h3>
+                    <button onclick="exportChartData('priority')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+                <p class="chart-subtitle">Phân bố mức ưu tiên của toàn bộ function</p>
+                <div class="chart-box chart-box-doughnut h-64"><canvas id="chartPriority"></canvas></div>
+            </div>
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-5">
+                <div class="flex items-center justify-between gap-2">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-complexity">⚙️ Complexity</h3>
+                    <button onclick="exportChartData('complexity')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+                <p class="chart-subtitle">Phân bố độ phức tạp — Low/Medium/High</p>
+                <div class="chart-box chart-box-doughnut h-64"><canvas id="chartComplexity"></canvas></div>
+            </div>
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-5">
+                <div class="flex items-center justify-between gap-2">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-fitgap">🔍 FIT / GAP</h3>
+                    <button onclick="exportChartData('fit_gap')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+                <p class="chart-subtitle">Số function FIT / GAP theo từng module</p>
+                <div class="chart-box h-64"><canvas id="chartFitGap"></canvas></div>
+            </div>
+        </section>
+
+        <!-- ==== GIAI DOAN ==== -->
+        <section id="section-giaidoan" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between gap-2 mb-1">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-giaidoan">📅 Tiến độ theo Giai đoạn</h3>
+                <button onclick="exportChartData('giai_doan')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+            </div>
+            <p class="chart-subtitle">% Closed của từng phase, so sánh giữa các giai đoạn triển khai</p>
+            <div class="chart-box h-72"><canvas id="chartGiaiDoan"></canvas></div>
+        </section>
+
+        <!-- ==== UNASSIGNED ==== -->
+        <section id="section-unassigned" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+                <h3 class="text-lg font-semibold text-orange-700" data-help="section-unassigned">🚨 Task chưa có PIC phụ trách</h3>
+                <div class="flex items-center gap-2">
+                    <button onclick="openDrillDown('unassigned', {})" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1 no-print">Chi tiết</button>
+                    <button onclick="exportChartData('unassigned')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-orange-700 text-white">
+                            <th class="px-2 py-2">#</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên chức năng</th>
+                            <th class="px-2 py-2">Module</th>
+                            <th class="px-2 py-2">Phase</th>
+                            <th class="px-2 py-2">Status</th>
+                            <th class="px-2 py-2">Priority</th>
+                            <th class="px-2 py-2">Deadline</th>
+                            <th class="px-2 py-2">Trễ</th>
+                        </tr>
+                    </thead>
+                    <tbody id="unassignedTable"></tbody>
+                </table>
+            </div>
+            <div id="unassignedShowMoreWrap"></div>
+            <div id="unassignedCount" class="text-sm text-gray-500 mt-3"></div>
+        </section>
+
+        <!-- ==== DURATION ==== -->
+        <section id="section-duration" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-duration">⏱️ Phân tích Duration</h3>
+                <div class="flex items-center gap-2">
+                    <button onclick="openDrillDown('duration', {})" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded px-2 py-1 no-print">Chi tiết</button>
+                    <button onclick="exportChartData('duration')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">TB duration</div>
+                    <div id="durAvg" class="text-xl font-bold text-gray-800">0</div>
+                    <div class="text-xs">ngày</div>
+                </div>
+                <div class="delta-card delta-warning">
+                    <div class="text-xs text-gray-500">Task > 3 ngày</div>
+                    <div id="durOver3" class="text-xl font-bold text-orange-600">0</div>
+                </div>
+                <div class="delta-card delta-negative">
+                    <div class="text-xs text-gray-500">Task > 7 ngày</div>
+                    <div id="durOver7" class="text-xl font-bold text-red-600">0</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Ngưỡng cảnh báo</div>
+                    <div id="durThresholdView" class="text-xl font-bold">3 ngày</div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
+                <div class="relative">
+                    <button class="fs-btn no-print" onclick="fullscreenChart('chartDurationBox')">⛶</button>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Distribution theo Phase (min–max)</h4>
+                    <div class="chart-box h-72"><canvas id="chartDurationBox"></canvas></div>
+                </div>
+                <div class="relative">
+                    <button class="fs-btn no-print" onclick="fullscreenChart('chartDurationScatter')">⛶</button>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Duration vs Estimate MH</h4>
+                    <div class="chart-box h-72"><canvas id="chartDurationScatter"></canvas></div>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-slate-700 text-white">
+                            <th class="px-2 py-2">#</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên CN</th>
+                            <th class="px-2 py-2">Module</th>
+                            <th class="px-2 py-2">Phase</th>
+                            <th class="px-2 py-2">Start</th>
+                            <th class="px-2 py-2">End</th>
+                            <th class="px-2 py-2">Duration</th>
+                            <th class="px-2 py-2">Loại</th>
+                            <th class="px-2 py-2">Status</th>
+                            <th class="px-2 py-2 text-left">PIC</th>
+                        </tr>
+                    </thead>
+                        <tbody id="durationTable"></tbody>
+                    </table>
+                </div>
+                <div id="durationShowMoreWrap"></div>
+                <div id="durationCount" class="text-sm text-gray-500 mt-3"></div>
+            </section>
+
+        <!-- ==== STALLED ==== -->
+        <section id="section-stalled" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-stalled">🔄 Pipeline / Task bị Stalled</h3>
+                <div class="flex items-center gap-2">
+                    <button onclick="openDrillDown('stalled', {})" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1 no-print">Chi tiết</button>
+                    <button onclick="exportChartData('stalled')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
+                <div>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Funnel: Số function Closed / Phase</h4>
+                    <div id="funnelChart"></div>
+                </div>
+                <div>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Transitions bị kẹt (từ → sang)</h4>
+                    <div id="transitionList" class="text-sm"></div>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-slate-700 text-white">
+                            <th class="px-2 py-2">#</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên CN</th>
+                            <th class="px-2 py-2">Module</th>
+                            <th class="px-2 py-2">Phase đã xong</th>
+                            <th class="px-2 py-2">Phase chờ</th>
+                            <th class="px-2 py-2">Xong ngày</th>
+                            <th class="px-2 py-2">Chờ (ngày)</th>
+                            <th class="px-2 py-2">Priority</th>
+                        </tr>
+                    </thead>
+                        <tbody id="stalledTable"></tbody>
+                    </table>
+                </div>
+                <div id="stalledShowMoreWrap"></div>
+                <div id="stalledCount" class="text-sm text-gray-500 mt-3"></div>
+            </section>
+
+        <!-- ==== RISK SCORE ==== -->
+        <section id="section-risk" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-risk">⚡ Top Functions Có Điểm Rủi Ro Cao</h3>
+                <div class="flex items-center gap-2">
+                    <button onclick="openDrillDown('risk', {level:'high'})" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded px-2 py-1 no-print">Chi tiết</button>
+                    <button onclick="exportChartData('risk')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-rose-700 text-white">
+                            <th class="px-2 py-2">#</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên CN</th>
+                            <th class="px-2 py-2">Module</th>
+                            <th class="px-2 py-2">Priority</th>
+                            <th class="px-2 py-2">Risk Score</th>
+                            <th class="px-2 py-2 text-left">Yếu tố rủi ro</th>
+                        </tr>
+                    </thead>
+                    <tbody id="riskTable"></tbody>
+                </table>
+            </div>
+            <div id="riskShowMoreWrap"></div>
+            <div id="riskCount" class="text-sm text-gray-500 mt-3"></div>
+        </section>
+
+        <!-- ==== EFFORT ==== -->
+        <section id="section-effort" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-effort">📊 Phân tích Effort</h3>
+                <div class="flex flex-wrap items-center gap-2 no-print">
+                    <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+                        <button data-unit="MH" onclick="setEffortUnit('MH')"
+                                class="effort-unit-btn px-2 py-1 bg-blue-600 text-white">MH</button>
+                        <button data-unit="MD" onclick="setEffortUnit('MD')"
+                                class="effort-unit-btn px-2 py-1 border-l hover:bg-blue-50">MD</button>
+                        <button data-unit="MM" onclick="setEffortUnit('MM')"
+                                class="effort-unit-btn px-2 py-1 border-l hover:bg-blue-50">MM</button>
+                    </div>
+                    <button onclick="exportChartData('effort_heatmap')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Heatmap">📥 Heatmap</button>
+                    <button onclick="exportChartData('effort_pic')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất PIC">📥 PIC</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Tổng Estimate</div>
+                    <div id="effortTotal" class="text-xl font-bold">0</div>
+                    <div class="text-xs" data-effort-unit-label>MH</div>
+                </div>
+                <div class="delta-card delta-positive">
+                    <div class="text-xs text-gray-500">Đã Closed</div>
+                    <div id="effortClosed" class="text-xl font-bold text-green-600">0</div>
+                    <div class="text-xs" data-effort-unit-label>MH</div>
+                </div>
+                <div class="delta-card delta-negative">
+                    <div class="text-xs text-gray-500">Còn lại</div>
+                    <div id="effortRemaining" class="text-xl font-bold text-red-600">0</div>
+                    <div class="text-xs" data-effort-unit-label>MH</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">% Closed</div>
+                    <div id="effortPct" class="text-xl font-bold">0%</div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Effort Heatmap: Module × Phase</h4>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs" id="effortHeatmapTable">
+                            <thead id="effortHeatmapHead"></thead>
+                            <tbody id="effortHeatmapBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="relative">
+                    <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                        <h4 class="text-sm font-semibold text-gray-700">Effort theo PIC (Top 15)</h4>
+                        <select id="effortPicFilter" onchange="setEffortPicFilter(this.value)"
+                                class="text-xs border rounded px-2 py-1 no-print">
+                            <option value="all">Tất cả</option>
+                            <option value="open">Chưa done</option>
+                            <option value="closed">Closed</option>
+                        </select>
+                    </div>
+                    <div id="effortPicChartWrap">
+                        <button class="fs-btn no-print" onclick="fullscreenChart('chartPICEffort')">⛶</button>
+                        <div class="chart-box h-72"><canvas id="chartPICEffort"></canvas></div>
+                    </div>
+                    <div id="effortOpenTasksWrap" class="hidden"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==== PROCESS TREEMAP ==== -->
+        <section id="section-process" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between gap-2 mb-4">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-process">🏷️ Phân tích theo Quy trình</h3>
+                <button onclick="exportChartData('process')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+            </div>
+            <div id="processTreemap" style="min-height:300px;"></div>
+        </section>
+
+        <!-- ==== GANTT TIMELINE ==== -->
+        <section id="section-gantt" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h3 class="text-lg font-semibold text-gray-800" data-help="section-gantt">📅 Timeline (Gantt-style)</h3>
+                        <button onclick="exportChartData('module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print hidden" title="Xuất" id="ganttExportBtn">📥</button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-0.5">Mỗi function là 1 dòng · click function để xem chi tiết · fold/unfold nhóm</p>
+                    <p class="chart-scope"></p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 no-print">
+                    <!-- Group by Module | Quy trình -->
+                    <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+                        <button data-groupby="module" onclick="setGanttGroupBy('module')"
+                                class="gantt-groupby-btn px-2 py-1 bg-blue-600 text-white">Module</button>
+                        <button data-groupby="process" onclick="setGanttGroupBy('process')"
+                                class="gantt-groupby-btn px-2 py-1 border-l hover:bg-blue-50">Quy trình</button>
+                    </div>
+                    <!-- Zoom controls -->
+                    <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+                        <button data-zoom="week" onclick="setGanttZoom('week')"
+                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50">Tuần</button>
+                        <button data-zoom="month" onclick="setGanttZoom('month')"
+                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50 border-l bg-blue-600 text-white">Tháng</button>
+                        <button data-zoom="quarter" onclick="setGanttZoom('quarter')"
+                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50 border-l">Quý</button>
+                    </div>
+                    <!-- Compact label toggle: rút gọn label để timeline rộng hơn -->
+                    <button onclick="toggleGanttCompact()" id="ganttCompactBtn"
+                            class="text-xs bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1"
+                            title="Rút gọn cột nhãn để timeline rộng hơn (ẩn Tên chức năng, chỉ hiện Mã CN)">
+                        ⇔ Rút gọn nhãn
+                    </button>
+                    <button onclick="toggleAllGanttModules()"
+                            id="ganttToggleAllBtn"
+                            class="text-xs bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1">
+                        📂 Mở tất cả
+                    </button>
+                </div>
+            </div>
+            <!-- Legend -->
+            <div class="flex flex-wrap items-center gap-3 text-[11px] text-gray-600 mb-2">
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded" style="background:#22c55e"></span>Closed</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded" style="background:#3b82f6"></span>In-progress</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded" style="background:#f59e0b"></span>Assigned</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded" style="background:#94a3b8"></span>Open/Pending</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded" style="background:#ef4444"></span>Overdue</span>
+                <span class="flex items-center gap-1 ml-auto"><span class="inline-block w-0.5 h-3 bg-red-600"></span>TODAY</span>
+            </div>
+            <!-- Banner cảnh báo dataset lớn (JS toggle) -->
+            <div id="ganttSizeBanner" class="hidden mb-2 bg-amber-50 border-l-4 border-amber-500 text-amber-900 px-3 py-2 rounded text-xs">
+                <b>⚠️ Dataset lớn</b> — <span id="ganttSizeBannerMsg"></span>
+                <a href="#section-globalfilter" class="underline font-semibold ml-1">Dùng bộ lọc Module ở đầu trang</a>
+                để chọn 1-2 module xem chi tiết.
+            </div>
+            <div id="ganttContainer" class="gantt-container-v2"></div>
+        </section>
+
+        <!-- ==================================================================
+             PHASE 4 — Analytics vận hành (Burndown + SLA + Capacity + Slow)
+             ================================================================== -->
+
+        <!-- ==== BURNDOWN + VELOCITY ==== -->
+        <section id="section-burndown" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">
+                        📉 Burndown &amp; Velocity
+                        <span class="help-tip"
+                              title="Cách đọc biểu đồ này:&#10;&#10;• TRỤC X: Tuần (mỗi cột = 1 tuần dương lịch, T2 → CN).&#10;• TRỤC Y (thanh xanh): Số function-phase Closed trong tuần đó (đếm theo cột End khi status = Closed).&#10;• TRỤC Y (đường vàng): Cumulative — tổng dồn số Closed từ đầu dự án.&#10;&#10;Ý nghĩa các số:&#10;• Velocity = trung bình số Closed / tuần trong 4 tuần gần nhất → dự báo tốc độ team.&#10;• Tổng Closed = tổng phase-record đã đóng trong scope filter hiện tại.&#10;&#10;⚠️ Nếu số tuần quá lớn (VD > 200) là do có date lỗi rất xưa/rất xa trong file — hãy filter Module/Process để thu hẹp phạm vi.">?</span>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Closed count theo tuần (End khi Closed / Last Updated) — velocity = trung bình 4 tuần gần nhất</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="text-xs bg-blue-50 text-blue-800 px-3 py-1.5 rounded border border-blue-200">
+                        Velocity: <b id="burndownVelocity">—</b> function/tuần
+                    </div>
+                    <div class="text-xs bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded border border-emerald-200">
+                        Tổng Closed: <b id="burndownTotal">—</b>
+                    </div>
+                </div>
+            </div>
+            <div class="chart-box" style="height:280px"><canvas id="chartBurndown"></canvas></div>
+        </section>
+
+        <!-- ==== SLA VIOLATIONS ==== -->
+        <section id="section-sla" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">
+                        🚨 SLA — vi phạm deadline theo Priority
+                        <span class="help-tip"
+                              title="ĐỊNH NGHĨA vi phạm SLA:&#10;&#10;Một phase-record được coi là vi phạm SLA khi thỏa MỌI điều kiện:&#10;  1. Có End (hoặc To) date&#10;  2. End &lt; ngày hôm nay (đã trễ)&#10;  3. Status ≠ Closed VÀ ≠ Cancelled (chưa đóng)&#10;&#10;→ Nghĩa là: 'đã qua hạn nhưng vẫn chưa xong / chưa hủy'.&#10;&#10;PHÂN LOẠI severity theo Priority:&#10;  • Must-have + trễ ≥ N ngày (default 3) → CRITICAL&#10;  • Should-have + trễ ≥ M ngày (default 7) → CRITICAL&#10;  • Còn lại → WARNING&#10;&#10;⚙️ Có thể chỉnh N, M ở Cài đặt project (banner cấu hình).">?</span>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Định nghĩa: End date đã qua &amp; status chưa Closed/Cancelled.
+                        Must-have quá <span id="slaMustDays">3</span>d · Should-have quá <span id="slaShouldDays">7</span>d → nâng lên "critical"
+                    </p>
+                </div>
+                <div class="flex items-center gap-3 text-xs">
+                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Critical: <b id="slaCritical">0</b></span>
+                    <span class="bg-amber-50 text-amber-800 px-3 py-1.5 rounded border border-amber-200">Warning: <b id="slaWarning">0</b></span>
+                </div>
+            </div>
+            <div id="slaTableWrap" class="overflow-x-auto"></div>
+            <div id="slaPagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- ==== CAPACITY PIC ==== -->
+        <section id="section-capacity" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">👥 Capacity PIC — remaining MH vs công suất</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Default <b id="capDefaultMD">5</b> MD/tuần · Overload nếu remaining > 4 tuần công việc</p>
+                </div>
+                <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200 text-xs">
+                    Overload: <b id="capOverload">0</b>
+                </span>
+            </div>
+            <div id="capacityTableWrap" class="overflow-x-auto"></div>
+            <div id="capacityPagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- ==== SLOW HEATMAP ==== -->
+        <section id="section-slow" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">🐌 Ai đang chậm — Heatmap PIC × Phase</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Số phase-record trễ (End &lt; today, chưa Closed) của mỗi PIC ở mỗi phase</p>
+                </div>
+                <span class="text-xs bg-orange-50 text-orange-700 px-3 py-1.5 rounded border border-orange-200">
+                    Tổng slow: <b id="slowTotal">0</b>
+                </span>
+            </div>
+            <div id="slowHeatmapWrap" class="overflow-x-auto"></div>
+            <div id="slowPagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- ==================================================================
+             PHASE 5 — Dependency + Baseline
+             ================================================================== -->
+
+        <!-- ==== DEPENDENCY BLOCKERS ==== -->
+        <section id="section-deps" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">🔗 Dependency — Must-have đang bị block</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Parse cột <code>function_lq</code>; function Must-have bị block khi related chưa Closed phase cuối</p>
+                </div>
+                <div class="flex items-center gap-3 text-xs">
+                    <span class="bg-gray-50 text-gray-700 px-3 py-1.5 rounded border">Cạnh: <b id="depsEdges">0</b></span>
+                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Blockers: <b id="depsBlockers">0</b></span>
+                </div>
+            </div>
+            <div id="depsTableWrap" class="overflow-x-auto"></div>
+            <div id="depsPagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- ==== UPLOAD HISTORY (P6 #26) ==== -->
+        <section id="section-history" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">📜 Lịch sử upload</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Meta-only — chỉ lưu filename, row count, checksum (không copy file)</p>
+                </div>
+                <span class="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded border">
+                    Tổng: <b id="historyTotal">0</b> lần
+                </span>
+            </div>
+            <div id="uploadHistoryTableWrap" class="overflow-x-auto"></div>
+            <div id="historyPagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- ==== BASELINE vs ACTUAL ==== -->
+        <section id="section-baseline" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">📐 Baseline vs Actual — variance ngày</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Auto-detect <code>Planned</code>/<code>Actual</code> trong phase; fallback End vs Last Updated khi Closed</p>
+                </div>
+                <div class="flex items-center gap-3 text-xs">
+                    <span class="bg-gray-50 text-gray-700 px-3 py-1.5 rounded border">So sánh được: <b id="bslTotal">0</b></span>
+                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Trễ: <b id="bslLate">0</b></span>
+                    <span class="bg-blue-50 text-blue-700 px-3 py-1.5 rounded border border-blue-200">Avg: <b id="bslAvg">0</b>d</span>
+                </div>
+            </div>
+            <div id="baselineTableWrap" class="overflow-x-auto"></div>
+            <div id="baselinePagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- ==== OVERDUE ==== -->
+        <section id="section-overdue" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h3 class="text-lg font-semibold text-red-700" data-help="section-overdue">⚠️ Danh sách trễ deadline</h3>
+                <div class="flex flex-wrap gap-2 items-center no-print">
+                    <select id="filterModule" class="text-sm border rounded px-2 py-1">
+                        <option value="">Tất cả Module</option>
+                    </select>
+                    <select id="filterPIC" class="text-sm border rounded px-2 py-1">
+                        <option value="">Tất cả PIC</option>
+                    </select>
+                    <select id="filterPhase" class="text-sm border rounded px-2 py-1">
+                        <option value="">Tất cả Phase</option>
+                    </select>
+                    <button id="btnExport" onclick="exportOverdue()"
+                            class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm">
+                        📥 Xuất Excel
+                    </button>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-red-800 text-white">
+                            <th class="px-2 py-2">#</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên chức năng</th>
+                            <th class="px-2 py-2">Module</th>
+                            <th class="px-2 py-2">Phase</th>
+                            <th class="px-2 py-2">Deadline</th>
+                            <th class="px-2 py-2">Ngày trễ</th>
+                            <th class="px-2 py-2">Status</th>
+                            <th class="px-2 py-2 text-left">PIC</th>
+                            <th class="px-2 py-2">Priority</th>
+                        </tr>
+                    </thead>
+                    <tbody id="overdueTable"></tbody>
+                </table>
+            </div>
+            <div id="overdueShowMoreWrap"></div>
+            <div id="overdueCount" class="text-sm text-gray-500 mt-3"></div>
+        </section>
+
+    </div> <!-- end dashboard -->
+</main>
+
+<!-- Fullscreen chart modal -->
+<div id="fullscreenModal" class="chart-fullscreen hidden">
+    <button class="fullscreen-close" onclick="closeFullscreen()">✕ Đóng (Esc)</button>
+    <div class="flex-1 flex items-center justify-center">
+        <canvas id="fullscreenCanvas"></canvas>
+    </div>
+</div>
+
+<!-- Chart help popover (không phải modal fullscreen) -->
+<div id="chartHelpPopover" class="chart-help-popover hidden no-print" role="dialog" aria-modal="false" aria-labelledby="chartHelpTitle">
+    <div class="chart-help-popover-inner">
+        <div class="chart-help-popover-head">
+            <strong id="chartHelpTitle"></strong>
+            <button type="button" id="chartHelpClose" class="chart-help-close" aria-label="Đóng">✕</button>
+        </div>
+        <div id="chartHelpBody" class="chart-help-popover-body"></div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="fixed bottom-5 right-5 bg-green-600 text-white px-5 py-3 rounded-lg shadow-lg hidden z-50"></div>
+
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>

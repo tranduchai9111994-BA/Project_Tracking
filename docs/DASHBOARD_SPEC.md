@@ -1,0 +1,408 @@
+# Dashboard Specification — V3 (18 sections + drill-down + global filter)
+
+Dashboard chia thành 3 nhóm section:
+- **Core V1** (10 sections): summary, module, task-type, matrix, phase stack, PIC, priority/complexity/fitgap, giai đoạn, overdue
+- **Advanced V2 P1** (4 sections): unassigned, duration, stalled, risk
+- **Advanced V2 P2-P3** (4 sections): effort, process, timeline, compare + weekly digest
+
+Ngoài ra có các thành phần UX toàn cục: sidebar nav, search bar, dark mode toggle, fullscreen chart, refresh reminder.
+
+**V3 mở rộng UX:**
+- 🗂️ Project selector + Project Manager Modal (dropdown header)
+- 🎯 Global filter (Module × Quy trình) — apply cho toàn dashboard, `applied_filter` badge hiện row count
+- 🔍 Drill-down modal — click cell/segment/row biểu đồ → hiện table function chi tiết, sort/lọc, xuất Excel riêng
+- 📱 Chart responsive — dùng CSS clamp() để scale mượt theo viewport, resize handler cho window
+
+---
+
+## 1. Summary Cards (V2 — 6 cards)
+
+6 cards ngang hàng trên cùng:
+
+| Card                | Giá trị                                            | Icon | Border color | Semantic                                     |
+|---------------------|----------------------------------------------------|------|--------------|----------------------------------------------|
+| Tổng chức năng      | `summary.total_functions`                          | 📋   | blue-500     | Đếm row có data                              |
+| Closed phase cuối   | `summary.overall_progress_pct` + phase name        | ✅   | green-500    | % function đã Closed ở phase cuối cùng       |
+| Function trễ deadline | `summary.total_overdue` (+ phase-level records) | ⚠️   | red-500      | Số function unique (không phải phase count!) |
+| Function chưa PIC   | `summary.unassigned_count` (+ phase-level records) | 🚨   | orange-500   | Số function unique có ít nhất 1 phase chưa PIC |
+| High-risk (≥50 điểm)| `summary.high_risk_count`                          | ⚡   | rose-500     | Function có Risk Score ≥ 50                  |
+| Số Module           | `summary.modules_count`                            | 📦   | purple-500   | Unique modules                               |
+
+**Chú ý V2 fix:** Card hiển thị function-unique để tránh gây hoang mang. Phase-level count hiện trong ngoặc nhỏ hơn (VD: `44 function (74 phase)`).
+
+---
+
+## 2. Module Overview Table (Bảng A)
+
+| Cột          | Mô tả                                                                       |
+|--------------|------------------------------------------------------------------------------|
+| STT          | 1, 2, 3...                                                                  |
+| Phân hệ      | Tên Module                                                                  |
+| SL           | Tổng function trong module                                                  |
+| QT           | Đếm quy trình unique                                                        |
+| Tiến độ      | % function Closed ở phase cuối (progress bar)                               |
+| Đang ở       | Phase active nhất (hoặc "✓ Hoàn thành" / "Chưa bắt đầu" / "Đang hoàn tất") |
+| Trễ          | Số function unique có overdue                                                |
+
+**V2 fix:** Nếu tất cả function của module đã Closed phase cuối → `active_phase = "✓ Hoàn thành"` để không confusing với hiển thị "đang ở Document" khi thực chất đã 100%.
+
+**Conditional formatting progress bar:**
+- 100%: xanh lá đậm
+- ≥80%: xanh lá
+- ≥50%: vàng
+- ≥20%: cam
+- <20%: đỏ
+
+---
+
+## 3. Tiến độ theo công việc (Grouped Bar Chart)
+
+- Trục X: Task types (auto detect từ phase name — Phân tích, Lập trình, Kiểm thử, Cấu hình UAT, UAT, Cấu hình Golive, Tài liệu)
+- Trục Y: % Closed (0-100%)
+- Mỗi Module = 1 group bar
+
+**Mapping tự động** trong `PhaseGroup.task_type` (xem `DATA_MODEL.md` bảng "Các Phase thường gặp").
+
+---
+
+## 4. Phase × Module Matrix (Heatmap)
+
+Bảng pivot:
+- Row: Module
+- Col: Phase
+- Cell: `pct_closed` với heatmap background
+
+**Heatmap color:**
+- 100%: đậm xanh lá (#166534)
+- 80-99%: xanh lá (#22c55e)
+- 50-79%: vàng (#eab308)
+- 20-49%: cam (#f97316)
+- 0-19%: đỏ (#ef4444)
+- Không có data: xám nhạt
+
+**Hover tooltip:** hiển thị `Module / Phase: X/Y Closed (Z%)`.
+
+---
+
+## 5. Phase Progress — Stacked Bar Chart
+
+- Trục X: Các Phase (Analysis, Dev, Config Local, Config UAT, Document, Config PROD, UAT, Golive)
+- Trục Y: Số function
+- Stack theo Status: Closed, In-progress, Assigned, Resolved, Open, Pending, Cancelled
+
+---
+
+## 6. PIC Workload — Horizontal Bar Chart
+
+- Trục Y: Tên PIC (top 15 theo total_tasks giảm dần)
+- Trục X: Số phase-level tasks
+- Stack: Closed / In-progress / Assigned / Overdue
+
+**V2 note:** `total_tasks` là **phase-level count** (1 function × N phase × M PIC = N×M records). Không phải số function unique. Cần đặt tooltip giải thích rõ.
+
+---
+
+## 7. Priority Doughnut
+
+- Segments: Must-have / Should-have / Could-have / Won't-have (auto tùy file)
+- Filter bỏ giá trị "None" / "N/A"
+
+---
+
+## 8. Complexity Doughnut
+
+- Segments: Low / Medium / High
+- Palette: `["#22c55e", "#f59e0b", "#ef4444", "#6b7280"]`
+
+---
+
+## 9. FIT/GAP — Stacked Bar (theo Module)
+
+- Trục X: Module
+- Stack: FIT / GAP / Customization / Pending
+- Auto-detect all types trong file
+
+---
+
+## 10. Giai đoạn Progress (nếu có cột Giai đoạn)
+
+- Trục X: Phase
+- Grouped bar: mỗi giai đoạn (1/2/3) = 1 group
+- Trục Y: % Closed
+- Section auto-hide nếu file không có cột "Giai đoạn"
+
+---
+
+## 🆕 11. Unassigned Tasks (V2 P1)
+
+Bảng liệt kê phase-level records có `status ∈ (Open|Assigned|In-progress|Resolved|Pending)` nhưng `pics == []`.
+
+**Columns:** #, Mã CN, Tên CN, Module, Phase, Status, Priority, Deadline, Trễ (ngày)
+
+**Row styling:**
+- Overdue + unassigned: `bg-red-100 border-l-4 border-red-500` (rủi ro cao nhất)
+- Must-have + unassigned (không overdue): `bg-orange-100 border-l-4 border-orange-500`
+- Còn lại: bình thường
+
+**Sort:** overdue trước → Must-have trước → ngày trễ giảm dần
+
+---
+
+## 🆕 12. Duration Analysis (V2 P1)
+
+### Summary cards (4 cards)
+- TB duration
+- Task > 3 ngày
+- Task > 7 ngày
+- Ngưỡng cảnh báo (điều chỉnh được ở toolbar)
+
+### Box plot theo Phase (dùng horizontal bar Chart.js)
+- Range bar: min → max
+- Median dot (đỏ)
+- Avg dot (xanh, rectRot)
+- Tooltip: `min=X, Q1=Y, med=Z, Q3=W, max=V, avg=U (n=N)`
+
+### Scatter: Duration vs Estimate MH
+- X: Estimate MH
+- Y: Duration (ngày)
+- 3 datasets: Đã Closed (xanh), Đang chạy elapsed (đỏ), Khác (xám)
+- Tooltip: `Mã CN — Phase: Xh → Yd`
+
+### Bảng chi tiết
+Columns: #, Mã CN, Tên CN, Module, Phase, Start, End, Duration, Loại (KH/Đang), Status, PIC.
+Row highlight theo mức trễ giống overdue table.
+
+**Ngưỡng threshold:** slider ở toolbar (mặc định 3, cho phép 1-30). Threshold áp dụng backend khi upload; nếu chỉnh sau upload → client-side filter tạm thời.
+
+---
+
+## 🆕 13. Pipeline / Stalled Tasks (V2 P1)
+
+Detect function bị kẹt: phase trước Closed nhưng phase sau vẫn None/Open.
+
+### Funnel chart (custom HTML, không dùng Chart.js)
+- Row cho mỗi phase, chiều rộng bar = số function Closed / max_closed
+- Gradient blue → green
+
+### Transitions list
+- List các cặp `(from_phase → to_phase)` bị kẹt kèm count
+- Sort giảm dần theo count
+
+### Bảng chi tiết
+Columns: #, Mã CN, Tên CN, Module, Phase đã xong, Phase chờ, Xong ngày, Chờ (ngày), Priority.
+Row highlight nếu wait_days > 7d (orange) hoặc > 14d (red).
+
+---
+
+## 🆕 14. Risk Score — Top 20 High-Risk Functions (V2 P1)
+
+Bảng sort theo risk_score giảm dần, top 20.
+
+**Columns:** #, Mã CN, Tên CN, Module, Priority, Risk Score (bar), Yếu tố rủi ro (tags).
+
+**Color coding risk bar:**
+- ≥80: đỏ (#ef4444)
+- ≥50: cam (#f97316)
+- ≥30: vàng (#eab308)
+- <30: xanh (#22c55e)
+
+**Factor tags:** hiển thị dưới dạng chip đỏ nhạt.
+
+Xem `ARCHITECTURE.md` phần `risk_scorer.py` để hiểu công thức trọng số.
+
+---
+
+## 🆕 15. Effort Analysis (Man-hour) (V2 P2)
+
+### Summary cards (4 cards)
+- Tổng Estimate MH
+- MH đã Closed
+- MH còn lại
+- % MH Closed
+
+### MH Heatmap: Module × Phase
+- Bảng với background theo intensity `rgba(59, 130, 246, opacity)` (opacity theo tỉ lệ MH của cell / max)
+- Cell rỗng: xám nhạt
+
+### PIC Effort chart
+- Horizontal stacked bar (top 15 PIC theo total_mh)
+- Stack: Đã Closed MH (green) + Còn lại MH (orange)
+
+**Chia MH giữa nhiều PIC:** nếu 1 phase có N PIC → mỗi PIC gánh MH/N.
+
+---
+
+## 🆕 16. Process Analysis (Quy trình treemap) (V2 P3)
+
+Group function theo `meta.quy_trinh`:
+- Total function per process
+- % Closed
+- Modules liên quan
+- Overdue count
+- Top 3 PIC chính
+
+**Layout:** custom flexbox treemap-like — chiều rộng cell proportional với total function, chiều cao cố định.
+
+**Color:** background theo % Closed (>80% xanh, 50-80% vàng, 20-50% cam, <20% đỏ).
+
+Section auto-hide nếu file không có cột "Quy trình".
+
+---
+
+## 🆕 17. Timeline Gantt (V2 P3)
+
+Với mỗi Module × Phase có ít nhất 1 function có start/end:
+- Bar horizontal từ min(start_date) → max(end_date)
+- Chiều dài normalized theo tổng timeline (min → max toàn dataset)
+- Đường dọc đỏ = TODAY marker
+- Bar color:
+  - Đỏ nếu có overdue
+  - Xanh lá nếu ≥80% Closed
+  - Vàng nếu ≥50% Closed
+  - Xanh dương nếu <50%
+- Text trên bar: `pct_closed%`
+
+---
+
+## 🆕 18. Compare Snapshot + Weekly Digest (V2 P2)
+
+### Compare section (auto-show nếu ≥ 2 snapshots)
+
+**Toolbar:**
+- 2 dropdown chọn old/new snapshot
+- Nút "So sánh"
+- Nút "📥 Xuất Excel"
+- Upload file cũ (không lưu snapshot, chỉ so sánh)
+
+**4 Delta Cards:**
+- Tiến độ chung: old → new + delta (▲ xanh, ▼ đỏ)
+- Overdue: old → new + delta (▲ đỏ, ▼ xanh — vì overdue tăng là xấu)
+- Function mới phát sinh (luôn hiển thị cam — cảnh báo scope creep)
+- Tốc độ close + est ngày còn lại
+
+**Module Delta Chart:** grouped bar 2 dataset (Trước = gray, Sau = blue).
+
+**Status Transitions:** list `oldStatus → newStatus` với count, top 12.
+
+**New Functions Table:** danh sách function mới phát sinh với Mã CN + Tên + Module + Priority.
+
+### Weekly Digest (auto-show sau khi compare)
+
+Format báo cáo có nút "🖨️ In / Xuất PDF":
+- Header: `<old_date> → <new_date> (N ngày)`
+- 3 cards lớn: Function Closed / Function mới / Est ngày còn lại
+- Top 3 Module tiến bộ (xanh) + Top 3 Module cần chú ý (đỏ)
+- 4 số nhỏ: forward / backward / removed / delta_total
+
+**Print CSS:** ẩn header, sidebar, upload zone; giữ cards + tables.
+
+---
+
+## 19. Overdue Table (V1 giữ nguyên, có filter + export)
+
+**Filters (dropdown):**
+- Module: All / TMS / HR / ...
+- PIC: All / SonHN6 / ...
+- Phase: All / Analysis / Dev / ...
+
+**Columns:** #, Mã CN, Tên CN, Module, Phase, Deadline, Ngày trễ, Status, PIC, Priority.
+
+**Row styling:**
+- >14 ngày: `bg-red-100 border-l-4 border-red-500`
+- 7-14 ngày: `bg-orange-100 border-l-4 border-orange-500`
+- 1-7 ngày: `bg-yellow-100 border-l-4 border-yellow-500`
+
+**Sort:** mặc định theo ngày trễ giảm dần.
+
+**Export button:** gọi `/api/export-overdue` với filter hiện tại.
+
+---
+
+## 🆕 UX Components (V2 P4)
+
+### Sidebar Nav (fixed left)
+Auto-hide đến khi upload file. Sau upload → hiện với 18 shortcut links.
+
+### Search bar (header)
+Auto-hide đến khi upload file. Sau upload → tìm trong overdue / unassigned / risk / duration / stalled bằng Mã CN / Tên / Module / PIC. Click result → scroll đến section tương ứng.
+
+### Dark Mode toggle (header 🌙/☀️)
+- Class `dark` trên `<html>`
+- localStorage lưu preference `theme = "dark"` hoặc `"light"`
+- Load early trong `<script>` header để tránh flash white
+- Toggle icon 🌙 ↔ ☀️
+- Chart auto re-render sau khi đổi
+
+### Fullscreen Chart
+- Nút `⛶` (opacity 0.5, hover đủ 1.0) trên mỗi chart card
+- Click → modal fullscreen overlay `rgba(15,23,42,0.95)`
+- Escape key hoặc nút "✕ Đóng" để thoát
+- Re-render chart trong canvas mới với `maintainAspectRatio: false`
+
+### Refresh Reminder banner
+- Hiển thị sau khi upload nếu snapshot mới nhất > 24h trước
+- Banner amber, có nút ✕ dismiss
+
+### Threshold slider (Duration Analysis)
+- Input number 1-30, mặc định 3
+- Nút "Áp dụng" → nhắc user upload lại để backend recompute
+- Client-side filter tạm thời cho bảng
+
+## Responsive
+
+- Grid 2 cột trên desktop (lg breakpoint 1024px), 1 cột mobile
+- Summary 6 cards: 2 cột mobile / 6 cột desktop
+- Sidebar nav ẩn trên mobile
+- Chart cần overflow-x scroll nếu quá rộng
+
+## 🆕 V3 UX Components
+
+### Project Selector (header)
+- Dropdown liệt kê tất cả project active (không hiện archived)
+- Kèm số snapshot trong ngoặc `(N)` để user thấy nhanh
+- Nút ⚙️ mở "Quản lý Project" modal (create/rename/archive/delete/import/export .zip)
+- LocalStorage nhớ project đang chọn giữa các lần refresh (`current_project`)
+
+### Global Filter (Module × Quy trình)
+- Section riêng trên toolbar, 2 dropdown + nút "✕ Bỏ lọc"
+- Backend recompute toàn bộ 18 metrics cho subset row (không phải filter client-side)
+- Response có `applied_filter = {module, process, row_count}` → badge FE hiển thị:
+  `🎯 Đang lọc → Module: TMS · Quy trình: X · 24 function`
+- structureCache giữ `all_modules` / `all_processes` gốc để dropdown không mất option khi filter đang active
+
+### Drill-Down Modal
+Bấm vào:
+- 1 cell trong Phase × Module matrix → filter `{module, phase}`
+- 1 bar trong Phase Stacked → filter `{phase, status}`
+- 1 bar trong PIC Workload → filter `{pic, status}` (`Overdue` → `status=overdue`)
+- 1 segment Priority / Complexity doughnut → filter `{priority}` / `{complexity}`
+- 1 bar FIT/GAP → filter `{module, fit_gap}`
+- 1 bar Giai đoạn → filter `{giai_doan, phase}`
+- 1 row Module Overview → filter `{module}` (V3.1 addition)
+
+Modal có:
+- Table 13 cột (Mã CN, Tên, Module, Phase, Status, PIC, Start, End, Trễ ngày, Priority, Complexity, FIT/GAP, ...)
+- Search box lọc trong table
+- Click header → sort asc/desc
+- Row highlight: đỏ nhạt (overdue), xanh nhạt (Closed)
+- Footer: `Tổng · Closed · Đang làm · Trễ`
+- Nút "📥 Xuất Excel" POST đến `/api/projects/<slug>/drill-down/export`
+  → file lưu trong `uploads/projects/<slug>/exports/`
+
+### Chart Responsive
+- `.chart-box` CSS class dùng `height: clamp(min, vh-based, max)` cho scale mượt
+- Chart.js config force `responsive: true` + `maintainAspectRatio: false`
+- Window resize handler debounced 150ms gọi `chart.resize()` cho tất cả instance
+- Fullscreen mode dùng `maintainAspectRatio: false` để fill viewport
+
+## Color palette
+
+| Element        | Light                                   | Dark                          |
+|----------------|-----------------------------------------|-------------------------------|
+| Background     | `#f8fafc` (slate-50)                   | `#0f172a` (slate-900)         |
+| Card           | `#ffffff`                               | `#1e293b` (slate-800)         |
+| Text primary   | `#1e293b`                               | `#e2e8f0`                     |
+| Text muted     | `#64748b`                               | `#94a3b8`                     |
+| Border         | `#e2e8f0`                               | `#334155`                     |
+| Header gradient| `blue-800 → blue-600`                   | `blue-900 → blue-800`         |
+| Heatmap none   | `#f3f4f6`                               | `#334155`                     |
