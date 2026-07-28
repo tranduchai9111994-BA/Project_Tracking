@@ -50,6 +50,7 @@ from exporter.excel_exporter import (
     export_slow_heatmap_report,
     export_baseline_variance_report,
     export_fitgap_report,
+    export_function_diff_report,
     SUPPORTED_EXPORT_CHARTS,
 )
 
@@ -1993,6 +1994,134 @@ def export_fitgap(slug: str):
         return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
     except Exception as e:
         return jsonify({"error": f"Lỗi xuất FIT/GAP: {str(e)}"}), 500
+
+
+# ==========================================================================
+# Function Diff (BA — Task 3)
+# ==========================================================================
+# So sánh state hiện tại với snapshot upload trước. Snapshot đã có sẵn dưới
+# dạng pickled ParsedData (SnapshotManager). Không cần tạo JSON snapshot
+# riêng — pickle rẻ hơn và đã có sẵn full data.
+#
+# Match function bằng Mã CN, fallback theo (Tên + Module). Trả 6 tab data:
+# Added / Deleted / PIC / Priority-Complexity / FIT-GAP / Phase Status.
+# ==========================================================================
+
+
+def _resolve_diff_previous_snapshot(slug: str, vs: str):
+    """
+    Chọn snapshot đóng vai "trước" khi diff.
+
+    Args:
+        vs: 'previous' (mặc định) → snapshot ngay trước current;
+            hoặc YYYY-MM-DD → snapshot cụ thể.
+
+    Return: (parsed_data_prev, meta_dict, error_response_or_None)
+    """
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    snaps = smgr.list_snapshots()
+    if not snaps:
+        return None, None, (
+            jsonify({"error": "Chưa có snapshot nào để so sánh", "code": "NO_SNAPSHOT"}),
+            404,
+        )
+
+    if vs and vs != "previous":
+        # snapshot cụ thể theo date
+        loaded = smgr.load_snapshot(vs)
+        if not loaded:
+            return None, None, (jsonify({"error": f"Snapshot {vs} không tồn tại"}), 404)
+        return loaded["parsed"], loaded["meta"], None
+
+    # vs=previous → snapshot ngay trước current.
+    # snapshot mới nhất (index 0) là snapshot chính hôm nay (thường trùng current).
+    # → 'previous' đúng phải là index 1. Nếu chỉ có 1 snapshot → không diff được.
+    if len(snaps) < 2:
+        return None, None, (
+            jsonify({
+                "error": "Chỉ có 1 snapshot — chưa có snapshot trước để so sánh. "
+                         "Upload file lần thứ 2 để bắt đầu track diff.",
+                "code": "SINGLE_SNAPSHOT",
+                "current_snapshot": snaps[0] if snaps else None,
+            }),
+            404,
+        )
+
+    prev_entry = snaps[1]
+    loaded = smgr.load_snapshot(prev_entry["date"])
+    if not loaded:
+        return None, None, (jsonify({"error": "Không load được snapshot trước"}), 500)
+    return loaded["parsed"], loaded["meta"], None
+
+
+@app.route("/api/projects/<slug>/function-diff")
+def function_diff(slug: str):
+    """
+    So sánh state hiện tại với snapshot trước.
+    Query params:
+    - vs: 'previous' (default) hoặc YYYY-MM-DD của snapshot cụ thể.
+    """
+    from analyzer.function_diff import compute_function_diff
+    state, err = _require_state(slug)
+    if err:
+        return err
+
+    vs = request.args.get("vs", "previous").strip() or "previous"
+    prev_data, prev_meta, err2 = _resolve_diff_previous_snapshot(slug, vs)
+    if err2:
+        return err2
+
+    # Meta cho snapshot "current" — dùng thông tin _state
+    current_meta = {
+        "date": state["upload_time"].date().isoformat() if state.get("upload_time") else None,
+        "filename": state.get("filename", "current.xlsx"),
+        "total_functions": len(state["data"].rows),
+    }
+
+    payload = compute_function_diff(
+        current=state["data"],
+        previous=prev_data,
+        current_meta=current_meta,
+        previous_meta=prev_meta,
+    )
+    # List snapshots để FE hiển thị dropdown "so với snapshot nào"
+    payload["available_snapshots"] = _project_mgr.get_snapshot_manager(slug).list_snapshots()
+    return jsonify(payload)
+
+
+@app.route("/api/projects/<slug>/export-function-diff")
+def export_function_diff(slug: str):
+    """Xuất Excel Function Diff (multi-sheet, xuất ALL). Query: ?vs="""
+    from analyzer.function_diff import compute_function_diff
+    state, err = _require_state(slug)
+    if err:
+        return err
+
+    vs = request.args.get("vs", "previous").strip() or "previous"
+    prev_data, prev_meta, err2 = _resolve_diff_previous_snapshot(slug, vs)
+    if err2:
+        return err2
+
+    current_meta = {
+        "date": state["upload_time"].date().isoformat() if state.get("upload_time") else None,
+        "filename": state.get("filename", "current.xlsx"),
+        "total_functions": len(state["data"].rows),
+    }
+
+    try:
+        payload = compute_function_diff(
+            current=state["data"],
+            previous=prev_data,
+            current_meta=current_meta,
+            previous_meta=prev_meta,
+        )
+        filepath = export_function_diff_report(
+            payload=payload,
+            output_dir=_project_mgr.get_export_dir(slug),
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Function Diff: {str(e)}"}), 500
 
 
 # ==========================================================================

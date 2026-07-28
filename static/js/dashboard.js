@@ -309,6 +309,8 @@ function applyDashboardResponse(data) {
     // Task 2 — FIT/GAP Dashboard: fetch riêng như SLA/Capacity vì compute nặng
     // (đi qua tất cả rows) và support aging_threshold_days configurable.
     try { if (typeof loadFitgapDashboard === "function") setTimeout(loadFitgapDashboard, 120); } catch (e) {}
+    // Task 3 — Function Diff: fetch riêng vì cần load snapshot pickle (chậm hơn dashboard)
+    try { if (typeof loadFunctionDiff === "function") setTimeout(loadFunctionDiff, 150); } catch (e) {}
     try { if (typeof loadSavedViews === "function") setTimeout(loadSavedViews, 120); } catch (e) {}
     try { if (typeof _updateDeepLink === "function") _updateDeepLink(); } catch (e) {}
 }
@@ -1887,6 +1889,8 @@ const pageState = {
     history:    { page: 1, size: PAGE_DEFAULT_SIZE },
     // Task 2: FIT/GAP aging table
     fitgap:     { page: 1, size: PAGE_DEFAULT_SIZE },
+    // Task 3: Function Diff — 1 pager dùng chung cho tab active
+    fdiff:      { page: 1, size: PAGE_DEFAULT_SIZE },
 };
 
 /** Cắt page slice từ list theo pageState[sectionKey]. */
@@ -5990,6 +5994,298 @@ function _renderFitgapAgingTable(items) {
     renderPager("fitgapPagerWrap", "fitgap", items.length,
         () => _renderFitgapAgingTable(items));
 }
+
+// ========================================================================
+// Task 3 — Function Diff between snapshots.
+// Fetch diff, render summary cards + tab bar + table. Tabs share pager
+// (pageState.fdiff) — chuyển tab reset page về 1.
+// ========================================================================
+
+// Cấu hình tab: id → {label, dataKey trong payload, columns [{key, label, cls}]}
+const FDIFF_TABS = [
+    {
+        id: "added", label: "➕ Mới thêm", dataKey: "added",
+        countKey: "added",
+        columns: [
+            { key: "ma_cn", label: "Mã CN", cls: "font-mono" },
+            { key: "ten_cn", label: "Tên chức năng", cls: "" },
+            { key: "module", label: "Module", cls: "" },
+            { key: "quy_trinh", label: "Quy trình", cls: "" },
+            { key: "priority", label: "Priority", cls: "" },
+            { key: "fit_gap", label: "FIT/GAP", cls: "" },
+        ],
+    },
+    {
+        id: "deleted", label: "➖ Bị xoá", dataKey: "deleted",
+        countKey: "deleted",
+        columns: [
+            { key: "ma_cn", label: "Mã CN", cls: "font-mono" },
+            { key: "ten_cn", label: "Tên chức năng", cls: "" },
+            { key: "module", label: "Module", cls: "" },
+            { key: "quy_trinh", label: "Quy trình", cls: "" },
+            { key: "priority", label: "Priority", cls: "" },
+            { key: "fit_gap", label: "FIT/GAP", cls: "" },
+        ],
+    },
+    {
+        id: "pic_changed", label: "👤 Đổi PIC", dataKey: "pic_changed",
+        countKey: "pic_changed",
+        columns: [
+            { key: "ma_cn", label: "Mã CN", cls: "font-mono" },
+            { key: "ten_cn", label: "Tên chức năng", cls: "" },
+            { key: "module", label: "Module", cls: "" },
+            { key: "phase", label: "Phase", cls: "" },
+            { key: "old", label: "PIC cũ", cls: "text-red-600" },
+            { key: "new", label: "PIC mới", cls: "text-green-700 font-medium" },
+        ],
+    },
+    {
+        id: "priority_complexity_changed", label: "🎯 Đổi Priority/Complexity", dataKey: "priority_complexity_changed",
+        countKey: "prio_complex_changed",
+        columns: [
+            { key: "ma_cn", label: "Mã CN", cls: "font-mono" },
+            { key: "ten_cn", label: "Tên chức năng", cls: "" },
+            { key: "module", label: "Module", cls: "" },
+            { key: "field", label: "Field", cls: "font-medium" },
+            { key: "old", label: "Cũ", cls: "text-red-600" },
+            { key: "new", label: "Mới", cls: "text-green-700 font-medium" },
+        ],
+    },
+    {
+        id: "fitgap_changed", label: "🧩 Đổi FIT/GAP", dataKey: "fitgap_changed",
+        countKey: "fitgap_changed",
+        columns: [
+            { key: "ma_cn", label: "Mã CN", cls: "font-mono" },
+            { key: "ten_cn", label: "Tên chức năng", cls: "" },
+            { key: "module", label: "Module", cls: "" },
+            { key: "old", label: "Cũ", cls: "text-red-600" },
+            { key: "new", label: "Mới", cls: "text-green-700 font-medium" },
+        ],
+    },
+    {
+        id: "phase_status_changed", label: "🔄 Đổi Status phase", dataKey: "phase_status_changed",
+        countKey: "status_changed",
+        columns: [
+            { key: "ma_cn", label: "Mã CN", cls: "font-mono" },
+            { key: "ten_cn", label: "Tên chức năng", cls: "" },
+            { key: "module", label: "Module", cls: "" },
+            { key: "phase", label: "Phase", cls: "" },
+            { key: "old", label: "Status cũ", cls: "text-red-600" },
+            { key: "new", label: "Status mới", cls: "text-green-700 font-medium" },
+        ],
+    },
+];
+
+let _lastFdiffData = null;
+let _fdiffActiveTab = "added";
+
+async function loadFunctionDiff() {
+    const sel = document.getElementById("fdiffVsSelect");
+    const vs = sel ? (sel.value || "previous") : "previous";
+    try {
+        const url = `/api/projects/${currentProjectSlug}/function-diff?vs=${encodeURIComponent(vs)}`;
+        const r = await fetch(url);
+        const section = document.getElementById("section-function-diff");
+        if (!section) return;
+
+        if (!r.ok) {
+            // 404 = chưa đủ snapshot / snapshot không tồn tại. Show empty state.
+            const err = await r.json().catch(() => ({}));
+            _renderFdiffEmpty(err);
+            return;
+        }
+        const data = await r.json();
+        _lastFdiffData = data;
+        _renderFunctionDiff(data);
+    } catch (e) {
+        console.error("[loadFunctionDiff]", e);
+    }
+}
+
+function _renderFdiffEmpty(errPayload) {
+    const section = document.getElementById("section-function-diff");
+    if (!section) return;
+    // Nếu chưa upload lần đầu (NO_SNAPSHOT) — ẩn hoàn toàn section, không phiền user
+    const code = errPayload && errPayload.code;
+    if (code === "NO_SNAPSHOT") {
+        section.classList.add("hidden");
+        return;
+    }
+    // SINGLE_SNAPSHOT: hiện section với empty message
+    section.classList.remove("hidden");
+    document.getElementById("fdiffSummaryCards").innerHTML = "";
+    document.getElementById("fdiffTabsWrap").innerHTML = "";
+    document.getElementById("fdiffTableHead").innerHTML = "";
+    document.getElementById("fdiffTableBody").innerHTML = "";
+    document.getElementById("fdiffPagerWrap").innerHTML = "";
+    document.getElementById("fdiffHeaderTs").textContent = "—";
+    const empty = document.getElementById("fdiffEmptyState");
+    const msg = document.getElementById("fdiffEmptyMessage");
+    if (empty && msg) {
+        empty.classList.remove("hidden");
+        msg.textContent = (errPayload && errPayload.error) ||
+            "Chưa có snapshot trước để so sánh. Upload file lần 2 để bắt đầu track diff.";
+    }
+}
+
+function _renderFunctionDiff(data) {
+    const section = document.getElementById("section-function-diff");
+    if (!section) return;
+    section.classList.remove("hidden");
+    document.getElementById("fdiffEmptyState").classList.add("hidden");
+
+    // --- Header timestamp + subtitle ---
+    const cur = data.current_snapshot || {};
+    const prev = data.previous_snapshot || {};
+    document.getElementById("fdiffHeaderTs").textContent =
+        `[${prev.date || "—"} → ${cur.date || "—"}]`;
+    document.getElementById("fdiffSubtitle").textContent =
+        `${prev.filename || "—"}  ↔  ${cur.filename || "—"}  ·  `
+        + `${data.counts.previous_total} chức năng → ${data.counts.current_total} chức năng`;
+
+    // --- Dropdown "So với" ---
+    const sel = document.getElementById("fdiffVsSelect");
+    if (sel && Array.isArray(data.available_snapshots)) {
+        const currentVal = sel.value || "previous";
+        // Rebuild options: previous + tất cả snapshot theo date desc (bỏ snapshot hiện tại - index 0)
+        const opts = ['<option value="previous">Snapshot ngay trước</option>'];
+        (data.available_snapshots || []).slice(1).forEach(sn => {
+            opts.push(`<option value="${escapeHtml(sn.date)}">${escapeHtml(sn.date)} — ${escapeHtml(sn.filename || "")}</option>`);
+        });
+        sel.innerHTML = opts.join("");
+        sel.value = currentVal;
+    }
+
+    // --- Summary cards ---
+    const c = data.counts || {};
+    const cardsWrap = document.getElementById("fdiffSummaryCards");
+    cardsWrap.innerHTML = [
+        _fdiffCard("+ Mới thêm", c.added, "bg-green-100 text-green-800"),
+        _fdiffCard("- Bị xoá", c.deleted, "bg-red-100 text-red-800"),
+        _fdiffCard("⇄ Function đổi", c.total_changed, "bg-amber-100 text-amber-800"),
+        _fdiffCard("Đổi PIC (bản ghi)", c.pic_changed, "bg-blue-100 text-blue-800"),
+        _fdiffCard("Đổi Prio/Complex", c.prio_complex_changed, "bg-purple-100 text-purple-800"),
+        _fdiffCard("Đổi Status phase", c.status_changed, "bg-indigo-100 text-indigo-800"),
+    ].join("");
+
+    // --- Tabs ---
+    _renderFdiffTabs(data);
+
+    // --- Table cho active tab ---
+    _renderFdiffTable(data);
+}
+
+function _fdiffCard(label, val, cls) {
+    return `<div class="rounded-lg border dark:border-slate-700 p-2 ${cls}">
+        <div class="text-[10px] uppercase font-semibold opacity-70">${escapeHtml(label)}</div>
+        <div class="text-xl font-bold mt-0.5">${val ?? 0}</div>
+    </div>`;
+}
+
+function _renderFdiffTabs(data) {
+    const wrap = document.getElementById("fdiffTabsWrap");
+    if (!wrap) return;
+    const c = data.counts || {};
+
+    // Nếu tab active không có data → auto switch sang tab đầu tiên có data
+    // để user không nhìn "empty table" ngay khi mở
+    const activeTabDef = FDIFF_TABS.find(t => t.id === _fdiffActiveTab);
+    if (!activeTabDef || (c[activeTabDef.countKey] || 0) === 0) {
+        const firstWithData = FDIFF_TABS.find(t => (c[t.countKey] || 0) > 0);
+        if (firstWithData) _fdiffActiveTab = firstWithData.id;
+    }
+
+    wrap.innerHTML = FDIFF_TABS.map(t => {
+        const cnt = c[t.countKey] || 0;
+        const isActive = t.id === _fdiffActiveTab;
+        const activeCls = isActive
+            ? "bg-white dark:bg-slate-800 border-b-2 border-blue-600 text-blue-700 font-semibold"
+            : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-200";
+        const countBadge = cnt > 0
+            ? `<span class="ml-1 text-[10px] px-1.5 py-0.5 rounded-full ${isActive ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}">${cnt}</span>`
+            : "";
+        return `<button onclick="_fdiffSetActiveTab('${t.id}')"
+                    class="px-3 py-1.5 text-xs ${activeCls} whitespace-nowrap">
+            ${t.label}${countBadge}
+        </button>`;
+    }).join("");
+}
+
+function _fdiffSetActiveTab(tabId) {
+    _fdiffActiveTab = tabId;
+    pageState.fdiff.page = 1;
+    if (_lastFdiffData) {
+        _renderFdiffTabs(_lastFdiffData);
+        _renderFdiffTable(_lastFdiffData);
+    }
+}
+
+function _renderFdiffTable(data) {
+    const head = document.getElementById("fdiffTableHead");
+    const body = document.getElementById("fdiffTableBody");
+    const pager = document.getElementById("fdiffPagerWrap");
+    if (!head || !body) return;
+
+    const tab = FDIFF_TABS.find(t => t.id === _fdiffActiveTab) || FDIFF_TABS[0];
+    const items = (data && data[tab.dataKey]) || [];
+
+    head.innerHTML = tab.columns.map(col =>
+        `<th class="px-2 py-2 text-left">${escapeHtml(col.label)}</th>`
+    ).join("");
+
+    if (items.length === 0) {
+        body.innerHTML = `<tr><td colspan="${tab.columns.length}" class="px-2 py-4 text-center text-gray-400 italic">
+            Không có thay đổi nào trong nhóm này
+        </td></tr>`;
+        pager.innerHTML = "";
+        return;
+    }
+    const { pageItems } = _pageSlice("fdiff", items);
+    body.innerHTML = pageItems.map(it => {
+        const cells = tab.columns.map(col => {
+            const val = it[col.key];
+            return `<td class="px-2 py-1.5 ${col.cls}">${escapeHtml(val ?? "—")}</td>`;
+        }).join("");
+        // Click row → mở function detail (nếu có ma_cn và row_num — hầu hết đều có)
+        const rowNum = it.row_num;
+        const clickable = rowNum
+            ? `onclick="openFunctionDetail(${rowNum})" class="border-b dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer"`
+            : `class="border-b dark:border-slate-700"`;
+        return `<tr ${clickable}>${cells}</tr>`;
+    }).join("");
+
+    renderPager("fdiffPagerWrap", "fdiff", items.length, () => _renderFdiffTable(data));
+}
+
+async function exportFunctionDiff() {
+    const sel = document.getElementById("fdiffVsSelect");
+    const vs = sel ? (sel.value || "previous") : "previous";
+    const url = `/api/projects/${currentProjectSlug}/export-function-diff?vs=${encodeURIComponent(vs)}`;
+    try {
+        const r = await fetch(url);
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            if (typeof showToast === "function")
+                showToast(`Xuất Excel lỗi: ${err.error || r.statusText}`, "red");
+            return;
+        }
+        const blob = await r.blob();
+        const cd = r.headers.get("Content-Disposition") || "";
+        const m = /filename\*?=(?:UTF-8'')?"?([^\";]+)"?/i.exec(cd);
+        const fname = m ? decodeURIComponent(m[1]) : `Function_Diff_${Date.now()}.xlsx`;
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = fname;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        if (typeof showToast === "function") showToast("Đã xuất Excel Diff", "green");
+    } catch (e) {
+        if (typeof showToast === "function") showToast(`Lỗi mạng: ${e.message}`, "red");
+    }
+}
+
 
 /** Xuất Excel FIT/GAP — POST filter body để cùng chuẩn với 4 export khác. */
 async function exportFitgapReport() {

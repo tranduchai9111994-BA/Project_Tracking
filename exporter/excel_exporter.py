@@ -2102,3 +2102,193 @@ def export_fitgap_report(
     wb.save(filepath)
     wb.close()
     return filepath
+
+
+# --------------------------------------------------------------------------
+# Function Diff export (Task 3) — multi-sheet, mỗi tab 1 sheet.
+# Rule V4: XUẤT ALL (không pagination).
+# --------------------------------------------------------------------------
+
+def export_function_diff_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+) -> str:
+    """
+    Xuất báo cáo diff giữa 2 snapshot sang Excel (multi-sheet).
+    Mỗi tab trong UI = 1 sheet: Summary / Added / Deleted / PIC / Priority
+    (kèm Complexity) / FIT_GAP / Status.
+    """
+    cur_meta = payload.get("current_snapshot") or {}
+    prev_meta = payload.get("previous_snapshot") or {}
+    counts = payload.get("counts") or {}
+
+    wb = openpyxl.Workbook()
+
+    subtitle_base = (
+        f"Hiện tại: {cur_meta.get('date', '—')} ({cur_meta.get('filename', '—')})  "
+        f"|  Trước: {prev_meta.get('date', '—')} ({prev_meta.get('filename', '—')})"
+    )
+
+    # === Sheet 1: Summary ===
+    ws = wb.active
+    ws.title = "Summary"
+    _write_sheet(
+        ws,
+        title="FUNCTION DIFF — TỔNG QUAN THAY ĐỔI",
+        subtitle=subtitle_base,
+        columns=[("Chỉ số", 40), ("Số lượng", 14)],
+        data_rows=[
+            ["Tổng function hiện tại", counts.get("current_total", 0)],
+            ["Tổng function snapshot trước", counts.get("previous_total", 0)],
+            ["+ Mới thêm", counts.get("added", 0)],
+            ["- Bị xoá", counts.get("deleted", 0)],
+            ["⇄ Function đổi (distinct)", counts.get("total_changed", 0)],
+            ["   ↳ Đổi PIC (bản ghi)", counts.get("pic_changed", 0)],
+            ["   ↳ Đổi Priority/Complexity", counts.get("prio_complex_changed", 0)],
+            ["   ↳ Đổi FIT/GAP", counts.get("fitgap_changed", 0)],
+            ["   ↳ Đổi Status phase (bản ghi)", counts.get("status_changed", 0)],
+        ],
+    )
+
+    # === Sheet 2: Added ===
+    ws2 = wb.create_sheet("Added")
+    _write_sheet(
+        ws2,
+        title="FUNCTION MỚI THÊM",
+        subtitle=subtitle_base,
+        columns=[
+            ("STT", 6),
+            ("Mã CN", 14),
+            ("Tên chức năng", 40),
+            ("Module", 10),
+            ("Quy trình", 30),
+            ("Priority", 12),
+            ("Complexity", 12),
+            ("FIT/GAP", 10),
+        ],
+        data_rows=[
+            [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
+             r.get("quy_trinh", ""), r.get("priority", ""), r.get("complexity", ""),
+             r.get("fit_gap", "")]
+            for idx, r in enumerate(payload.get("added") or [])
+        ],
+        row_fill_fn=lambda _ri, _idx: GREEN_FILL,
+    )
+
+    # === Sheet 3: Deleted ===
+    ws3 = wb.create_sheet("Deleted")
+    _write_sheet(
+        ws3,
+        title="FUNCTION BỊ XOÁ",
+        subtitle=subtitle_base,
+        columns=[
+            ("STT", 6),
+            ("Mã CN", 14),
+            ("Tên chức năng", 40),
+            ("Module", 10),
+            ("Quy trình", 30),
+            ("Priority", 12),
+            ("Complexity", 12),
+            ("FIT/GAP", 10),
+        ],
+        data_rows=[
+            [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
+             r.get("quy_trinh", ""), r.get("priority", ""), r.get("complexity", ""),
+             r.get("fit_gap", "")]
+            for idx, r in enumerate(payload.get("deleted") or [])
+        ],
+        row_fill_fn=lambda _ri, _idx: RED_FILL,
+    )
+
+    # === Sheet 4: PIC change ===
+    ws4 = wb.create_sheet("PIC_Change")
+    _write_sheet(
+        ws4,
+        title="THAY ĐỔI PIC",
+        subtitle=subtitle_base,
+        columns=[
+            ("STT", 6),
+            ("Mã CN", 14),
+            ("Tên chức năng", 30),
+            ("Module", 10),
+            ("Phase", 16),
+            ("PIC cũ", 30),
+            ("PIC mới", 30),
+        ],
+        data_rows=[
+            [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
+             r.get("phase", ""), r.get("old", ""), r.get("new", "")]
+            for idx, r in enumerate(payload.get("pic_changed") or [])
+        ],
+    )
+
+    # === Sheet 5: Priority / Complexity change ===
+    ws5 = wb.create_sheet("PrioComplex_Change")
+    _write_sheet(
+        ws5,
+        title="THAY ĐỔI PRIORITY / COMPLEXITY",
+        subtitle=subtitle_base,
+        columns=[
+            ("STT", 6),
+            ("Mã CN", 14),
+            ("Tên chức năng", 30),
+            ("Module", 10),
+            ("Field", 16),
+            ("Cũ", 20),
+            ("Mới", 20),
+        ],
+        data_rows=[
+            [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
+             r.get("field", ""), r.get("old", ""), r.get("new", "")]
+            for idx, r in enumerate(payload.get("priority_complexity_changed") or [])
+        ],
+    )
+
+    # === Sheet 6: FIT/GAP change ===
+    ws6 = wb.create_sheet("FITGAP_Change")
+    _write_sheet(
+        ws6,
+        title="THAY ĐỔI FIT / GAP",
+        subtitle=subtitle_base,
+        columns=[
+            ("STT", 6),
+            ("Mã CN", 14),
+            ("Tên chức năng", 30),
+            ("Module", 10),
+            ("Cũ", 14),
+            ("Mới", 14),
+        ],
+        data_rows=[
+            [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
+             r.get("old", ""), r.get("new", "")]
+            for idx, r in enumerate(payload.get("fitgap_changed") or [])
+        ],
+    )
+
+    # === Sheet 7: Phase status change ===
+    ws7 = wb.create_sheet("Status_Change")
+    _write_sheet(
+        ws7,
+        title="THAY ĐỔI STATUS PHASE",
+        subtitle=subtitle_base,
+        columns=[
+            ("STT", 6),
+            ("Mã CN", 14),
+            ("Tên chức năng", 30),
+            ("Module", 10),
+            ("Phase", 16),
+            ("Status cũ", 14),
+            ("Status mới", 14),
+        ],
+        data_rows=[
+            [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
+             r.get("phase", ""), r.get("old", ""), r.get("new", "")]
+            for idx, r in enumerate(payload.get("phase_status_changed") or [])
+        ],
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"Function_Diff_{date.today().strftime('%Y%m%d')}.xlsx")
+    wb.save(filepath)
+    wb.close()
+    return filepath
