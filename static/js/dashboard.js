@@ -2383,13 +2383,40 @@ function renderEffortSection() {
         ];
     createChart(ctx, "bar", {
         labels: picList.map(p => p.pic),
-        datasets,
+        datasets: datasets.map(ds => ({
+            ...ds,
+            // Bug 6-pattern: bỏ borderRadius (default global = 4) để segment
+            // nhỏ (VD PIC có ít MH closed) không bị "nuốt" mất trên horizontal
+            // stacked bar.
+            borderRadius: 0,
+            borderSkipped: false,
+            stack: "effort_pic",
+        })),
     }, {
         indexAxis: "y",
         responsive: true,
         plugins: {
-            legend: { position: "top" },
+            legend: {
+                position: "top",
+                labels: { usePointStyle: true, boxWidth: 10, padding: 12 },
+            },
             tooltip: { callbacks: { footer: () => "💡 Click để xem chi tiết" } },
+            // Bug 11: Hiện số MM (hoặc MD) trực tiếp trên từng segment,
+            // user không cần hover mới thấy. Bỏ qua segment có value < 0.1
+            // để tránh overlap khi PIC có phần rất nhỏ.
+            datalabels: {
+                display: (ctx) => {
+                    const val = Number(ctx.dataset.data[ctx.dataIndex]) || 0;
+                    return val >= 0.1;
+                },
+                color: "#fff",
+                font: { size: 10, weight: "bold" },
+                textStrokeColor: "rgba(0,0,0,0.55)",
+                textStrokeWidth: 2,
+                formatter: (val) => (val >= 0.1 ? `${Math.round(val * 10) / 10}` : ""),
+                anchor: "center",
+                align: "center",
+            },
         },
         scales: {
             x: { stacked: true, beginAtZero: true, title: { display: true, text: unit } },
