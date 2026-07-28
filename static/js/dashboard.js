@@ -1727,10 +1727,28 @@ function renderGiaiDoanChart() {
     createChart(ctx, "bar", { labels: phases, datasets }, {
         layout: { padding: { top: 24 } },
         plugins: {
-            legend: { position: "top" },
+            legend: {
+                position: "top",
+                align: "start",
+                // Bug 9 fix: label chồng lên nhau khi có > 2 giai đoạn.
+                // Tăng padding + boxWidth để mỗi item có đủ chỗ; usePointStyle
+                // cho legend gọn hơn, không dùng hình chữ nhật dài.
+                labels: {
+                    usePointStyle: true,
+                    boxWidth: 8,
+                    padding: 16,
+                    font: { size: 11 },
+                },
+            },
             tooltip: {
                 callbacks: {
-                    label: (c) => `${c.dataset.label} · ${c.label}: ${c.parsed.y}%`,
+                    label: (c) => {
+                        const gd = c.dataset._gd;
+                        const cell = (metricsData.giai_doan_progress || {})[gd]?.[c.label] || {};
+                        const denom = cell.total ?? 0;
+                        const closed = cell.closed ?? 0;
+                        return `${c.dataset.label} · ${c.label}: ${c.parsed.y}%  (${closed}/${denom} func)`;
+                    },
                     footer: () => "💡 Click để xem chi tiết",
                 },
             },

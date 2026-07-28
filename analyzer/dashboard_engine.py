@@ -417,10 +417,22 @@ class DashboardEngine:
     # ------------------------------------------------------------------
 
     def _giai_doan_progress(self, data: ParsedData) -> dict:
-        """% Closed theo giai đoạn × phase."""
+        """
+        % Closed theo giai đoạn × phase, dùng WEIGHTED_ALL pattern.
+
+        Denominator = len(rows) của giai đoạn (KHÔNG phải total_with_status),
+        để chart phản ánh đúng tiến độ: nếu 1 phase có 1 Closed + 40 phase blank
+        thì pct = 1/41 ≈ 2%, KHÔNG phải 100%. Coi phase blank ("chưa làm") là
+        chưa done — nhất quán với công thức `overall_progress_pct` weighted_all
+        ở summary card.
+
+        Trả thêm `total_with_status` để tooltip hiển thị được (VD "8/45 rows,
+        tính trên tổng 45 function của giai đoạn").
+        """
         result = {}
         for gd in data.all_giai_doan:
             rows = [r for r in data.rows if str(r.meta.get("giai_doan", "")) == gd]
+            denom = len(rows)  # tổng function của giai đoạn — weighted_all
             result[gd] = {}
             for phase_name in data.all_phases:
                 total_with_status = 0
@@ -431,8 +443,13 @@ class DashboardEngine:
                         total_with_status += 1
                         if pd.status == "Closed":
                             closed += 1
-                pct = round(closed / total_with_status * 100, 1) if total_with_status > 0 else 0
-                result[gd][phase_name] = {"total": total_with_status, "closed": closed, "pct": pct}
+                pct = round(closed / denom * 100, 1) if denom > 0 else 0
+                result[gd][phase_name] = {
+                    "total": denom,
+                    "total_with_status": total_with_status,
+                    "closed": closed,
+                    "pct": pct,
+                }
         return result
 
     # ------------------------------------------------------------------
