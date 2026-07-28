@@ -103,10 +103,17 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // Escape: ưu tiên đóng help popover, sau đó fullscreen
+    // Escape: ưu tiên đóng help popover, sau đó fullscreen, sau đó modal khác.
+    // Function Detail modal (Task 1) đóng qua Esc cho UX consistent với drill-down.
     document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
             if (typeof closeChartHelp === "function" && closeChartHelp()) return;
+            // Function detail modal đang mở?
+            const fnModal = document.getElementById("functionDetailModal");
+            if (fnModal && !fnModal.classList.contains("hidden")) {
+                closeFunctionDetail();
+                return;
+            }
             closeFullscreen();
         }
     });
@@ -3398,60 +3405,293 @@ async function exportSection(section) {
 // ========================================================================
 // V2: SEARCH
 // ========================================================================
+// Task 1 — Function Traceability search.
+// Autocomplete hit backend /function-search (debounce 200ms) → click 1 kết quả
+// mở modal "Hồ sơ chức năng" với full lifecycle. Đã thay thế logic cũ (chỉ
+// tìm trong overdue/unassigned/risk in-memory) vì backend cover toàn bộ rows.
+let _fnSearchTimer = null;
+let _fnSearchInflight = 0;
+let _fnSearchLastQuery = "";
+
 function handleSearch() {
-    const q = document.getElementById("searchBox").value.trim().toLowerCase();
+    if (_fnSearchTimer) clearTimeout(_fnSearchTimer);
+    const q = document.getElementById("searchBox").value.trim();
     const results = document.getElementById("searchResults");
-    if (!q || q.length < 2) {
+    if (!q) {
         results.classList.add("hidden");
+        results.innerHTML = "";
         return;
     }
-    if (!metricsData) return;
-
-    // Tìm trong overdue, unassigned, risk (đại diện function)
-    const seen = new Set();
-    const hits = [];
-
-    const searchIn = (list, sourceName) => {
-        for (const item of list) {
-            const key = item.ma_cn || item.ten_cn;
-            if (!key || seen.has(key)) continue;
-            const searchStr = `${item.ma_cn} ${item.ten_cn} ${item.module} ${(item.pic || []).join(" ")}`.toLowerCase();
-            if (searchStr.includes(q)) {
-                seen.add(key);
-                hits.push({
-                    ma_cn: item.ma_cn,
-                    ten_cn: item.ten_cn,
-                    module: item.module,
-                    source: sourceName,
-                });
-                if (hits.length >= 15) return true;
-            }
-        }
-        return false;
-    };
-
-    if (searchIn(metricsData.overdue_list || [], "Overdue")) {}
-    else if (searchIn(metricsData.unassigned_tasks || [], "Chưa PIC")) {}
-    else if (searchIn(metricsData.risk_scores || [], "High Risk")) {}
-    else if (searchIn(metricsData.duration_analysis?.items || [], "Duration")) {}
-    else if (searchIn(metricsData.stalled_tasks?.items || [], "Stalled")) {}
-
-    if (hits.length === 0) {
-        results.innerHTML = `<div class="p-3 text-gray-500 text-sm">Không tìm thấy</div>`;
-    } else {
-        results.innerHTML = hits.map(h => `
-            <div class="search-item" onclick="scrollToSection('${h.source === 'Overdue' ? 'section-overdue' : h.source === 'Chưa PIC' ? 'section-unassigned' : 'section-risk'}')">
-                <div class="font-mono text-xs text-gray-500">${escapeHtml(h.ma_cn)} · ${escapeHtml(h.module)} · <span class="text-blue-500">${h.source}</span></div>
-                <div>${escapeHtml(h.ten_cn)}</div>
-            </div>`).join("");
-    }
-    results.classList.remove("hidden");
+    // Debounce 200ms: tránh gọi API mỗi ký tự khi user gõ nhanh.
+    _fnSearchTimer = setTimeout(() => _runFnSearch(q), 200);
 }
 
-function scrollToSection(id) {
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    document.getElementById("searchResults").classList.add("hidden");
-    document.getElementById("searchBox").value = "";
+async function _runFnSearch(q) {
+    const results = document.getElementById("searchResults");
+    _fnSearchLastQuery = q;
+    const myTicket = ++_fnSearchInflight;
+    try {
+        const r = await fetch(
+            `/api/projects/${currentProjectSlug}/function-search`
+            + `?q=${encodeURIComponent(q)}&limit=10`
+        );
+        // Nếu người dùng đã gõ tiếp (query cũ) → bỏ result này
+        if (myTicket !== _fnSearchInflight) return;
+        if (!r.ok) {
+            results.innerHTML = `<div class="p-3 text-red-500 text-sm">Lỗi ${r.status}</div>`;
+            results.classList.remove("hidden");
+            return;
+        }
+        const data = await r.json();
+        const hits = data.items || [];
+        if (hits.length === 0) {
+            results.innerHTML = `<div class="p-3 text-gray-500 text-sm">Không tìm thấy chức năng nào khớp "${escapeHtml(q)}"</div>`;
+        } else {
+            results.innerHTML = hits.map(h => {
+                const badge = h.fit_gap
+                    ? `<span class="ml-1 px-1.5 py-0 rounded text-[10px] ${
+                        String(h.fit_gap).toUpperCase() === 'GAP'
+                          ? 'bg-orange-100 text-orange-700'
+                          : 'bg-green-100 text-green-700'
+                    }">${escapeHtml(h.fit_gap)}</span>`
+                    : "";
+                const pri = h.priority
+                    ? `<span class="ml-1 text-[10px] text-gray-400">· ${escapeHtml(h.priority)}</span>`
+                    : "";
+                return `
+                    <div class="search-item" onclick="openFunctionDetail(${h.row_num})">
+                        <div class="font-mono text-xs text-gray-500">
+                            ${escapeHtml(h.ma_cn || '(chưa có mã)')}
+                            · ${escapeHtml(h.module || '—')}
+                            ${badge}${pri}
+                        </div>
+                        <div>${escapeHtml(h.ten_cn || '')}</div>
+                        <div class="text-[10px] text-gray-400 truncate">
+                            ${escapeHtml(h.quy_trinh || '')}
+                        </div>
+                    </div>`;
+            }).join("");
+        }
+        results.classList.remove("hidden");
+    } catch (e) {
+        if (myTicket !== _fnSearchInflight) return;
+        results.innerHTML = `<div class="p-3 text-red-500 text-sm">Lỗi mạng: ${escapeHtml(e.message)}</div>`;
+        results.classList.remove("hidden");
+    }
+}
+
+// ------------------------------------------------------------------
+// Modal "Hồ sơ chức năng" — hiển thị full lifecycle 1 function.
+// Data từ /function-detail/<row_num>.
+// ------------------------------------------------------------------
+
+async function openFunctionDetail(rowNum) {
+    // Đóng dropdown search + clear input để user thấy chuyển context sang modal
+    const results = document.getElementById("searchResults");
+    if (results) results.classList.add("hidden");
+    const box = document.getElementById("searchBox");
+    if (box) box.value = "";
+
+    const modal = document.getElementById("functionDetailModal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+
+    document.getElementById("fnDetailMaCn").textContent = "—";
+    document.getElementById("fnDetailBadges").innerHTML = "";
+    document.getElementById("fnDetailTenCn").textContent = "Đang tải…";
+    document.getElementById("fnDetailBody").innerHTML =
+        `<div class="text-gray-400 text-center py-10">⏳ Đang tải chi tiết…</div>`;
+    document.getElementById("fnDetailFooter").textContent = `Row #${rowNum}`;
+
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/function-detail/${rowNum}`);
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            document.getElementById("fnDetailBody").innerHTML =
+                `<div class="text-red-600 text-center py-10">Lỗi: ${escapeHtml(err.error || r.statusText)}</div>`;
+            return;
+        }
+        const data = await r.json();
+        _renderFunctionDetail(data);
+    } catch (e) {
+        document.getElementById("fnDetailBody").innerHTML =
+            `<div class="text-red-600 text-center py-10">Lỗi mạng: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function closeFunctionDetail() {
+    const modal = document.getElementById("functionDetailModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+}
+
+/** Style class Tailwind cho status badge trong modal detail. */
+function _fnStatusBadgeClass(status) {
+    const s = String(status || "").toLowerCase();
+    if (s === "closed")       return "bg-green-100 text-green-800 border-green-200";
+    if (s === "in-progress")  return "bg-blue-100 text-blue-800 border-blue-200";
+    if (s === "assigned")     return "bg-amber-100 text-amber-800 border-amber-200";
+    if (s === "resolved")     return "bg-purple-100 text-purple-800 border-purple-200";
+    if (s === "pending")      return "bg-orange-100 text-orange-800 border-orange-200";
+    if (s === "cancelled")    return "bg-red-100 text-red-800 border-red-200";
+    if (s === "open")         return "bg-gray-100 text-gray-700 border-gray-200";
+    return "bg-gray-50 text-gray-500 border-gray-200";
+}
+
+function _fnRenderPhaseCard(p) {
+    // Card 1 phase: header (task_type + status badge) + Start/End + PIC chips + note
+    const st = p.status || "";
+    const stCls = _fnStatusBadgeClass(st);
+    const overdueBadge = p.is_overdue
+        ? `<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-red-600 text-white font-semibold">⚠️ TRỄ</span>`
+        : "";
+    const closedRibbon = p.is_closed
+        ? `<div class="absolute top-2 right-2 text-[10px] text-green-600">✓ Closed</div>`
+        : "";
+    const start = p.start_date || "—";
+    const end = p.end_date || "—";
+    let dur = "";
+    if (p.duration_days != null) dur = ` <span class="text-gray-400 text-[10px]">(${p.duration_days}d)</span>`;
+    let daysToEndTxt = "";
+    if (p.days_to_end != null && !p.is_closed) {
+        if (p.days_to_end < 0) daysToEndTxt = `<span class="text-red-600 text-[11px]">quá ${-p.days_to_end} ngày</span>`;
+        else if (p.days_to_end === 0) daysToEndTxt = `<span class="text-orange-600 text-[11px]">hết hôm nay</span>`;
+        else daysToEndTxt = `<span class="text-gray-500 text-[11px]">còn ${p.days_to_end} ngày</span>`;
+    }
+    const pics = (p.pics || []).map(pic => `
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-slate-100 dark:bg-slate-700 dark:text-gray-100 font-medium">
+            👤 ${escapeHtml(pic)}
+        </span>`).join("") || `<span class="text-xs text-gray-400 italic">chưa có PIC</span>`;
+    const est = (typeof p.estimate_mh === "number")
+        ? `<span class="text-[11px] text-gray-500">${p.estimate_mh} MH</span>`
+        : "";
+    const note = p.note
+        ? `<div class="mt-2 text-[11px] text-gray-600 dark:text-gray-300 bg-yellow-50 dark:bg-yellow-900/20 border-l-2 border-yellow-400 px-2 py-1 rounded">📝 ${escapeHtml(p.note)}</div>`
+        : "";
+
+    const borderCls = p.is_overdue
+        ? "border-red-300 dark:border-red-600"
+        : p.is_closed
+            ? "border-green-200 dark:border-green-800"
+            : "border-gray-200 dark:border-slate-700";
+
+    return `
+        <div class="relative border ${borderCls} rounded-lg p-3 bg-white dark:bg-slate-800">
+            ${closedRibbon}
+            <div class="flex items-center justify-between gap-2 mb-2">
+                <div class="min-w-0">
+                    <div class="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">
+                        ${escapeHtml(p.task_type || p.name)}${overdueBadge}
+                    </div>
+                    <div class="text-[10px] text-gray-400">phase: ${escapeHtml(p.name)}</div>
+                </div>
+                <span class="text-[11px] px-2 py-0.5 rounded border ${stCls} font-medium shrink-0">
+                    ${escapeHtml(st || 'Chưa có')}
+                </span>
+            </div>
+            <div class="text-xs text-gray-600 dark:text-gray-300 space-y-1">
+                <div>📅 ${escapeHtml(start)} → ${escapeHtml(end)}${dur} ${daysToEndTxt}</div>
+                <div class="flex flex-wrap gap-1 items-center">${pics}</div>
+                ${est ? `<div>${est}</div>` : ""}
+                ${note}
+            </div>
+        </div>`;
+}
+
+function _renderFunctionDetail(data) {
+    const meta = data.meta || {};
+    const s = data.summary || {};
+    const phases = data.phases || [];
+
+    // Header: mã CN + badges
+    document.getElementById("fnDetailMaCn").textContent = meta.ma_cn || `Row #${data.row_num}`;
+    document.getElementById("fnDetailTenCn").textContent = meta.ten_cn || "(chưa có tên)";
+    const badges = [];
+    if (meta.module) badges.push(`<span class="px-1.5 py-0.5 rounded text-[10px] bg-blue-100 text-blue-700 font-medium">${escapeHtml(meta.module)}</span>`);
+    if (meta.priority) badges.push(`<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 text-slate-700">${escapeHtml(meta.priority)}</span>`);
+    if (meta.complexity) badges.push(`<span class="px-1.5 py-0.5 rounded text-[10px] bg-purple-100 text-purple-700">${escapeHtml(meta.complexity)}</span>`);
+    if (meta.fit_gap) {
+        const isGap = String(meta.fit_gap).toUpperCase().includes("GAP");
+        badges.push(`<span class="px-1.5 py-0.5 rounded text-[10px] ${isGap ? 'bg-orange-100 text-orange-800' : 'bg-green-100 text-green-800'} font-semibold">${escapeHtml(meta.fit_gap)}</span>`);
+    }
+    if (meta.giai_doan) badges.push(`<span class="px-1.5 py-0.5 rounded text-[10px] bg-gray-100 text-gray-700">GĐ ${escapeHtml(meta.giai_doan)}</span>`);
+    document.getElementById("fnDetailBadges").innerHTML = badges.join("");
+
+    // Summary strip — 5 card
+    const overdueBanner = s.is_overdue
+        ? `<div class="col-span-full bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500 px-3 py-2 rounded text-sm text-red-700 dark:text-red-200">
+             ⚠️ Function đang trễ deadline. Số ngày trễ tối đa của 1 phase: <b>${s.days_overdue_max}</b> ngày.
+           </div>`
+        : "";
+
+    const progressPct = s.total_phases > 0
+        ? Math.round((s.closed_count / s.total_phases) * 100)
+        : 0;
+
+    const nextDl = s.next_deadline
+        ? `${escapeHtml(s.next_deadline)}${
+            s.days_to_next_deadline != null
+              ? (s.days_to_next_deadline >= 0
+                  ? ` <span class="text-[10px] text-gray-500">(còn ${s.days_to_next_deadline}d)</span>`
+                  : ` <span class="text-[10px] text-red-600">(quá ${-s.days_to_next_deadline}d)</span>`)
+              : ""
+          }`
+        : `<span class="text-gray-400">—</span>`;
+
+    const summaryStrip = `
+        ${overdueBanner}
+        <div class="rounded-lg border dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 p-3">
+            <div class="text-[10px] uppercase text-gray-500 font-semibold">Đang ở phase</div>
+            <div class="text-base font-bold text-gray-800 dark:text-gray-100 mt-1">${escapeHtml(s.current_phase || '—')}</div>
+        </div>
+        <div class="rounded-lg border dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 p-3">
+            <div class="text-[10px] uppercase text-gray-500 font-semibold">Tiến độ</div>
+            <div class="text-base font-bold text-gray-800 dark:text-gray-100 mt-1">
+                ${s.closed_count}/${s.total_phases}
+                <span class="text-xs text-gray-500 font-normal">phase (${progressPct}%)</span>
+            </div>
+        </div>
+        <div class="rounded-lg border dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 p-3">
+            <div class="text-[10px] uppercase text-gray-500 font-semibold">Tổng Estimate</div>
+            <div class="text-base font-bold text-gray-800 dark:text-gray-100 mt-1">
+                ${s.total_estimate_mh != null ? `${s.total_estimate_mh} MH` : '—'}
+            </div>
+        </div>
+        <div class="rounded-lg border dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 p-3">
+            <div class="text-[10px] uppercase text-gray-500 font-semibold">Next deadline</div>
+            <div class="text-base font-bold text-gray-800 dark:text-gray-100 mt-1">${nextDl}</div>
+        </div>
+        <div class="rounded-lg border dark:border-slate-700 ${s.is_overdue ? 'bg-red-50 dark:bg-red-900/20' : 'bg-slate-50 dark:bg-slate-900/50'} p-3">
+            <div class="text-[10px] uppercase text-gray-500 font-semibold">Tình trạng</div>
+            <div class="text-base font-bold mt-1 ${s.is_overdue ? 'text-red-600' : 'text-green-600'}">
+                ${s.is_overdue ? '⚠️ Trễ deadline' : '✓ Đúng tiến độ'}
+            </div>
+        </div>`;
+
+    // Timeline: mỗi phase 1 card, grid 2 cột trên desktop
+    const phaseCards = phases.map(_fnRenderPhaseCard).join("");
+
+    // Extra info nếu có
+    const extras = [];
+    if (meta.quy_trinh) extras.push(`<div><span class="text-gray-500">Quy trình:</span> ${escapeHtml(meta.quy_trinh)}</div>`);
+    if (meta.risk_blocker) extras.push(`<div><span class="text-gray-500">Risk/Blocker:</span> <span class="text-red-600">${escapeHtml(meta.risk_blocker)}</span></div>`);
+    if (meta.mo_ta) extras.push(`<div><span class="text-gray-500">Mô tả:</span> ${escapeHtml(meta.mo_ta)}</div>`);
+    if (meta.function_lq) extras.push(`<div><span class="text-gray-500">Function liên quan:</span> ${escapeHtml(meta.function_lq)}</div>`);
+    if (meta.remark) extras.push(`<div><span class="text-gray-500">Remark:</span> ${escapeHtml(meta.remark)}</div>`);
+    const extraBlock = extras.length
+        ? `<div class="mt-4 text-xs bg-slate-50 dark:bg-slate-900/50 rounded-lg p-3 space-y-1">${extras.join("")}</div>`
+        : "";
+
+    document.getElementById("fnDetailBody").innerHTML = `
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">${summaryStrip}</div>
+        <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">⏱️ Timeline lifecycle</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">${phaseCards}</div>
+        ${extraBlock}
+    `;
+    document.getElementById("fnDetailFooter").textContent =
+        `Row Excel #${data.row_num} · ${phases.length} phase${meta.ma_cn ? ` · ${meta.ma_cn}` : ""}`;
 }
 
 // ========================================================================

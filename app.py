@@ -1899,6 +1899,52 @@ def export_baseline(slug: str):
 
 
 # ==========================================================================
+# Function Traceability (BA — Task 1)
+# ==========================================================================
+# BA nhập mã CN / tên chức năng → autocomplete + modal "Hồ sơ chức năng"
+# hiển thị full lifecycle: meta + từng phase (Start/End/Status/PIC) + summary
+# (đang ở phase nào, có trễ không, next deadline). Auto-detect cột theo .cursorrules.
+# ==========================================================================
+
+
+@app.route("/api/projects/<slug>/function-search")
+def function_search(slug: str):
+    """
+    Autocomplete tra cứu function. Query params:
+    - q: chuỗi search (mã CN / tên / module / quy trình), tối thiểu 1 ký tự
+    - limit: số kết quả max (default 10)
+
+    Trả `{items: [...]}` — mỗi item có row_num để mở detail modal.
+    """
+    from analyzer.function_traceability import search_functions
+    state, err = _require_state(slug)
+    if err:
+        return err
+    q = (request.args.get("q") or "").strip()
+    try:
+        limit = int(request.args.get("limit", 10))
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 50))  # kẹp 1–50
+
+    items = search_functions(state["data"], q, limit=limit)
+    return jsonify({"query": q, "count": len(items), "items": items})
+
+
+@app.route("/api/projects/<slug>/function-detail/<int:row_num>")
+def function_detail(slug: str, row_num: int):
+    """Full lifecycle của 1 function (theo row_num Excel gốc)."""
+    from analyzer.function_traceability import get_function_detail
+    state, err = _require_state(slug)
+    if err:
+        return err
+    result = get_function_detail(state["data"], row_num)
+    if result is None:
+        return jsonify({"error": f"Không tìm thấy function row {row_num}"}), 404
+    return jsonify(result)
+
+
+# ==========================================================================
 # Main
 # ==========================================================================
 
