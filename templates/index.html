@@ -17,7 +17,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <!-- Plugin hiển thị data label ngay trên chart (số / % ở đỉnh cột, giữa segment…) -->
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_ver('css/style.css') }}">
 </head>
 <body class="bg-slate-50 min-h-screen">
 
@@ -1078,12 +1078,19 @@
                     <p class="chart-scope"></p>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 no-print">
-                    <!-- Group by Module | Quy trình -->
+                    <!-- Mode: Module | Quy trình | Function
+                         - Module / Quy trình: mỗi nhóm 1 row aggregate (min start → max end)
+                         - Function: mỗi function 1 row, mỗi phase 1 segment (mode cũ) -->
                     <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
                         <button data-groupby="module" onclick="setGanttGroupBy('module')"
-                                class="gantt-groupby-btn px-2 py-1 bg-blue-600 text-white">Module</button>
+                                class="gantt-groupby-btn px-2 py-1 hover:bg-blue-50"
+                                title="Mỗi module 1 row aggregate">Module</button>
                         <button data-groupby="process" onclick="setGanttGroupBy('process')"
-                                class="gantt-groupby-btn px-2 py-1 border-l hover:bg-blue-50">Quy trình</button>
+                                class="gantt-groupby-btn px-2 py-1 border-l hover:bg-blue-50"
+                                title="Mỗi quy trình 1 row aggregate">Quy trình</button>
+                        <button data-groupby="function" onclick="setGanttGroupBy('function')"
+                                class="gantt-groupby-btn px-2 py-1 border-l bg-blue-600 text-white"
+                                title="Mỗi function 1 row, phase segment (mặc định)">Function</button>
                     </div>
                     <!-- Zoom controls -->
                     <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
@@ -1325,6 +1332,6 @@
 <!-- Toast -->
 <div id="toast" class="fixed bottom-5 right-5 bg-green-600 text-white px-5 py-3 rounded-lg shadow-lg hidden z-50"></div>
 
-<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/dashboard.js?v={{ static_ver('js/dashboard.js') }}"></script>
 </body>
 </html>

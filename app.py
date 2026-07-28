@@ -56,6 +56,27 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 os.makedirs(app.config["PROJECTS_FOLDER"], exist_ok=True)
 
+# --------------------------------------------------------------------------
+# Cache-busting cho static assets — mtime của file thành ?v= query param.
+# Khi dev sửa dashboard.js / style.css, mtime đổi → browser tự fetch bản mới,
+# tránh bug UI "hiện số 0" do trình duyệt cache JS/CSS cũ.
+# --------------------------------------------------------------------------
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+
+def _static_ver(rel_path: str) -> str:
+    """Trả về mtime của file static để làm cache-busting query param."""
+    full = os.path.join(_STATIC_DIR, rel_path.replace("/", os.sep))
+    try:
+        return str(int(os.path.getmtime(full)))
+    except OSError:
+        return "0"
+
+
+@app.context_processor
+def _inject_static_ver():
+    return {"static_ver": _static_ver}
+
 # ==========================================================================
 # Global state — mỗi project 1 slot, cache metrics trong memory
 # ==========================================================================

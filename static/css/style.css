@@ -633,6 +633,18 @@ html.dark .gantt-func-label .code { color: #93c5fd; }
     outline: 1.5px solid #7f1d1d;
     outline-offset: -1px;
 }
+/* Aggregate segment (mode "module" / "process") — cao hơn 1 chút, font đậm hơn */
+.gantt-seg.gantt-seg-aggregate {
+    top: 2px;
+    bottom: 2px;
+    font-weight: 600;
+    font-size: 11px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.gantt-seg.gantt-seg-aggregate:hover {
+    filter: brightness(1.08);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
 
 /* TODAY line (thẳng đứng, full height container) */
 .gantt-today-line-v2 {

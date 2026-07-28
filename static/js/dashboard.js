@@ -220,65 +220,84 @@ function _buildDashboardUrl() {
     return `/api/projects/${currentProjectSlug}/dashboard${qs ? "?" + qs : ""}`;
 }
 
-/** Áp response upload/dashboard vào UI + render. */
+/**
+ * Áp response upload/dashboard vào UI + render.
+ *
+ * QUAN TRỌNG: Mỗi bước phụ (sidebar chrome, PIC blacklist badge, structure cache,
+ * global filters…) bọc trong _step() để nếu 1 bước bất kỳ throw, dashboard render
+ * vẫn chạy. Đây là root-cause fix cho bug "summary cards hiện 0 sau khi filter":
+ * trước fix, 1 exception ở bước phụ (VD sidebar / localStorage / MutationObserver)
+ * làm hàm dừng giữa chừng trước khi tới renderDashboard(), cards giữ giá trị mặc định
+ * (0) dù metricsData đã đúng.
+ */
 function applyDashboardResponse(data) {
+    // Helper: chạy 1 bước, log lỗi nhưng KHÔNG throw để step sau vẫn chạy
+    const _step = (name, fn) => {
+        try { fn(); }
+        catch (err) { console.error(`[applyDashboardResponse] ${name} failed:`, err); }
+    };
+
+    // Bước core BẮT BUỘC: set state metrics — nếu bước này lỗi thì đúng là hết cứu
     metricsData = data.metrics;
     snapshotsData = data.snapshots || [];
 
-    // P6: lưu meta project để checkRefreshReminder + saved views biết settings
-    window._projectMeta = {
-        settings: data.settings || null,
-        project: data.project || null,
-        upload_time: data.upload_time || null,
-    };
-
-    document.getElementById("fileName").textContent = data.filename;
-    document.getElementById("rowCount").textContent = data.metrics.summary.total_functions;
-    document.getElementById("uploadTime").textContent = new Date(data.upload_time).toLocaleString("vi-VN");
-    document.getElementById("fileInfo").classList.remove("hidden");
-    document.getElementById("searchWrap").classList.remove("hidden");
-    showSidebarChrome(); // hiện sidebar + nút toggle; tôn trọng localStorage collapsed
-
-    // P6: hiển thị warnings sau upload (chỉ khi có, không spam khi load lại project)
-    if (Array.isArray(data.warnings) && data.warnings.length) {
-        _showUploadWarnings(data.warnings);
-    }
-
-    // PIC blacklist chip — hiện count nếu có, hoặc "🟢 PIC sạch" nếu rỗng.
-    // Count lấy từ top-level field (không phải metrics.*) vì đây là data-quality,
-    // không thay đổi theo global filter.
-    _updatePicBlacklistBadge(data.pic_blacklist_count || 0);
-
-    // Cache structure gốc (full list) từ lần load đầu (không có filter)
-    // để filter dropdown luôn giữ nguyên option kể cả khi backend
-    // trả subset (filter đang active).
-    if (!data.applied_filter && data.metrics.structure) {
-        // BUG FIX (screenshot 2): trước đây thiếu `all_pics` → khi filter Module=PR
-        // thì fallback `s = structureCache` có `s.all_pics = undefined` → PIC dropdown
-        // bị rebuild với options rỗng, user nhìn thấy list PIC trắng.
-        // Cache đầy đủ mọi list để filter (module/process/pic) không phụ thuộc lẫn nhau.
-        // Wave 3: thêm `pics_by_module` cho cascade PIC theo Module.
-        structureCache = {
-            all_modules: data.metrics.structure.all_modules || [],
-            all_processes: data.metrics.structure.all_processes || [],
-            all_pics: data.metrics.structure.all_pics || [],
-            processes_by_module: data.metrics.structure.processes_by_module || {},
-            pics_by_module: data.metrics.structure.pics_by_module || {},
+    _step("meta", () => {
+        window._projectMeta = {
+            settings: data.settings || null,
+            project: data.project || null,
+            upload_time: data.upload_time || null,
         };
-    }
+    });
 
-    populateGlobalFilters(data.applied_filter);
-    renderDashboard();
-    renderEmptyFilterState(data.applied_filter);
-    // Wave 3: sync dòng subtitle "Đang lọc: ..." cho các chart chính
-    // để user không tưởng chart hiện toàn bộ dữ liệu khi filter đang bật.
-    updateChartScopeSubtitles(data.applied_filter);
-    document.getElementById("dashboard").classList.remove("hidden");
-    document.getElementById("dashboard").classList.add("fade-in");
-    checkRefreshReminder();
+    _step("fileInfo", () => {
+        document.getElementById("fileName").textContent = data.filename;
+        document.getElementById("rowCount").textContent = data.metrics.summary.total_functions;
+        document.getElementById("uploadTime").textContent = new Date(data.upload_time).toLocaleString("vi-VN");
+        document.getElementById("fileInfo").classList.remove("hidden");
+        document.getElementById("searchWrap").classList.remove("hidden");
+    });
+
+    _step("sidebar", () => showSidebarChrome());
+
+    _step("warnings", () => {
+        if (Array.isArray(data.warnings) && data.warnings.length) {
+            _showUploadWarnings(data.warnings);
+        }
+    });
+
+    _step("picBlacklist", () => _updatePicBlacklistBadge(data.pic_blacklist_count || 0));
+
+    _step("structureCache", () => {
+        // Cache structure gốc (full list) từ lần load đầu (không có filter)
+        // để filter dropdown luôn giữ nguyên option kể cả khi backend
+        // trả subset (filter đang active).
+        if (!data.applied_filter && data.metrics.structure) {
+            structureCache = {
+                all_modules: data.metrics.structure.all_modules || [],
+                all_processes: data.metrics.structure.all_processes || [],
+                all_pics: data.metrics.structure.all_pics || [],
+                processes_by_module: data.metrics.structure.processes_by_module || {},
+                pics_by_module: data.metrics.structure.pics_by_module || {},
+            };
+        }
+    });
+
+    _step("globalFilters", () => populateGlobalFilters(data.applied_filter));
+
+    // *** RENDER DASHBOARD — bước quan trọng nhất, giờ luôn được chạy ***
+    _step("renderDashboard", () => renderDashboard());
+
+    _step("emptyFilter", () => renderEmptyFilterState(data.applied_filter));
+    _step("scopeSubtitles", () => updateChartScopeSubtitles(data.applied_filter));
+
+    _step("showDashboard", () => {
+        document.getElementById("dashboard").classList.remove("hidden");
+        document.getElementById("dashboard").classList.add("fade-in");
+    });
+
+    _step("refreshReminder", () => checkRefreshReminder());
 
     // P3/P4 hooks — lazy analytics + saved views + deep-link URL.
-    // Không throw ra ngoài để tránh block dashboard nếu 1 module lỗi.
     try { if (typeof loadBurndownAndSLA === "function") setTimeout(loadBurndownAndSLA, 100); } catch (e) {}
     try { if (typeof loadSavedViews === "function") setTimeout(loadSavedViews, 120); } catch (e) {}
     try { if (typeof _updateDeepLink === "function") _updateDeepLink(); } catch (e) {}
@@ -2407,8 +2426,12 @@ function shortenProcess(name) {
 const _ganttState = {
     zoom: "month",              // "week" | "month" | "quarter"
     layout: "horizontal",       // "horizontal" | "vertical"
-    groupBy: "module",          // "module" | "process"
-    foldedModules: new Set(),   // nhóm đang fold (module hoặc process name)
+    // 3 mode (issue #2):
+    //   "module"   → 1 row / module (aggregate min-start → max-end)
+    //   "process"  → 1 row / quy trình (aggregate)
+    //   "function" → 1 row / function, phase là segment (mode cũ)
+    groupBy: "function",
+    foldedModules: new Set(),   // nhóm đang fold (chỉ áp dụng cho mode "function")
     initialized: false,         // để biết lần đầu render thì set default fold
 };
 
@@ -2453,7 +2476,7 @@ function toggleGanttCompact() {
 // Legacy stub — nếu code cũ còn call setGanttLayout, fallback về horizontal (no-op).
 function setGanttLayout() { /* deprecated */ }
 function setGanttGroupBy(groupBy) {
-    if (!["module", "process"].includes(groupBy)) return;
+    if (!["module", "process", "function"].includes(groupBy)) return;
     _ganttState.groupBy = groupBy;
     _ganttState.foldedModules.clear();
     _ganttState.initialized = false;
@@ -2493,7 +2516,12 @@ function _updateGanttToggleAllBtn() {
     btn.textContent = anyFolded ? "📂 Mở tất cả" : "📁 Đóng tất cả";
 }
 
-/** Lấy map group → list function theo mode hiện tại. */
+/**
+ * Lấy map group → list function theo mode hiện tại.
+ * - "process": group theo quy_trinh
+ * - "module"  : group theo module (aggregate render)
+ * - "function": group theo module (giữ nguyên hành vi fold/expand cũ)
+ */
 function _ganttGroupedFunctions() {
     const t = metricsData?.timeline_data || {};
     if (_ganttState.groupBy === "process") {
@@ -2509,6 +2537,7 @@ function _ganttGroupedFunctions() {
         });
         return byProc;
     }
+    // "module" hoặc "function" → group theo module
     return t.functions_by_module || {};
 }
 
@@ -2519,6 +2548,58 @@ function _ganttGroupKeys() {
         return Object.keys(_ganttGroupedFunctions()).sort();
     }
     return t.modules || [];
+}
+
+/**
+ * Tính aggregate cho 1 group (module hoặc process) trong mode "module"/"process":
+ * - minStart / maxEnd trên mọi phase của mọi function trong group
+ * - closedPct = closedPhaseRecords / totalPhaseRecords có status (bỏ qua phase trống)
+ * - overdueCount = số function có ít nhất 1 phase overdue
+ */
+function _ganttAggregate(funcs) {
+    let minStart = null, maxEnd = null;
+    let totalPhaseWithStatus = 0, closedPhase = 0;
+    let overdueCount = 0;
+    let totalPhaseSlots = 0;
+    (funcs || []).forEach(f => {
+        if (f.has_overdue) overdueCount += 1;
+        (f.phases || []).forEach(p => {
+            totalPhaseSlots += 1;
+            if (p.start) {
+                const d = new Date(p.start);
+                if (!minStart || d < minStart) minStart = d;
+                if (!maxEnd || d > maxEnd) maxEnd = d;
+            }
+            if (p.end) {
+                const d = new Date(p.end);
+                if (!minStart || d < minStart) minStart = d;
+                if (!maxEnd || d > maxEnd) maxEnd = d;
+            }
+            if (p.status) {
+                totalPhaseWithStatus += 1;
+                if (p.status === "Closed") closedPhase += 1;
+            }
+        });
+    });
+    const closedPct = totalPhaseWithStatus > 0
+        ? Math.round(closedPhase / totalPhaseWithStatus * 100)
+        : 0;
+    return {
+        minStart, maxEnd,
+        totalFuncs: (funcs || []).length,
+        totalPhaseSlots,
+        closedPct,
+        overdueCount,
+    };
+}
+
+/** Color theo % Closed weighted (giống module_overview). */
+function _ganttAggregateColor(pct, hasOverdue) {
+    if (hasOverdue) return "#ef4444";       // đỏ nếu có overdue
+    if (pct >= 80) return "#22c55e";        // xanh
+    if (pct >= 50) return "#eab308";        // vàng
+    if (pct >= 20) return "#f97316";        // cam
+    return "#94a3b8";                       // xám (chưa nhiều)
 }
 
 /** Render chính. */
@@ -2536,7 +2617,12 @@ function renderGanttTimeline() {
         globalFilters.processes.length ||
         globalFilters.pics.length
     );
-    const groupLabel = _ganttState.groupBy === "process" ? "Quy trình" : "Module";
+    // Label header: theo mode
+    const groupLabel = _ganttState.groupBy === "process" ? "Quy trình"
+                      : _ganttState.groupBy === "module" ? "Module"
+                      : "Module / Function";
+    // Aggregate mode = "module" hoặc "process" — mỗi group 1 row aggregate, không expand
+    const isAggregate = _ganttState.groupBy === "module" || _ganttState.groupBy === "process";
 
     // Empty state
     if (groups.length === 0 || totalFuncs === 0) {
@@ -2548,28 +2634,37 @@ function renderGanttTimeline() {
         return;
     }
 
-    // Init default fold state lần đầu, hoặc khi có group mới sau khi filter
-    if (!_ganttState.initialized) {
-        _ganttState.initialized = true;
-        if (groups.length > 5) {
-            groups.forEach(m => _ganttState.foldedModules.add(m));
-        }
+    // Fold state chỉ áp dụng cho mode "function" (aggregate không expand)
+    if (isAggregate) {
+        _ganttState.foldedModules.clear();
     } else {
-        for (const m of [..._ganttState.foldedModules]) {
-            if (!groups.includes(m)) _ganttState.foldedModules.delete(m);
+        if (!_ganttState.initialized) {
+            _ganttState.initialized = true;
+            if (groups.length > 5) {
+                groups.forEach(m => _ganttState.foldedModules.add(m));
+            }
+        } else {
+            for (const m of [..._ganttState.foldedModules]) {
+                if (!groups.includes(m)) _ganttState.foldedModules.delete(m);
+            }
         }
     }
 
     const banner = document.getElementById("ganttSizeBanner");
     const bannerMsg = document.getElementById("ganttSizeBannerMsg");
-    if (totalFuncs > 100 && !hasActiveFilter) {
+    if (!isAggregate && totalFuncs > 100 && !hasActiveFilter) {
         banner.classList.remove("hidden");
-        bannerMsg.textContent = `${totalFuncs} function — mặc định đã fold tất cả ${groupLabel.toLowerCase()} để dashboard nhẹ. Click header để mở, hoặc `;
+        bannerMsg.textContent = `${totalFuncs} function — mặc định đã fold tất cả module để dashboard nhẹ. Click header để mở, hoặc `;
         if (!_ganttState.userInteracted) {
             groups.forEach(m => _ganttState.foldedModules.add(m));
         }
     } else {
         banner.classList.add("hidden");
+    }
+    // Toggle All button chỉ có nghĩa ở mode "function"
+    const toggleAllBtn = document.getElementById("ganttToggleAllBtn");
+    if (toggleAllBtn) {
+        toggleAllBtn.style.display = isAggregate ? "none" : "";
     }
     _updateGanttToggleAllBtn();
 
@@ -2621,7 +2716,7 @@ function renderGanttTimeline() {
     const parts = [];
 
     parts.push(`<div class="gantt-ruler">
-        <div class="gantt-ruler-label">${groupLabel} / Function</div>
+        <div class="gantt-ruler-label">${escapeHtml(groupLabel)}</div>
         <div class="gantt-ruler-track">
             ${ticks.map(tk => `<div class="gantt-tick" style="left:${tk.px}px">${escapeHtml(tk.label)}</div>`).join("")}
         </div>
@@ -2637,10 +2732,65 @@ function renderGanttTimeline() {
         const funcs = funcsByGroup[group] || [];
         if (funcs.length === 0) return;
 
+        const displayName = _ganttState.groupBy === "process" ? shortenProcess(group) : group;
+
+        // ====== MODE "module" / "process" ======
+        // Mỗi group render 1 row duy nhất với 1 segment kéo dài min-start → max-end,
+        // màu theo % Closed weighted của group. Không có expand/fold.
+        if (isAggregate) {
+            const agg = _ganttAggregate(funcs);
+            if (!agg.minStart || !agg.maxEnd) {
+                // Nhóm không có date nào → hiện label + msg
+                parts.push(`<div class="gantt-func-row">
+                    <div class="gantt-func-label"><b>${escapeHtml(displayName)}</b> · ${funcs.length} func</div>
+                    <div class="gantt-func-track">
+                        <div class="gantt-empty-track" style="left:0;padding-left:8px;color:#94a3b8;font-size:11px">
+                            (Chưa có date)
+                        </div>
+                    </div>
+                </div>`);
+                return;
+            }
+            const leftPx = dateToPx(agg.minStart);
+            const rightPx = dateToPx(agg.maxEnd);
+            const widthPx = Math.max(6, rightPx - leftPx);
+            const color = _ganttAggregateColor(agg.closedPct, agg.overdueCount > 0);
+            const tip = [
+                `${displayName}`,
+                `Số function: ${agg.totalFuncs}`,
+                `Số phase-record: ${agg.totalPhaseSlots}`,
+                `% Closed (weighted): ${agg.closedPct}%`,
+                `Overdue: ${agg.overdueCount} function`,
+                `Thời gian: ${agg.minStart.toISOString().slice(0,10)} → ${agg.maxEnd.toISOString().slice(0,10)}`,
+            ].join("\n");
+            const innerLabel = widthPx > 80
+                ? `${escapeHtml(displayName)} · ${agg.closedPct}%`
+                : (widthPx > 40 ? `${agg.closedPct}%` : "");
+            // Click aggregate row → drill-down module/process
+            const drillChart = _ganttState.groupBy === "module" ? "module" : "process";
+            const drillFilterKey = _ganttState.groupBy === "module" ? "module" : "process";
+            const rowLabel = `<b>${escapeHtml(displayName)}</b>
+                <span class="text-xs text-gray-500">${agg.totalFuncs} func · ${agg.closedPct}%${
+                    agg.overdueCount > 0 ? ` · <span class="text-red-600">⚠️ ${agg.overdueCount}</span>` : ""
+                }</span>`;
+            parts.push(`<div class="gantt-func-row cursor-pointer"
+                onclick="openDrillDown('${drillChart}', {${drillFilterKey}: '${escapeAttr(group)}'})"
+                title="${escapeAttr(tip)}">
+                <div class="gantt-func-label">${rowLabel}</div>
+                <div class="gantt-func-track">
+                    <div class="gantt-seg gantt-seg-aggregate"
+                        style="left:${leftPx}px;width:${widthPx}px;background:${color}"
+                        title="${escapeAttr(tip)}">${innerLabel}</div>
+                </div>
+            </div>`);
+            return;
+        }
+
+        // ====== MODE "function" ======
+        // Hành vi cũ: group header (fold/expand) + function rows với phase segment
         const folded = _ganttState.foldedModules.has(group);
         const overdueCount = funcs.filter(f => f.has_overdue).length;
         const totalPhases = funcs.reduce((s, f) => s + (f.phases || []).length, 0);
-        const displayName = _ganttState.groupBy === "process" ? shortenProcess(group) : group;
 
         parts.push(`<div class="gantt-module-header" data-folded="${folded}"
                         onclick="toggleGanttModule('${escapeAttr(group)}')" title="Click để ${folded ? "mở" : "đóng"} ${escapeHtml(group)}">
@@ -2658,8 +2808,7 @@ function renderGanttTimeline() {
         if (folded) return;
 
         funcs.forEach(f => {
-            const modForDrill = f.module || (_ganttState.groupBy === "module" ? group : "");
-            // Compact: chỉ hiện Mã CN. Full: Mã CN + Tên chức năng.
+            const modForDrill = f.module || group;
             const rowLabel = _ganttState.compact
                 ? `<span class="code">${escapeHtml(f.ma_cn || "")}</span>`
                 : `<span class="code">${escapeHtml(f.ma_cn || "")}</span> ${escapeHtml(f.ten_cn || "")}`;
@@ -3283,38 +3432,43 @@ function getCanvas(id) {
     return document.getElementById(id).getContext("2d");
 }
 
-// Chart.js — defaults thẩm mỹ chung
-if (typeof Chart !== "undefined") {
-    Chart.defaults.font.family = "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
-    Chart.defaults.font.size = 11;
-    Chart.defaults.color = "#334155";
-    Chart.defaults.plugins.legend.labels.usePointStyle = true;
-    Chart.defaults.plugins.legend.labels.boxWidth = 10;
-    Chart.defaults.plugins.legend.labels.padding = 12;
-    Chart.defaults.plugins.tooltip.backgroundColor = "rgba(15, 23, 42, 0.92)";
-    Chart.defaults.plugins.tooltip.padding = 10;
-    Chart.defaults.plugins.tooltip.cornerRadius = 8;
-    Chart.defaults.plugins.tooltip.titleFont = { weight: "600", size: 12 };
-    Chart.defaults.plugins.tooltip.bodyFont = { size: 11 };
-    Chart.defaults.plugins.tooltip.boxPadding = 4;
-    // Phase 7 Slim: tắt animation mặc định — máy yếu / dataset lớn render mượt hơn.
-    Chart.defaults.animation = false;
-    // Bar chart
-    if (Chart.defaults.datasets && Chart.defaults.datasets.bar) {
-        Chart.defaults.datasets.bar.borderRadius = 4;
-        Chart.defaults.datasets.bar.maxBarThickness = 40;
+// Chart.js — defaults thẩm mỹ chung.
+// Bọc try/catch để nếu CDN Chart.js load chưa xong / structure Chart.defaults
+// đổi giữa version, top-level không throw làm hỏng khai báo (TDZ) các const/let
+// bên dưới (như SIDEBAR_COLLAPSE_KEY).
+try {
+    if (typeof Chart !== "undefined") {
+        Chart.defaults.font.family = "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+        Chart.defaults.font.size = 11;
+        Chart.defaults.color = "#334155";
+        Chart.defaults.plugins.legend.labels.usePointStyle = true;
+        Chart.defaults.plugins.legend.labels.boxWidth = 10;
+        Chart.defaults.plugins.legend.labels.padding = 12;
+        Chart.defaults.plugins.tooltip.backgroundColor = "rgba(15, 23, 42, 0.92)";
+        Chart.defaults.plugins.tooltip.padding = 10;
+        Chart.defaults.plugins.tooltip.cornerRadius = 8;
+        Chart.defaults.plugins.tooltip.titleFont = { weight: "600", size: 12 };
+        Chart.defaults.plugins.tooltip.bodyFont = { size: 11 };
+        Chart.defaults.plugins.tooltip.boxPadding = 4;
+        // Phase 7 Slim: tắt animation mặc định — máy yếu / dataset lớn render mượt hơn.
+        Chart.defaults.animation = false;
+        // Bar chart
+        if (Chart.defaults.datasets && Chart.defaults.datasets.bar) {
+            Chart.defaults.datasets.bar.borderRadius = 4;
+            Chart.defaults.datasets.bar.maxBarThickness = 40;
+        }
+        // ChartDataLabels — register global nhưng mặc định TẮT.
+        if (typeof ChartDataLabels !== "undefined") {
+            Chart.register(ChartDataLabels);
+            Chart.defaults.plugins.datalabels = { display: false };
+        }
+        // Dark mode listener → cập nhật màu
+        _applyChartTheme();
+        const observer = new MutationObserver(_applyChartTheme);
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     }
-    // ChartDataLabels — register global nhưng mặc định TẮT.
-    // Chỉ opt-in cho từng chart cần label (Priority/Complexity/FitGap/PIC/PhaseStack/GiaiDoan/TaskType).
-    // Lý do: tránh label auto đè lên Scatter, DeltaChart, DurationBox…
-    if (typeof ChartDataLabels !== "undefined") {
-        Chart.register(ChartDataLabels);
-        Chart.defaults.plugins.datalabels = { display: false };
-    }
-    // Dark mode listener → cập nhật màu
-    _applyChartTheme();
-    const observer = new MutationObserver(_applyChartTheme);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+} catch (e) {
+    console.error("[dashboard.js] Chart.js init failed (bỏ qua để không chặn khai báo const bên dưới):", e);
 }
 
 // ==========================================================================
