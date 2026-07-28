@@ -306,6 +306,9 @@ function applyDashboardResponse(data) {
 
     // P3/P4 hooks — lazy analytics + saved views + deep-link URL.
     try { if (typeof loadBurndownAndSLA === "function") setTimeout(loadBurndownAndSLA, 100); } catch (e) {}
+    // Task 2 — FIT/GAP Dashboard: fetch riêng như SLA/Capacity vì compute nặng
+    // (đi qua tất cả rows) và support aging_threshold_days configurable.
+    try { if (typeof loadFitgapDashboard === "function") setTimeout(loadFitgapDashboard, 120); } catch (e) {}
     try { if (typeof loadSavedViews === "function") setTimeout(loadSavedViews, 120); } catch (e) {}
     try { if (typeof _updateDeepLink === "function") _updateDeepLink(); } catch (e) {}
 }
@@ -1882,6 +1885,8 @@ const pageState = {
     deps:       { page: 1, size: PAGE_DEFAULT_SIZE },
     baseline:   { page: 1, size: PAGE_DEFAULT_SIZE },
     history:    { page: 1, size: PAGE_DEFAULT_SIZE },
+    // Task 2: FIT/GAP aging table
+    fitgap:     { page: 1, size: PAGE_DEFAULT_SIZE },
 };
 
 /** Cắt page slice từ list theo pageState[sectionKey]. */
@@ -5811,6 +5816,220 @@ let _lastSlowData = null;
 let _lastDepsData = null;
 let _lastBaselineData = null;
 let _lastHistoryData = null;
+let _lastFitgapData = null;   // Task 2 — cache để pager re-render
+
+
+// ========================================================================
+// Task 2 — FIT/GAP Dashboard: fetch analytics + render summary/charts/aging.
+// Chart instances cached ở chartInstances (theo canvas id) để destroy khi
+// re-render (đổi filter / đổi aging threshold).
+// ========================================================================
+
+async function loadFitgapDashboard() {
+    const thrInput = document.getElementById("fitgapAgingThr");
+    const thr = thrInput ? parseInt(thrInput.value, 10) || 14 : 14;
+    const qs = new URLSearchParams();
+    qs.set("aging_threshold_days", thr);
+    // Apply global filter chung với các section khác
+    if (globalFilters.modules.length) qs.set("module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) qs.set("process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) qs.set("pic", globalFilters.pics.join(","));
+
+    try {
+        const url = `/api/projects/${currentProjectSlug}/fitgap-analytics?${qs.toString()}`;
+        const r = await fetch(url);
+        if (!r.ok) {
+            console.warn("[fitgap] fetch failed", r.status);
+            return;
+        }
+        const data = await r.json();
+        _lastFitgapData = data;
+        renderFitgapSection(data);
+    } catch (e) {
+        console.error("[loadFitgapDashboard]", e);
+    }
+}
+
+function renderFitgapSection(data) {
+    const section = document.getElementById("section-fitgap-dashboard");
+    if (!section || !data) return;
+    const s = data.summary || {};
+
+    // Ẩn section nếu không có function nào (parser chưa detect được cột FIT/GAP,
+    // hoặc file chưa có data). Tránh hiển thị section rỗng gây rối UI.
+    if ((s.total || 0) === 0) {
+        section.classList.add("hidden");
+        return;
+    }
+    section.classList.remove("hidden");
+
+    // --- Summary cards ---
+    const cardsWrap = document.getElementById("fitgapSummaryCards");
+    if (cardsWrap) {
+        const gapPct = s.total ? Math.round((s.gap / s.total) * 100) : 0;
+        cardsWrap.innerHTML = [
+            _fitgapCard("Tổng function", s.total, "bg-slate-100 text-slate-800"),
+            _fitgapCard("FIT", s.fit, "bg-green-100 text-green-800"),
+            _fitgapCard(`GAP (${gapPct}%)`, s.gap, "bg-orange-100 text-orange-800"),
+            _fitgapCard("GAP đã đóng", s.gap_closed, "bg-emerald-100 text-emerald-800"),
+            _fitgapCard("GAP đang mở", s.gap_open, "bg-amber-100 text-amber-800"),
+            _fitgapCard(`Aging > ${s.aging_threshold_days}d`, s.gap_open_aging, "bg-red-100 text-red-800"),
+        ].join("");
+    }
+
+    // --- 3 bar charts ---
+    _fitgapRenderStackedBar("chartFitgapByModule",  data.by_module,   "module");
+    _fitgapRenderStackedBar("chartFitgapByProcess", data.by_process,  "process");
+    _fitgapRenderStackedBar("chartFitgapByPriority", data.by_priority, "priority");
+
+    // --- Aging table ---
+    const lbl = document.getElementById("fitgapAgingThrLabel");
+    if (lbl) lbl.textContent = s.aging_threshold_days;
+    _renderFitgapAgingTable(data.aging_items || []);
+}
+
+function _fitgapCard(label, value, cls) {
+    return `<div class="rounded-lg border dark:border-slate-700 p-2 ${cls}">
+        <div class="text-[10px] uppercase font-semibold opacity-70">${escapeHtml(label)}</div>
+        <div class="text-xl font-bold mt-0.5">${value ?? 0}</div>
+    </div>`;
+}
+
+function _fitgapRenderStackedBar(canvasId, rows, keyField) {
+    const ctx = getCanvas(canvasId);
+    if (!ctx || !rows) return;
+    // Giữ top 8 để chart đọc được — chart phải responsive với file lớn
+    const items = rows.slice(0, 8);
+    const labels = items.map(r => (r[keyField] || "—").length > 22
+        ? r[keyField].slice(0, 20) + "…"
+        : (r[keyField] || "—"));
+    createChart(ctx, "bar", {
+        labels,
+        datasets: [
+            {
+                label: "FIT",
+                data: items.map(r => r.fit || 0),
+                backgroundColor: "rgba(34, 197, 94, 0.75)",
+                borderRadius: 0,
+                borderSkipped: false,
+                stack: "fg",
+            },
+            {
+                label: "GAP",
+                data: items.map(r => r.gap || 0),
+                backgroundColor: "rgba(249, 115, 22, 0.85)",
+                borderRadius: 0,
+                borderSkipped: false,
+                stack: "fg",
+            },
+        ],
+    }, {
+        indexAxis: "y",
+        plugins: {
+            legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 10 } } },
+            tooltip: {
+                mode: "index", intersect: false,
+                callbacks: {
+                    afterLabel: (ctx) => {
+                        const r = items[ctx.dataIndex];
+                        return `Tổng: ${r.total} · %GAP: ${r.pct_gap}%`;
+                    },
+                },
+            },
+            datalabels: { display: false },
+        },
+        scales: {
+            x: { beginAtZero: true, stacked: true, ticks: { font: { size: 10 } } },
+            y: { stacked: true, ticks: { font: { size: 10 } } },
+        },
+    });
+}
+
+function _renderFitgapAgingTable(items) {
+    const tbody = document.getElementById("fitgapAgingBody");
+    const countLbl = document.getElementById("fitgapAgingCount");
+    if (!tbody) return;
+    if (countLbl) countLbl.textContent = `(${items.length} function)`;
+
+    if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="px-2 py-4 text-center text-gray-400 italic">
+            ✓ Không có GAP nào aging vượt ngưỡng
+        </td></tr>`;
+        document.getElementById("fitgapPagerWrap").innerHTML = "";
+        return;
+    }
+    const { pageItems } = _pageSlice("fitgap", items);
+    tbody.innerHTML = pageItems.map(it => {
+        const d = it.aging_days;
+        const rowCls =
+            d == null           ? "" :
+            d >= 30             ? "bg-red-50 dark:bg-red-900/20" :
+            d >= 21             ? "bg-orange-50 dark:bg-orange-900/20" :
+            /* >=14 */            "bg-yellow-50 dark:bg-yellow-900/20";
+        const agingBadge =
+            d == null           ? `<span class="text-gray-400">N/A</span>` :
+            d >= 30             ? `<span class="text-red-700 font-bold">${d}d</span>` :
+            d >= 21             ? `<span class="text-orange-700 font-semibold">${d}d</span>` :
+                                  `<span class="text-yellow-700">${d}d</span>`;
+        const picStr = (it.pics || []).slice(0, 3).join(", ")
+            + ((it.pics || []).length > 3 ? ` +${it.pics.length - 3}` : "");
+        return `<tr class="border-b dark:border-slate-700 ${rowCls} hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer"
+                    onclick="openFunctionDetail(${it.row_num})">
+            <td class="px-2 py-1.5 font-mono">${escapeHtml(it.ma_cn || "—")}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.ten_cn || "")}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.module || "")}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.opened_date || "—")}</td>
+            <td class="px-2 py-1.5 text-right">${agingBadge}</td>
+            <td class="px-2 py-1.5">${escapeHtml(picStr || "—")}</td>
+            <td class="px-2 py-1.5">
+                <span class="font-medium">${escapeHtml(it.current_phase || "—")}</span>
+                <span class="text-gray-500 text-[11px]"> · ${escapeHtml(it.status || "")}</span>
+            </td>
+        </tr>`;
+    }).join("");
+    renderPager("fitgapPagerWrap", "fitgap", items.length,
+        () => _renderFitgapAgingTable(items));
+}
+
+/** Xuất Excel FIT/GAP — POST filter body để cùng chuẩn với 4 export khác. */
+async function exportFitgapReport() {
+    const thrInput = document.getElementById("fitgapAgingThr");
+    const thr = thrInput ? parseInt(thrInput.value, 10) || 14 : 14;
+    const qs = new URLSearchParams();
+    qs.set("aging_threshold_days", thr);
+    const url = `/api/projects/${currentProjectSlug}/export-fitgap?${qs.toString()}`;
+    try {
+        const r = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                module: globalFilters.modules,
+                process: globalFilters.processes,
+                pic: globalFilters.pics,
+            }),
+        });
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            showToast(`Xuất Excel lỗi: ${err.error || r.statusText}`, "red");
+            return;
+        }
+        // Trigger download
+        const blob = await r.blob();
+        const cd = r.headers.get("Content-Disposition") || "";
+        const match = /filename\*?=(?:UTF-8'')?"?([^\";]+)"?/i.exec(cd);
+        const fname = match ? decodeURIComponent(match[1]) : `FITGAP_Dashboard_${Date.now()}.xlsx`;
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = fname;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        if (typeof showToast === "function") showToast("Đã xuất Excel FIT/GAP", "green");
+    } catch (e) {
+        if (typeof showToast === "function") showToast(`Lỗi mạng: ${e.message}`, "red");
+    }
+}
 
 function renderSLASection(sla) {
     _lastSlaData = sla;

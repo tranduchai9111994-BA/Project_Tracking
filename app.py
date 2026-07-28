@@ -49,6 +49,7 @@ from exporter.excel_exporter import (
     export_capacity_report,
     export_slow_heatmap_report,
     export_baseline_variance_report,
+    export_fitgap_report,
     SUPPORTED_EXPORT_CHARTS,
 )
 
@@ -1942,6 +1943,56 @@ def function_detail(slug: str, row_num: int):
     if result is None:
         return jsonify({"error": f"Không tìm thấy function row {row_num}"}), 404
     return jsonify(result)
+
+
+# ==========================================================================
+# FIT/GAP Dashboard (BA — Task 2)
+# ==========================================================================
+# BA cần section riêng để quản lý lifecycle GAP: cards summary + 3 chart
+# (module / quy trình / priority) + bảng aging GAP > 14 ngày. Global filter
+# (module/process/pic) apply. Xuất Excel tuân rule V4 (xuất ALL).
+# ==========================================================================
+
+
+@app.route("/api/projects/<slug>/fitgap-analytics")
+def fitgap_analytics(slug: str):
+    """Cards + 3 chart data + aging list. Apply global filter module/process/pic."""
+    from analyzer.fitgap_analytics import compute_fitgap_analytics
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    # Cho phép override aging threshold qua query param (BA có thể thử 7/21/30 ngày)
+    try:
+        thr = int(request.args.get("aging_threshold_days", 14))
+    except (TypeError, ValueError):
+        thr = 14
+    thr = max(1, min(thr, 365))
+    return jsonify(compute_fitgap_analytics(data, aging_threshold_days=thr))
+
+
+@app.route("/api/projects/<slug>/export-fitgap", methods=["GET", "POST"])
+def export_fitgap(slug: str):
+    """Xuất Excel FIT/GAP Dashboard (multi-sheet, xuất ALL). Áp global filter."""
+    from analyzer.fitgap_analytics import compute_fitgap_analytics
+    state, err = _require_state(slug)
+    if err:
+        return err
+    try:
+        data, filters = _filter_state_from_body_or_args(state)
+        try:
+            thr = int(request.args.get("aging_threshold_days", 14))
+        except (TypeError, ValueError):
+            thr = 14
+        payload = compute_fitgap_analytics(data, aging_threshold_days=thr)
+        filepath = export_fitgap_report(
+            payload=payload,
+            output_dir=_project_mgr.get_export_dir(slug),
+            filters=filters,
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất FIT/GAP: {str(e)}"}), 500
 
 
 # ==========================================================================

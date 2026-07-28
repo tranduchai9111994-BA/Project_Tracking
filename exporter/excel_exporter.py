@@ -1973,3 +1973,132 @@ def export_baseline_variance_report(
     wb.save(filepath)
     wb.close()
     return filepath
+
+
+# --------------------------------------------------------------------------
+# FIT/GAP Dashboard export (Task 2). Multi-sheet: Summary + Aging + by-Module +
+# by-Process + by-Priority. Rule V4: xuất ALL — không cắt aging list theo pagination.
+# --------------------------------------------------------------------------
+
+def _aging_fill(days: Optional[int]) -> Optional[PatternFill]:
+    """Fill row aging: >= 30d red, 21-29d orange, 14-20d yellow."""
+    if days is None:
+        return None
+    if days >= 30:
+        return RED_FILL
+    if days >= 21:
+        return ORANGE_FILL
+    if days >= 14:
+        return YELLOW_FILL
+    return None
+
+
+def export_fitgap_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+    filters: Optional[dict] = None,
+) -> str:
+    """
+    Xuất báo cáo FIT/GAP Dashboard sang Excel (multi-sheet).
+
+    Rule V4: XUẤT ALL. Aging list dùng `payload["aging_items"]` (đã filter theo
+    threshold ở backend); nếu caller muốn xuất TẤT CẢ GAP đang mở (không filter
+    theo threshold), truyền vào `payload["all_open_gap_items"]` thay thế.
+    """
+    summary = payload.get("summary") or {}
+    by_module = payload.get("by_module") or []
+    by_process = payload.get("by_process") or []
+    by_priority = payload.get("by_priority") or []
+    aging_items = payload.get("aging_items") or []
+
+    wb = openpyxl.Workbook()
+
+    subtitle_base = _filter_subtitle(filters)
+    thr = summary.get("aging_threshold_days", 14)
+
+    # === Sheet 1: Summary ===
+    ws = wb.active
+    ws.title = "Summary"
+    _write_sheet(
+        ws,
+        title="FIT/GAP DASHBOARD — TỔNG QUAN",
+        subtitle=subtitle_base + f"  |  Aging threshold: {thr} ngày",
+        columns=[("Chỉ số", 30), ("Số lượng", 14)],
+        data_rows=[
+            ["Tổng function", summary.get("total", 0)],
+            ["FIT", summary.get("fit", 0)],
+            ["GAP (tổng)", summary.get("gap", 0)],
+            ["GAP đã đóng (all phase Closed/Cancelled)", summary.get("gap_closed", 0)],
+            ["GAP đang mở", summary.get("gap_open", 0)],
+            [f"GAP aging > {thr} ngày", summary.get("gap_open_aging", 0)],
+        ],
+    )
+
+    # === Sheet 2: Aging GAP list ===
+    ws2 = wb.create_sheet("Aging_GAP")
+    _write_sheet(
+        ws2,
+        title=f"GAP AGING — ĐANG MỞ > {thr} NGÀY",
+        subtitle=subtitle_base + f"  |  Tổng: {len(aging_items)}",
+        columns=[
+            ("STT", 6),
+            ("Mã CN", 14),
+            ("Tên chức năng", 40),
+            ("Module", 10),
+            ("Quy trình", 30),
+            ("Priority", 14),
+            ("Ngày mở", 14),
+            ("Aging (ngày)", 12),
+            ("Phase đang mở", 14),
+            ("Status", 12),
+            ("PIC", 24),
+        ],
+        data_rows=[
+            [
+                idx + 1,
+                it.get("ma_cn", ""),
+                it.get("ten_cn", ""),
+                it.get("module", ""),
+                it.get("quy_trinh", ""),
+                it.get("priority", ""),
+                it.get("opened_date") or "N/A",
+                it.get("aging_days") if it.get("aging_days") is not None else "N/A",
+                it.get("current_phase", ""),
+                it.get("status", ""),
+                ", ".join(it.get("pics") or []),
+            ]
+            for idx, it in enumerate(aging_items)
+        ],
+        row_fill_fn=lambda _ri, idx: _aging_fill(aging_items[idx].get("aging_days")),
+    )
+
+    def _breakdown_sheet(sheet_name: str, title: str, rows: list[dict], key_field: str, label: str):
+        ws_bk = wb.create_sheet(sheet_name)
+        _write_sheet(
+            ws_bk,
+            title=title,
+            subtitle=subtitle_base,
+            columns=[
+                ("STT", 6),
+                (label, 32),
+                ("FIT", 10),
+                ("GAP", 10),
+                ("Tổng", 10),
+                ("% GAP", 10),
+            ],
+            data_rows=[
+                [idx + 1, r.get(key_field, ""), r.get("fit", 0), r.get("gap", 0),
+                 r.get("total", 0), f"{r.get('pct_gap', 0)}%"]
+                for idx, r in enumerate(rows)
+            ],
+        )
+
+    _breakdown_sheet("By_Module", "FIT/GAP THEO MODULE", by_module, "module", "Module")
+    _breakdown_sheet("By_Process", "FIT/GAP THEO QUY TRÌNH", by_process, "process", "Quy trình")
+    _breakdown_sheet("By_Priority", "FIT/GAP THEO PRIORITY", by_priority, "priority", "Priority")
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"FITGAP_Dashboard_{date.today().strftime('%Y%m%d')}.xlsx")
+    wb.save(filepath)
+    wb.close()
+    return filepath
