@@ -1646,3 +1646,24 @@ body.layout-edit #btnLayoutReset { display: inline-flex; }
 body.layout-edit #btnLayoutEdit {
     background: rgba(16, 185, 129, 0.4) !important;
 }
+
+/* Task 16: Effort heatmap full-width — cell to hon, d?c d? */
+.effort-heatmap-fw {
+    min-width: 100%;
+    table-layout: fixed;
+}
+.effort-heatmap-fw th,
+.effort-heatmap-fw td {
+    min-width: 70px;
+    padding: 8px 10px;
+    font-size: 12px;
+    text-align: center;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+.effort-heatmap-fw th:first-child,
+.effort-heatmap-fw td:first-child {
+    text-align: left;
+    font-weight: 600;
+    min-width: 120px;
+}
+
