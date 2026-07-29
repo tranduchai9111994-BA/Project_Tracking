@@ -43,18 +43,32 @@ def _week_monday(d: date) -> date:
     return d - timedelta(days=d.weekday())
 
 
-def compute_burndown_velocity(data: ParsedData, today: Optional[date] = None) -> dict[str, Any]:
+def compute_burndown_velocity(
+    data: ParsedData,
+    today: Optional[date] = None,
+    phase: Optional[str] = None,
+) -> dict[str, Any]:
     """
     Closed count theo tuần — dựa End date khi Closed, fallback Last Updated meta.
-    Trả: weeks[], closed_per_week[], cumulative[], velocity (avg 4 tuần gần).
+
+    Args:
+        phase: Nếu cung cấp → chỉ đếm phase Closed = tên phase này (b12: toggle
+            Phạm vi theo phase). Bỏ qua case-sensitive strip, so sánh exact
+            với r.phases key.
+
+    Trả: weeks[], closed_per_week[], cumulative[], velocity (avg 4 tuần gần),
+    scope_phase (echo lại param), total_closed_events.
     """
     today = today or date.today()
     closed_by_week: dict[str, int] = defaultdict(int)
+    phase_filter = (phase or "").strip()
 
     for row in data.rows:
         last_upd = _parse_iso(row.meta.get("last_updated"))
         for phase_name, pd in row.phases.items():
             if pd.status != "Closed":
+                continue
+            if phase_filter and phase_name != phase_filter:
                 continue
             event = _parse_iso(pd.end_date) or last_upd
             if event is None:
@@ -68,6 +82,7 @@ def compute_burndown_velocity(data: ParsedData, today: Optional[date] = None) ->
             "closed_per_week": [],
             "cumulative": [],
             "velocity_4w": 0,
+            "scope_phase": phase_filter,
         }
 
     # Fill tuần liên tục từ min → today
@@ -98,6 +113,7 @@ def compute_burndown_velocity(data: ParsedData, today: Optional[date] = None) ->
         "cumulative": cumulative,
         "velocity_4w": velocity,
         "total_closed_events": s,
+        "scope_phase": phase_filter,
     }
 
 

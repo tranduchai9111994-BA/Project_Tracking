@@ -2275,12 +2275,18 @@ def project_capacity_load(slug: str):
 
 @app.route("/api/projects/<slug>/burndown")
 def project_burndown(slug: str):
+    """b12: hỗ trợ query param `phase` để giới hạn scope theo 1 phase cụ thể.
+
+    Không có param → đếm mọi phase Closed (behavior cũ). Có param → chỉ
+    đếm phase name matched.
+    """
     from analyzer.advanced_metrics import compute_burndown_velocity
     state, err = _require_state(slug)
     if err:
         return err
     data = _filtered_data_from_request(state)
-    return jsonify(compute_burndown_velocity(data))
+    phase = (request.args.get("phase") or "").strip()
+    return jsonify(compute_burndown_velocity(data, phase=phase or None))
 
 
 @app.route("/api/projects/<slug>/sla")

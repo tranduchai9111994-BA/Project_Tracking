@@ -6156,18 +6156,27 @@ function _apiUrl(pathSuffix) {
     return `/api/projects/${currentProjectSlug}/${pathSuffix}`;
 }
 
+// b12: state phase filter cho Burndown — session-only, không persist.
+let _burndownScopePhase = "";
+
 async function loadBurndownAndSLA() {
     if (!currentProjectSlug || !metricsData) return;
     // Build filter query string chung để mọi endpoint nhận cùng global filter.
     // Upload-history KHÔNG cần filter (là data-quality info per project).
     const qsFilter = _buildFilterQuery();
     try {
-        const safeJson = (path, withFilter = true) => {
-            const url = _apiUrl(path) + (withFilter && qsFilter ? "?" + qsFilter : "");
+        const safeJson = (path, withFilter = true, extraParams = null) => {
+            let url = _apiUrl(path);
+            const parts = [];
+            if (withFilter && qsFilter) parts.push(qsFilter);
+            if (extraParams) parts.push(extraParams);
+            if (parts.length) url += "?" + parts.join("&");
             return fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
         };
+        const burndownExtras = _burndownScopePhase
+            ? "phase=" + encodeURIComponent(_burndownScopePhase) : null;
         const [bd, sla, cap, slow, deps, bsl, hist] = await Promise.all([
-            safeJson("burndown"),
+            safeJson("burndown", true, burndownExtras),
             safeJson("sla"),
             safeJson("capacity-load"),
             safeJson("slow-heatmap"),
@@ -6199,11 +6208,20 @@ function _buildFilterQuery() {
 function renderBurndownSection(bd) {
     const section = document.getElementById("section-burndown");
     if (!section) return;
+    // b12: luôn hiện section (không hide khi rỗng data) để user thấy phần
+    // toggle Phạm vi + biết filter đang chặn. Empty-state hiển thị message.
+    section.classList.remove("hidden");
+    _populateBurndownPhaseSelector();
     if (!bd || !bd.weeks || bd.weeks.length === 0) {
-        section.classList.add("hidden");
+        document.getElementById("burndownVelocity").textContent = "—";
+        document.getElementById("burndownTotal").textContent = "0";
+        const ctxEmpty = getCanvas("chartBurndown");
+        if (ctxEmpty && ctxEmpty.canvas) {
+            const c = ctxEmpty.canvas.getContext("2d");
+            c.clearRect(0, 0, ctxEmpty.canvas.width, ctxEmpty.canvas.height);
+        }
         return;
     }
-    section.classList.remove("hidden");
     document.getElementById("burndownVelocity").textContent = bd.velocity_4w ?? "—";
     document.getElementById("burndownTotal").textContent = bd.total_closed_events ?? "—";
 
@@ -6248,6 +6266,39 @@ function renderBurndownSection(bd) {
         },
     });
 }
+
+/** Populate dropdown phase từ metricsData.structure. Giữ phase đang chọn. */
+function _populateBurndownPhaseSelector() {
+    const sel = document.getElementById("burndownPhaseSelector");
+    if (!sel) return;
+    const phases = (metricsData?.structure?.all_phases || []);
+    const prev = _burndownScopePhase || sel.value || "";
+    sel.innerHTML = `<option value="">Tất cả phase</option>` +
+        phases.map(p => `<option value="${escapeAttr(p)}">${escapeHtml(p)}</option>`).join("");
+    if (prev && phases.includes(prev)) sel.value = prev;
+    else sel.value = "";
+}
+
+/** Handler khi user đổi phase scope — refetch burndown. */
+window.onBurndownPhaseChange = async function (phase) {
+    _burndownScopePhase = (phase || "").trim();
+    // Reload chỉ burndown, không đụng SLA/Capacity (không phụ thuộc phase).
+    if (!currentProjectSlug) return;
+    try {
+        const qs = _buildFilterQuery();
+        let url = _apiUrl("burndown");
+        const parts = [];
+        if (qs) parts.push(qs);
+        if (_burndownScopePhase) parts.push("phase=" + encodeURIComponent(_burndownScopePhase));
+        if (parts.length) url += "?" + parts.join("&");
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(await r.text());
+        const bd = await r.json();
+        renderBurndownSection(bd);
+    } catch (err) {
+        showToast("Lỗi tải Burndown: " + err.message, "red");
+    }
+};
 
 // State cache — cần thiết vì pager click gọi lại render function bằng closure
 let _lastSlaData = null;

@@ -1366,7 +1366,7 @@
             </section>
 
         <section id="section-burndown" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800">
                         📉 Burndown &amp; Velocity
@@ -1375,7 +1375,12 @@
                     </h3>
                     <p class="text-xs text-gray-500 mt-0.5">Closed count theo tuần (End khi Closed / Last Updated) — velocity = trung bình 4 tuần gần nhất</p>
                 </div>
-                <div class="flex items-center gap-3">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <label class="text-xs text-gray-600">Phạm vi theo phase:</label>
+                    <select id="burndownPhaseSelector" onchange="onBurndownPhaseChange(this.value)"
+                            class="text-xs border border-gray-300 rounded px-2 py-1 bg-white">
+                        <option value="">Tất cả phase</option>
+                    </select>
                     <div class="text-xs bg-blue-50 text-blue-800 px-3 py-1.5 rounded border border-blue-200">
                         Velocity: <b id="burndownVelocity">—</b> function/tuần
                     </div>
@@ -1384,7 +1389,8 @@
                     </div>
                 </div>
             </div>
-            <div class="chart-box" style="height:280px"><canvas id="chartBurndown"></canvas></div>
+            <p class="chart-scope"></p>
+            <div class="chart-box mt-2" style="height:280px"><canvas id="chartBurndown"></canvas></div>
         </section>
 
         <section id="section-slow" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
