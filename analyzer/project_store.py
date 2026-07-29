@@ -377,6 +377,43 @@ def reset_chart_configs(project_dir: str) -> None:
             pass
 
 
+def set_chart_config_visibility(
+    project_dir: str, mapping: dict
+) -> dict[str, dict]:
+    """
+    Bulk update chỉ trường `hidden` của nhiều section cùng lúc.
+
+    `mapping`: {section_id: visible_bool} — True = hiển thị, False = ẩn.
+    Preserve tất cả field khác của entry (title/caption/type/x_field/…).
+    Trả về full map chart_configs sau khi cập nhật.
+
+    Dùng cho tab "Hiển thị" trong Settings modal (bulk toggle nhiều section
+    trong 1 request thay vì loop POST /chart-config từng cái).
+    """
+    all_cfg = load_chart_configs(project_dir)
+    if not isinstance(mapping, dict):
+        return all_cfg
+    for sid, visible in mapping.items():
+        sid_s = str(sid).strip()
+        if not sid_s:
+            continue
+        entry = dict(all_cfg.get(sid_s) or {})
+        if visible:
+            # User muốn hiển thị → xoá cờ hidden (nếu có)
+            entry.pop("hidden", None)
+        else:
+            # User muốn ẩn
+            entry["hidden"] = True
+        s = _sanitize_chart_config(entry)
+        if s:
+            all_cfg[sid_s] = s
+        else:
+            # Entry rỗng sau sanitize (không còn field nào) → xoá key để file gọn
+            all_cfg.pop(sid_s, None)
+    _write_json(_path(project_dir, _CHART_CFG_FILE), all_cfg)
+    return all_cfg
+
+
 # ------------------------------------------------------------------
 # Custom dashboards (Task 9 — Dynamic Dashboard Builder)
 # ------------------------------------------------------------------

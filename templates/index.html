@@ -622,6 +622,32 @@
                     </div>
                     <div id="setDigestLast" class="text-[11px] text-gray-500 mt-2"></div>
                 </section>
+
+                <!-- Hiển thị section — bulk toggle -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                    <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+                        <h4 class="font-semibold text-gray-800 dark:text-gray-100">🎛️ Hiển thị section dashboard</h4>
+                        <div class="flex gap-1 flex-wrap text-xs no-print">
+                            <button type="button" onclick="_visSelectAll()"
+                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500">
+                                ✔ Chọn tất cả
+                            </button>
+                            <button type="button" onclick="_visClearAll()"
+                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500">
+                                ✖ Bỏ chọn tất cả
+                            </button>
+                            <button type="button" onclick="_visResetDefault()"
+                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500">
+                                ↺ Khôi phục mặc định
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-500 mb-3">
+                        Bỏ tick những section bạn không muốn thấy. Trạng thái được lưu vào project, tự động
+                        khôi phục ở phiên sau. Không mất filter/pagination hiện tại.
+                    </p>
+                    <div id="visibilityPanel" class="space-y-2"></div>
+                </section>
             </div>
             <div class="px-5 py-3 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
                 <button onclick="closeSettingsModal()" class="px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-slate-700 text-sm">Huỷ</button>

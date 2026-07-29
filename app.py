@@ -1725,6 +1725,32 @@ def project_chart_config(slug: str):
     return jsonify({"configs": {}})
 
 
+@app.route("/api/projects/<slug>/chart-config/visibility", methods=["PUT"])
+def project_chart_visibility(slug: str):
+    """
+    Bulk toggle hiển thị nhiều section cùng lúc — dùng cho tab "Hiển thị"
+    trong Settings modal.
+
+    Body: {"visibility": {"section-xxx": true, "section-yyy": false, ...}}
+      · true  → hiển thị (xoá cờ hidden nếu có)
+      · false → ẩn (đặt cờ hidden = true, preserve các field khác)
+
+    Trả về: {"configs": <full chart_configs map>} — FE có thể apply ngay.
+    """
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    body = request.get_json(silent=True) or {}
+    mapping = body.get("visibility")
+    if not isinstance(mapping, dict):
+        return jsonify({"error": "visibility phải là dict {section_id: bool}"}), 400
+    # Coerce sang bool để không lệ thuộc payload gửi 0/1/"true"/"false"
+    coerced = {str(k): bool(v) for k, v in mapping.items() if k}
+    folder = _project_dir_for(slug)
+    all_cfg = ps.set_chart_config_visibility(folder, coerced)
+    return jsonify({"configs": all_cfg})
+
+
 @app.route("/api/projects/<slug>/chart-fields")
 def project_chart_fields(slug: str):
     """

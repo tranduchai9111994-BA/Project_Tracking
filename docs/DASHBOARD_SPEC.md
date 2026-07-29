@@ -448,7 +448,25 @@ Modal có:
 
 ### Settings modal (T29)
 - Nút "⚙️ Cài đặt" trong header sát nút Trình chiếu.
-- 5 section như liệt kê ở `ARCHITECTURE.md :: T29`.
+- 6 panel: `Ngưỡng % tiến độ` · `Ngưỡng Aging WIP` · `Nhắc upload định kỳ`
+  · `Ngưỡng SLA (theo priority)` · `Lịch sinh Digest tự động` · `Hiển thị
+  section dashboard`.
+- Panel **Hiển thị** (Task Cấu hình ẩn/hiện, bổ sung sau T29):
+  - Metadata `_VISIBILITY_GROUPS` gom section theo 5 nhóm: `📊 Tổng quan`,
+    `📈 Tiến độ & Timeline`, `🔬 Phân tích chuyên sâu`, `🚨 Danh sách &
+    Cảnh báo`, `🛠️ Tùy chỉnh & Lịch sử`. Mỗi item có `id`, `label`, mô tả
+    ngắn — FE tự lọc theo section thực có trong DOM (auto-detect).
+  - 3 action pills: `✔ Chọn tất cả` / `✖ Bỏ chọn tất cả` / `↺ Khôi phục
+    mặc định` (default = tick tất cả).
+  - Save: gọi `PUT /api/projects/<slug>/chart-config/visibility` với body
+    `{visibility:{section_id:bool,…}}` — bulk cập nhật cờ `hidden` trong
+    `chart_configs.json`. Chạy song song với `PUT /settings`.
+  - Apply runtime: sau save, `_applyVisibilityMapping()` toggle `.hidden`
+    class ngay lập tức — KHÔNG reload trang, KHÔNG mất filter/pagination
+    /scroll position hiện tại.
+  - Persist: reuse `chart_configs.<section_id>.hidden` → phiên sau load
+    `loadChartConfigs()` → `applyChartConfigsToDom()` tự ẩn lại các
+    section user đã bỏ tick.
 - Sau khi lưu: auto refresh `loadDigests()` + section Aging WIP nếu đang mở.
 
 ### UX7 — Icon 👁 View trong bảng lưới

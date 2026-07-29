@@ -10153,6 +10153,9 @@ window.openSettingsModal = async function () {
         console.error("[openSettingsModal]", err);
         showToast("Không tải được settings: " + err.message, "red");
     }
+    // Render panel Hiển thị dựa trên _chartConfigsCache hiện tại — cache đã
+    // load sẵn khi vào dashboard (loadChartConfigs) nên không cần fetch lại.
+    _renderVisibilityPanel();
     modal.classList.remove("hidden");
     modal.classList.add("flex");
 };
@@ -10210,15 +10213,34 @@ window.saveSettings = async function () {
             hour: int0("setDigestHour", 9),
         },
     };
+    // Thu thập state của tab Hiển thị (bulk toggle ẩn/hiện section).
+    const visMap = _collectVisibilityMap();
     try {
-        const r = await fetch(`/api/projects/${currentProjectSlug}/settings`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        });
-        if (!r.ok) throw new Error(await r.text());
-        const s = await r.json();
+        // Chạy song song: PUT settings + PUT visibility bulk
+        const [rSet, rVis] = await Promise.all([
+            fetch(`/api/projects/${currentProjectSlug}/settings`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            }),
+            Object.keys(visMap).length
+                ? fetch(`/api/projects/${currentProjectSlug}/chart-config/visibility`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ visibility: visMap }),
+                })
+                : Promise.resolve(null),
+        ]);
+        if (!rSet.ok) throw new Error(await rSet.text());
+        const s = await rSet.json();
         _fillSettingsForm(s);
+        // Cập nhật cache chart_configs từ response bulk visibility (nếu có) và
+        // apply ngay lập tức lên DOM — không reload trang, giữ nguyên filter.
+        if (rVis && rVis.ok) {
+            const d = await rVis.json();
+            _chartConfigsCache = d.configs || {};
+        }
+        _applyVisibilityMapping(visMap);
         showToast("Đã lưu cài đặt", "green");
         // Refresh digest section (badge lịch có thể đổi)
         if (typeof loadDigests === "function") loadDigests();
@@ -10238,6 +10260,161 @@ window.saveSettings = async function () {
         showToast("Lưu cài đặt lỗi: " + err.message, "red");
     }
 };
+
+
+// ========================================================================
+// Tab "Hiển thị" — cấu hình ẩn/hiện section dashboard
+// ------------------------------------------------------------------------
+// - Metadata gom section theo 5 nhóm (Tổng quan / Tiến độ & Timeline /
+//   Phân tích chuyên sâu / Danh sách & Cảnh báo / Tùy chỉnh & Lịch sử).
+// - Auto-detect: chỉ render checkbox cho section thực sự tồn tại trong DOM
+//   (tránh hiển thị section đã bị xoá / feature-flag off).
+// - Persistence: reuse chart_configs.<section_id>.hidden qua endpoint bulk
+//   PUT /api/projects/<slug>/chart-config/visibility.
+// - Runtime: sau save, gọi applyChartConfigsToDom() để toggle .hidden class
+//   ngay lập tức (không reload trang, giữ nguyên filter/pagination state).
+// ========================================================================
+const _VISIBILITY_GROUPS = [
+    {
+        name: "📊 Tổng quan",
+        items: [
+            { id: "section-summary",  label: "Summary cards",         desc: "Các thẻ KPI tổng quan trên đầu trang" },
+            { id: "section-module",   label: "Module Overview",       desc: "Bảng tổng quan theo Module/Quy trình" },
+            { id: "section-matrix",   label: "Matrix Phase × Module", desc: "Ma trận số function theo Phase × Module/Quy trình" },
+            { id: "section-tasktype", label: "Task Type Progress",    desc: "Tiến độ theo loại công việc (Phân tích/Dev/Test/UAT/Golive)" },
+            { id: "section-phase",    label: "Tiến độ theo Phase",    desc: "Stacked bar tiến độ status của từng phase" },
+        ],
+    },
+    {
+        name: "📈 Tiến độ & Timeline",
+        items: [
+            { id: "section-gantt",     label: "Gantt",              desc: "Sơ đồ Gantt lộ trình phase theo function" },
+            { id: "section-burndown",  label: "Burndown & Velocity", desc: "Đường burndown + velocity theo tuần" },
+            { id: "section-sla",       label: "SLA vi phạm",        desc: "Danh sách task vượt SLA theo priority" },
+            { id: "section-duration",  label: "Duration",            desc: "Bảng thời lượng thực tế theo function" },
+            { id: "section-giaidoan",  label: "Giai đoạn dự án",    desc: "Gộp phase theo giai đoạn (Phân tích/Phát triển/UAT/Golive)" },
+        ],
+    },
+    {
+        name: "🔬 Phân tích chuyên sâu",
+        items: [
+            { id: "section-pic",              label: "PIC Workload",             desc: "Khối lượng theo người phụ trách" },
+            { id: "section-priority",         label: "Priority / Complexity / FIT-GAP mini", desc: "3 doughnut phân bố Priority — Complexity — FIT/GAP" },
+            { id: "section-fitgap-dashboard", label: "FIT/GAP Dashboard",        desc: "Dashboard chi tiết cho BA quản lý lifecycle GAP" },
+            { id: "section-process",          label: "Heatmap Quy trình",        desc: "Heatmap function theo quy trình × status" },
+            { id: "section-effort",           label: "Heatmap Effort",           desc: "Heatmap MH theo Module × Phase" },
+            { id: "section-slow",             label: "Heatmap Slow",             desc: "Heatmap function chậm theo module" },
+            { id: "section-capacity",         label: "Capacity",                 desc: "So sánh capacity vs load thực tế của PIC" },
+            { id: "section-baseline",         label: "Baseline Variance",        desc: "Chênh lệch baseline vs actual date" },
+        ],
+    },
+    {
+        name: "🚨 Danh sách & Cảnh báo",
+        items: [
+            { id: "section-overdue",     label: "Danh sách Overdue",   desc: "Bảng function trễ theo phase" },
+            { id: "section-unassigned",  label: "Chưa phân công",      desc: "Bảng task chưa gán PIC" },
+            { id: "section-stalled",     label: "Task đình trệ",       desc: "Task lâu không có cập nhật status" },
+            { id: "section-risk",        label: "High Risk",           desc: "Function rủi ro cao (Priority × Complexity × Overdue)" },
+            { id: "section-aging-wip",   label: "Aging WIP",           desc: "Task In-progress quá lâu (vượt ngưỡng ngày)" },
+            { id: "section-dataquality", label: "Data Quality",        desc: "Bảng dữ liệu thiếu / không hợp lệ để dọn dẹp Excel" },
+        ],
+    },
+    {
+        name: "🛠️ Tùy chỉnh & Lịch sử",
+        items: [
+            { id: "section-custom-dashboards", label: "Custom Dashboards", desc: "Các dashboard do user tự cấu hình" },
+            { id: "section-kanban",            label: "Kanban",            desc: "Board Kanban tự động theo Dev/BA" },
+            { id: "section-my-bookmarks",      label: "Bookmarks ⭐",      desc: "Danh sách function đã đánh dấu sao" },
+            { id: "section-my-digests",        label: "Digest lưu trữ",    desc: "Excel digest sinh tự động hàng tuần" },
+            { id: "section-compare",           label: "Snapshot Compare",  desc: "So sánh 2 lần upload để phát hiện thay đổi" },
+            { id: "section-function-diff",    label: "Function Diff",     desc: "Thay đổi so với snapshot upload trước" },
+            { id: "section-deps",              label: "Dependencies",      desc: "Sơ đồ phụ thuộc giữa các function" },
+            { id: "section-history",           label: "Lịch sử upload",    desc: "Timeline các lần upload snapshot" },
+        ],
+    },
+];
+
+/** Render checkbox list vào #visibilityPanel dựa trên _chartConfigsCache. */
+function _renderVisibilityPanel() {
+    const wrap = document.getElementById("visibilityPanel");
+    if (!wrap) return;
+    const html = _VISIBILITY_GROUPS.map(g => {
+        // Auto-detect: chỉ liệt kê section thực sự có trong DOM
+        const items = g.items.filter(it => document.getElementById(it.id));
+        if (!items.length) return "";
+        const rows = items.map(it => {
+            const cfg = _chartConfigsCache[it.id] || {};
+            const checked = !cfg.hidden;   // default: visible nếu không có cờ hidden
+            return `
+                <label class="flex items-start gap-2 text-xs cursor-pointer rounded px-1 py-0.5
+                              hover:bg-slate-100 dark:hover:bg-slate-700">
+                    <input type="checkbox" data-vis-id="${escapeAttr(it.id)}"
+                           class="mt-0.5 flex-shrink-0" ${checked ? "checked" : ""}>
+                    <span class="flex-1">
+                        <span class="font-medium text-gray-800 dark:text-gray-100">${escapeHtml(it.label)}</span>
+                        <span class="text-gray-500 dark:text-gray-400"> — ${escapeHtml(it.desc)}</span>
+                    </span>
+                </label>
+            `;
+        }).join("");
+        return `
+            <div class="border rounded-md p-2 bg-white/70 dark:bg-slate-800/40 dark:border-slate-600">
+                <div class="text-xs font-semibold text-gray-700 dark:text-gray-100 mb-1">${escapeHtml(g.name)}</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-3 gap-y-0.5">${rows}</div>
+            </div>
+        `;
+    }).join("");
+    wrap.innerHTML = html || `<p class="text-xs text-gray-500">Chưa có section nào để cấu hình.</p>`;
+}
+
+window._visSelectAll = function () {
+    document.querySelectorAll("#visibilityPanel input[data-vis-id]").forEach(el => { el.checked = true; });
+};
+
+window._visClearAll = function () {
+    document.querySelectorAll("#visibilityPanel input[data-vis-id]").forEach(el => { el.checked = false; });
+};
+
+/**
+ * Khôi phục mặc định = tick tất cả (không có override nào).
+ * User bấm Lưu → BE sẽ xoá hết cờ hidden cho các section trong panel.
+ */
+window._visResetDefault = function () {
+    _visSelectAll();
+    showToast("Đã đặt về mặc định — nhớ bấm Lưu để áp dụng", "blue");
+};
+
+/**
+ * Đọc trạng thái checkbox → { section_id: true/false }.
+ * Chỉ lấy các section có id (data-vis-id). Không đọc thứ tự.
+ */
+function _collectVisibilityMap() {
+    const map = {};
+    document.querySelectorAll("#visibilityPanel input[data-vis-id]").forEach(el => {
+        map[el.dataset.visId] = !!el.checked;
+    });
+    return map;
+}
+
+/**
+ * Áp dụng ngay lập tức lên DOM sau khi save (không reload trang).
+ * Force toggle .hidden class theo mapping — respect user intent.
+ */
+function _applyVisibilityMapping(map) {
+    if (!map) return;
+    for (const [sid, visible] of Object.entries(map)) {
+        const sec = document.getElementById(sid);
+        if (!sec) continue;
+        if (visible) {
+            sec.classList.remove("hidden");
+            delete sec.dataset.userHidden;
+        } else {
+            sec.classList.add("hidden");
+            sec.dataset.userHidden = "1";
+        }
+    }
+    if (typeof _renderHiddenSectionPills === "function") _renderHiddenSectionPills();
+}
 
 
 // ========================================================================
