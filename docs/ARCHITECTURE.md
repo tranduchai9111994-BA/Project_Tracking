@@ -543,3 +543,102 @@ Khi ProjectManager khởi tạo và `projects.json` chưa tồn tại:
 2. Nếu có → tạo project "default" và copy files vào
 3. Nếu không → chỉ tạo empty index
 4. Chỉ chạy 1 lần; lần thứ 2 khởi tạo với index đã có sẽ skip
+
+
+## V4 Wave — Productivity + Presentation (T21–T29)
+
+Batch task từ Wave "PM/BA productivity" (Tier 2–4) đã hoàn thành. Không tạo
+DB mới, không dependency mới; mọi persistence dùng file JSON trong
+`uploads/projects/<slug>/` như V3.
+
+### `analyzer/data_quality.py` — T21
+Detect issue trong Function List: status invalid, End < Start, PIC blank ở
+phase quan trọng, Priority/Complexity/FIT-GAP blank, phase Closed thiếu End
+date, duplicate Mã CN. Return list `{code, severity, row_num, ma_cn, msg}`.
+
+- Endpoint: `GET /api/projects/<slug>/data-quality` (+ `?severity=high|medium|low`)
+- Export: `GET /api/projects/<slug>/data-quality/export` (Excel single sheet
+  với highlight severity).
+- Section: `#section-dataquality` — summary strip + filter theo severity/code
+  + bảng issue paginated.
+
+### `analyzer/aging_wip.py` (inline in dashboard_engine) — T22
+Compute WIP task quá `threshold` ngày kể từ Start date, chưa Closed. Slider
+threshold trong section, persist `localStorage` per-project. Endpoint
+`GET /api/projects/<slug>/aging-wip?threshold=N` + export Excel.
+
+### T23 — Command Palette (Ctrl+K)
+Modal fuzzy search jump section / action / function. `Ctrl+K` (Cmd+K trên
+Mac) hoặc `/` trigger. Fetch function list qua `/function-search?q=` — chỉ
+functions dạng top 20; sections + actions cứng phía FE.
+
+### T24 — Bookmarks + Notes per-function
+- `analyzer/project_store.py`: `load_bookmarks`, `save_bookmarks`,
+  `toggle_bookmark`, `load_function_notes`, `save_function_note`. Key theo
+  `ma_cn` — ổn định qua re-upload (row_num thay đổi).
+- Endpoint:
+  ```
+  GET/POST /api/projects/<slug>/bookmarks
+  POST     /api/projects/<slug>/bookmarks/toggle
+  GET      /api/projects/<slug>/notes
+  GET/PUT  /api/projects/<slug>/notes/<ma_cn>
+  ```
+- Section `#section-my-bookmarks` (ẩn khi rỗng) — card grid, mỗi card có
+  icon 👁 mở function detail + ⭐ bỏ bookmark.
+
+### T25 — Presentation Mode
+- Nút "🎬 Trình chiếu" header → `body.presentation-mode`.
+- Thu thập top-level `#dashboard > section:not(.hidden)`, ẩn header/sidebar,
+  hiển thị 1 section/lần với card style + fadeIn.
+- Key handler: `ArrowLeft/Right`, `Space`, `PageUp/Down`, `Home/End`, `Esc`.
+- HUD progress `<idx>/<total>` + tên section + hint.
+
+### T26 — Weekly Digest cron-lite (`analyzer/digest.py`)
+- Scheduler run 1 lần khi Flask start (không thread nền). Check enabled +
+  weekday + hour + last_generated_date → sinh Excel digest
+  (reuse `exporter.export_full_report`) → lưu
+  `.project_store/<slug>/digests/YYYYMMDD.xlsx`.
+- Settings: `digest.{enabled, day_of_week (0=T2), hour, last_generated_date}`
+  trong `project_settings.json`.
+- Endpoints:
+  ```
+  GET  /api/projects/<slug>/digests             → list history
+  POST /api/projects/<slug>/digests             → generate now
+  GET  /api/projects/<slug>/digests/<filename>  → download Excel
+  DELETE /api/projects/<slug>/digests/<filename>
+  ```
+- Section `#section-my-digests` (ẩn nếu rỗng + scheduler off) — badge lịch,
+  nút "Sinh ngay", bảng history.
+
+### T27 — Custom Dashboard drill-down inline
+- `analyzer/generic_chart.py :: drill_chart(x_field, x_value, series_field,
+  series_value, filters)` — reuse cùng filter + explode logic để count khớp.
+- Endpoint: `GET /api/projects/<slug>/custom-dashboard/<id>/drill?x_value=&series_value=`
+- FE: `_cdBuildChart` gắn `options.onClick` khi chart có `id` (không phải
+  preview trong wizard). Modal `#cdDrillModal` list function match, cột
+  cuối là icon 👁 (UX7).
+
+### T28 — Chart Config filter multi-select
+- Wizard filter thay input plain-text bằng 7 multi-select (createMultiSelect):
+  Module, Process, PIC, Status, Priority, Complexity, FIT/GAP.
+- Domain values từ `structureCache` / `metricsData.structure` (bổ sung
+  `all_fit_gap` trong `_structure_info` — tách "FIT / GAP", "FIT, GAP").
+- Preview live: `_cdOnFilterChange()` debounce 220ms — nếu preview đang show
+  thì re-run `_cdPreview()`.
+
+### T29 — Settings modal
+- Nút "⚙️ Cài đặt" header → modal `#settingsModal` với 5 section:
+  1. Ngưỡng % tiến độ (in_progress / closed_soon)
+  2. Ngưỡng Aging WIP
+  3. Nhắc upload định kỳ
+  4. SLA must-have / should-have
+  5. Lịch sinh Digest (T26)
+- Backend: `analyzer/project_store.py :: load/save_project_settings` mở rộng
+  với `digest`, `progress_thresholds`, `aging_wip_threshold`. Endpoint
+  `GET|PUT|POST /api/projects/<slug>/settings`.
+
+### UX7 — Icon 👁 View cho bảng lưới
+Bỏ click-any-row → thêm cột 👁 cuối các bảng: Overdue, Unassigned, Duration,
+Stalled, Risk, Effort open tasks, Aging WIP, Bookmark, custom drill result.
+Helper `_viewIconCell(maCn)` — click gọi `openFunctionDetailByMaCn(ma_cn)`.
+Kanban card giữ nguyên click card (không đổi).

@@ -303,3 +303,98 @@ Data cũ vẫn giữ nguyên ở vị trí gốc (để user có thể rollback 
 ```
 
 Cùng ngày upload nhiều lần → ghi đè bản cũ. Giới hạn tổng 30 snapshots (bản cũ nhất tự xóa).
+
+## V4 — Bookmark / Notes / Digest / Settings
+
+Mọi state ngoài Excel đều nằm trong `uploads/projects/<slug>/` dưới dạng JSON
+đơn (read/write qua `_read_json` / `_write_json` trong `analyzer/project_store.py`).
+
+### `bookmarks.json` (T24)
+
+```json
+{"functions": ["PR.FR.57", "HR.HRM.03"]}
+```
+- Key = danh sách `ma_cn`; dedupe giữ thứ tự user bấm ⭐.
+- Ma_cn dùng vì stable qua re-upload (row_num thay đổi khi user thêm/bớt
+  row Excel).
+
+### `function_notes.json` (T24)
+
+```json
+{
+  "PR.FR.57": {
+    "note": "Cần confirm với BA Loan trước 15/08",
+    "updated_at": "2026-07-29T10:15:00"
+  }
+}
+```
+- Value là dict `{note, updated_at}`. Note rỗng → tự xoá key.
+
+### `custom_dashboards.json` (Task 9 + T27/T28)
+
+```json
+[
+  {
+    "id": "cd_1690000000",
+    "title": "Workload PIC theo phase Coding",
+    "caption": "Chart tự tạo",
+    "chart_type": "stackedBar",
+    "x_field": "pic",
+    "y_measure": "count",
+    "series_field": "status",
+    "palette": "default",
+    "filters": {
+      "modules": ["PR"],
+      "processes": ["PRM.BP.03"],
+      "pics": ["HoaTT81"],
+      "statuses": ["In-progress"],
+      "priorities": [],
+      "complexities": [],
+      "fitgaps": ["GAP"],
+      "overdue_only": false,
+      "open_only": true
+    },
+    "created_at": "2026-07-29T08:00:00"
+  }
+]
+```
+
+Filter object accept 7 dimension list (T28) + 2 boolean toggle. Backend
+`_row_passes_filters` (`analyzer/generic_chart.py`) match với meta key
+`quy_trinh` / `fit_gap` (theo parser, không dùng `process` / `fitgap`).
+
+### `project_settings.json` (T26 + T29)
+
+```json
+{
+  "upload_reminder_days": 7,
+  "sla": {"must_have_days": 3, "should_have_days": 7},
+  "digest": {
+    "enabled": true,
+    "day_of_week": 0,
+    "hour": 9,
+    "last_generated_date": "2026-07-29"
+  },
+  "progress_thresholds": {"in_progress": 30, "closed_soon": 70},
+  "aging_wip_threshold": 14
+}
+```
+
+- `digest.day_of_week`: 0=Thứ 2 … 6=Chủ Nhật (theo `datetime.weekday()`).
+- `progress_thresholds` invariant: `in_progress < closed_soon` (BE tự
+  chuẩn hoá khi PUT).
+- Fields default nếu file thiếu — xem `analyzer/project_store.py :: DEFAULT_*`.
+
+### `digests/` folder (T26)
+
+```
+uploads/projects/<slug>/digests/
+├── 20260722.xlsx
+├── 20260729.xlsx
+```
+
+- Tên file: `YYYYMMDD.xlsx` (ngày sinh digest).
+- Nội dung: giống `export_full_report` — 6 sheet Summary / Overdue /
+  Unassigned / Long_Duration / Stalled / High_Risk.
+- Không auto-cleanup — user tự xoá qua UI (nút 🗑).
+

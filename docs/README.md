@@ -107,6 +107,27 @@ Data cũ từ V2 (không có project) tự động migrate vào project "Default
 - 📱 **Chart responsive** — CSS clamp() cho height scale mượt từ mobile → 2K + resize handler debounce
 - 📦 **Export folder per-project** — mọi file Excel (overdue / full / by-pic / compare / drill-down) lưu vào `uploads/projects/<slug>/exports/` thay vì base uploads/
 
+### 7. V4 Wave — PM/BA productivity + Presentation
+- 🩺 **Data Quality panel (T21)** — auto-detect issue: status invalid, End<Start,
+  PIC blank ở phase quan trọng, duplicate Mã CN… + xuất Excel highlight severity.
+- ⏳ **Aging WIP tracking (T22)** — task In-progress vượt ngưỡng ngày cần push.
+- ⌨️ **Command Palette (T23)** — Ctrl+K / Cmd+K / `/` jump nhanh section /
+  action / function.
+- ⭐ **Bookmark + Notes (T24)** — đánh dấu function cần theo dõi + note riêng,
+  section "Bookmark của tôi" tự ẩn khi rỗng.
+- 🎬 **Presentation Mode (T25)** — full-screen 1 section/lần, ← → điều hướng,
+  Esc thoát; ẩn header/sidebar cho meeting.
+- 📥 **Weekly Digest cron-lite (T26)** — auto-generate Excel digest theo lịch
+  (day_of_week + hour), lưu `.project_store/<slug>/digests/YYYYMMDD.xlsx`.
+- 🔎 **Drill-down inline cho custom dashboard (T27)** — click bar/pie chart
+  wizard → modal chi tiết function match bucket.
+- 🎛️ **Wizard filter multi-select (T28)** — 7 dimension (Module/Process/PIC/
+  Status/Priority/Complexity/FIT-GAP) preview live.
+- ⚙️ **Settings modal (T29)** — configure progress thresholds / aging WIP /
+  digest schedule / SLA / reminder trong 1 chỗ.
+- 👁 **UX7 View icon** — bảng lưới bỏ click-any-row, thay bằng icon 👁 cột cuối
+  cho rõ affordance.
+
 ## Tech Stack
 - Backend: Python 3.10+ / Flask 3
 - Frontend: HTML + Tailwind CSS + Chart.js (CDN, không cần build)

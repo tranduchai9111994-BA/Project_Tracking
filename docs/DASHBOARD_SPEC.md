@@ -406,3 +406,54 @@ Modal có:
 | Border         | `#e2e8f0`                               | `#334155`                     |
 | Header gradient| `blue-800 → blue-600`                   | `blue-900 → blue-800`         |
 | Heatmap none   | `#f3f4f6`                               | `#334155`                     |
+
+## V4 additions (T21–T29 + UX7)
+
+### `section-dataquality` (T21)
+- Summary strip: tổng issue, số high/medium/low.
+- Filter theo severity + code; bảng issue paginated (30/page).
+- Nút "📥 Xuất Excel" → sheet đơn với highlight theo severity.
+
+### `section-aging-wip` (T22)
+- Slider threshold 1-90 ngày, live-update (debounce 250ms), persist
+  `localStorage` per-project.
+- Summary card: Tổng WIP, Aging (>N ngày), Avg aging, Max aging.
+- Bảng sort cột `aging_days` (asc/desc), phân trang 20/page.
+- UX7: icon 👁 cột cuối mở function detail.
+
+### `section-my-bookmarks` (T24)
+- Card grid 1-2 cột. Mỗi card: Mã CN, Tên, Module · Quy trình, note
+  (nếu có). Nút 👁 xem detail + ⭐ bỏ bookmark.
+- Ẩn khi bookmarks rỗng để giảm noise.
+
+### `section-my-digests` (T26)
+- Badge lịch hiện tại (VD "Thứ 2 lúc 09:00" hoặc "Tắt").
+- Nút "Sinh digest ngay" (POST endpoint).
+- Bảng history: filename `YYYYMMDD.xlsx` | sinh lúc | size | Tải/Xoá.
+- Ẩn khi không có file + schedule off.
+
+### Presentation Mode (T25)
+- Body class `presentation-mode` ẩn header, sidebar, `.no-print`.
+- 1 section chọn: background trắng, shadow, min-height fill viewport,
+  fadeIn 0.35s.
+- HUD `<pos>/<total>` + tên section, hint `← → · Esc`.
+- Key: `Arrow*`, `Space`, `PageUp/Down`, `Home/End`, `Esc`.
+
+### Custom Dashboard drill-down modal (T27)
+- Modal `#cdDrillModal` mở khi click bar/pie/segment chart có id (không
+  áp dụng cho preview trong wizard).
+- Bảng cột: Mã CN · Tên · Module · Quy trình · Priority · Status · Deadline
+  · PIC · 👁 (mở function detail).
+- Truncate 500 rows với note "(hiển thị 500/N)".
+
+### Settings modal (T29)
+- Nút "⚙️ Cài đặt" trong header sát nút Trình chiếu.
+- 5 section như liệt kê ở `ARCHITECTURE.md :: T29`.
+- Sau khi lưu: auto refresh `loadDigests()` + section Aging WIP nếu đang mở.
+
+### UX7 — Icon 👁 View trong bảng lưới
+- Cột cuối mỗi bảng lưới có nút `.view-icon-btn` (26×26, rounded, hover
+  blue). Click → `openFunctionDetailByMaCn(ma_cn)` mở function detail modal.
+- Áp dụng cho: Overdue, Unassigned, Duration, Stalled, Risk, Effort open
+  tasks, Aging WIP, Bookmark card, Custom drill result.
+- Kanban card không đổi (giữ click card mở detail).
