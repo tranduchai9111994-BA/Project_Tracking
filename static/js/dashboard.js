@@ -6931,12 +6931,20 @@ async function loadKanban() {
     params.set("week_offset", String(_kanbanWeekOffset));
     const q = document.getElementById("kanbanSearch")?.value?.trim();
     if (q) params.set("search", q);
-    const mod = document.getElementById("kanbanFilterModule")?.value;
-    if (mod) params.set("module", mod);
-    const proc = document.getElementById("kanbanFilterProcess")?.value;
-    if (proc) params.set("process", proc);
-    const pic = document.getElementById("kanbanFilterPic")?.value;
-    if (pic) params.set("pic", pic);
+
+    // Merge global filter (top bar) + local Kanban filter — nếu 2 nguồn cùng
+    // set 1 field, hợp union (comma-sep). Backend _parse_multi_arg đã tách
+    // được đa giá trị. Trước đây chỉ gửi local filter → Kanban bỏ qua global
+    // filter → mismatch với các bảng khác.
+    const mergeField = (globalArr, localSel, paramName) => {
+        const local = document.getElementById(localSel)?.value?.trim();
+        const combined = new Set([...(globalArr || []), ...(local ? [local] : [])].filter(Boolean));
+        if (combined.size) params.set(paramName, [...combined].join(","));
+    };
+    mergeField(globalFilters?.modules,   "kanbanFilterModule",  "module");
+    mergeField(globalFilters?.processes, "kanbanFilterProcess", "process");
+    mergeField(globalFilters?.pics,      "kanbanFilterPic",     "pic");
+
     const role = document.getElementById("kanbanFilterRole")?.value;
     if (role) params.set("role", role);
     try {

@@ -82,7 +82,10 @@ def _row_to_card(row: FunctionRow, today: date, pic_role_map: dict[str, str]) ->
         "ma_cn": str(meta.get("ma_cn") or ""),
         "ten_cn": str(meta.get("ten_cn") or "")[:120],
         "module": str(meta.get("module") or ""),
-        "process": str(meta.get("process") or ""),
+        # Parser lưu process ở key "quy_trinh" (theo .cursorrules) — trước đây
+        # kanban.py dùng meta.get("process") → luôn rỗng → filter process luôn
+        # không match → mọi filter Process ra 0 kết quả.
+        "process": str(meta.get("quy_trinh") or meta.get("process") or ""),
         "priority": str(meta.get("priority") or ""),
         "complexity": str(meta.get("complexity") or ""),
         "phase": phase_name,
