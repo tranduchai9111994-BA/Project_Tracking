@@ -2657,12 +2657,17 @@ function _ganttGroupKeys() {
 /**
  * Tính aggregate cho 1 group (module hoặc process) trong mode "module"/"process":
  * - minStart / maxEnd trên mọi phase của mọi function trong group
- * - closedPct = closedPhaseRecords / totalPhaseRecords có status (bỏ qua phase trống)
+ * - closedPct = weighted_all formula (giống module_overview):
+ *     closedPhase / (funcs.length × total_all_phases)
+ *   → phase blank / chưa touch ĐƯỢC ĐẾM VÀO mẫu số (như "chưa làm"), không
+ *   bị bỏ qua. Trước đây denominator = totalPhaseWithStatus (chỉ phase có
+ *   status set) → khi filter còn ít row + hầu như phase blank + 1 vài phase
+ *   Closed → % bị đẩy về 100% giả tạo.
  * - overdueCount = số function có ít nhất 1 phase overdue
  */
 function _ganttAggregate(funcs) {
     let minStart = null, maxEnd = null;
-    let totalPhaseWithStatus = 0, closedPhase = 0;
+    let closedPhase = 0;
     let overdueCount = 0;
     let totalPhaseSlots = 0;
     (funcs || []).forEach(f => {
@@ -2679,18 +2684,24 @@ function _ganttAggregate(funcs) {
                 if (!minStart || d < minStart) minStart = d;
                 if (!maxEnd || d > maxEnd) maxEnd = d;
             }
-            if (p.status) {
-                totalPhaseWithStatus += 1;
-                if (p.status === "Closed") closedPhase += 1;
-            }
+            if (p.status === "Closed") closedPhase += 1;
         });
     });
-    const closedPct = totalPhaseWithStatus > 0
-        ? Math.round(closedPhase / totalPhaseWithStatus * 100)
+    // Weighted denominator: mỗi function ứng với TOÀN BỘ phase định nghĩa
+    // trong project (giống module_overview / summary.overall_progress_pct).
+    // `functions_by_module` chỉ giữ phase user đã touch → dùng total_all_phases
+    // từ metricsData.timeline_data.phases (list tất cả phase định nghĩa) làm
+    // divisor chuẩn.
+    const totalAllPhases = (metricsData?.timeline_data?.phases || []).length ||
+                           (metricsData?.structure?.all_phases || []).length || 0;
+    const nFuncs = (funcs || []).length;
+    const weightedDenom = nFuncs * totalAllPhases;
+    const closedPct = weightedDenom > 0
+        ? Math.round(closedPhase / weightedDenom * 100)
         : 0;
     return {
         minStart, maxEnd,
-        totalFuncs: (funcs || []).length,
+        totalFuncs: nFuncs,
         totalPhaseSlots,
         closedPct,
         overdueCount,
