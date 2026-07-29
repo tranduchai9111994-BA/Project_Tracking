@@ -36,11 +36,31 @@ _DONE_STATUSES = frozenset({"Closed", "Cancelled"})
 
 
 def _is_overdue(pd: PhaseData, today: date) -> bool:
+    """Phase overdue: End date < today, status khác Closed/Cancelled.
+
+    Đồng bộ với ``dashboard_engine._is_overdue``: status=None vẫn tính
+    overdue nếu có End date < today (rất phổ biến — user quên cập nhật
+    status). Trước đây drill loại status=None → count summary ≠ drill list
+    (bug: card báo số nhưng drill trả rỗng cho các row status blank).
+    """
     return (
         pd.end_date is not None
-        and pd.status not in ("Closed", "Cancelled", None)
+        and pd.status not in ("Closed", "Cancelled")
         and pd.end_date < today
     )
+
+
+def _is_phase_active_for_unassigned(pd: PhaseData) -> bool:
+    """Phase 'đang cần theo dõi' — đồng bộ với ``dashboard_engine._is_phase_active``.
+
+    Không phải Closed/Cancelled + có ít nhất 1 dấu hiệu đã plan/làm
+    (status truthy, HOẶC Start date, HOẶC End date). Ngăn false positive
+    với phase hoàn toàn trống, nhưng vẫn bắt được phase đã plan ngày mà
+    chưa fill status (đây chính là case bị mismatch trước đây).
+    """
+    if pd.status in ("Closed", "Cancelled"):
+        return False
+    return bool(pd.status) or pd.start_date is not None or pd.end_date is not None
 
 
 def _days_overdue(pd: PhaseData, today: date) -> int:
@@ -316,7 +336,13 @@ def _filter_overdue(data: ParsedData, filters: dict, today: date) -> list[dict]:
 
 
 def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dict]:
-    """Phase đang active (≠ Closed/Cancelled) mà không có PIC."""
+    """Phase đang active (≠ Closed/Cancelled) mà không có PIC.
+
+    Đồng bộ với ``dashboard_engine._is_phase_active``: phase được coi là
+    active nếu status truthy HOẶC có Start/End date. Bug cũ chỉ bắt phase
+    có status truthy nên card summary hiển thị số nhưng drill trả rỗng
+    khi phase chỉ có End date mà status blank.
+    """
     module = filters.get("module", "")
     phase_f = filters.get("phase", "")
     result = []
@@ -326,7 +352,7 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
         for phase_name, pd in row.phases.items():
             if phase_f and phase_name != phase_f:
                 continue
-            if not pd.status or pd.status in _DONE_STATUSES:
+            if not _is_phase_active_for_unassigned(pd):
                 continue
             if pd.pics:
                 continue
