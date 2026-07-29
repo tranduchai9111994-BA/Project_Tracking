@@ -201,6 +201,12 @@ html.dark .sidebar-toggle-btn:hover { background: #60a5fa; }
     cursor: pointer;
     vertical-align: middle;
     flex-shrink: 0;
+    /* ??m b?o nút không b? element khác ?è lên: m?t s? section (VD Stalled/
+       ?ình tr?) có funnel/transition SVG ho?c container flex-wrap khi nh?
+       màn hình khi?n nút b? blocked. */
+    position: relative;
+    z-index: 5;
+    pointer-events: auto;
 }
 .chart-help-btn:hover,
 .chart-help-btn[aria-expanded="true"] {

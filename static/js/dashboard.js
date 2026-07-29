@@ -2468,7 +2468,7 @@ function renderStalledSection() {
     // Transitions
     const trWrap = document.getElementById("transitionList");
     if (transitions.length === 0) {
-        trWrap.innerHTML = `<div class="text-gray-500 text-xs italic">Không có task bị stalled</div>`;
+        trWrap.innerHTML = `<div class="text-gray-500 text-xs italic">Không có task bị đình trệ</div>`;
     } else {
         trWrap.innerHTML = transitions
             .sort((a, b) => b.count - a.count)
@@ -2492,7 +2492,7 @@ function renderStalledTable() {
                   : i.wait_days > 7 ? "overdue-warning" : "";
         return `<tr class="${cls} border-b cursor-pointer hover:bg-orange-50"
                     onclick="openDrillDown('stalled', {})"
-                    title="Click để xem chi tiết stalled">
+                    title="Click để xem chi tiết đình trệ">
             <td class="px-2 py-2 text-center">${start + idx + 1}</td>
             <td class="px-2 py-2 font-mono text-xs">${escapeHtml(i.ma_cn)}</td>
             <td class="px-2 py-2">${escapeHtml(i.ten_cn)}</td>
@@ -2509,8 +2509,8 @@ function renderStalledTable() {
     const cnt = document.getElementById("stalledCount");
     if (cnt) {
         cnt.textContent = items.length === 0
-            ? "Không có task bị stalled"
-            : `Đang xem ${start + 1}–${end}/${items.length} task bị stalled`;
+            ? "Không có task bị đình trệ"
+            : `Đang xem ${start + 1}–${end}/${items.length} task bị đình trệ`;
     }
 }
 
@@ -5881,7 +5881,7 @@ const CHART_HELP = {
         note: "Box plot theo phase và scatter Duration vs Estimate MH giúp nhận ra phase nào ước lượng lệch thực tế."
     },
     "section-stalled": {
-        title: "🔄 Pipeline / Task bị Stalled",
+        title: "🔄 Pipeline / Task bị Đình trệ",
         meaning: "Function bị kẹt giữa hai phase: phase trước đã xong nhưng phase sau chưa ai bắt đầu.",
         logic: "Với mỗi cặp phase liền nhau: phase trước Status Closed, phase sau chưa có tiến triển → tính số ngày chờ = hôm nay − ngày End của phase trước.",
         example: "HR-045 Analysis Closed 01/07, Dev vẫn Open → chờ 27 ngày, cần escalate.",
@@ -8253,7 +8253,7 @@ function _sectionShortLabel(sid) {
         "section-deps": "Deps", "section-baseline": "Baseline",
         "section-history": "History", "section-overdue": "Overdue",
         "section-unassigned": "Unassigned", "section-risk": "Risk",
-        "section-stalled": "Stalled",
+        "section-stalled": "Đình trệ",
     };
     return map[sid] || sid.replace("section-", "");
 }

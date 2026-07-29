@@ -596,7 +596,7 @@ def build_title(chart: str, filters: dict) -> str:
             f" — Phase {filters['phase']}" if filters.get("phase") else ""
         )
     if chart == "stalled":
-        return "Task bị Stalled" + (
+        return "Task bị Đình trệ" + (
             f" — Phase {filters['phase']}" if filters.get("phase") else ""
         )
     if chart == "risk":
