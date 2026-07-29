@@ -19,6 +19,9 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
     <!-- Task 4b: SortableJS cho drag-drop reorder section -->
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <!-- Task 7: PDF export (client-side, không cần backend dep) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_ver('css/style.css') }}">
 </head>
 <body class="bg-slate-50 min-h-screen">
@@ -114,6 +117,12 @@
                         class="hidden bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
                         title="Reset về thứ tự mặc định">
                     ↺ Reset
+                </button>
+                <!-- Task 7: Xuất PDF báo cáo tuần -->
+                <button id="btnExportPdf" onclick="openPdfExportModal()"
+                        class="bg-emerald-500/80 hover:bg-emerald-500 px-3 py-1.5 rounded text-sm font-semibold"
+                        title="Xuất PDF báo cáo tuần (client-side)">
+                    📄 Xuất PDF
                 </button>
             </div>
             <button id="btnTheme" onclick="toggleTheme()"
@@ -460,6 +469,74 @@
             </div>
             <button onclick="document.getElementById('refreshBanner').classList.add('hidden')"
                     class="text-amber-700 hover:text-amber-900 font-bold px-2">✕</button>
+        </div>
+    </div>
+
+    <!-- ============ TASK 7: MODAL XUẤT PDF BÁO CÁO TUẦN ============ -->
+    <div id="pdfExportModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"
+         onclick="if(event.target===this)closePdfExportModal()">
+        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-lg flex flex-col">
+            <div class="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between">
+                <h3 class="text-lg font-bold">📄 Xuất PDF báo cáo tuần</h3>
+                <button onclick="closePdfExportModal()" class="text-gray-500 hover:text-red-500 text-xl">✕</button>
+            </div>
+            <div class="p-5 space-y-4">
+                <div>
+                    <label class="block text-sm font-semibold mb-2">Preset nội dung</label>
+                    <div class="grid grid-cols-2 gap-2 text-sm">
+                        <label class="flex items-center gap-2 border rounded p-2 cursor-pointer hover:bg-blue-50 dark:hover:bg-slate-700">
+                            <input type="radio" name="pdfPreset" value="pm" checked onchange="_pdfOnPresetChange()">
+                            <span>👔 PM view</span>
+                        </label>
+                        <label class="flex items-center gap-2 border rounded p-2 cursor-pointer hover:bg-blue-50 dark:hover:bg-slate-700">
+                            <input type="radio" name="pdfPreset" value="ba" onchange="_pdfOnPresetChange()">
+                            <span>📊 BA view</span>
+                        </label>
+                        <label class="flex items-center gap-2 border rounded p-2 cursor-pointer hover:bg-blue-50 dark:hover:bg-slate-700">
+                            <input type="radio" name="pdfPreset" value="full" onchange="_pdfOnPresetChange()">
+                            <span>🔀 Cả 2 (Full)</span>
+                        </label>
+                        <label class="flex items-center gap-2 border rounded p-2 cursor-pointer hover:bg-blue-50 dark:hover:bg-slate-700">
+                            <input type="radio" name="pdfPreset" value="custom" onchange="_pdfOnPresetChange()">
+                            <span>🎯 Custom</span>
+                        </label>
+                    </div>
+                </div>
+                <div id="pdfCustomSections" class="hidden max-h-40 overflow-y-auto border rounded p-2 text-xs">
+                    <!-- Populated by JS -->
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold mb-1">Sub-title / ghi chú (in đầu PDF)</label>
+                    <textarea id="pdfNotes" rows="2" class="w-full border rounded p-2 text-sm"
+                              placeholder="VD: Báo cáo tuần 30/2026 · Trọng tâm: giảm overdue phân hệ CBLD"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-semibold mb-1">Ngày báo cáo</label>
+                        <input type="date" id="pdfReportDate" class="w-full border rounded p-2 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-semibold mb-1">Chất lượng ảnh</label>
+                        <select id="pdfScale" class="w-full border rounded p-2 text-sm">
+                            <option value="1.5" selected>Trung bình (1.5x — nhanh)</option>
+                            <option value="2">Cao (2x — file lớn hơn)</option>
+                            <option value="1">Thấp (1x — file gọn)</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="pdfProgress" class="hidden text-sm text-blue-700">
+                    <span id="pdfProgressText">Đang tạo PDF…</span>
+                    <div class="w-full bg-gray-200 rounded-full h-2 mt-1">
+                        <div id="pdfProgressBar" class="bg-blue-600 h-2 rounded-full transition-all" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="px-5 py-3 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
+                <button onclick="closePdfExportModal()" class="px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-slate-700 text-sm">Huỷ</button>
+                <button id="pdfExportGoBtn" onclick="doPdfExport()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-semibold">
+                    📥 Xuất PDF
+                </button>
+            </div>
         </div>
     </div>
 

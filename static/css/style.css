@@ -1311,6 +1311,24 @@ html.dark #pfCompareTable th, html.dark #pfCompareTable td {
     .dashboard-card { break-inside: avoid; box-shadow: none !important; border: 1px solid #ccc; }
 }
 
+/* ==== Task 7 — PDF capture mode ==== */
+/* Trong lúc html2canvas render, tạm ẩn các UI element không nên xuất hiện
+   trên PDF (sticky, drag handle, gear, toast, modal, sidebar...). */
+body.pdf-capture-mode #section-globalfilter {
+    position: static !important;
+    box-shadow: none !important;
+}
+body.pdf-capture-mode .sortable-ghost,
+body.pdf-capture-mode .sortable-chosen,
+body.pdf-capture-mode .chart-config-gear,
+body.pdf-capture-mode #hiddenSectionsPills,
+body.pdf-capture-mode .no-print {
+    display: none !important;
+}
+body.pdf-capture-mode {
+    background: white !important;
+}
+
 /* ==== Task 6 — Chart Config Phase A (gear button + popover) ==== */
 .chart-config-gear {
     position: absolute;

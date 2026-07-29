@@ -6862,6 +6862,276 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
 // ========================================================================
+// TASK 7 — XUẤT PDF BÁO CÁO TUẦN (client-side html2canvas + jsPDF)
+// ========================================================================
+
+// Preset content — union PM + BA cho "Full", user chọn tay cho "Custom"
+const _PDF_PRESET_SECTIONS = {
+    pm: [
+        "section-summary", "section-overdue", "section-module", "section-pic",
+        "section-effort", "section-giaidoan", "section-burndown",
+        "section-gantt", "section-risk",
+    ],
+    ba: [
+        "section-summary", "section-fitgap-dashboard", "section-priority",
+        "section-process", "section-function-diff", "section-matrix",
+        "section-unassigned",
+    ],
+};
+
+window.openPdfExportModal = function () {
+    const modal = document.getElementById("pdfExportModal");
+    if (!modal) return;
+    if (typeof html2canvas === "undefined" || !window.jspdf?.jsPDF) {
+        showToast("PDF library chưa load — thử reload trang", "red");
+        return;
+    }
+    // Default date = today
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10);
+    const dateInput = document.getElementById("pdfReportDate");
+    if (dateInput && !dateInput.value) dateInput.value = dateStr;
+    _pdfOnPresetChange();
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+};
+
+window.closePdfExportModal = function () {
+    const modal = document.getElementById("pdfExportModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+};
+
+window._pdfOnPresetChange = function () {
+    const preset = document.querySelector('input[name="pdfPreset"]:checked')?.value || "pm";
+    const wrap = document.getElementById("pdfCustomSections");
+    if (!wrap) return;
+    if (preset !== "custom") {
+        wrap.classList.add("hidden");
+        return;
+    }
+    wrap.classList.remove("hidden");
+    // Build checkbox list từ tất cả section trong dashboard
+    const secs = Array.from(document.querySelectorAll('#dashboard [id^="section-"]'))
+        .filter(s => s.id !== "section-summary-header");
+    wrap.innerHTML = secs.map(s => {
+        const label = _sectionShortLabel(s.id);
+        return `<label class="flex items-center gap-2 py-0.5">
+            <input type="checkbox" class="pdf-custom-cb" value="${s.id}">
+            <span>${escapeHtml(label)} <span class="text-gray-400">(${s.id})</span></span>
+        </label>`;
+    }).join("");
+};
+
+function _pdfGetSelectedSections() {
+    const preset = document.querySelector('input[name="pdfPreset"]:checked')?.value || "pm";
+    if (preset === "custom") {
+        return Array.from(document.querySelectorAll(".pdf-custom-cb"))
+            .filter(cb => cb.checked)
+            .map(cb => cb.value);
+    }
+    if (preset === "full") {
+        const set = new Set([..._PDF_PRESET_SECTIONS.pm, ..._PDF_PRESET_SECTIONS.ba]);
+        return Array.from(set);
+    }
+    return _PDF_PRESET_SECTIONS[preset] || [];
+}
+
+function _pdfPresetSuffix() {
+    const preset = document.querySelector('input[name="pdfPreset"]:checked')?.value || "pm";
+    return ({ pm: "PM", ba: "BA", full: "Full", custom: "Custom" })[preset];
+}
+
+/**
+ * Filter subtitle: hiển thị globalFilters đang active dưới header PDF.
+ */
+function _pdfFilterSubtitle() {
+    const parts = [];
+    if (globalFilters.modules?.length) parts.push(`Module: ${globalFilters.modules.join(", ")}`);
+    if (globalFilters.processes?.length) parts.push(`Quy trình: ${globalFilters.processes.slice(0, 3).join(", ")}` +
+        (globalFilters.processes.length > 3 ? ` +${globalFilters.processes.length - 3}` : ""));
+    if (globalFilters.pics?.length) parts.push(`PIC: ${globalFilters.pics.slice(0, 3).join(", ")}` +
+        (globalFilters.pics.length > 3 ? ` +${globalFilters.pics.length - 3}` : ""));
+    return parts.length ? "Filter: " + parts.join(" · ") : "Filter: (không áp)";
+}
+
+function _pdfSetProgress(text, percent) {
+    const wrap = document.getElementById("pdfProgress");
+    const tx = document.getElementById("pdfProgressText");
+    const bar = document.getElementById("pdfProgressBar");
+    if (!wrap) return;
+    wrap.classList.remove("hidden");
+    if (tx) tx.textContent = text;
+    if (bar) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+}
+
+window.doPdfExport = async function () {
+    if (typeof html2canvas === "undefined" || !window.jspdf?.jsPDF) {
+        showToast("PDF library chưa load", "red");
+        return;
+    }
+    const ids = _pdfGetSelectedSections();
+    if (!ids.length) {
+        showToast("Chưa chọn section nào để xuất", "red");
+        return;
+    }
+    const goBtn = document.getElementById("pdfExportGoBtn");
+    if (goBtn) { goBtn.disabled = true; goBtn.textContent = "⏳ Đang tạo…"; }
+
+    // Force light mode để capture đẹp
+    const htmlEl = document.documentElement;
+    const wasDark = htmlEl.classList.contains("dark");
+    if (wasDark) htmlEl.classList.remove("dark");
+    document.body.classList.add("pdf-capture-mode");
+
+    try {
+        const scale = parseFloat(document.getElementById("pdfScale")?.value || "1.5");
+        const notes = document.getElementById("pdfNotes")?.value?.trim() || "";
+        const dateStr = document.getElementById("pdfReportDate")?.value || new Date().toISOString().slice(0, 10);
+        const [yy, mm, dd] = dateStr.split("-");
+        const displayDate = `${dd}/${mm}/${yy}`;
+        const suffix = _pdfPresetSuffix();
+
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+        const pageW = pdf.internal.pageSize.getWidth();   // 210
+        const pageH = pdf.internal.pageSize.getHeight();  // 297
+        const margin = 10;
+        const contentW = pageW - margin * 2;
+
+        // ==== HEADER PAGE ====
+        pdf.setFillColor(30, 64, 175);
+        pdf.rect(0, 0, pageW, 30, "F");
+        pdf.setTextColor(255, 255, 255);
+        pdf.setFontSize(16);
+        pdf.text("📊 Báo cáo tuần iHRP Function List", margin, 14);
+        pdf.setFontSize(10);
+        pdf.text(displayDate, pageW - margin, 14, { align: "right" });
+        pdf.setFontSize(9);
+        const projName = window._projectMeta?.project?.name || currentProjectSlug;
+        pdf.text(`Project: ${projName} · Preset: ${suffix}`, margin, 23);
+
+        pdf.setTextColor(30, 41, 59);
+        pdf.setFontSize(9);
+        pdf.text(_pdfFilterSubtitle(), margin, 40);
+
+        let cursorY = 48;
+        if (notes) {
+            pdf.setFontSize(10);
+            pdf.setFont(undefined, "italic");
+            const wrapped = pdf.splitTextToSize(notes, contentW);
+            pdf.text(wrapped, margin, cursorY);
+            cursorY += wrapped.length * 5 + 4;
+            pdf.setFont(undefined, "normal");
+        }
+
+        // ==== CAPTURE EACH SECTION ====
+        let sectionIndex = 0;
+        for (const sid of ids) {
+            sectionIndex += 1;
+            const sec = document.getElementById(sid);
+            if (!sec) continue;
+            // Nếu section đang hidden (user hoặc mặc định) → tạm show để capture
+            const wasHidden = sec.classList.contains("hidden");
+            if (wasHidden) sec.classList.remove("hidden");
+            const label = _sectionShortLabel(sid);
+            _pdfSetProgress(`(${sectionIndex}/${ids.length}) ${label}…`, (sectionIndex / (ids.length + 1)) * 100);
+
+            // Wait 1 frame để layout ổn định
+            await new Promise(r => requestAnimationFrame(() => setTimeout(r, 50)));
+
+            let canvas;
+            try {
+                canvas = await html2canvas(sec, {
+                    scale,
+                    backgroundColor: "#ffffff",
+                    logging: false,
+                    useCORS: true,
+                    ignoreElements: (el) => {
+                        // Bỏ qua gear config, drag handle, các nút no-print
+                        if (el.classList?.contains?.("chart-config-gear")) return true;
+                        if (el.classList?.contains?.("no-print")) return true;
+                        return false;
+                    },
+                });
+            } catch (err) {
+                console.warn(`[pdfExport] capture failed for ${sid}:`, err);
+                if (wasHidden) sec.classList.add("hidden");
+                continue;
+            }
+            if (wasHidden) sec.classList.add("hidden");
+
+            const imgW = contentW;
+            const imgH = (canvas.height * imgW) / canvas.width;
+
+            // Nếu section quá cao (> nửa trang), start ở page mới
+            const remainH = pageH - cursorY - margin;
+            if (imgH > remainH || cursorY > pageH - 60) {
+                pdf.addPage();
+                cursorY = margin;
+            }
+
+            // Nếu section vẫn cao hơn 1 trang trọn → cắt slice
+            if (imgH <= pageH - cursorY - margin) {
+                pdf.addImage(canvas.toDataURL("image/jpeg", 0.85),
+                    "JPEG", margin, cursorY, imgW, imgH);
+                cursorY += imgH + 4;
+            } else {
+                // Slice canvas theo trang
+                let srcY = 0;
+                const srcHPerPage = (canvas.width * (pageH - margin * 2)) / imgW;
+                while (srcY < canvas.height) {
+                    const sliceH = Math.min(srcHPerPage, canvas.height - srcY);
+                    const tmp = document.createElement("canvas");
+                    tmp.width = canvas.width;
+                    tmp.height = sliceH;
+                    tmp.getContext("2d").drawImage(canvas, 0, srcY, canvas.width, sliceH,
+                        0, 0, canvas.width, sliceH);
+                    const dispH = (sliceH * imgW) / canvas.width;
+                    pdf.addImage(tmp.toDataURL("image/jpeg", 0.85),
+                        "JPEG", margin, margin, imgW, dispH);
+                    srcY += sliceH;
+                    if (srcY < canvas.height) pdf.addPage();
+                }
+                cursorY = pageH; // buộc trang sau bắt đầu mới
+            }
+        }
+
+        // ==== FOOTER: Trang X/Y ====
+        const totalPages = pdf.internal.getNumberOfPages();
+        for (let p = 1; p <= totalPages; p++) {
+            pdf.setPage(p);
+            pdf.setFontSize(8);
+            pdf.setTextColor(100, 116, 139);
+            pdf.text(`Trang ${p} / ${totalPages}`, pageW - margin, pageH - 5, { align: "right" });
+            pdf.text(`Generate: ${new Date().toLocaleString("vi-VN")}`, margin, pageH - 5);
+        }
+
+        _pdfSetProgress("Đang lưu file…", 98);
+
+        // ==== Save ====
+        const dateSlug = dateStr.replace(/-/g, "");
+        const fname = `iHRP_Report_${dateSlug}_${suffix}.pdf`;
+        pdf.save(fname);
+        _pdfSetProgress("✅ Xuất PDF xong!", 100);
+        showToast(`Đã tạo ${fname}`);
+        setTimeout(() => {
+            document.getElementById("pdfProgress")?.classList.add("hidden");
+            closePdfExportModal();
+        }, 900);
+    } catch (err) {
+        console.error("[doPdfExport]", err);
+        showToast("Xuất PDF thất bại: " + err.message, "red");
+    } finally {
+        if (wasDark) htmlEl.classList.add("dark");
+        document.body.classList.remove("pdf-capture-mode");
+        if (goBtn) { goBtn.disabled = false; goBtn.textContent = "📥 Xuất PDF"; }
+    }
+};
+
+
+// ========================================================================
 // TASK 6 — CHART CONFIG PHASE A (title / caption / hide-show per section)
 // ========================================================================
 //
