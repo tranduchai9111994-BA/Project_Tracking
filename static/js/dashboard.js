@@ -1232,6 +1232,9 @@ function renderDashboard() {
     // T24: Bookmarks section
     _safe("bookmarks", loadBookmarks);
 
+    // T26: Weekly Digest archive
+    _safe("digests", loadDigests);
+
     // Populate PIC dropdown (export by pic)
     _safe("picExport", populatePicExportSelect);
 }
@@ -9960,6 +9963,137 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 });
+
+// ========================================================================
+// T26 — WEEKLY DIGEST ARCHIVE
+// ========================================================================
+const _DIGEST_DAY_NAMES = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"];
+
+async function loadDigests() {
+    if (!currentProjectSlug) return;
+    const section = document.getElementById("section-my-digests");
+    if (!section) return;
+    try {
+        // Fetch song song: list digest + settings (để hiện badge lịch)
+        const [rList, rSet] = await Promise.all([
+            fetch(`/api/projects/${currentProjectSlug}/digests`),
+            fetch(`/api/projects/${currentProjectSlug}/settings`),
+        ]);
+        const list = rList.ok ? await rList.json() : { items: [] };
+        const settings = rSet.ok ? await rSet.json() : {};
+        _renderDigestList(list.items || [], settings);
+    } catch (err) {
+        console.error("[loadDigests]", err);
+    }
+}
+
+function _renderDigestList(items, settings) {
+    const section = document.getElementById("section-my-digests");
+    const listEl = document.getElementById("digestList");
+    const badgeText = document.getElementById("digestScheduleText");
+    if (!section || !listEl) return;
+
+    // Badge lịch
+    if (badgeText) {
+        const dig = (settings && settings.digest) || {};
+        if (dig.enabled) {
+            const dayLbl = _DIGEST_DAY_NAMES[dig.day_of_week] || `Thứ ${dig.day_of_week + 2}`;
+            const hr = String(dig.hour ?? 9).padStart(2, "0");
+            badgeText.textContent = `${dayLbl} lúc ${hr}:00`;
+        } else {
+            badgeText.textContent = "Tắt";
+        }
+    }
+
+    // Nếu chưa có file digest và schedule off → ẩn section cho gọn dashboard
+    if (!items.length && !(settings && settings.digest && settings.digest.enabled)) {
+        section.classList.add("hidden");
+        return;
+    }
+    section.classList.remove("hidden");
+
+    if (!items.length) {
+        listEl.innerHTML = `<div class="text-gray-500 text-sm italic py-3">Chưa có digest nào — bấm "Sinh digest ngay" hoặc chờ scheduler tự sinh.</div>`;
+        return;
+    }
+    // Render bảng: filename | created_at | size | actions
+    listEl.innerHTML = `
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-100 text-gray-700">
+                    <tr>
+                        <th class="px-3 py-2 text-left">File digest</th>
+                        <th class="px-3 py-2 text-left">Sinh lúc</th>
+                        <th class="px-3 py-2 text-right">Kích thước</th>
+                        <th class="px-3 py-2 text-center">Thao tác</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${items.map(it => {
+                        const sizeKb = (it.size_bytes / 1024).toFixed(1);
+                        const ts = _fmtDigestTime(it.created_at);
+                        const url = `/api/projects/${currentProjectSlug}/digests/${encodeURIComponent(it.filename)}`;
+                        return `<tr class="border-b hover:bg-slate-50">
+                            <td class="px-3 py-2 font-mono text-xs">${escapeHtml(it.filename)}</td>
+                            <td class="px-3 py-2 text-xs text-gray-600">${escapeHtml(ts)}</td>
+                            <td class="px-3 py-2 text-right text-xs text-gray-600">${sizeKb} KB</td>
+                            <td class="px-3 py-2 text-center">
+                                <a href="${url}" class="text-blue-600 hover:underline text-xs mr-3" download>⬇ Tải</a>
+                                <button onclick="_deleteDigest('${escapeAttr(it.filename)}')"
+                                        class="text-red-500 hover:text-red-700 text-xs">🗑 Xoá</button>
+                            </td>
+                        </tr>`;
+                    }).join("")}
+                </tbody>
+            </table>
+        </div>`;
+}
+
+function _fmtDigestTime(iso) {
+    if (!iso) return "—";
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        const pad = n => String(n).padStart(2, "0");
+        return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch (e) { return iso; }
+}
+
+window.generateDigestNow = async function () {
+    if (!currentProjectSlug) return;
+    try {
+        showToast("Đang sinh digest...");
+        const r = await fetch(`/api/projects/${currentProjectSlug}/digests`, { method: "POST" });
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            showToast(err.error || "Sinh digest thất bại", "red");
+            return;
+        }
+        const d = await r.json();
+        showToast(`✅ Đã sinh ${d.filename}`, "green");
+        // Reload settings + list
+        loadDigests();
+    } catch (err) {
+        showToast("Lỗi mạng: " + err.message, "red");
+    }
+};
+
+window._deleteDigest = async function (filename) {
+    if (!currentProjectSlug || !filename) return;
+    if (!confirm(`Xoá digest "${filename}"?`)) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/digests/${encodeURIComponent(filename)}`, { method: "DELETE" });
+        if (!r.ok) {
+            showToast("Xoá thất bại", "red");
+            return;
+        }
+        showToast("Đã xoá");
+        loadDigests();
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
+};
+
 
 // ========================================================================
 // T24 — BOOKMARK + NOTES (per-function)

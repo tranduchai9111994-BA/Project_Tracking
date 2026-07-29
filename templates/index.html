@@ -60,6 +60,7 @@
     <a href="#section-dataquality">Data Quality</a>
     <a href="#section-aging-wip">Aging WIP</a>
     <a href="#section-my-bookmarks">Bookmarks</a>
+    <a href="#section-my-digests">Digest lưu trữ</a>
     <a href="#section-history">Upload history</a>
 </nav>
 
@@ -1759,6 +1760,31 @@
                 </span>
             </div>
             <div id="bmList" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+        </section>
+
+        <!-- ========================================================================
+             T26 — WEEKLY DIGEST ARCHIVE (Excel file lưu offline)
+             Danh sách file digest đã sinh (auto hoặc manual). Section này ẩn mặc
+             định — JS bỏ 'hidden' khi có file trong digests/ folder hoặc user
+             mở Settings/Trigger manual generate.
+             ======================================================================== -->
+        <section id="section-my-digests" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">📥 Digest lưu trữ</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">File Excel báo cáo tổng hợp — tự sinh theo lịch trong Cài đặt (T29) hoặc bấm nút bên phải.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span id="digestScheduleBadge" class="text-xs bg-blue-100 text-blue-800 px-3 py-1.5 rounded border border-blue-300">
+                        Lịch: <b id="digestScheduleText">Tắt</b>
+                    </span>
+                    <button onclick="generateDigestNow()"
+                            class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm no-print">
+                        ⚡ Sinh digest ngay
+                    </button>
+                </div>
+            </div>
+            <div id="digestList" class="text-sm"></div>
         </section>
 
         <!-- ========================================================================

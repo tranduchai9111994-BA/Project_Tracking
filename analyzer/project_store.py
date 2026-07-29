@@ -16,6 +16,21 @@ from typing import Any, Optional
 DEFAULT_PIC_MD_PER_WEEK = 5.0  # 5 MD = 40 MH
 DEFAULT_UPLOAD_REMINDER_DAYS = 7
 DEFAULT_SLA = {"must_have_days": 3, "should_have_days": 7}
+# T26 — Digest scheduler:
+#   day_of_week: 0=Monday .. 6=Sunday (theo datetime.weekday())
+#   hour: giờ (0-23) — server check thời điểm start-up; nếu >= hour này
+#         và chưa gen digest hôm nay → gen.
+DEFAULT_DIGEST = {
+    "enabled": False,
+    "day_of_week": 0,   # Thứ Hai
+    "hour": 9,
+    "last_generated_date": "",   # YYYY-MM-DD của digest gần nhất
+}
+# T29 — Threshold cho progress bar + WIP aging.
+#   in_progress: % ngưỡng vàng (< in_progress → đỏ nhạt)
+#   closed_soon: % ngưỡng xanh (>= closed_soon → xanh đậm)
+DEFAULT_PROGRESS_THRESHOLDS = {"in_progress": 30, "closed_soon": 70}
+DEFAULT_AGING_WIP_THRESHOLD = 14  # ngày
 
 
 def _path(project_dir: str, filename: str) -> str:
@@ -533,17 +548,34 @@ def save_phase_aliases(project_dir: str, aliases: dict[str, str]) -> dict[str, s
 # ------------------------------------------------------------------
 
 def load_project_settings(project_dir: str) -> dict[str, Any]:
+    """Trả về tất cả settings với default hợp lý — reminder / SLA /
+    digest schedule (T26) / thresholds (T29)."""
     data = _read_json(_path(project_dir, "project_settings.json"), {})
     if not isinstance(data, dict):
         data = {}
     sla = dict(DEFAULT_SLA)
     sla.update(data.get("sla") or {})
+    digest = dict(DEFAULT_DIGEST)
+    digest.update(data.get("digest") or {})
+    thresholds = dict(DEFAULT_PROGRESS_THRESHOLDS)
+    thresholds.update(data.get("progress_thresholds") or {})
     return {
         "upload_reminder_days": int(data.get("upload_reminder_days", DEFAULT_UPLOAD_REMINDER_DAYS)),
         "sla": {
             "must_have_days": int(sla.get("must_have_days", 3)),
             "should_have_days": int(sla.get("should_have_days", 7)),
         },
+        "digest": {
+            "enabled": bool(digest.get("enabled", False)),
+            "day_of_week": max(0, min(6, int(digest.get("day_of_week", 0)))),
+            "hour": max(0, min(23, int(digest.get("hour", 9)))),
+            "last_generated_date": str(digest.get("last_generated_date") or ""),
+        },
+        "progress_thresholds": {
+            "in_progress": max(0, min(100, int(thresholds.get("in_progress", 30)))),
+            "closed_soon": max(0, min(100, int(thresholds.get("closed_soon", 70)))),
+        },
+        "aging_wip_threshold": max(1, int(data.get("aging_wip_threshold", DEFAULT_AGING_WIP_THRESHOLD))),
     }
 
 
@@ -556,5 +588,30 @@ def save_project_settings(project_dir: str, payload: dict[str, Any]) -> dict[str
             k: int(v) for k, v in payload["sla"].items()
             if k in ("must_have_days", "should_have_days")
         })
+    # T26: digest schedule
+    if "digest" in payload and isinstance(payload["digest"], dict):
+        d = payload["digest"]
+        if "enabled" in d:
+            current["digest"]["enabled"] = bool(d["enabled"])
+        if "day_of_week" in d:
+            current["digest"]["day_of_week"] = max(0, min(6, int(d["day_of_week"])))
+        if "hour" in d:
+            current["digest"]["hour"] = max(0, min(23, int(d["hour"])))
+        if "last_generated_date" in d:
+            current["digest"]["last_generated_date"] = str(d["last_generated_date"] or "")
+    # T29: thresholds
+    if "progress_thresholds" in payload and isinstance(payload["progress_thresholds"], dict):
+        pt = payload["progress_thresholds"]
+        if "in_progress" in pt:
+            current["progress_thresholds"]["in_progress"] = max(0, min(100, int(pt["in_progress"])))
+        if "closed_soon" in pt:
+            current["progress_thresholds"]["closed_soon"] = max(0, min(100, int(pt["closed_soon"])))
+        # Enforce in_progress < closed_soon để không bị đảo ngược
+        if current["progress_thresholds"]["in_progress"] >= current["progress_thresholds"]["closed_soon"]:
+            current["progress_thresholds"]["in_progress"] = max(
+                0, current["progress_thresholds"]["closed_soon"] - 10
+            )
+    if "aging_wip_threshold" in payload:
+        current["aging_wip_threshold"] = max(1, int(payload["aging_wip_threshold"]))
     _write_json(_path(project_dir, "project_settings.json"), current)
     return current

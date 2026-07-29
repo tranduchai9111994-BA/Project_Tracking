@@ -109,6 +109,19 @@ except Exception as _janitor_err:
     print(f"[janitor] Bỏ qua: {_janitor_err}", file=sys.stderr)
 
 
+def _run_startup_digest_scheduler() -> None:
+    """T26 — Chạy cron-lite digest ngay khi start Flask (safe: không block start)."""
+    try:
+        from analyzer import digest as _digest_mod
+        # State loader dùng chung với dashboard endpoints, gọi _get_state đã cache
+        results = _digest_mod.run_scheduler(_project_mgr, _get_state)
+        for r in results:
+            if r.get("status") == "ok":
+                print(f"[digest] Đã sinh {r['filename']} cho project {r['slug']}", file=sys.stderr)
+    except Exception as _digest_err:
+        print(f"[digest] Bỏ qua: {_digest_err}", file=sys.stderr)
+
+
 # ==========================================================================
 # Helpers
 # ==========================================================================
@@ -2205,7 +2218,7 @@ def project_upload_history(slug: str):
     return jsonify({"items": ps.load_upload_history(_project_dir_for(slug))})
 
 
-@app.route("/api/projects/<slug>/settings", methods=["GET", "PUT"])
+@app.route("/api/projects/<slug>/settings", methods=["GET", "PUT", "POST"])
 def project_settings(slug: str):
     from analyzer import project_store as ps
     if not _project_mgr.project_exists(slug):
@@ -2215,6 +2228,56 @@ def project_settings(slug: str):
         return jsonify(ps.load_project_settings(folder))
     body = request.get_json(silent=True) or {}
     return jsonify(ps.save_project_settings(folder, body))
+
+
+# --------------------------------------------------------------------------
+# T26 — Weekly Digest endpoints
+# --------------------------------------------------------------------------
+
+@app.route("/api/projects/<slug>/digests", methods=["GET", "POST"])
+def project_digests(slug: str):
+    """GET: list history; POST: generate ngay (manual trigger)."""
+    from analyzer import digest as digest_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({"items": digest_mod.list_digests(folder)})
+    # POST — generate ngay
+    state = _get_state(slug)
+    if not state or not state.get("metrics"):
+        return jsonify({"error": "Project chưa có dữ liệu — upload trước"}), 400
+    path = digest_mod.generate_digest_now(folder, state["metrics"])
+    if not path:
+        return jsonify({"error": "Không sinh được digest"}), 500
+    return jsonify({
+        "filename": os.path.basename(path),
+        "items": digest_mod.list_digests(folder),
+    })
+
+
+@app.route("/api/projects/<slug>/digests/<path:filename>", methods=["GET", "DELETE"])
+def project_digest_file(slug: str, filename: str):
+    """GET: download 1 file; DELETE: xoá."""
+    from analyzer import digest as digest_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    path = digest_mod.get_digest_path(folder, filename)
+    if not path:
+        return jsonify({"error": "File digest không tồn tại"}), 404
+    if request.method == "DELETE":
+        try:
+            os.remove(path)
+        except OSError as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"items": digest_mod.list_digests(folder)})
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=os.path.basename(path),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.route("/api/projects/<slug>/phase-aliases", methods=["GET", "PUT"])
@@ -2719,6 +2782,11 @@ if __name__ == "__main__":
     else:
         print("  Mode: PRODUCTION (on dinh, khong auto-reload)")
     print("=" * 60 + "\n")
+    # T26: check digest scheduler ngay khi start (không block server)
+    # Chỉ chạy 1 lần với reloader parent — tránh spawn duplicate digest
+    # khi Flask debug=True fork worker.
+    if not reloader or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        _run_startup_digest_scheduler()
     try:
         app.run(debug=debug_mode, use_reloader=reloader, port=5000, host="0.0.0.0")
     except Exception as e:
