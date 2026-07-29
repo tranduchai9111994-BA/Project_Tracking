@@ -7165,6 +7165,15 @@ async function loadChartConfigs() {
         const data = await r.json();
         _chartConfigsCache = data.configs || {};
         applyChartConfigsToDom();
+        // Phase B: apply type/axes/palette overrides cho canvas nào có cấu hình
+        _ensureChartFields().then(() => {
+            Object.entries(_chartConfigsCache).forEach(([tid, cfg]) => {
+                if (tid.startsWith("chart") && (cfg.type || cfg.x_field || cfg.palette)) {
+                    // Cho chart render default xong (setTimeout) rồi rerender với config
+                    setTimeout(() => rerenderChartWithConfig(tid, cfg), 200);
+                }
+            });
+        });
     } catch (err) {
         console.error("[loadChartConfigs]", err);
     }
@@ -7346,35 +7355,161 @@ function injectChartConfigGears() {
     });
 }
 
+// Phase B: mapping section id → canvas id primary (chart mà Phase B config apply
+// vào). Section không có canvas hoặc canvas đặc thù (Gantt, Burndown, Deps...)
+// → SKIP list, không hiện tab Phase B.
+const _SECTION_CANVAS_MAP = {
+    "section-tasktype": "chartTaskType",
+    "section-phase": "chartPhaseStacked",
+    "section-pic": "chartPIC",
+    "section-effort": "chartPICEffort",
+    "section-giaidoan": "chartGiaidoan",
+    "section-priority": "chartPriority",
+    "section-fitgap-dashboard": "chartFitGapModule",
+};
+const _CHART_TYPES_ORDER = ["bar", "horizontalBar", "line", "area", "pie", "doughnut", "stackedBar", "groupedBar"];
+let _chartFieldsCache = null;   // cache field list từ backend
+
+async function _ensureChartFields() {
+    if (_chartFieldsCache) return _chartFieldsCache;
+    try {
+        const r = await fetch(_apiUrl("chart-fields"));
+        if (r.ok) _chartFieldsCache = await r.json();
+    } catch (e) { console.error("[chart-fields]", e); }
+    return _chartFieldsCache || { fields: {}, measures: {}, chart_types: {}, palettes: {} };
+}
+
 function openChartConfigPopover(target_id, anchorEl) {
     closeChartConfigPopover();
+    _ensureChartFields().then(fields => _openChartConfigPopoverImpl(target_id, anchorEl, fields));
+}
+
+function _openChartConfigPopoverImpl(target_id, anchorEl, fields) {
     const cur = _chartConfigsCache[target_id] || {};
+    const canvasId = _SECTION_CANVAS_MAP[target_id];
+    // Config Phase B lưu dưới key = canvasId (nếu có), tách rời với Phase A
+    const curB = canvasId ? (_chartConfigsCache[canvasId] || {}) : {};
     const label = _sectionShortLabel(target_id);
+    const hasPhaseB = !!canvasId;
 
     const pop = document.createElement("div");
-    pop.className = "chart-config-popover no-print";
+    pop.className = "chart-config-popover chart-config-popover-large no-print";
     pop.dataset.target = target_id;
+    pop.dataset.canvas = canvasId || "";
+
+    const fieldOpts = Object.entries(fields.fields || {}).map(
+        ([k, v]) => `<option value="${escapeAttr(k)}">${escapeHtml(v)}</option>`
+    ).join("");
+    const measureOpts = Object.entries(fields.measures || {}).map(
+        ([k, v]) => `<option value="${escapeAttr(k)}">${escapeHtml(v)}</option>`
+    ).join("");
+    const typeOpts = _CHART_TYPES_ORDER
+        .filter(t => fields.chart_types?.[t])
+        .map(t => `<option value="${t}">${escapeHtml(fields.chart_types[t])}</option>`).join("");
+    const paletteOpts = Object.keys(fields.palettes || {}).map(
+        p => `<option value="${p}">${p}</option>`
+    ).join("");
+
     pop.innerHTML = `
         <div class="cc-header">
             <span class="cc-title">⚙️ Cấu hình: ${escapeHtml(label)}</span>
             <button class="cc-close" title="Đóng">✕</button>
         </div>
+        <div class="cc-tabs">
+            <button class="cc-tab active" data-tab="basic">Cơ bản</button>
+            ${hasPhaseB ? `
+            <button class="cc-tab" data-tab="type">Loại</button>
+            <button class="cc-tab" data-tab="axes">Trục & Field</button>
+            <button class="cc-tab" data-tab="colors">Màu</button>
+            <button class="cc-tab" data-tab="filter">Filter riêng</button>
+            ` : ""}
+        </div>
         <div class="cc-body">
-            <label class="cc-field">
-                <span>Tiêu đề</span>
-                <input type="text" class="cc-input-title" maxlength="200"
-                    placeholder="Để trống = dùng title mặc định"
-                    value="${escapeAttr(cur.title || "")}">
-            </label>
-            <label class="cc-field">
-                <span>Caption / ghi chú</span>
-                <textarea class="cc-input-caption" rows="2" maxlength="1000"
-                    placeholder="Hiển thị dưới chart (text nhỏ, xám)">${escapeHtml(cur.caption || "")}</textarea>
-            </label>
-            <label class="cc-field-check">
-                <input type="checkbox" class="cc-input-hidden" ${cur.hidden ? "checked" : ""}>
-                <span>Ẩn chart này khỏi dashboard</span>
-            </label>
+            <div class="cc-pane" data-pane="basic">
+                <label class="cc-field">
+                    <span>Tiêu đề</span>
+                    <input type="text" class="cc-input-title" maxlength="200"
+                        placeholder="Để trống = dùng title mặc định"
+                        value="${escapeAttr(cur.title || "")}">
+                </label>
+                <label class="cc-field">
+                    <span>Caption / ghi chú</span>
+                    <textarea class="cc-input-caption" rows="2" maxlength="1000"
+                        placeholder="Hiển thị dưới chart (text nhỏ, xám)">${escapeHtml(cur.caption || "")}</textarea>
+                </label>
+                <label class="cc-field-check">
+                    <input type="checkbox" class="cc-input-hidden" ${cur.hidden ? "checked" : ""}>
+                    <span>Ẩn chart này khỏi dashboard</span>
+                </label>
+            </div>
+            ${hasPhaseB ? `
+            <div class="cc-pane hidden" data-pane="type">
+                <label class="cc-field">
+                    <span>Loại biểu đồ</span>
+                    <select class="cc-input-type">
+                        <option value="">— Giữ mặc định —</option>
+                        ${typeOpts}
+                    </select>
+                </label>
+                <div class="text-xs text-gray-500 mt-1">
+                    Đổi loại chart sẽ dùng data từ Field/Measure ở tab kế tiếp.
+                    Nếu để trống Field → giữ nguyên data cũ.
+                </div>
+            </div>
+            <div class="cc-pane hidden" data-pane="axes">
+                <label class="cc-field">
+                    <span>Trục X (dim)</span>
+                    <select class="cc-input-xfield">
+                        <option value="">— Giữ mặc định —</option>
+                        ${fieldOpts}
+                    </select>
+                </label>
+                <label class="cc-field">
+                    <span>Measure Y</span>
+                    <select class="cc-input-ymeasure">
+                        <option value="count">Số function (count)</option>
+                        ${measureOpts}
+                    </select>
+                </label>
+                <label class="cc-field">
+                    <span>Group / Stack theo (optional)</span>
+                    <select class="cc-input-series">
+                        <option value="">— Không group —</option>
+                        ${fieldOpts}
+                    </select>
+                </label>
+            </div>
+            <div class="cc-pane hidden" data-pane="colors">
+                <label class="cc-field">
+                    <span>Palette</span>
+                    <select class="cc-input-palette">
+                        <option value="">— Giữ mặc định —</option>
+                        ${paletteOpts}
+                    </select>
+                </label>
+                <div id="ccPalettePreview" class="cc-palette-preview"></div>
+            </div>
+            <div class="cc-pane hidden" data-pane="filter">
+                <label class="cc-field-check">
+                    <input type="checkbox" class="cc-input-fo-enable" ${curB.filter_override ? "checked" : ""}>
+                    <span>Dùng filter riêng cho chart này (ghi đè global filter)</span>
+                </label>
+                <div class="cc-fo-body ${curB.filter_override ? "" : "hidden"}">
+                    <label class="cc-field">
+                        <span>Chỉ lấy status</span>
+                        <input type="text" class="cc-input-fo-statuses" placeholder="VD: Open,In-progress (phân cách ,)">
+                    </label>
+                    <label class="cc-field">
+                        <span>Chỉ FIT/GAP</span>
+                        <input type="text" class="cc-input-fo-fitgaps" placeholder="VD: GAP hoặc FIT,GAP">
+                    </label>
+                    <label class="cc-field-check">
+                        <input type="checkbox" class="cc-input-fo-overdue">
+                        <span>Chỉ overdue</span>
+                    </label>
+                </div>
+            </div>
+            ` : ""}
         </div>
         <div class="cc-footer">
             <button class="cc-btn cc-btn-reset">↺ Reset</button>
@@ -7384,9 +7519,41 @@ function openChartConfigPopover(target_id, anchorEl) {
     document.body.appendChild(pop);
     _chartConfigsPopoverEl = pop;
 
-    // Position popover near anchor
+    // Fill Phase B pre-values
+    if (hasPhaseB) {
+        pop.querySelector(".cc-input-type").value = curB.type || "";
+        pop.querySelector(".cc-input-xfield").value = curB.x_field || "";
+        pop.querySelector(".cc-input-ymeasure").value = curB.y_measure || "count";
+        pop.querySelector(".cc-input-series").value = curB.series_field || "";
+        pop.querySelector(".cc-input-palette").value =
+            typeof curB.palette === "string" ? curB.palette : "";
+        _renderPalettePreview(pop, fields);
+        pop.querySelector(".cc-input-palette").addEventListener("change",
+            () => _renderPalettePreview(pop, fields));
+        const fo = curB.filter_override || {};
+        pop.querySelector(".cc-input-fo-statuses").value = (fo.statuses || []).join(",");
+        pop.querySelector(".cc-input-fo-fitgaps").value = (fo.fitgaps || []).join(",");
+        pop.querySelector(".cc-input-fo-overdue").checked = !!fo.overdue_only;
+        pop.querySelector(".cc-input-fo-enable").addEventListener("change", e => {
+            pop.querySelector(".cc-fo-body").classList.toggle("hidden", !e.target.checked);
+        });
+    }
+
+    // Tab switching
+    pop.querySelectorAll(".cc-tab").forEach(btn => {
+        btn.onclick = () => {
+            pop.querySelectorAll(".cc-tab").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            const tab = btn.dataset.tab;
+            pop.querySelectorAll(".cc-pane").forEach(p => {
+                p.classList.toggle("hidden", p.dataset.pane !== tab);
+            });
+        };
+    });
+
+    // Position (large: 400px)
     const r = anchorEl.getBoundingClientRect();
-    const popW = 340;
+    const popW = 400;
     let left = r.right - popW;
     if (left < 8) left = 8;
     if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8;
@@ -7397,19 +7564,182 @@ function openChartConfigPopover(target_id, anchorEl) {
     // Handlers
     pop.querySelector(".cc-close").onclick = closeChartConfigPopover;
     pop.querySelector(".cc-btn-reset").onclick = async () => {
+        // Reset cả section (Phase A) + canvas (Phase B) nếu có
         await _resetChartConfig(target_id);
+        if (canvasId && _chartConfigsCache[canvasId]) {
+            await _resetChartConfig(canvasId);
+        }
         closeChartConfigPopover();
     };
     pop.querySelector(".cc-btn-save").onclick = async () => {
+        // Phase A: save section
         const title = pop.querySelector(".cc-input-title").value.trim();
         const caption = pop.querySelector(".cc-input-caption").value.trim();
         const hidden = pop.querySelector(".cc-input-hidden").checked;
         await _saveChartConfig(target_id, title, caption, hidden);
+
+        // Phase B: save canvas (nếu có canvas mapping)
+        if (hasPhaseB) {
+            const ctype = pop.querySelector(".cc-input-type").value.trim();
+            const xf = pop.querySelector(".cc-input-xfield").value.trim();
+            const ym = pop.querySelector(".cc-input-ymeasure").value.trim();
+            const sf = pop.querySelector(".cc-input-series").value.trim();
+            const pal = pop.querySelector(".cc-input-palette").value.trim();
+            const foOn = pop.querySelector(".cc-input-fo-enable").checked;
+            let filterOverride = null;
+            if (foOn) {
+                filterOverride = {};
+                const st = pop.querySelector(".cc-input-fo-statuses").value.trim();
+                if (st) filterOverride.statuses = st.split(",").map(s => s.trim()).filter(Boolean);
+                const fg = pop.querySelector(".cc-input-fo-fitgaps").value.trim();
+                if (fg) filterOverride.fitgaps = fg.split(",").map(s => s.trim()).filter(Boolean);
+                if (pop.querySelector(".cc-input-fo-overdue").checked) filterOverride.overdue_only = true;
+            }
+            const bodyB = {
+                target_id: canvasId,
+                type: ctype || undefined,
+                x_field: xf || undefined,
+                y_measure: ym || undefined,
+                series_field: sf || undefined,
+                palette: pal || undefined,
+                filter_override: filterOverride,
+            };
+            try {
+                const r = await fetch(_apiUrl("chart-config"), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(bodyB),
+                });
+                if (r.ok) {
+                    const d = await r.json();
+                    _chartConfigsCache = d.configs || {};
+                    // Rerender chart nếu có type / axes / palette / filter
+                    if (ctype || xf || pal || foOn) {
+                        rerenderChartWithConfig(canvasId, _chartConfigsCache[canvasId] || {});
+                    }
+                }
+            } catch (err) {
+                console.error("[savePhaseB]", err);
+                showToast("Lưu cấu hình Phase B thất bại: " + err.message, "red");
+            }
+        }
         closeChartConfigPopover();
     };
 
-    // Đóng khi click ngoài
     setTimeout(() => document.addEventListener("mousedown", _closePopOutside), 10);
+}
+
+function _renderPalettePreview(pop, fields) {
+    const wrap = pop.querySelector("#ccPalettePreview");
+    if (!wrap) return;
+    const key = pop.querySelector(".cc-input-palette").value;
+    const colors = fields.palettes?.[key] || fields.palettes?.default || [];
+    wrap.innerHTML = colors.map(c =>
+        `<span class="cc-swatch" style="background:${c}" title="${c}"></span>`
+    ).join("");
+}
+
+
+/**
+ * Rerender 1 chart theo cấu hình Phase B (type / axes / palette / filter).
+ * Gọi POST /chart-aggregate để lấy data đã aggregate, destroy + create Chart mới.
+ */
+async function rerenderChartWithConfig(canvasId, cfg) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) {
+        console.warn(`[rerenderChart] canvas ${canvasId} not found`);
+        return;
+    }
+    // Nếu không có x_field override → không có gì để aggregate (chỉ đổi type
+    // mà không có data reshape ít khi hữu ích) → skip.
+    if (!cfg.x_field) {
+        showToast("Cần chọn Trục X ở tab 'Trục & Field' để đổi loại chart", "amber");
+        return;
+    }
+    const payload = {
+        x_field: cfg.x_field,
+        y_measure: cfg.y_measure || "count",
+        series_field: cfg.series_field || null,
+        filters: cfg.filter_override || {},
+        apply_global_filter: !cfg.filter_override,   // nếu ko có filter riêng → merge global
+    };
+    let agg;
+    try {
+        const r = await fetch(_apiUrl("chart-aggregate"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        agg = await r.json();
+    } catch (err) {
+        console.error("[chart-aggregate]", err);
+        showToast("Aggregate thất bại: " + err.message, "red");
+        return;
+    }
+
+    const existing = Chart.getChart(canvas);
+    if (existing) existing.destroy();
+
+    // Palette lookup
+    const fields = _chartFieldsCache || {};
+    let colors = fields.palettes?.default || ["#3b82f6", "#10b981", "#f59e0b", "#ef4444"];
+    if (typeof cfg.palette === "string" && fields.palettes?.[cfg.palette]) {
+        colors = fields.palettes[cfg.palette];
+    } else if (Array.isArray(cfg.palette) && cfg.palette.length) {
+        colors = cfg.palette;
+    }
+
+    // Map user-friendly type → Chart.js real type + options
+    const userType = cfg.type || "bar";
+    let chartType = "bar";
+    let extraOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom" } } };
+    let stacked = false;
+    if (userType === "horizontalBar") { chartType = "bar"; extraOpts.indexAxis = "y"; }
+    else if (userType === "line") { chartType = "line"; }
+    else if (userType === "area") { chartType = "line"; }
+    else if (userType === "pie") { chartType = "pie"; }
+    else if (userType === "doughnut") { chartType = "doughnut"; }
+    else if (userType === "stackedBar") { chartType = "bar"; stacked = true; }
+    else if (userType === "groupedBar") { chartType = "bar"; }
+    else { chartType = "bar"; }
+
+    // Datasets: colors mapping
+    const datasets = agg.datasets.map((ds, i) => {
+        const c = colors[i % colors.length];
+        const base = {
+            label: ds.label,
+            data: ds.data,
+            backgroundColor: (chartType === "pie" || chartType === "doughnut")
+                ? ds.data.map((_, j) => colors[j % colors.length])
+                : c,
+            borderColor: c,
+            borderWidth: chartType === "line" ? 2 : 0,
+            fill: userType === "area",
+            tension: chartType === "line" ? 0.3 : 0,
+        };
+        return base;
+    });
+
+    if (stacked || userType === "stackedBar") {
+        extraOpts.scales = {
+            x: { stacked: true },
+            y: { stacked: true, beginAtZero: true },
+        };
+    } else if (chartType === "bar") {
+        extraOpts.scales = { y: { beginAtZero: true } };
+    }
+
+    try {
+        new Chart(canvas, {
+            type: chartType,
+            data: { labels: agg.labels, datasets },
+            options: extraOpts,
+        });
+    } catch (err) {
+        console.error("[rerender Chart.js]", err);
+        showToast("Render chart mới thất bại: " + err.message, "red");
+    }
 }
 
 function _closePopOutside(e) {

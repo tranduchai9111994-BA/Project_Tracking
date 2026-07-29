@@ -178,12 +178,44 @@ _CHART_CFG_FILE = "chart_configs.json"
 def _sanitize_chart_config(entry: dict) -> dict:
     """Chỉ giữ các key hợp lệ; loại các key rỗng để file không phình."""
     out: dict = {}
+    # --- Phase A: title / caption / hidden ---
     if isinstance(entry.get("title"), str) and entry["title"].strip():
         out["title"] = entry["title"].strip()[:200]
     if isinstance(entry.get("caption"), str) and entry["caption"].strip():
         out["caption"] = entry["caption"].strip()[:1000]
     if entry.get("hidden") is True:
         out["hidden"] = True
+    # --- Phase B: type / axes / colors / filter_override ---
+    ctype = entry.get("type") or entry.get("chart_type")
+    if isinstance(ctype, str) and ctype.strip():
+        out["type"] = ctype.strip()[:32]
+    x_field = entry.get("x_field")
+    y_measure = entry.get("y_measure")
+    series_field = entry.get("series_field") or None
+    if isinstance(x_field, str) and x_field.strip():
+        out["x_field"] = x_field.strip()[:32]
+    if isinstance(y_measure, str) and y_measure.strip():
+        out["y_measure"] = y_measure.strip()[:32]
+    if isinstance(series_field, str) and series_field.strip():
+        out["series_field"] = series_field.strip()[:32]
+    palette = entry.get("palette") or entry.get("colors")
+    if isinstance(palette, str) and palette.strip():
+        out["palette"] = palette.strip()[:32]
+    elif isinstance(palette, list) and palette:
+        out["palette"] = [str(c).strip()[:16] for c in palette if c][:16]
+    fo = entry.get("filter_override")
+    if isinstance(fo, dict) and fo:
+        cleaned_fo: dict = {}
+        for k in ("modules", "processes", "pics", "priorities", "complexities",
+                  "fitgaps", "statuses"):
+            v = fo.get(k)
+            if isinstance(v, list) and v:
+                cleaned_fo[k] = [str(x)[:80] for x in v if x][:100]
+        for k in ("overdue_only", "closed_only", "open_only"):
+            if fo.get(k) is True:
+                cleaned_fo[k] = True
+        if cleaned_fo:
+            out["filter_override"] = cleaned_fo
     return out
 
 

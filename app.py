@@ -1687,10 +1687,18 @@ def project_chart_config(slug: str):
         target_id = body.get("target_id") or body.get("chart_id") or ""
         if not target_id:
             return jsonify({"error": "target_id bắt buộc"}), 400
-        entry = {
+        # Pass through TOÀN BỘ field (Phase A + Phase B). Sanitize logic ở
+        # project_store._sanitize_chart_config sẽ chỉ giữ key hợp lệ.
+        entry: dict = {
             "title": body.get("title"),
             "caption": body.get("caption"),
             "hidden": bool(body.get("hidden")),
+            "type": body.get("type") or body.get("chart_type"),
+            "x_field": body.get("x_field"),
+            "y_measure": body.get("y_measure"),
+            "series_field": body.get("series_field"),
+            "palette": body.get("palette") or body.get("colors"),
+            "filter_override": body.get("filter_override"),
         }
         all_cfg = ps.upsert_chart_config(folder, target_id, entry)
         return jsonify({"configs": all_cfg})
@@ -1702,6 +1710,63 @@ def project_chart_config(slug: str):
         return jsonify({"configs": all_cfg})
     ps.reset_chart_configs(folder)
     return jsonify({"configs": {}})
+
+
+@app.route("/api/projects/<slug>/chart-fields")
+def project_chart_fields(slug: str):
+    """
+    Task 8: trả về danh sách field / measure / chart_type / palette phù hợp
+    với FE dropdown. Không phụ thuộc file uploaded (static enum).
+    """
+    from analyzer.generic_chart import get_available_fields
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    return jsonify(get_available_fields())
+
+
+@app.route("/api/projects/<slug>/chart-aggregate", methods=["POST"])
+def project_chart_aggregate(slug: str):
+    """
+    Task 8/9: aggregate data để render chart tuỳ chỉnh.
+    Body:
+      {
+        "x_field": "module",
+        "y_measure": "count",
+        "series_field": "status" | null,
+        "filters": {"modules":[...], "processes":[...], ...},
+        "apply_global_filter": true  # nếu true → merge với globalFilters từ query
+      }
+    """
+    from analyzer.generic_chart import aggregate_chart
+    state, err = _require_state(slug)
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    data = state["data"]
+    filters = body.get("filters") or {}
+    # Merge global filter từ query (nếu FE muốn)
+    if body.get("apply_global_filter"):
+        gmods = _parse_multi_arg("module")
+        gprocs = _parse_multi_arg("process")
+        gpics = _parse_multi_arg("pic")
+        if gmods:
+            filters["modules"] = list(set(filters.get("modules", []) + gmods)) or gmods
+        if gprocs:
+            filters["processes"] = list(set(filters.get("processes", []) + gprocs)) or gprocs
+        if gpics:
+            filters["pics"] = list(set(filters.get("pics", []) + gpics)) or gpics
+    try:
+        result = aggregate_chart(
+            data,
+            x_field=body.get("x_field") or "module",
+            y_measure=body.get("y_measure") or "count",
+            series_field=body.get("series_field") or None,
+            filters=filters,
+            limit_x=int(body.get("limit_x") or 50),
+        )
+    except Exception as e:
+        return jsonify({"error": f"Aggregate failed: {e}"}), 400
+    return jsonify(result)
 
 
 @app.route("/api/projects/<slug>/upload-history")
