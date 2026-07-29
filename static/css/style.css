@@ -182,6 +182,43 @@ html.dark .sidebar-nav a:hover { background: #1e40af; color: white; }
 html.dark .sidebar-toggle-btn { background: #3b82f6; }
 html.dark .sidebar-toggle-btn:hover { background: #60a5fa; }
 
+/* ==== UX7: ?? View icon button trong b?ng l??i ==== */
+.view-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #f8fafc;
+    color: #334155;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.12s ease;
+}
+.view-icon-btn:hover {
+    background: #dbeafe;
+    border-color: #3b82f6;
+    color: #1d4ed8;
+    transform: scale(1.06);
+}
+.view-icon-btn:active {
+    transform: scale(0.96);
+}
+html.dark .view-icon-btn {
+    background: #1e293b;
+    border-color: #475569;
+    color: #cbd5e1;
+}
+html.dark .view-icon-btn:hover {
+    background: #1e40af;
+    border-color: #60a5fa;
+    color: #fff;
+}
+
 /* ==== CHART HELP (? popover) ==== */
 .chart-help-btn {
     display: inline-flex;

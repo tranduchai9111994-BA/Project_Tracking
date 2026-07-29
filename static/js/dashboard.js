@@ -1114,6 +1114,24 @@ function escapeAttr(s) {
     return String(s || "").replace(/["'\\]/g, m => "\\" + m);
 }
 
+/**
+ * UX7: Cell "👁 Xem" cho các bảng lưới (Overdue, Unassigned, Stalled, Risk,
+ * Effort, Duration, Aging WIP, Bookmark, custom drill result). Thay vì cả
+ * row bắt click, chỉ icon 👁 ở cột cuối bắt click. Gọi
+ * openFunctionDetailByMaCn(maCn) để mở modal chi tiết function.
+ * - `title` mặc định "Xem chi tiết".
+ * - Nếu không có maCn hợp lệ → render ô rỗng.
+ */
+function _viewIconCell(maCn, opts) {
+    const s = String(maCn || "").trim();
+    if (!s) return `<td class="px-2 py-1 text-center text-gray-300">—</td>`;
+    const title = (opts && opts.title) || "Xem chi tiết function";
+    const cls = (opts && opts.cls) || "px-2 py-1 text-center";
+    return `<td class="${cls}"><button type="button" class="view-icon-btn" 
+        onclick="event.stopPropagation();openFunctionDetailByMaCn('${escapeAttr(s)}')"
+        title="${escapeHtml(title)}">👁</button></td>`;
+}
+
 // ========================================================================
 // UPLOAD
 // ========================================================================
@@ -2218,6 +2236,7 @@ function renderOverdueTable() {
             <td class="px-2 py-2 text-center">${statusBadge(item.status)}</td>
             <td class="px-2 py-2 text-xs">${escapeHtml(item.pic.join(", "))}</td>
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(item.priority)}</td>
+            ${_viewIconCell(item.ma_cn, {title: "Xem chi tiết function trễ deadline"})}
         </tr>`;
     }).join("");
 
@@ -2355,9 +2374,7 @@ function renderUnassignedSection() {
     tbody.innerHTML = pageItems.map((i, idx) => {
         const rowCls = i.is_overdue ? "overdue-critical"
                     : (String(i.priority).includes("Must") ? "overdue-warning" : "");
-        return `<tr class="${rowCls} border-b cursor-pointer hover:bg-orange-50"
-                    onclick="openDrillDown('unassigned', {})"
-                    title="Click để xem chi tiết">
+        return `<tr class="${rowCls} border-b">
             <td class="px-2 py-2 text-center">${start + idx + 1}</td>
             <td class="px-2 py-2 font-mono text-xs">${escapeHtml(i.ma_cn)}</td>
             <td class="px-2 py-2">${escapeHtml(i.ten_cn)}</td>
@@ -2367,6 +2384,7 @@ function renderUnassignedSection() {
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(i.priority)}</td>
             <td class="px-2 py-2 text-center text-xs">${i.end_date || "-"}</td>
             <td class="px-2 py-2 text-center ${i.is_overdue ? 'text-red-600 font-bold' : 'text-gray-500'}">${i.days_overdue || 0}</td>
+            ${_viewIconCell(i.ma_cn, {title: "Xem chi tiết function chưa có PIC"})}
         </tr>`;
     }).join("");
 
@@ -2504,9 +2522,7 @@ function renderDurationTable() {
     tbody.innerHTML = pageItems.map((i, idx) => {
         const cls = i.duration_days > 14 ? "overdue-critical"
                   : i.duration_days > 7 ? "overdue-warning" : "overdue-mild";
-        return `<tr class="${cls} border-b cursor-pointer hover:bg-blue-50"
-                    onclick="openDrillDown('duration', {})"
-                    title="Click để xem chi tiết duration">
+        return `<tr class="${cls} border-b">
             <td class="px-2 py-2 text-center">${start + idx + 1}</td>
             <td class="px-2 py-2 font-mono text-xs">${escapeHtml(i.ma_cn)}</td>
             <td class="px-2 py-2">${escapeHtml(i.ten_cn)}</td>
@@ -2518,6 +2534,7 @@ function renderDurationTable() {
             <td class="px-2 py-2 text-center text-xs">${i.duration_type === "elapsed" ? "🔴 Đang" : "📅 KH"}</td>
             <td class="px-2 py-2 text-center">${statusBadge(i.status)}</td>
             <td class="px-2 py-2 text-xs">${escapeHtml((i.pic || []).join(", "))}</td>
+            ${_viewIconCell(i.ma_cn, {title: "Xem chi tiết function"})}
         </tr>`;
     }).join("");
 
@@ -2575,9 +2592,7 @@ function renderStalledTable() {
     tbody.innerHTML = pageItems.map((i, idx) => {
         const cls = i.wait_days > 14 ? "overdue-critical"
                   : i.wait_days > 7 ? "overdue-warning" : "";
-        return `<tr class="${cls} border-b cursor-pointer hover:bg-orange-50"
-                    onclick="openDrillDown('stalled', {})"
-                    title="Click để xem chi tiết đình trệ">
+        return `<tr class="${cls} border-b">
             <td class="px-2 py-2 text-center">${start + idx + 1}</td>
             <td class="px-2 py-2 font-mono text-xs">${escapeHtml(i.ma_cn)}</td>
             <td class="px-2 py-2">${escapeHtml(i.ten_cn)}</td>
@@ -2587,6 +2602,7 @@ function renderStalledTable() {
             <td class="px-2 py-2 text-center text-xs">${i.completed_date || "-"}</td>
             <td class="px-2 py-2 text-center font-bold">${i.wait_days}</td>
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(i.priority)}</td>
+            ${_viewIconCell(i.ma_cn, {title: "Xem chi tiết function đình trệ"})}
         </tr>`;
     }).join("");
 
@@ -2611,9 +2627,7 @@ function renderRiskSection() {
         const color = r.risk_score >= 80 ? "#ef4444"
                     : r.risk_score >= 50 ? "#f97316"
                     : r.risk_score >= 30 ? "#eab308" : "#22c55e";
-        return `<tr class="border-b hover:bg-red-50 cursor-pointer"
-                    onclick="openDrillDown('risk', {ma_cn: '${escapeAttr(r.ma_cn)}'})"
-                    title="Click để xem chi tiết">
+        return `<tr class="border-b">
             <td class="px-2 py-2 text-center">${start + idx + 1}</td>
             <td class="px-2 py-2 font-mono text-xs">${escapeHtml(r.ma_cn)}</td>
             <td class="px-2 py-2">${escapeHtml(r.ten_cn)}</td>
@@ -2628,6 +2642,7 @@ function renderRiskSection() {
             <td class="px-2 py-2 text-xs">
                 ${(r.risk_factors || []).map(f => `<span class="inline-block bg-red-100 text-red-700 rounded px-1.5 py-0.5 mr-1 mb-0.5">${escapeHtml(f)}</span>`).join("")}
             </td>
+            ${_viewIconCell(r.ma_cn, {title: "Xem chi tiết function rủi ro"})}
         </tr>`;
     }).join("");
     renderPager("riskShowMoreWrap", "risk", all.length, () => renderRiskSection());
@@ -2736,11 +2751,11 @@ function renderEffortSection() {
                         <th class="px-2 py-1">Status</th>
                         <th class="px-2 py-1">End</th>
                         <th class="px-2 py-1">${unit}</th>
+                        <th class="px-2 py-1" title="Xem chi tiết">👁</th>
                     </tr></thead>
                     <tbody>${openTasks.length === 0
-                        ? `<tr><td colspan="8" class="px-2 py-4 text-center text-gray-500">Không có task mở</td></tr>`
-                        : openTasks.map(t => `<tr class="border-b hover:bg-blue-50 cursor-pointer"
-                            onclick="openDrillDown('effort_pic', {pic:'${escapeAttr((t.pic||[])[0]||'')}', status:'remaining'})">
+                        ? `<tr><td colspan="9" class="px-2 py-4 text-center text-gray-500">Không có task mở</td></tr>`
+                        : openTasks.map(t => `<tr class="border-b">
                             <td class="px-2 py-1 font-mono">${escapeHtml(t.ma_cn)}</td>
                             <td class="px-2 py-1">${escapeHtml(t.ten_cn)}</td>
                             <td class="px-2 py-1 text-center">${escapeHtml(t.module)}</td>
@@ -2749,6 +2764,7 @@ function renderEffortSection() {
                             <td class="px-2 py-1 text-center">${statusBadge(t.status)}</td>
                             <td class="px-2 py-1 text-center">${t.end_date || "-"}</td>
                             <td class="px-2 py-1 text-center font-semibold">${_toEffortUnit(t.estimate_mh)}</td>
+                            ${_viewIconCell(t.ma_cn, {title: "Xem chi tiết function open"})}
                         </tr>`).join("")}
                     </tbody>
                 </table>
@@ -9503,7 +9519,7 @@ function _agingRenderTable() {
         return _agingState.sortDesc ? -cmp : cmp;
     });
     if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="9" class="text-center py-6 text-green-600">
+        tbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-green-600">
             ✅ Không có WIP nào vượt ngưỡng ${_agingState.threshold} ngày!
         </td></tr>`;
         const pager = document.getElementById("agingPagerWrap");
@@ -9524,6 +9540,7 @@ function _agingRenderTable() {
             <td class="px-2 py-1.5 text-right font-semibold">${it.aging_days}d</td>
             <td class="px-2 py-1.5 text-right ${overColor(it.over_by_days)}">+${it.over_by_days}d</td>
             <td class="px-2 py-1.5 text-xs">${escapeHtml(it.priority || "")}</td>
+            ${_viewIconCell(it.ma_cn, {title: "Xem chi tiết function aging"})}
         </tr>
     `).join("");
     const totalPages = Math.max(1, Math.ceil(items.length / _agingState.pageSize));
@@ -9831,8 +9848,7 @@ function _renderBookmarkSection(items) {
     }
     section.classList.remove("hidden");
     list.innerHTML = items.map(it => `
-        <div class="border rounded-lg p-3 bg-yellow-50 hover:bg-yellow-100 cursor-pointer transition"
-             onclick="openFunctionDetailByMaCn('${escapeAttr(it.ma_cn)}')">
+        <div class="border rounded-lg p-3 bg-yellow-50 transition">
             <div class="flex items-start justify-between gap-2">
                 <div class="flex-1 min-w-0">
                     <div class="text-xs font-mono text-gray-500">${escapeHtml(it.ma_cn)}</div>
@@ -9840,8 +9856,14 @@ function _renderBookmarkSection(items) {
                     <div class="text-xs text-blue-700 mt-0.5">${escapeHtml(it.module || "")} · ${escapeHtml(it.quy_trinh || "")}</div>
                     ${it.note ? `<div class="text-xs text-gray-700 mt-2 line-clamp-2 border-l-2 border-yellow-400 pl-2 italic">📝 ${escapeHtml(it.note)}</div>` : ""}
                 </div>
-                <button onclick="event.stopPropagation(); toggleBookmarkByMaCn('${escapeAttr(it.ma_cn)}')"
-                        class="text-yellow-600 hover:text-red-500 text-lg" title="Bỏ bookmark">⭐</button>
+                <div class="flex flex-col items-center gap-1 shrink-0">
+                    <button type="button" class="view-icon-btn"
+                            onclick="openFunctionDetailByMaCn('${escapeAttr(it.ma_cn)}')"
+                            title="Xem chi tiết function">👁</button>
+                    <button type="button"
+                            onclick="toggleBookmarkByMaCn('${escapeAttr(it.ma_cn)}')"
+                            class="text-yellow-600 hover:text-red-500 text-lg" title="Bỏ bookmark">⭐</button>
+                </div>
             </div>
         </div>
     `).join("");
