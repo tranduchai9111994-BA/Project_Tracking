@@ -264,12 +264,30 @@ function applyDashboardResponse(data) {
         };
     });
 
-    _step("fileInfo", () => {
-        document.getElementById("fileName").textContent = data.filename;
-        document.getElementById("rowCount").textContent = data.metrics.summary.total_functions;
-        document.getElementById("uploadTime").textContent = new Date(data.upload_time).toLocaleString("vi-VN");
-        document.getElementById("fileInfo").classList.remove("hidden");
-        document.getElementById("searchWrap").classList.remove("hidden");
+    // BUG P0-A fix: tách các thao tác thành sub-step độc lập. Trước đây gom
+    // hết vào 1 `_step("fileInfo")` — nếu step nào ném lỗi (VD `#fileName`
+    // element bị refactor mất, hoặc `data.upload_time` null → Date(null)
+    // an toàn nhưng có thể phá downstream), thì các thao tác sau bị bỏ lỡ
+    // → `searchWrap.remove("hidden")` không chạy → ô search Function
+    // Traceability biến mất sau upload/switch project.
+    _step("fileInfo.fileName", () => {
+        const el = document.getElementById("fileName");
+        if (el) el.textContent = data.filename || "";
+    });
+    _step("fileInfo.rowCount", () => {
+        const el = document.getElementById("rowCount");
+        if (el) el.textContent = data?.metrics?.summary?.total_functions ?? 0;
+    });
+    _step("fileInfo.uploadTime", () => {
+        const el = document.getElementById("uploadTime");
+        if (el && data.upload_time) el.textContent = new Date(data.upload_time).toLocaleString("vi-VN");
+    });
+    _step("fileInfo.visibility", () => {
+        document.getElementById("fileInfo")?.classList.remove("hidden");
+    });
+    // Tách hẳn thành step riêng để KHÔNG BAO GIỜ bị nuốt bởi lỗi upstream.
+    _step("searchVisibility", () => {
+        document.getElementById("searchWrap")?.classList.remove("hidden");
     });
 
     _step("sidebar", () => showSidebarChrome());
