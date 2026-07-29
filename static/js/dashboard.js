@@ -10138,6 +10138,109 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ========================================================================
+// T29 — SETTINGS MODAL (thresholds / aging WIP / reminder / digest schedule)
+// ========================================================================
+window.openSettingsModal = async function () {
+    if (!currentProjectSlug) return;
+    const modal = document.getElementById("settingsModal");
+    if (!modal) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/settings`);
+        if (!r.ok) throw new Error(await r.text());
+        const s = await r.json();
+        _fillSettingsForm(s);
+    } catch (err) {
+        console.error("[openSettingsModal]", err);
+        showToast("Không tải được settings: " + err.message, "red");
+    }
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+};
+
+window.closeSettingsModal = function () {
+    const modal = document.getElementById("settingsModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+};
+
+function _fillSettingsForm(s) {
+    const set = (id, val) => { const el = document.getElementById(id); if (el != null) el.value = val; };
+    const chk = (id, val) => { const el = document.getElementById(id); if (el != null) el.checked = !!val; };
+    const pt = s.progress_thresholds || {};
+    set("setProgLow", pt.in_progress ?? 30);
+    set("setProgHigh", pt.closed_soon ?? 70);
+    set("setAgingWip", s.aging_wip_threshold ?? 14);
+    set("setReminderDays", s.upload_reminder_days ?? 7);
+    const sla = s.sla || {};
+    set("setSlaMust", sla.must_have_days ?? 3);
+    set("setSlaShould", sla.should_have_days ?? 7);
+    const dig = s.digest || {};
+    chk("setDigestEnabled", dig.enabled);
+    set("setDigestDay", String(dig.day_of_week ?? 0));
+    set("setDigestHour", dig.hour ?? 9);
+    const last = document.getElementById("setDigestLast");
+    if (last) {
+        last.textContent = dig.last_generated_date
+            ? `Lần sinh gần nhất: ${dig.last_generated_date}`
+            : "Chưa từng sinh digest";
+    }
+}
+
+window.saveSettings = async function () {
+    if (!currentProjectSlug) return;
+    const int0 = (id, def) => {
+        const v = parseInt(document.getElementById(id)?.value, 10);
+        return Number.isFinite(v) ? v : def;
+    };
+    const payload = {
+        progress_thresholds: {
+            in_progress: int0("setProgLow", 30),
+            closed_soon: int0("setProgHigh", 70),
+        },
+        aging_wip_threshold: int0("setAgingWip", 14),
+        upload_reminder_days: int0("setReminderDays", 7),
+        sla: {
+            must_have_days: int0("setSlaMust", 3),
+            should_have_days: int0("setSlaShould", 7),
+        },
+        digest: {
+            enabled: document.getElementById("setDigestEnabled")?.checked,
+            day_of_week: int0("setDigestDay", 0),
+            hour: int0("setDigestHour", 9),
+        },
+    };
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/settings`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const s = await r.json();
+        _fillSettingsForm(s);
+        showToast("Đã lưu cài đặt", "green");
+        // Refresh digest section (badge lịch có thể đổi)
+        if (typeof loadDigests === "function") loadDigests();
+        // Refresh aging WIP threshold (dùng ngưỡng mới nếu user đang xem section)
+        try {
+            if (typeof _agingState !== "undefined") {
+                _agingState.threshold = s.aging_wip_threshold || 14;
+                const slider = document.getElementById("agingThreshold");
+                const label = document.getElementById("agingThresholdVal");
+                if (slider) slider.value = _agingState.threshold;
+                if (label) label.textContent = `${_agingState.threshold} ngày`;
+                if (typeof _agingFetch === "function") _agingFetch();
+            }
+        } catch (e) { /* aging WIP not loaded yet */ }
+        closeSettingsModal();
+    } catch (err) {
+        showToast("Lưu cài đặt lỗi: " + err.message, "red");
+    }
+};
+
+
+// ========================================================================
 // T26 — WEEKLY DIGEST ARCHIVE
 // ========================================================================
 const _DIGEST_DAY_NAMES = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"];

@@ -140,6 +140,12 @@
                         title="Chế độ trình chiếu (1 section/lần, ← → điều hướng, Esc thoát)">
                     🎬 Trình chiếu
                 </button>
+                <!-- T29: Settings modal -->
+                <button id="btnSettings" onclick="openSettingsModal()"
+                        class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
+                        title="Cài đặt: threshold progress, aging WIP, digest schedule, refresh reminder">
+                    ⚙️ Cài đặt
+                </button>
             </div>
             <button id="btnTheme" onclick="toggleTheme()"
                     class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm">
@@ -511,6 +517,116 @@
             </div>
             <button onclick="document.getElementById('refreshBanner').classList.add('hidden')"
                     class="text-amber-700 hover:text-amber-900 font-bold px-2">✕</button>
+        </div>
+    </div>
+
+    <!-- ============ T29: SETTINGS MODAL (thresholds / digest / reminder) ============ -->
+    <div id="settingsModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"
+         onclick="if(event.target===this)closeSettingsModal()">
+        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh]">
+            <div class="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between">
+                <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100">⚙️ Cài đặt dự án</h3>
+                <button onclick="closeSettingsModal()" class="text-gray-500 hover:text-red-500 text-xl">✕</button>
+            </div>
+            <div class="p-5 flex-1 overflow-y-auto space-y-5 text-sm">
+                <!-- Threshold progress -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">📊 Ngưỡng % tiến độ</h4>
+                    <p class="text-xs text-gray-500 mb-3">Ngưỡng dùng để tô màu progress bar trong bảng Module Overview / PIC Workload.</p>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="block">
+                            <span class="text-xs">Ngưỡng vàng (dưới đó → đỏ nhạt)</span>
+                            <div class="flex items-center gap-2 mt-1">
+                                <input type="number" id="setProgLow" min="0" max="100" step="1"
+                                       class="w-20 border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600">
+                                <span class="text-xs text-gray-500">%</span>
+                            </div>
+                        </label>
+                        <label class="block">
+                            <span class="text-xs">Ngưỡng xanh (trên đó → xanh đậm)</span>
+                            <div class="flex items-center gap-2 mt-1">
+                                <input type="number" id="setProgHigh" min="0" max="100" step="1"
+                                       class="w-20 border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600">
+                                <span class="text-xs text-gray-500">%</span>
+                            </div>
+                        </label>
+                    </div>
+                    <p class="text-[11px] text-gray-500 mt-2">Ràng buộc: ngưỡng vàng &lt; ngưỡng xanh (BE tự chuẩn hoá).</p>
+                </section>
+
+                <!-- Aging WIP threshold -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">⏳ Ngưỡng Aging WIP</h4>
+                    <p class="text-xs text-gray-500 mb-3">Task In-progress vượt ngưỡng này (kể từ Start date) sẽ được đánh dấu Aging trong section "Aging WIP".</p>
+                    <label class="flex items-center gap-2">
+                        <input type="number" id="setAgingWip" min="1" max="365" step="1"
+                               class="w-20 border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600">
+                        <span class="text-xs text-gray-500">ngày</span>
+                    </label>
+                </section>
+
+                <!-- Upload reminder -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">🔔 Nhắc upload định kỳ</h4>
+                    <p class="text-xs text-gray-500 mb-3">Số ngày kể từ lần upload gần nhất — quá ngưỡng này sẽ hiện banner nhắc upload lại.</p>
+                    <label class="flex items-center gap-2">
+                        <input type="number" id="setReminderDays" min="1" max="90" step="1"
+                               class="w-20 border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600">
+                        <span class="text-xs text-gray-500">ngày</span>
+                    </label>
+                </section>
+
+                <!-- SLA -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">🎯 Ngưỡng SLA (theo priority)</h4>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="block">
+                            <span class="text-xs">Must-have (ngày tối đa)</span>
+                            <input type="number" id="setSlaMust" min="1" max="90" step="1"
+                                   class="w-full border rounded px-2 py-1 mt-1 dark:bg-slate-700 dark:border-slate-600">
+                        </label>
+                        <label class="block">
+                            <span class="text-xs">Should-have (ngày tối đa)</span>
+                            <input type="number" id="setSlaShould" min="1" max="90" step="1"
+                                   class="w-full border rounded px-2 py-1 mt-1 dark:bg-slate-700 dark:border-slate-600">
+                        </label>
+                    </div>
+                </section>
+
+                <!-- Digest schedule -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">📥 Lịch sinh Digest tự động (T26)</h4>
+                    <p class="text-xs text-gray-500 mb-3">Khi app khởi động vào ngày+giờ đã cấu hình, backend tự sinh Excel digest và lưu vào <code class="text-[11px] bg-slate-200 dark:bg-slate-600 px-1 rounded">.project_store/&lt;slug&gt;/digests/</code>.</p>
+                    <div class="grid grid-cols-3 gap-3">
+                        <label class="col-span-3 flex items-center gap-2">
+                            <input type="checkbox" id="setDigestEnabled" class="scale-125">
+                            <span class="text-xs">Bật scheduler</span>
+                        </label>
+                        <label class="block col-span-2">
+                            <span class="text-xs">Ngày trong tuần</span>
+                            <select id="setDigestDay" class="w-full border rounded px-2 py-1 mt-1 dark:bg-slate-700 dark:border-slate-600">
+                                <option value="0">Thứ 2</option>
+                                <option value="1">Thứ 3</option>
+                                <option value="2">Thứ 4</option>
+                                <option value="3">Thứ 5</option>
+                                <option value="4">Thứ 6</option>
+                                <option value="5">Thứ 7</option>
+                                <option value="6">Chủ nhật</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-xs">Giờ (0–23)</span>
+                            <input type="number" id="setDigestHour" min="0" max="23" step="1"
+                                   class="w-full border rounded px-2 py-1 mt-1 dark:bg-slate-700 dark:border-slate-600">
+                        </label>
+                    </div>
+                    <div id="setDigestLast" class="text-[11px] text-gray-500 mt-2"></div>
+                </section>
+            </div>
+            <div class="px-5 py-3 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
+                <button onclick="closeSettingsModal()" class="px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-slate-700 text-sm">Huỷ</button>
+                <button onclick="saveSettings()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm">💾 Lưu</button>
+            </div>
         </div>
     </div>
 
