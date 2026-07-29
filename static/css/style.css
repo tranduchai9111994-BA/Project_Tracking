@@ -1311,6 +1311,176 @@ html.dark #pfCompareTable th, html.dark #pfCompareTable td {
     .dashboard-card { break-inside: avoid; box-shadow: none !important; border: 1px solid #ccc; }
 }
 
+/* ==== Task 6 — Chart Config Phase A (gear button + popover) ==== */
+.chart-config-gear {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: rgba(148, 163, 184, 0.1);
+    color: #64748b;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 5;
+    opacity: 0.35;
+    transition: opacity 0.15s, background 0.15s;
+}
+.chart-config-gear:hover {
+    opacity: 1;
+    background: rgba(59, 130, 246, 0.15);
+    border-color: #93c5fd;
+}
+html.dark .chart-config-gear {
+    background: rgba(148, 163, 184, 0.15);
+    color: #cbd5e1;
+}
+html.dark .chart-config-gear:hover {
+    background: rgba(59, 130, 246, 0.25);
+}
+/* Ẩn gear khi in ấn / export */
+@media print { .chart-config-gear { display: none !important; } }
+
+/* Caption inject dưới chart */
+.chart-config-caption {
+    font-family: inherit;
+    line-height: 1.4;
+}
+
+/* Popover */
+.chart-config-popover {
+    position: absolute;
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.18);
+    z-index: 100;
+    font-size: 13px;
+}
+html.dark .chart-config-popover {
+    background: #1e293b;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+.chart-config-popover .cc-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    background: #f8fafc;
+    border-radius: 10px 10px 0 0;
+}
+html.dark .chart-config-popover .cc-header {
+    background: #0f172a;
+    border-color: #334155;
+}
+.chart-config-popover .cc-title {
+    font-weight: 600;
+    color: #1e293b;
+}
+html.dark .chart-config-popover .cc-title { color: #e2e8f0; }
+.chart-config-popover .cc-close {
+    background: transparent;
+    border: none;
+    color: #64748b;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+}
+.chart-config-popover .cc-close:hover { color: #ef4444; }
+.chart-config-popover .cc-body {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.chart-config-popover .cc-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.chart-config-popover .cc-field > span {
+    font-weight: 500;
+    color: #475569;
+    font-size: 12px;
+}
+html.dark .chart-config-popover .cc-field > span { color: #cbd5e1; }
+.chart-config-popover .cc-field input,
+.chart-config-popover .cc-field textarea {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 13px;
+    resize: vertical;
+    font-family: inherit;
+    background: white;
+    color: #1e293b;
+}
+html.dark .chart-config-popover .cc-field input,
+html.dark .chart-config-popover .cc-field textarea {
+    background: #0f172a;
+    color: #e2e8f0;
+    border-color: #334155;
+}
+.chart-config-popover .cc-field-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    padding: 4px 0;
+}
+.chart-config-popover .cc-footer {
+    padding: 10px 12px;
+    border-top: 1px solid #e2e8f0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    background: #f8fafc;
+    border-radius: 0 0 10px 10px;
+}
+html.dark .chart-config-popover .cc-footer {
+    background: #0f172a;
+    border-color: #334155;
+}
+.chart-config-popover .cc-btn {
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+.chart-config-popover .cc-btn-reset {
+    background: transparent;
+    color: #64748b;
+    border-color: #cbd5e1;
+}
+.chart-config-popover .cc-btn-reset:hover { background: #f1f5f9; }
+.chart-config-popover .cc-btn-save {
+    background: #2563eb;
+    color: white;
+}
+.chart-config-popover .cc-btn-save:hover { background: #1d4ed8; }
+
+/* Pills hiển thị section user-hidden (header) */
+#hiddenSectionsPills {
+    max-width: 320px;
+    overflow: hidden;
+}
+#hiddenSectionsPills button {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+}
+#hiddenSectionsPills button:hover {
+    background: rgba(239, 68, 68, 0.35);
+    border-color: rgba(239, 68, 68, 0.6);
+}
+
 /* ==== Task 5 — Sticky Global Filter Bar ==== */
 /*
  * Filter bar (Module / Quy trình / PIC + saved views) luôn hiện khi scroll.

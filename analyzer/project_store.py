@@ -96,6 +96,17 @@ def save_saved_views(project_dir: str, views: list[dict]) -> list[dict]:
         so = v.get("section_order")
         if isinstance(so, list):
             entry["section_order"] = [str(x) for x in so if x]
+        # Task 6: optional per-view chart_configs (title/caption/hidden override)
+        cc = v.get("chart_configs")
+        if isinstance(cc, dict):
+            per_view: dict[str, dict] = {}
+            for k, val in cc.items():
+                if isinstance(val, dict):
+                    s = _sanitize_chart_config(val)
+                    if s:
+                        per_view[str(k)] = s
+            if per_view:
+                entry["chart_configs"] = per_view
         cleaned.append(entry)
     _write_json(_path(project_dir, "saved_views.json"), cleaned)
     return cleaned
@@ -115,6 +126,9 @@ def upsert_saved_view(project_dir: str, view: dict) -> list[dict]:
     so = view.get("section_order")
     if isinstance(so, list):
         entry["section_order"] = [str(x) for x in so if x]
+    cc = view.get("chart_configs")
+    if isinstance(cc, dict):
+        entry["chart_configs"] = cc  # sanitize xử lý trong save_saved_views
     views.append(entry)
     return save_saved_views(project_dir, views)
 
@@ -143,6 +157,91 @@ def reset_section_order(project_dir: str) -> None:
     """Xoá file section_order.json → FE fallback về HTML default."""
     import os as _os
     p = _path(project_dir, "section_order.json")
+    if _os.path.exists(p):
+        try:
+            _os.remove(p)
+        except OSError:
+            pass
+
+
+# ------------------------------------------------------------------
+# Chart configs (Task 6 — Phase A: title/caption/hide per chart section)
+# ------------------------------------------------------------------
+# File: chart_configs.json = {target_id: {"title"?, "caption"?, "hidden"?}}
+# target_id có thể là section id (VD "section-pic") hoặc canvas id (VD "chartPIC").
+# FE tự map + apply override.
+# ------------------------------------------------------------------
+
+_CHART_CFG_FILE = "chart_configs.json"
+
+
+def _sanitize_chart_config(entry: dict) -> dict:
+    """Chỉ giữ các key hợp lệ; loại các key rỗng để file không phình."""
+    out: dict = {}
+    if isinstance(entry.get("title"), str) and entry["title"].strip():
+        out["title"] = entry["title"].strip()[:200]
+    if isinstance(entry.get("caption"), str) and entry["caption"].strip():
+        out["caption"] = entry["caption"].strip()[:1000]
+    if entry.get("hidden") is True:
+        out["hidden"] = True
+    return out
+
+
+def load_chart_configs(project_dir: str) -> dict[str, dict]:
+    data = _read_json(_path(project_dir, _CHART_CFG_FILE), {})
+    if not isinstance(data, dict):
+        return {}
+    cleaned: dict[str, dict] = {}
+    for k, v in data.items():
+        if isinstance(v, dict):
+            s = _sanitize_chart_config(v)
+            if s:
+                cleaned[str(k)] = s
+    return cleaned
+
+
+def save_chart_configs(project_dir: str, configs: dict[str, dict]) -> dict[str, dict]:
+    """Overwrite full map — dùng khi FE gửi bulk."""
+    cleaned: dict[str, dict] = {}
+    if isinstance(configs, dict):
+        for k, v in configs.items():
+            if isinstance(v, dict):
+                s = _sanitize_chart_config(v)
+                if s:
+                    cleaned[str(k)] = s
+    _write_json(_path(project_dir, _CHART_CFG_FILE), cleaned)
+    return cleaned
+
+
+def upsert_chart_config(project_dir: str, target_id: str, entry: dict) -> dict[str, dict]:
+    """
+    Update 1 chart config. Nếu entry sanitize xong RỖNG → xoá key.
+    Trả về full map sau khi update.
+    """
+    all_cfg = load_chart_configs(project_dir)
+    tid = str(target_id).strip()
+    if not tid:
+        return all_cfg
+    s = _sanitize_chart_config(entry or {})
+    if s:
+        all_cfg[tid] = s
+    else:
+        all_cfg.pop(tid, None)
+    _write_json(_path(project_dir, _CHART_CFG_FILE), all_cfg)
+    return all_cfg
+
+
+def delete_chart_config(project_dir: str, target_id: str) -> dict[str, dict]:
+    all_cfg = load_chart_configs(project_dir)
+    all_cfg.pop(str(target_id).strip(), None)
+    _write_json(_path(project_dir, _CHART_CFG_FILE), all_cfg)
+    return all_cfg
+
+
+def reset_chart_configs(project_dir: str) -> None:
+    """Xoá toàn bộ chart config → về default."""
+    import os as _os
+    p = _path(project_dir, _CHART_CFG_FILE)
     if _os.path.exists(p):
         try:
             _os.remove(p)

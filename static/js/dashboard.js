@@ -316,6 +316,11 @@ function applyDashboardResponse(data) {
     // Task 4b: Load custom section order (nếu user đã customize) — apply DOM reorder
     // TRƯỚC khi user nhìn thấy dashboard (idempotent: nếu order khớp default sẽ no-op).
     try { if (typeof loadSectionOrder === "function") loadSectionOrder(); } catch (e) {}
+    // Task 6: Inject gear buttons + load chart configs (title/caption/hidden overrides)
+    try {
+        if (typeof injectChartConfigGears === "function") setTimeout(injectChartConfigGears, 250);
+        if (typeof loadChartConfigs === "function") setTimeout(loadChartConfigs, 260);
+    } catch (e) {}
 }
 
 // ========================================================================
@@ -6729,6 +6734,12 @@ window.applySavedView = function (viewId) {
     if (Array.isArray(v.section_order) && v.section_order.length) {
         applySectionOrderToDom(v.section_order);
     }
+    // Task 6: view có thể override chart_configs — apply chồng lên default
+    if (v.chart_configs && typeof applyChartConfigsToDom === "function") {
+        applyChartConfigsToDom(v.chart_configs);
+    } else if (typeof applyChartConfigsToDom === "function") {
+        applyChartConfigsToDom(); // reset về default
+    }
     showToast(`Đã áp view "${v.name}"`);
 };
 
@@ -6747,6 +6758,9 @@ window.saveCurrentView = async function () {
         pics: globalFilters.pics,
         // Task 4b: kèm section_order hiện tại vào view (nếu user đã customize)
         section_order: _readCurrentSectionOrderFromDom(),
+        // Task 6: kèm chart_configs hiện tại vào view — cho phép mỗi view có
+        // config title/caption/hidden riêng.
+        chart_configs: Object.assign({}, _chartConfigsCache),
     };
     try {
         const r = await fetch(_apiUrl("saved-views"), {
@@ -6845,6 +6859,301 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }, 800);
 });
+
+
+// ========================================================================
+// TASK 6 — CHART CONFIG PHASE A (title / caption / hide-show per section)
+// ========================================================================
+//
+// Concept:
+//   - Config target = section id (tất cả section top-level có heading + chart).
+//   - Config schema: { title?: string, caption?: string, hidden?: boolean }
+//   - Lưu 2 tầng:
+//       (a) project_default (chart_configs.json)
+//       (b) per_view (chart_configs field trong 1 saved view)
+//     FE apply: default → view override → DOM.
+//   - UI: gear ⚙️ float ở góc phải-trên mỗi section. Click → popover.
+// ========================================================================
+
+// Danh sách section được phép cấu hình (bỏ những section admin/không có title)
+const _CHART_CFG_SKIP_SECTIONS = new Set([
+    "section-summary",
+    "section-summary-header",
+    "section-globalfilter",
+    "section-compare",       // compare có UI riêng
+    "section-digest",        // digest có UI riêng
+]);
+
+let _chartConfigsCache = {};   // { target_id: {title, caption, hidden} }
+let _chartConfigsPopoverEl = null;
+
+async function loadChartConfigs() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(_apiUrl("chart-config"));
+        if (!r.ok) return;
+        const data = await r.json();
+        _chartConfigsCache = data.configs || {};
+        applyChartConfigsToDom();
+    } catch (err) {
+        console.error("[loadChartConfigs]", err);
+    }
+}
+
+/**
+ * Apply toàn bộ config (default + view override) vào DOM.
+ * Gọi mỗi khi:
+ *   - Load dashboard xong
+ *   - User save 1 config qua popover
+ *   - User apply saved view (view có thể có chart_configs override)
+ */
+function applyChartConfigsToDom(viewOverride = null) {
+    const merged = Object.assign({}, _chartConfigsCache, viewOverride || {});
+    // Loop qua tất cả section có id
+    document.querySelectorAll('#dashboard [id^="section-"]').forEach(sec => {
+        const sid = sec.id;
+        if (_CHART_CFG_SKIP_SECTIONS.has(sid)) return;
+        _applyOneChartConfig(sec, merged[sid] || null);
+    });
+    _renderHiddenSectionPills();
+}
+
+function _applyOneChartConfig(sec, cfg) {
+    const sid = sec.id;
+
+    // --- Title override ---
+    const titleEl = sec.querySelector("h2, h3, .section-title");
+    if (titleEl) {
+        // Lưu title gốc lần đầu để reset (dataset không mất qua render)
+        if (!titleEl.dataset.origTitle) {
+            titleEl.dataset.origTitle = titleEl.innerHTML;
+        }
+        if (cfg && cfg.title) {
+            titleEl.textContent = cfg.title;
+        } else {
+            titleEl.innerHTML = titleEl.dataset.origTitle;
+        }
+    }
+
+    // --- Caption override (thêm div dưới section body) ---
+    let capEl = sec.querySelector(":scope > .chart-config-caption");
+    if (cfg && cfg.caption) {
+        if (!capEl) {
+            capEl = document.createElement("div");
+            capEl.className = "chart-config-caption text-xs text-gray-500 italic mt-3 pt-2 border-t border-gray-100 dark:border-gray-700";
+            sec.appendChild(capEl);
+        }
+        capEl.textContent = cfg.caption;
+    } else if (capEl) {
+        capEl.remove();
+    }
+
+    // --- Hidden override ---
+    // Note: KHÔNG đè hidden gốc từ HTML default (compare/digest/burndown/sla/...).
+    // Chỉ track "user_hidden" attribute để tách bạch.
+    if (cfg && cfg.hidden) {
+        sec.classList.add("hidden");
+        sec.dataset.userHidden = "1";
+    } else if (sec.dataset.userHidden === "1") {
+        sec.classList.remove("hidden");
+        delete sec.dataset.userHidden;
+    }
+}
+
+/** Hiển thị pills trong header cho các section user đã ẩn — click để hiện lại. */
+function _renderHiddenSectionPills() {
+    let wrap = document.getElementById("hiddenSectionsPills");
+    if (!wrap) {
+        // Tạo wrapper 1 lần, chèn cạnh nút btnLayoutReset
+        const btnReset = document.getElementById("btnLayoutReset");
+        if (!btnReset) return;
+        wrap = document.createElement("div");
+        wrap.id = "hiddenSectionsPills";
+        wrap.className = "hidden flex-wrap gap-1 items-center text-xs no-print";
+        btnReset.parentElement.appendChild(wrap);
+    }
+    const userHidden = document.querySelectorAll('#dashboard [data-user-hidden="1"]');
+    if (!userHidden.length) {
+        wrap.classList.add("hidden");
+        wrap.classList.remove("flex");
+        wrap.innerHTML = "";
+        return;
+    }
+    wrap.classList.remove("hidden");
+    wrap.classList.add("flex");
+    wrap.innerHTML = `<span class="text-blue-200">Ẩn:</span>` +
+        Array.from(userHidden).map(el => {
+            const label = _sectionShortLabel(el.id);
+            return `<button onclick="_unhideSection('${el.id}')"
+                class="bg-white/10 hover:bg-white/25 px-2 py-0.5 rounded"
+                title="Bấm để hiện lại ${escapeAttr(label)}">
+                ${escapeHtml(label)} ✕
+            </button>`;
+        }).join("");
+}
+
+function _sectionShortLabel(sid) {
+    const map = {
+        "section-module": "Module", "section-tasktype": "Task type",
+        "section-matrix": "Matrix", "section-phase": "Phase",
+        "section-pic": "PIC", "section-effort": "Effort",
+        "section-priority": "Priority/Complexity/GAP",
+        "section-fitgap-dashboard": "FIT/GAP",
+        "section-function-diff": "Diff",
+        "section-giaidoan": "Giai đoạn", "section-process": "Quy trình",
+        "section-gantt": "Gantt", "section-duration": "Duration",
+        "section-burndown": "Burndown", "section-slow": "Slow",
+        "section-sla": "SLA", "section-capacity": "Capacity",
+        "section-deps": "Deps", "section-baseline": "Baseline",
+        "section-history": "History", "section-overdue": "Overdue",
+        "section-unassigned": "Unassigned", "section-risk": "Risk",
+        "section-stalled": "Stalled",
+    };
+    return map[sid] || sid.replace("section-", "");
+}
+
+window._unhideSection = async function (sid) {
+    // Xoá config hidden cho section này
+    const cur = _chartConfigsCache[sid] || {};
+    const next = Object.assign({}, cur, { hidden: false });
+    // Gọi upsert; nếu title/caption đều rỗng → backend sẽ xoá entry
+    await _saveChartConfig(sid, next.title || "", next.caption || "", false);
+};
+
+async function _saveChartConfig(target_id, title, caption, hidden) {
+    try {
+        const r = await fetch(_apiUrl("chart-config"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ target_id, title, caption, hidden }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        _chartConfigsCache = data.configs || {};
+        applyChartConfigsToDom();
+        showToast("Đã lưu cấu hình chart");
+    } catch (err) {
+        console.error("[_saveChartConfig]", err);
+        showToast("Lưu cấu hình thất bại: " + err.message, "red");
+    }
+}
+
+async function _resetChartConfig(target_id) {
+    try {
+        const r = await fetch(
+            _apiUrl(`chart-config?target=${encodeURIComponent(target_id)}`),
+            { method: "DELETE" }
+        );
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        _chartConfigsCache = data.configs || {};
+        applyChartConfigsToDom();
+        showToast("Đã reset về mặc định");
+    } catch (err) {
+        showToast("Reset thất bại: " + err.message, "red");
+    }
+}
+
+/** Inject gear button vào mỗi section (chạy 1 lần sau khi apply config). */
+function injectChartConfigGears() {
+    document.querySelectorAll('#dashboard [id^="section-"]').forEach(sec => {
+        if (_CHART_CFG_SKIP_SECTIONS.has(sec.id)) return;
+        if (sec.querySelector(":scope > .chart-config-gear")) return; // đã inject
+        // Ensure relative positioning để absolute gear đứng đúng
+        const cs = getComputedStyle(sec);
+        if (cs.position === "static") sec.style.position = "relative";
+        const btn = document.createElement("button");
+        btn.className = "chart-config-gear no-print";
+        btn.type = "button";
+        btn.title = "Cấu hình title / caption / ẩn chart này";
+        btn.setAttribute("aria-label", "Cấu hình chart");
+        btn.innerHTML = "⚙️";
+        btn.onclick = (e) => {
+            e.stopPropagation();
+            openChartConfigPopover(sec.id, btn);
+        };
+        sec.appendChild(btn);
+    });
+}
+
+function openChartConfigPopover(target_id, anchorEl) {
+    closeChartConfigPopover();
+    const cur = _chartConfigsCache[target_id] || {};
+    const label = _sectionShortLabel(target_id);
+
+    const pop = document.createElement("div");
+    pop.className = "chart-config-popover no-print";
+    pop.dataset.target = target_id;
+    pop.innerHTML = `
+        <div class="cc-header">
+            <span class="cc-title">⚙️ Cấu hình: ${escapeHtml(label)}</span>
+            <button class="cc-close" title="Đóng">✕</button>
+        </div>
+        <div class="cc-body">
+            <label class="cc-field">
+                <span>Tiêu đề</span>
+                <input type="text" class="cc-input-title" maxlength="200"
+                    placeholder="Để trống = dùng title mặc định"
+                    value="${escapeAttr(cur.title || "")}">
+            </label>
+            <label class="cc-field">
+                <span>Caption / ghi chú</span>
+                <textarea class="cc-input-caption" rows="2" maxlength="1000"
+                    placeholder="Hiển thị dưới chart (text nhỏ, xám)">${escapeHtml(cur.caption || "")}</textarea>
+            </label>
+            <label class="cc-field-check">
+                <input type="checkbox" class="cc-input-hidden" ${cur.hidden ? "checked" : ""}>
+                <span>Ẩn chart này khỏi dashboard</span>
+            </label>
+        </div>
+        <div class="cc-footer">
+            <button class="cc-btn cc-btn-reset">↺ Reset</button>
+            <button class="cc-btn cc-btn-save">💾 Lưu</button>
+        </div>
+    `;
+    document.body.appendChild(pop);
+    _chartConfigsPopoverEl = pop;
+
+    // Position popover near anchor
+    const r = anchorEl.getBoundingClientRect();
+    const popW = 340;
+    let left = r.right - popW;
+    if (left < 8) left = 8;
+    if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8;
+    pop.style.left = `${left}px`;
+    pop.style.top = `${r.bottom + window.scrollY + 6}px`;
+    pop.style.width = `${popW}px`;
+
+    // Handlers
+    pop.querySelector(".cc-close").onclick = closeChartConfigPopover;
+    pop.querySelector(".cc-btn-reset").onclick = async () => {
+        await _resetChartConfig(target_id);
+        closeChartConfigPopover();
+    };
+    pop.querySelector(".cc-btn-save").onclick = async () => {
+        const title = pop.querySelector(".cc-input-title").value.trim();
+        const caption = pop.querySelector(".cc-input-caption").value.trim();
+        const hidden = pop.querySelector(".cc-input-hidden").checked;
+        await _saveChartConfig(target_id, title, caption, hidden);
+        closeChartConfigPopover();
+    };
+
+    // Đóng khi click ngoài
+    setTimeout(() => document.addEventListener("mousedown", _closePopOutside), 10);
+}
+
+function _closePopOutside(e) {
+    if (!_chartConfigsPopoverEl) return;
+    if (!_chartConfigsPopoverEl.contains(e.target)) closeChartConfigPopover();
+}
+
+function closeChartConfigPopover() {
+    if (_chartConfigsPopoverEl) {
+        _chartConfigsPopoverEl.remove();
+        _chartConfigsPopoverEl = null;
+    }
+    document.removeEventListener("mousedown", _closePopOutside);
+}
 
 
 // ========================================================================

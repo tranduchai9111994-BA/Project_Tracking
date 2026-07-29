@@ -1660,6 +1660,50 @@ def project_section_order_reset(slug: str):
     return jsonify({"order": []})
 
 
+# ==========================================================================
+# Chart configs (Task 6 — Phase A: inline edit title/caption/visibility)
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/chart-config", methods=["GET", "POST", "DELETE"])
+def project_chart_config(slug: str):
+    """
+    GET → trả full map {target_id: {title?, caption?, hidden?}}.
+    POST → body {target_id, title?, caption?, hidden?} → upsert 1 chart.
+           Nếu tất cả field trong body rỗng → xoá config cho target đó.
+    DELETE:
+      · ?target=<id> → xoá 1 target.
+      · Không query → reset toàn bộ chart configs.
+    """
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+
+    if request.method == "GET":
+        return jsonify({"configs": ps.load_chart_configs(folder)})
+
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        target_id = body.get("target_id") or body.get("chart_id") or ""
+        if not target_id:
+            return jsonify({"error": "target_id bắt buộc"}), 400
+        entry = {
+            "title": body.get("title"),
+            "caption": body.get("caption"),
+            "hidden": bool(body.get("hidden")),
+        }
+        all_cfg = ps.upsert_chart_config(folder, target_id, entry)
+        return jsonify({"configs": all_cfg})
+
+    # DELETE
+    target_id = request.args.get("target", "").strip()
+    if target_id:
+        all_cfg = ps.delete_chart_config(folder, target_id)
+        return jsonify({"configs": all_cfg})
+    ps.reset_chart_configs(folder)
+    return jsonify({"configs": {}})
+
+
 @app.route("/api/projects/<slug>/upload-history")
 def project_upload_history(slug: str):
     from analyzer import project_store as ps
