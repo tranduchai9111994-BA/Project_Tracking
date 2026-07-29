@@ -3009,20 +3009,49 @@ function _generateGanttTicks(minDate, maxDate, zoom, dateToPx) {
 // ========================================================================
 function renderCompareSection() {
     const section = document.getElementById("section-compare");
-    if (!snapshotsData || snapshotsData.length < 2) {
-        section.classList.remove("hidden");
-        document.getElementById("compareContent").classList.add("hidden");
-        document.getElementById("compareEmpty").classList.remove("hidden");
-        // Vẫn populate select (có thể chỉ 1 snapshot)
-        fillSnapshotSelect("compareOld", snapshotsData);
-        fillSnapshotSelect("compareNew", snapshotsData);
+    const emptyEl = document.getElementById("compareEmpty");
+    const contentEl = document.getElementById("compareContent");
+    if (!section || !emptyEl || !contentEl) return;
+    section.classList.remove("hidden");
+
+    // 3 case rõ ràng:
+    //  - 0 snapshot → empty text mặc định + không populate select
+    //  - 1 snapshot → empty text đặc thù "cần thêm 1 nữa" + populate select
+    //    để user có thể "Upload file cũ" hoặc chờ upload mới
+    //  - ≥ 2 snapshot → auto-compare 2 cái mới nhất
+    const n = snapshotsData ? snapshotsData.length : 0;
+    if (n < 2) {
+        contentEl.classList.add("hidden");
+        emptyEl.classList.remove("hidden");
+        if (n === 0) {
+            emptyEl.innerHTML = `<div class="text-gray-500">
+                Chưa có snapshot nào để so sánh. Snapshot được tạo tự động mỗi lần upload file mới.
+            </div>`;
+        } else {
+            // n === 1
+            const s = snapshotsData[0];
+            emptyEl.innerHTML = `<div class="text-gray-600 dark:text-gray-300 space-y-2 text-sm">
+                <div>
+                    Hiện có <b>1 snapshot</b>: ${escapeHtml(s.date)}
+                    (${s.total_functions} func, ${s.overall_pct}%).
+                </div>
+                <div class="text-gray-500">
+                    Để so sánh, cần <b>ít nhất 2 snapshot</b>. Chọn 1 trong 2 cách:
+                </div>
+                <ul class="list-disc pl-6 text-gray-500">
+                    <li>Upload file cập nhật mới hơn → snapshot thứ 2 tự tạo.</li>
+                    <li>Dùng nút <b>"Upload file cũ"</b> bên phải để đối chiếu tạm với 1 file khác (không lưu snapshot).</li>
+                </ul>
+            </div>`;
+        }
+        // Populate dropdown dù chỉ 1 snapshot để nút "So sánh" và "Xuất Excel" có context
+        fillSnapshotSelect("compareOld", snapshotsData || []);
+        fillSnapshotSelect("compareNew", snapshotsData || []);
         return;
     }
-    section.classList.remove("hidden");
-    fillSnapshotSelect("compareOld", snapshotsData, snapshotsData[1].date); // snapshot cũ hơn (index 1)
+    // ≥ 2 snapshot
+    fillSnapshotSelect("compareOld", snapshotsData, snapshotsData[1].date); // cũ hơn
     fillSnapshotSelect("compareNew", snapshotsData, snapshotsData[0].date); // mới nhất
-
-    // Tự động compare 2 snapshot mới nhất
     doCompare();
 }
 
