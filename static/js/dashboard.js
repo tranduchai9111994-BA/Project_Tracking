@@ -2757,6 +2757,14 @@ function renderEffortSection() {
 function renderProcessTreemap() {
     const items = metricsData.process_analysis || [];
     const el = document.getElementById("processTreemap");
+    // b11 (a): badge số quy trình + số function; cập nhật kể cả khi list rỗng.
+    const totalFuncs = items.reduce((s, i) => s + (i.total || 0), 0);
+    const badge = document.getElementById("processTotalBadge");
+    if (badge) {
+        badge.textContent = items.length
+            ? `${items.length} quy trình · ${totalFuncs} function`
+            : "0 quy trình";
+    }
     if (items.length === 0) {
         el.innerHTML = `<div class="text-gray-500 text-sm italic p-4">Không có dữ liệu Quy trình</div>`;
         document.getElementById("section-process").classList.add("hidden");
@@ -2778,7 +2786,7 @@ function renderProcessTreemap() {
         return;
     }
 
-    const totalFuncs = items.reduce((s, i) => s + i.total, 0);
+    // totalFuncs đã tính ở đầu function (dùng cho badge). Dùng lại cho width.
     el.innerHTML = `
         <div class="flex flex-wrap gap-1" style="min-height:300px;">
             ${items.map(i => {
