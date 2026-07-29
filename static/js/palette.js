@@ -30,6 +30,7 @@
     "Cancelled":    "#94a3b8",
     "Overdue":      "#dc2626",
     "Blank":        "#e2e8f0",
+    "(Blank)":      "#e2e8f0",
   };
 
   const CATEGORICAL = [

@@ -34,6 +34,7 @@ STATUS = {
     "Cancelled": "#94a3b8",    # gray
     "Overdue": "#dc2626",      # đỏ
     "Blank": "#e2e8f0",        # light gray — status trống
+    "(Blank)": "#e2e8f0",      # alias hiển thị cho phase_progress_stacked bucket
 }
 
 # ---------------------------------------------------------------------------

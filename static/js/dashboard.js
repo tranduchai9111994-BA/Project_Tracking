@@ -1670,7 +1670,21 @@ function renderPhaseStackedChart() {
             datalabels: _labelsForStackedBar(5),
         },
         scales: {
-            x: { stacked: true, ticks: { font: { size: 10 } }, grid: { display: false } },
+            // Fix b10: chặn Chart.js auto-wrap tên phase thành 3 dòng vì
+            // fontSize 10 + phase name dài + chart hẹp → labels bị vỡ. Bật
+            // autoSkip: false để giữ tất cả label, maxRotation: 20 để nghiêng
+            // nhẹ khi thiếu chỗ thay vì wrap dòng.
+            x: {
+                stacked: true,
+                ticks: {
+                    font: { size: 11, lineHeight: 1.15 },
+                    autoSkip: false,
+                    maxRotation: 20,
+                    minRotation: 0,
+                    padding: 4,
+                },
+                grid: { display: false },
+            },
             y: { stacked: true, beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.15)" } },
         },
         onHover: CLICKABLE_CHART_OPTS.onHover,

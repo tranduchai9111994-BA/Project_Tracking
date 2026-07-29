@@ -509,15 +509,34 @@ class DashboardEngine:
     # ------------------------------------------------------------------
 
     def _phase_progress_stacked(self, data: ParsedData) -> dict:
-        statuses_ordered = ["Closed", "In-progress", "Assigned", "Resolved", "Open", "Pending", "Cancelled"]
+        """Bar stacked số function từng status ở mỗi phase.
+
+        Thêm bucket "(Blank)" để tổng mỗi phase = total functions. Trước
+        đây bỏ qua row có phase status blank khiến Analysis chỉ 311 trong
+        khi tổng function là 388 → user nhầm số. Blank ở đây có 2 nguồn:
+        (a) phase không tồn tại trong row.phases, (b) phase tồn tại nhưng
+        status chưa fill (rất phổ biến với các phase downstream chưa tới).
+        """
+        statuses_ordered = ["Closed", "In-progress", "Assigned", "Resolved", "Open", "Pending", "Cancelled", "(Blank)"]
         phase_data = {}
+        total = len(data.rows)
         for phase_name in data.all_phases:
             counts = Counter()
+            blank_count = 0
             for r in data.rows:
                 pd = r.phases.get(phase_name, PhaseData())
                 if pd.status:
                     counts[pd.status] += 1
-            phase_data[phase_name] = {s: counts.get(s, 0) for s in statuses_ordered}
+                else:
+                    blank_count += 1
+            phase_data[phase_name] = {s: counts.get(s, 0) for s in statuses_ordered if s != "(Blank)"}
+            phase_data[phase_name]["(Blank)"] = blank_count
+            # Đảm bảo tổng = total; nếu lệch (do status không nằm trong
+            # statuses_ordered — VD lỗi dữ liệu số 1/2/8) thì dồn vào Blank
+            # để user vẫn thấy đúng total, tránh chart bị "hụt cột".
+            summed = sum(phase_data[phase_name][s] for s in statuses_ordered)
+            if summed < total:
+                phase_data[phase_name]["(Blank)"] += (total - summed)
 
         return {
             "phases": data.all_phases,
