@@ -9312,3 +9312,238 @@ window.exportAgingWip = function () {
     const url = `/api/projects/${currentProjectSlug}/export-aging-wip?threshold=${_agingState.threshold}${qs ? "&" + qs : ""}`;
     window.location.href = url;
 };
+
+// ========================================================================
+// T23 — COMMAND PALETTE (Ctrl+K / Cmd+K / /)
+// ========================================================================
+// Danh sách "sections" lấy từ sidebar (auto-detect, không hardcode).
+// Danh sách "actions" cứng: export PDF, export Excel, apply filter reset...
+// Danh sách "functions" fetch từ /api/projects/<slug>/search với query hiện tại.
+
+const _cmdState = {
+    query: "",
+    items: [],       // filtered items hiện tại
+    selectedIdx: 0,
+    functionResults: [],
+};
+
+const _CMD_ACTIONS = [
+    { id: "act.reset-filter", label: "🔄 Reset tất cả filter global", kind: "action",
+      run: () => { globalFilters = { modules: [], processes: [], pics: [] };
+                   tryLoadDashboardForCurrent(true);
+                   showToast("Đã reset filter"); } },
+    { id: "act.export-pdf", label: "📄 Xuất PDF báo cáo tuần", kind: "action",
+      run: () => { if (typeof openPdfExportModal === "function") openPdfExportModal();
+                   else showToast("Chưa sẵn sàng"); } },
+    { id: "act.export-overdue", label: "📥 Xuất Excel Overdue", kind: "action",
+      run: () => { if (typeof exportOverdue === "function") exportOverdue();
+                   else showToast("Chưa sẵn sàng"); } },
+    { id: "act.export-dq", label: "🩺 Xuất Excel Data Quality", kind: "action",
+      run: () => exportDataQuality() },
+    { id: "act.export-aging", label: "⏳ Xuất Excel Aging WIP", kind: "action",
+      run: () => exportAgingWip() },
+    { id: "act.toggle-theme", label: "🌓 Đổi theme (Light/Dark)", kind: "action",
+      run: () => { if (typeof toggleTheme === "function") toggleTheme();
+                   else document.documentElement.classList.toggle("dark"); } },
+    { id: "act.layout-edit", label: "🔧 Bật/tắt drag-drop sắp xếp section", kind: "action",
+      run: () => { if (typeof toggleLayoutEditMode === "function") toggleLayoutEditMode(); } },
+    { id: "act.print", label: "🖨️ In dashboard hiện tại", kind: "action",
+      run: () => window.print() },
+];
+
+function _cmdCollectSections() {
+    // Auto-detect từ sidebar nav — mọi <a href="#section-*">
+    const anchors = document.querySelectorAll('#sidebarNav a[href^="#section-"]');
+    return Array.from(anchors).map(a => ({
+        id: "sec." + a.getAttribute("href"),
+        label: `📍 ${a.textContent.trim()}`,
+        kind: "section",
+        target: a.getAttribute("href"),
+        run: () => {
+            const el = document.querySelector(a.getAttribute("href"));
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        },
+    }));
+}
+
+function _cmdFuzzyScore(text, q) {
+    // Simple fuzzy: mỗi ký tự q phải xuất hiện theo thứ tự trong text.
+    // Score = số ký tự match liên tiếp / khoảng cách.
+    if (!q) return 1;
+    text = text.toLowerCase();
+    q = q.toLowerCase();
+    // Exact substring match ưu tiên cao nhất
+    if (text.includes(q)) return 1000 + (100 - text.indexOf(q));
+    let ti = 0, qi = 0, score = 0, streak = 0;
+    while (ti < text.length && qi < q.length) {
+        if (text[ti] === q[qi]) {
+            streak++;
+            score += streak;
+            qi++;
+        } else {
+            streak = 0;
+        }
+        ti++;
+    }
+    return qi === q.length ? score : 0;
+}
+
+async function _cmdFetchFunctions(q) {
+    if (!q || q.length < 2 || !currentProjectSlug) {
+        _cmdState.functionResults = [];
+        return;
+    }
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/function-search?q=${encodeURIComponent(q)}&limit=8`);
+        if (!r.ok) return;
+        const d = await r.json();
+        _cmdState.functionResults = (d.items || []).map(fn => ({
+            id: "fn." + (fn.row_num || fn.ma_cn),
+            label: `🧩 ${fn.ma_cn || "?"} — ${fn.ten_cn || ""}`,
+            sub: `${fn.module || ""} · ${fn.quy_trinh || ""}`,
+            kind: "function",
+            run: () => {
+                if (typeof openFunctionDetail === "function" && fn.row_num) {
+                    openFunctionDetail(fn.row_num);
+                } else {
+                    showToast(`Không mở được modal cho ${fn.ma_cn}`);
+                }
+            },
+        }));
+    } catch (err) {
+        console.error("[cmd fetchFunctions]", err);
+    }
+}
+
+function _cmdBuildItems() {
+    const q = _cmdState.query.trim();
+    // Nhóm 3: sections + actions (static) + functions (dynamic)
+    const staticItems = [..._cmdCollectSections(), ..._CMD_ACTIONS];
+    let items;
+    if (!q) {
+        items = staticItems.slice(0, 20);
+    } else {
+        // Fuzzy filter + score
+        const scored = staticItems.map(it => ({ it, s: _cmdFuzzyScore(it.label, q) }))
+            .filter(x => x.s > 0)
+            .sort((a, b) => b.s - a.s);
+        items = scored.slice(0, 15).map(x => x.it);
+        // Prepend function search results (đã fetch async ở input handler)
+        items = [..._cmdState.functionResults, ...items];
+    }
+    _cmdState.items = items;
+    _cmdState.selectedIdx = Math.min(_cmdState.selectedIdx, Math.max(0, items.length - 1));
+}
+
+function _cmdRender() {
+    const list = document.getElementById("cmdPaletteList");
+    if (!list) return;
+    if (!_cmdState.items.length) {
+        list.innerHTML = `<div class="px-4 py-6 text-center text-gray-400">Không có kết quả</div>`;
+        return;
+    }
+    list.innerHTML = _cmdState.items.map((it, i) => `
+        <div class="cmd-item px-4 py-2 cursor-pointer flex items-center justify-between ${i === _cmdState.selectedIdx ? "bg-blue-50 border-l-2 border-blue-500" : "hover:bg-slate-50"}"
+             data-idx="${i}">
+            <div>
+                <div class="text-sm text-gray-800">${escapeHtml(it.label)}</div>
+                ${it.sub ? `<div class="text-xs text-gray-500">${escapeHtml(it.sub)}</div>` : ""}
+            </div>
+            <span class="text-xs text-gray-400">${it.kind === "section" ? "Section" : it.kind === "action" ? "Action" : "Function"}</span>
+        </div>
+    `).join("");
+    // Bind click
+    list.querySelectorAll(".cmd-item").forEach(el => {
+        el.addEventListener("click", () => {
+            _cmdState.selectedIdx = parseInt(el.dataset.idx);
+            _cmdExecute();
+        });
+    });
+    // Scroll selected into view
+    const sel = list.querySelector(`.cmd-item[data-idx="${_cmdState.selectedIdx}"]`);
+    if (sel) sel.scrollIntoView({ block: "nearest" });
+}
+
+function _cmdExecute() {
+    const it = _cmdState.items[_cmdState.selectedIdx];
+    if (!it) return;
+    closeCmdPalette();
+    try { it.run(); } catch (err) { console.error("[cmd run]", err); }
+}
+
+window.openCmdPalette = function () {
+    const m = document.getElementById("cmdPaletteModal");
+    if (!m) return;
+    m.classList.remove("hidden");
+    m.classList.add("flex");
+    _cmdState.query = "";
+    _cmdState.selectedIdx = 0;
+    _cmdState.functionResults = [];
+    _cmdBuildItems();
+    _cmdRender();
+    const input = document.getElementById("cmdPaletteInput");
+    if (input) { input.value = ""; setTimeout(() => input.focus(), 50); }
+};
+
+window.closeCmdPalette = function () {
+    const m = document.getElementById("cmdPaletteModal");
+    if (!m) return;
+    m.classList.add("hidden");
+    m.classList.remove("flex");
+};
+
+// Bind global hotkeys + input + arrow keys
+document.addEventListener("DOMContentLoaded", () => {
+    const input = document.getElementById("cmdPaletteInput");
+    const modal = document.getElementById("cmdPaletteModal");
+    if (!input || !modal) return;
+
+    // Debounced function search
+    let fetchTimer = null;
+    input.addEventListener("input", (e) => {
+        _cmdState.query = e.target.value;
+        _cmdState.selectedIdx = 0;
+        _cmdBuildItems();
+        _cmdRender();
+        if (fetchTimer) clearTimeout(fetchTimer);
+        fetchTimer = setTimeout(async () => {
+            await _cmdFetchFunctions(_cmdState.query.trim());
+            _cmdBuildItems();
+            _cmdRender();
+        }, 200);
+    });
+
+    // Keyboard nav trong input
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            _cmdState.selectedIdx = Math.min(_cmdState.selectedIdx + 1, _cmdState.items.length - 1);
+            _cmdRender();
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            _cmdState.selectedIdx = Math.max(_cmdState.selectedIdx - 1, 0);
+            _cmdRender();
+        } else if (e.key === "Enter") {
+            e.preventDefault();
+            _cmdExecute();
+        } else if (e.key === "Escape") {
+            e.preventDefault();
+            closeCmdPalette();
+        }
+    });
+
+    // Global hotkey: Ctrl+K / Cmd+K / /
+    document.addEventListener("keydown", (e) => {
+        // Không kích hoạt nếu đang gõ trong ô input khác (trừ khi Ctrl/Cmd+K)
+        const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+        const ctrlK = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k";
+        const slash = e.key === "/" && !inField;
+        if (ctrlK || slash) {
+            e.preventDefault();
+            openCmdPalette();
+        } else if (e.key === "Escape" && !modal.classList.contains("hidden")) {
+            e.preventDefault();
+            closeCmdPalette();
+        }
+    });
+});

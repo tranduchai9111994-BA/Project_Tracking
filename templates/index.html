@@ -1753,6 +1753,32 @@
     </div> <!-- end dashboard -->
 </main>
 
+<!-- ========================================================================
+     T23 — COMMAND PALETTE (Ctrl+K / Cmd+K / /)
+     Modal cho quick actions: jump section, filter shortcut, export,
+     tra cứu chức năng. Esc để đóng, arrows để di chuyển, Enter để chọn.
+     ======================================================================== -->
+<div id="cmdPaletteModal" class="fixed inset-0 bg-black/50 z-[60] hidden items-start justify-center pt-20 no-print"
+     onclick="if(event.target===this)closeCmdPalette()">
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden border">
+        <div class="p-3 border-b flex items-center gap-2">
+            <span class="text-gray-400">🔎</span>
+            <input id="cmdPaletteInput" type="text"
+                   placeholder="Nhập lệnh, tên section, hoặc mã CN…  (Esc để đóng)"
+                   class="flex-1 focus:outline-none text-sm"
+                   autocomplete="off" spellcheck="false">
+            <span class="text-xs text-gray-400 border rounded px-1.5 py-0.5">Esc</span>
+        </div>
+        <div id="cmdPaletteList" class="max-h-96 overflow-y-auto text-sm">
+            <!-- JS render items -->
+        </div>
+        <div class="px-3 py-2 border-t text-xs text-gray-500 flex justify-between">
+            <span>↑↓ Di chuyển · ⏎ Chọn · Esc Đóng</span>
+            <span>Ctrl+K / Cmd+K / "/" để mở</span>
+        </div>
+    </div>
+</div>
+
 <!-- Fullscreen chart modal -->
 <div id="fullscreenModal" class="chart-fullscreen hidden">
     <button class="fullscreen-close" onclick="closeFullscreen()">✕ Đóng (Esc)</button>
