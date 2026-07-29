@@ -32,21 +32,26 @@ const _msInstances = {};
 // ========================================================================
 // CONSTANTS
 // ========================================================================
-const STATUS_COLORS = {
-    "Closed":      "#22c55e",
-    "In-progress": "#3b82f6",
-    "Assigned":    "#f59e0b",
-    "Open":        "#6b7280",
-    "Resolved":    "#8b5cf6",
-    "Pending":     "#f97316",
-    "Cancelled":   "#ef4444",
-};
+// Task 19: STATUS_COLORS + CHART_PALETTE giờ derive từ window.Palette
+// (analyzer/palette.py + static/js/palette.js). Giữ export cũ cho các nơi
+// còn reference trực tiếp — nhưng khuyến khích dùng Palette.statusColor()
+// / Palette.categoricalColors() cho code mới để hỗ trợ dark mode + threshold
+// config.
+const STATUS_COLORS = new Proxy({}, {
+    get(_t, key) {
+        // window.Palette lazy — reference tại thời điểm access
+        return (window.Palette && window.Palette.STATUS[key]) || "#94a3b8";
+    },
+});
 
-const CHART_PALETTE = [
-    "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6",
-    "#06b6d4", "#ec4899", "#14b8a6", "#f97316", "#6366f1",
-    "#84cc16", "#e11d48", "#0ea5e9", "#a855f7", "#10b981",
-];
+// Cycle categorical 15 màu — Palette.CATEGORICAL 10 màu, extend +5 màu bổ sung
+const CHART_PALETTE = (() => {
+    const base = (window.Palette && window.Palette.CATEGORICAL) || [
+        "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
+        "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac",
+    ];
+    return [...base, "#06b6d4", "#a855f7", "#10b981", "#e11d48", "#0ea5e9"];
+})();
 
 const PHASE_COLORS = {
     "Phân tích": "#8b5cf6",
@@ -1318,9 +1323,13 @@ async function _fetchModuleOverview() {
 }
 
 function _mgProgressColor(pct) {
-    return pct >= 80 ? "#22c55e"
-         : pct >= 50 ? "#eab308"
-         : pct >= 20 ? "#f97316" : "#ef4444";
+    // Task 19: dùng Palette.progressColor (semantic tiered đỏ/vàng/xanh).
+    // Fallback logic cũ nếu Palette chưa load.
+    if (window.Palette && window.Palette.progressColor) {
+        return window.Palette.progressColor(pct);
+    }
+    return pct >= 70 ? "#16a34a"
+         : pct >= 30 ? "#f59e0b" : "#dc2626";
 }
 
 function _mgRowHtml(r, opts = {}) {
@@ -1499,12 +1508,17 @@ function renderTaskTypeChart() {
             return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
         });
 
+        // Task 19: mỗi bar tô màu semantic tiered theo % Closed (đỏ/vàng/xanh)
+        // thay vì random categorical → user đọc được ngay task nào yếu.
+        const bgColors = values.map(v => window.Palette?.progressColor
+            ? window.Palette.progressColor(v)
+            : CHART_PALETTE[values.indexOf(v) % CHART_PALETTE.length]);
         const chart = createChart(ctx, "bar", {
             labels: taskTypes,
             datasets: [{
                 label: "% Closed",
                 data: values,
-                backgroundColor: taskTypes.map((_, i) => CHART_PALETTE[i % CHART_PALETTE.length]),
+                backgroundColor: bgColors,
                 borderRadius: 3,
             }],
         }, {
@@ -1782,11 +1796,21 @@ function renderPriorityChart() {
     if (!ctx) return;
     const values = labels.map(l => d[l]);
     const total = values.reduce((a, b) => a + b, 0);
+    // Task 19: Priority fixed mapping — High=red, Medium=amber, Low=slate.
+    const priColor = (lb) => {
+        const s = (lb || "").toLowerCase();
+        if (/high|must|1|critic/.test(s)) return window.Palette?.STATUS?.Overdue || "#dc2626";
+        if (/med|should|2/.test(s))        return window.Palette?.STATUS?.Pending || "#f59e0b";
+        if (/low|could|3/.test(s))         return window.Palette?.STATUS?.Open || "#64748b";
+        // Categorical fallback (Nice/Won't/Other)
+        return window.Palette?.CATEGORICAL?.[3] || "#76b7b2";
+    };
+    const priColors = labels.map(priColor);
     createChart(ctx, "doughnut", {
         labels,
         datasets: [{
             data: values,
-            backgroundColor: CHART_PALETTE,
+            backgroundColor: priColors,
             borderColor: "#fff",
             borderWidth: 2,
             hoverOffset: 8,
@@ -1829,11 +1853,20 @@ function renderComplexityChart() {
     if (!ctx) return;
     const values = labels.map(l => d[l]);
     const total = values.reduce((a, b) => a + b, 0);
+    // Task 19: Complexity sequential — high=darkblue, med=blue, low=lightblue.
+    const cmpColor = (lb) => {
+        const s = (lb || "").toLowerCase();
+        if (/high|hard|khó|3|complex/.test(s))       return "#1e3a8a";   // dark blue
+        if (/med|trung|2|moderate/.test(s))          return "#3b82f6";   // blue
+        if (/low|easy|dễ|1|simple/.test(s))          return "#93c5fd";   // light blue
+        return "#94a3b8";   // slate
+    };
+    const cmpColors = labels.map(cmpColor);
     createChart(ctx, "doughnut", {
         labels,
         datasets: [{
             data: values,
-            backgroundColor: ["#22c55e", "#f59e0b", "#ef4444", "#6b7280"],
+            backgroundColor: cmpColors,
             borderColor: "#fff",
             borderWidth: 2,
             hoverOffset: 8,
@@ -1895,10 +1928,17 @@ function renderFitGapChart() {
     }
     _restoreCanvas("chartFitGap");
     const ctx = getCanvas("chartFitGap");
-    const datasets = types.map((t, i) => ({
+    // Task 19: FIT=green, GAP=red, khác=categorical.
+    const fgColor = (t) => {
+        const s = (t || "").toLowerCase();
+        if (s === "fit") return window.Palette?.STATUS?.Closed || "#16a34a";
+        if (s === "gap") return window.Palette?.STATUS?.Overdue || "#dc2626";
+        return CHART_PALETTE[types.indexOf(t) % CHART_PALETTE.length];
+    };
+    const datasets = types.map(t => ({
         label: t,
         data: modules.map(m => d[m][t] || 0),
-        backgroundColor: CHART_PALETTE[i % CHART_PALETTE.length],
+        backgroundColor: fgColor(t),
     }));
     createChart(ctx, "bar", { labels: modules, datasets }, {
         plugins: {
@@ -2906,13 +2946,12 @@ function _ganttAggregate(funcs) {
     };
 }
 
-/** Color theo % Closed weighted (giống module_overview). */
+/** Color theo % Closed weighted (giống module_overview). Task 19: dùng Palette. */
 function _ganttAggregateColor(pct, hasOverdue) {
-    if (hasOverdue) return "#ef4444";       // đỏ nếu có overdue
-    if (pct >= 80) return "#22c55e";        // xanh
-    if (pct >= 50) return "#eab308";        // vàng
-    if (pct >= 20) return "#f97316";        // cam
-    return "#94a3b8";                       // xám (chưa nhiều)
+    if (hasOverdue) return (window.Palette?.STATUS?.Overdue) || "#dc2626";
+    if (window.Palette?.progressColor) return window.Palette.progressColor(pct);
+    // Fallback nếu palette.js chưa load
+    return pct >= 70 ? "#16a34a" : pct >= 30 ? "#f59e0b" : "#dc2626";
 }
 
 /** Render chính. */
