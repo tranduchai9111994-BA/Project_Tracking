@@ -7651,7 +7651,11 @@ async function _cdRenderChart(item) {
     }
 }
 
-/** Build Chart.js instance từ aggregated data + item config. Shared với preview. */
+/** Build Chart.js instance từ aggregated data + item config. Shared với preview.
+ *
+ * b15 (c)(d): legend + axis title tiếng Việt; data label format theo
+ * measure type (pct/int/hour/day) từ agg.meta.y_measure_format.
+ */
 function _cdBuildChart(canvas, agg, cfg) {
     const existing = Chart.getChart(canvas);
     if (existing) existing.destroy();
@@ -7661,9 +7665,12 @@ function _cdBuildChart(canvas, agg, cfg) {
         ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
 
     const ut = cfg.chart_type || "bar";
+    const fmt = agg?.meta?.y_measure_format || "int";
+    const yLabel = agg?.meta?.y_measure_label || cfg.y_measure || "";
+    const xLabel = (fields.fields || {})[cfg.x_field] || cfg.x_field || "";
+
     let chartType = "bar";
-    let extraOpts = { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { position: "bottom", labels: { font: { size: 10 } } } } };
+    let extraOpts = { responsive: true, maintainAspectRatio: false, plugins: {} };
     let stacked = false;
     if (ut === "horizontalBar") { chartType = "bar"; extraOpts.indexAxis = "y"; }
     else if (ut === "line") chartType = "line";
@@ -7684,11 +7691,65 @@ function _cdBuildChart(canvas, agg, cfg) {
         fill: ut === "area",
         tension: chartType === "line" ? 0.3 : 0,
     }));
+
+    // b15 (c): legend Vietnamese label (đã có sẵn từ backend series_label).
+    extraOpts.plugins.legend = { position: "bottom", labels: { font: { size: 10 } } };
+    extraOpts.plugins.tooltip = {
+        callbacks: {
+            label: (c) => {
+                const raw = Number(c.parsed?.y ?? c.parsed ?? c.raw ?? 0);
+                return `${c.dataset.label}: ${_fmtMeasureValue(raw, fmt)}`;
+            },
+        },
+    };
+
+    // b15 (d): data label — chartjs-plugin-datalabels đã register global.
+    // Ẩn label khi giá trị = 0 (bar/line) hoặc segment nhỏ (pie/doughnut).
+    const isPct = fmt === "pct";
+    const isCircular = (chartType === "pie" || chartType === "doughnut");
+    extraOpts.plugins.datalabels = {
+        display: (ctx) => {
+            const v = Number(ctx.dataset.data[ctx.dataIndex]) || 0;
+            if (v === 0) return false;
+            if (isCircular) {
+                const total = (ctx.dataset.data || []).reduce((s, x) => s + (Number(x) || 0), 0) || 1;
+                return (v / total) >= 0.05;   // ẩn segment < 5%
+            }
+            return true;
+        },
+        color: isCircular ? "#fff" : "#334155",
+        font: { size: 10, weight: "600" },
+        anchor: isCircular ? "center" : "end",
+        align: isCircular ? "center" : "top",
+        offset: isCircular ? 0 : 4,
+        formatter: (v) => _fmtMeasureValue(v, fmt),
+    };
+
+    // b15 (c): axis title tiếng Việt.
     if (stacked) {
-        extraOpts.scales = { x: { stacked: true }, y: { stacked: true, beginAtZero: true } };
+        extraOpts.scales = {
+            x: { stacked: true, title: { display: !!xLabel, text: xLabel, font: { size: 11 } } },
+            y: { stacked: true, beginAtZero: true, title: { display: !!yLabel, text: yLabel, font: { size: 11 } } },
+        };
     } else if (chartType === "bar") {
-        extraOpts.scales = { y: { beginAtZero: true } };
+        if (extraOpts.indexAxis === "y") {
+            extraOpts.scales = {
+                y: { title: { display: !!xLabel, text: xLabel, font: { size: 11 } } },
+                x: { beginAtZero: true, title: { display: !!yLabel, text: yLabel, font: { size: 11 } } },
+            };
+        } else {
+            extraOpts.scales = {
+                x: { title: { display: !!xLabel, text: xLabel, font: { size: 11 } } },
+                y: { beginAtZero: true, title: { display: !!yLabel, text: yLabel, font: { size: 11 } } },
+            };
+        }
+    } else if (chartType === "line") {
+        extraOpts.scales = {
+            x: { title: { display: !!xLabel, text: xLabel, font: { size: 11 } } },
+            y: { beginAtZero: true, title: { display: !!yLabel, text: yLabel, font: { size: 11 } } },
+        };
     }
+
     try {
         new Chart(canvas, {
             type: chartType,
@@ -7698,6 +7759,16 @@ function _cdBuildChart(canvas, agg, cfg) {
     } catch (err) {
         console.error("[cdBuildChart]", err);
     }
+}
+
+/** b15 (d): format 1 giá trị theo measure format hint từ backend. */
+function _fmtMeasureValue(v, fmt) {
+    const n = Number(v) || 0;
+    if (fmt === "pct") return n.toFixed(1).replace(/\.0$/, "") + "%";
+    if (fmt === "hour") return n.toFixed(1) + "h";
+    if (fmt === "day") return n.toFixed(1) + "d";
+    // int / default
+    return Number.isInteger(n) ? String(n) : n.toFixed(1);
 }
 
 // --- Modal management ---

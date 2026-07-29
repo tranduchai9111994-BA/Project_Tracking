@@ -141,7 +141,9 @@ def _row_field_values(row: FunctionRow, field: str) -> list[str]:
         v = str(meta.get("complexity") or "").strip()
         return [v or "(Không có Complexity)"]
     if f in ("fitgap", "fit/gap", "fit_gap"):
-        v = str(meta.get("fitgap") or "").strip()
+        # b15 fix: meta key là 'fit_gap' (parser); giữ fallback 'fitgap' cho
+        # backward compat nếu code khác set key này.
+        v = str(meta.get("fit_gap") or meta.get("fitgap") or "").strip()
         return [v or "(Không có FIT/GAP)"]
     if f in ("giai_doan", "giai đoạn", "stage"):
         v = str(meta.get("giai_doan") or "").strip()
@@ -196,7 +198,9 @@ def _row_passes_filters(row: FunctionRow, filters: dict, today: Optional[date] =
     if mods and str(meta.get("module") or "") not in mods:
         return False
     procs = filters.get("processes")
-    if procs and str(meta.get("process") or "") not in procs:
+    # b15 fix: meta lưu key 'quy_trinh' (theo parser), không phải 'process'.
+    # Filter cũ luôn miss → không filter được → chart không đúng scope.
+    if procs and str(meta.get("quy_trinh") or meta.get("process") or "") not in procs:
         return False
     prios = filters.get("priorities")
     if prios and str(meta.get("priority") or "") not in prios:
@@ -206,7 +210,8 @@ def _row_passes_filters(row: FunctionRow, filters: dict, today: Optional[date] =
         return False
     fgs = filters.get("fitgaps")
     if fgs:
-        v = str(meta.get("fitgap") or "").strip()
+        # b15 fix: meta key là 'fit_gap' theo parser; 'fitgap' luôn None.
+        v = str(meta.get("fit_gap") or meta.get("fitgap") or "").strip()
         # FIT/GAP có thể là "FIT / GAP" → split
         vs = [p.strip() for p in v.replace("/", ",").split(",") if p.strip()]
         if not any(x in fgs for x in vs):
@@ -231,12 +236,28 @@ def _row_passes_filters(row: FunctionRow, filters: dict, today: Optional[date] =
 # --- Measure computation -----------------------------------------------
 
 MEASURES = {
-    "count": "Số function",
-    "sum_mh": "Tổng MH",
-    "sum_md": "Tổng MD (MH/8)",
-    "pct_closed": "% Closed",
-    "pct_overdue": "% Overdue",
-    "avg_duration": "Duration trung bình (ngày)",
+    # b15 (b): label tiếng Việt cho wizard dropdown + legend/axis.
+    "count":         "Số task",
+    "pct_closed":    "% Closed",
+    "overdue_count": "Số task trễ",
+    "pct_overdue":   "% task trễ",
+    "sum_mh":        "Sum MH",
+    "sum_md":        "Sum MD",
+    "avg_duration":  "Avg Duration",
+    "pct_ontime":    "% On-time",
+}
+
+
+# Format hint cho FE data label — phân biệt "%" vs "count" vs "hour".
+MEASURE_FORMAT = {
+    "count":         "int",
+    "pct_closed":    "pct",
+    "overdue_count": "int",
+    "pct_overdue":   "pct",
+    "sum_mh":        "hour",
+    "sum_md":        "day",
+    "avg_duration":  "day",
+    "pct_ontime":    "pct",
 }
 
 FIELDS = {
@@ -255,13 +276,20 @@ FIELDS = {
 }
 
 
-def _measure_value(rows: list[FunctionRow], measure: str) -> float:
-    """Compute 1 aggregate value cho subset rows."""
+def _measure_value(rows: list[FunctionRow], measure: str, today: Optional[date] = None) -> float:
+    """Compute 1 aggregate value cho subset rows.
+
+    b15 (a) fix: truyền today qua _row_is_overdue để đảm bảo giá trị nhất
+    quán với `dashboard_engine._is_overdue` — trước đây fallback về
+    date.today() ở mỗi call nên aggregate có thể lệch nếu qua nửa đêm.
+    """
     if not rows:
         return 0
     m = (measure or "count").lower()
     if m == "count":
         return len(rows)
+    if m == "overdue_count":
+        return sum(1 for r in rows if _row_is_overdue(r, today))
     if m == "sum_mh":
         return round(sum(_row_total_mh(r) for r in rows), 1)
     if m == "sum_md":
@@ -270,8 +298,14 @@ def _measure_value(rows: list[FunctionRow], measure: str) -> float:
         closed = sum(1 for r in rows if _row_is_closed(r))
         return round(closed / len(rows) * 100, 1)
     if m == "pct_overdue":
-        overdue = sum(1 for r in rows if _row_is_overdue(r))
+        overdue = sum(1 for r in rows if _row_is_overdue(r, today))
         return round(overdue / len(rows) * 100, 1)
+    if m == "pct_ontime":
+        # b15 (a): "% On-time" = 100 - pct_overdue. Trước đây user chỉ có
+        # pct_overdue → khi tất cả row đều overdue -> 100% khó phân biệt vs
+        # empty bucket. On-time làm rõ nghĩa cho PM report.
+        overdue = sum(1 for r in rows if _row_is_overdue(r, today))
+        return round((len(rows) - overdue) / len(rows) * 100, 1)
     if m == "avg_duration":
         durs = [_row_duration_days(r) for r in rows]
         vals = [d for d in durs if d is not None]
@@ -321,7 +355,7 @@ def aggregate_chart(
     labels_ordered = sorted(x_to_series_rows.keys(),
                             key=lambda k: (-_measure_value(
                                 [r for slist in x_to_series_rows[k].values() for r in slist],
-                                y_measure), k))
+                                y_measure, today), k))
     labels = labels_ordered[:limit_x]
 
     # 4) build datasets
@@ -342,7 +376,7 @@ def aggregate_chart(
         vals = []
         for x in labels:
             rows_here = x_to_series_rows.get(x, {}).get(s, [])
-            vals.append(_measure_value(rows_here, y_measure))
+            vals.append(_measure_value(rows_here, y_measure, today))
         datasets.append({
             "label": (s if series_field else MEASURES.get(y_measure, y_measure)),
             "data": vals,
@@ -354,6 +388,8 @@ def aggregate_chart(
         "meta": {
             "x_field": x_field,
             "y_measure": y_measure,
+            "y_measure_label": MEASURES.get(y_measure, y_measure),
+            "y_measure_format": MEASURE_FORMAT.get(y_measure, "int"),
             "series_field": series_field,
             "total_rows_after_filter": len(rows_filtered),
         },
