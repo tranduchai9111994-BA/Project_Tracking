@@ -205,6 +205,105 @@ def compute_capacity_load(
     }
 
 
+def compute_aging_wip(
+    data: ParsedData,
+    threshold_days: int = 14,
+    today: Optional[date] = None,
+) -> dict[str, Any]:
+    """
+    T22 — Track task "In-progress" quá lâu (aging WIP).
+
+    Xác định: phase có status = "In-progress" và Start date đã qua ≥ threshold_days
+    → coi là "aging". Fallback: nếu không có Start date, dùng End date đã lên kế
+    hoạch nhưng chưa close.
+
+    Args:
+        threshold_days: ngưỡng aging (mặc định 14 ngày).
+        today: ngày reference (mặc định date.today()).
+
+    Returns:
+      {
+        "threshold_days": N,
+        "today": iso date,
+        "summary": {
+            "total_wip": N (tất cả phase đang In-progress),
+            "total_aging": N (WIP vượt threshold),
+            "avg_aging_days": float (chỉ tính aging),
+            "max_aging_days": int,
+        },
+        "items": [
+          {row_num, ma_cn, ten_cn, module, quy_trinh, phase, status,
+           start_date, end_date, pic, aging_days, over_by_days,
+           priority, complexity}, ...
+        ]  # sắp theo aging_days desc
+      }
+    """
+    if today is None:
+        today = date.today()
+
+    items: list[dict[str, Any]] = []
+    total_wip = 0
+
+    for row in data.rows:
+        ma_cn = str(row.meta.get("ma_cn") or "").strip()
+        ten_cn = str(row.meta.get("ten_cn") or "").strip()
+        module = str(row.meta.get("module") or "").strip()
+        quy_trinh = str(row.meta.get("quy_trinh") or row.meta.get("process") or "").strip()
+        priority = str(row.meta.get("priority") or "").strip()
+        complexity = str(row.meta.get("complexity") or "").strip()
+
+        for phase_name, pd in row.phases.items():
+            status = str(pd.status or "").strip()
+            if status != "In-progress":
+                continue
+            total_wip += 1
+
+            # Ngày bắt đầu tính aging: ưu tiên Start; fallback End (nếu End
+            # đã qua nhưng chưa Close thì vẫn đang aging).
+            anchor = pd.start_date or pd.end_date
+            if not anchor:
+                # Không có date → skip (không đủ thông tin tính aging)
+                continue
+            aging = (today - anchor).days
+            if aging < threshold_days:
+                continue
+
+            items.append({
+                "row_num": row.row_num,
+                "ma_cn": ma_cn,
+                "ten_cn": ten_cn,
+                "module": module,
+                "quy_trinh": quy_trinh,
+                "phase": phase_name,
+                "status": status,
+                "start_date": pd.start_date.isoformat() if pd.start_date else None,
+                "end_date": pd.end_date.isoformat() if pd.end_date else None,
+                "pic": ", ".join(pd.pics) if pd.pics else "",
+                "aging_days": aging,
+                "over_by_days": aging - threshold_days,
+                "priority": priority,
+                "complexity": complexity,
+            })
+
+    items.sort(key=lambda x: x["aging_days"], reverse=True)
+
+    total_aging = len(items)
+    avg_aging = round(sum(i["aging_days"] for i in items) / total_aging, 1) if total_aging else 0.0
+    max_aging = max((i["aging_days"] for i in items), default=0)
+
+    return {
+        "threshold_days": threshold_days,
+        "today": today.isoformat(),
+        "summary": {
+            "total_wip": total_wip,
+            "total_aging": total_aging,
+            "avg_aging_days": avg_aging,
+            "max_aging_days": max_aging,
+        },
+        "items": items,
+    }
+
+
 def compute_slow_heatmap(data: ParsedData, today: Optional[date] = None) -> dict[str, Any]:
     """
     Matrix PIC × Phase: số phase-record overdue hoặc stalled-ish (End < today, not done).

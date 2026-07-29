@@ -2308,6 +2308,96 @@ def export_function_diff_report(
 
 
 # ==========================================================================
+# T22 — Aging WIP Report
+# ==========================================================================
+
+
+def export_aging_wip_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+    subtitle: str = "",
+) -> str:
+    """
+    Xuất báo cáo Excel Aging WIP.
+    payload từ analyzer.advanced_metrics.compute_aging_wip().
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "AgingWIP"
+    items = payload.get("items") or []
+    summary = payload.get("summary") or {}
+    threshold = payload.get("threshold_days", 14)
+
+    columns = [
+        ("STT", 6),
+        ("Row #", 8),
+        ("Mã CN", 14),
+        ("Tên chức năng", 32),
+        ("Module", 10),
+        ("Quy trình", 24),
+        ("Phase", 16),
+        ("Status", 12),
+        ("Start", 12),
+        ("End", 12),
+        ("PIC", 20),
+        ("Aging (ngày)", 12),
+        ("Over ngưỡng", 12),
+        ("Priority", 12),
+        ("Complexity", 12),
+    ]
+    data_rows = [
+        [
+            idx + 1,
+            it.get("row_num", ""),
+            it.get("ma_cn", ""),
+            it.get("ten_cn", ""),
+            it.get("module", ""),
+            it.get("quy_trinh", ""),
+            it.get("phase", ""),
+            it.get("status", ""),
+            it.get("start_date", ""),
+            it.get("end_date", ""),
+            it.get("pic", ""),
+            it.get("aging_days", 0),
+            it.get("over_by_days", 0),
+            it.get("priority", ""),
+            it.get("complexity", ""),
+        ]
+        for idx, it in enumerate(items)
+    ]
+
+    # Tô màu theo mức độ over: <7d = vàng, 7-30d = cam, >30d = đỏ.
+    def _fill(_row_idx: int, offset: int):
+        if offset >= len(items):
+            return None
+        over = items[offset].get("over_by_days", 0)
+        if over > 30:
+            return RED_FILL
+        if over >= 7:
+            return ORANGE_FILL
+        return YELLOW_FILL
+
+    _write_sheet(
+        ws,
+        title=f"AGING WIP — In-progress > {threshold} ngày",
+        subtitle=subtitle or (
+            f"Tổng WIP: {summary.get('total_wip', 0)} | Aging: {summary.get('total_aging', 0)} | "
+            f"Avg={summary.get('avg_aging_days', 0)}d Max={summary.get('max_aging_days', 0)}d | "
+            f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+        ),
+        columns=columns,
+        data_rows=data_rows,
+        row_fill_fn=_fill,
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"Aging_WIP_{date.today().strftime('%Y%m%d')}.xlsx")
+    wb.save(filepath)
+    wb.close()
+    return filepath
+
+
+# ==========================================================================
 # T21 — Data Quality Report
 # ==========================================================================
 

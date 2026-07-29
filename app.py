@@ -1895,6 +1895,54 @@ def project_module_overview(slug: str):
 
 
 # ==========================================================================
+# T22 — Aging WIP tracking
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/aging-wip")
+def project_aging_wip(slug: str):
+    """
+    Trả danh sách phase In-progress vượt threshold ngày.
+    Query params:
+      threshold: int (mặc định 14)
+      + module/process/pic để filter (global filter).
+    """
+    from analyzer.advanced_metrics import compute_aging_wip
+    state, err = _require_state(slug)
+    if err:
+        return err
+    try:
+        threshold = int(request.args.get("threshold") or 14)
+        threshold = max(1, min(365, threshold))  # clamp 1-365
+    except ValueError:
+        threshold = 14
+    data = _filtered_data_from_request(state)
+    return jsonify(compute_aging_wip(data, threshold_days=threshold))
+
+
+@app.route("/api/projects/<slug>/export-aging-wip")
+def project_export_aging_wip(slug: str):
+    from analyzer.advanced_metrics import compute_aging_wip
+    from exporter.excel_exporter import export_aging_wip_report
+    state, err = _require_state(slug)
+    if err:
+        return err
+    try:
+        threshold = int(request.args.get("threshold") or 14)
+        threshold = max(1, min(365, threshold))
+    except ValueError:
+        threshold = 14
+    data = _filtered_data_from_request(state)
+    payload = compute_aging_wip(data, threshold_days=threshold)
+    project = _project_mgr.get_project(slug)
+    subtitle = (
+        f"Project: {project.name if project else slug} | "
+        f"Ngưỡng: {threshold} ngày | Ngày: {date.today().strftime('%d/%m/%Y')}"
+    )
+    filepath = export_aging_wip_report(payload, output_dir="uploads", subtitle=subtitle)
+    return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+
+
+# ==========================================================================
 # T21 — Data Quality Panel
 # ==========================================================================
 

@@ -58,6 +58,7 @@
     <a href="#section-overdue">Overdue</a>
     <a href="#section-digest">Weekly Digest</a>
     <a href="#section-dataquality">Data Quality</a>
+    <a href="#section-aging-wip">Aging WIP</a>
     <a href="#section-history">Upload history</a>
 </nav>
 
@@ -1682,6 +1683,57 @@
                 </table>
             </div>
             <div id="dqPagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- ========================================================================
+             T22 — AGING WIP tracking
+             Danh sách phase In-progress vượt ngưỡng N ngày → đánh dấu cần push.
+             Slider threshold live-update. Ẩn mặc định (JS load khi có data).
+             ======================================================================== -->
+        <section id="section-aging-wip" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">⏳ Aging WIP</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Task In-progress quá lâu (kể từ Start date) → cần push</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <label class="text-sm text-gray-700 flex items-center gap-2">
+                        Ngưỡng:
+                        <input id="agingThreshold" type="range" min="1" max="90"
+                               value="14" step="1" class="w-32">
+                        <span id="agingThresholdVal" class="font-semibold text-blue-700 min-w-[3rem]">14 ngày</span>
+                    </label>
+                    <button onclick="exportAgingWip()"
+                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
+                        📥 Xuất Excel
+                    </button>
+                </div>
+            </div>
+
+            <!-- Summary strip -->
+            <div id="agingSummary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-100 text-gray-700">
+                        <tr>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên chức năng</th>
+                            <th class="px-2 py-2 text-left">Module</th>
+                            <th class="px-2 py-2 text-left">Phase</th>
+                            <th class="px-2 py-2 text-left">PIC</th>
+                            <th class="px-2 py-2 text-left">Start</th>
+                            <th class="px-2 py-2 text-right cursor-pointer" onclick="_agingSort('aging_days')">
+                                Aging (ngày) ⇅
+                            </th>
+                            <th class="px-2 py-2 text-right">Over</th>
+                            <th class="px-2 py-2 text-left">Priority</th>
+                        </tr>
+                    </thead>
+                    <tbody id="agingTable"></tbody>
+                </table>
+            </div>
+            <div id="agingPagerWrap" class="mt-2"></div>
         </section>
 
         <section id="section-history" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">

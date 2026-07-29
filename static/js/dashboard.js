@@ -1200,6 +1200,9 @@ function renderDashboard() {
     // T21: Data Quality panel (lazy fetch — không block render chính)
     _safe("dataQuality", loadDataQuality);
 
+    // T22: Aging WIP tracking
+    _safe("agingWip", loadAgingWip);
+
     // Populate PIC dropdown (export by pic)
     _safe("picExport", populatePicExportSelect);
 }
@@ -9146,5 +9149,166 @@ window._dqGoPage = function (p) {
 window.exportDataQuality = function () {
     const qs = _buildFilterQuery();
     const url = `/api/projects/${currentProjectSlug}/export-data-quality${qs ? "?" + qs : ""}`;
+    window.location.href = url;
+};
+
+// ========================================================================
+// T22 — AGING WIP TRACKING
+// ========================================================================
+let _agingState = {
+    threshold: 14,
+    items: [],
+    summary: null,
+    page: 1,
+    pageSize: 30,
+    sortBy: "aging_days",
+    sortDesc: true,
+};
+
+const _AGING_KEY = () => `aging_threshold_${currentProjectSlug || "default"}`;
+
+async function loadAgingWip() {
+    const section = document.getElementById("section-aging-wip");
+    if (!section) return;
+    // Restore threshold từ localStorage (per-project)
+    try {
+        const saved = parseInt(localStorage.getItem(_AGING_KEY()) || "");
+        if (saved && saved > 0) _agingState.threshold = saved;
+    } catch (e) {}
+
+    _agingBindEvents();
+    // Set slider display sync
+    const slider = document.getElementById("agingThreshold");
+    const label = document.getElementById("agingThresholdVal");
+    if (slider) slider.value = _agingState.threshold;
+    if (label) label.textContent = `${_agingState.threshold} ngày`;
+
+    await _agingFetch();
+    section.classList.remove("hidden");
+}
+
+async function _agingFetch() {
+    try {
+        const qs = _buildFilterQuery();
+        const url = `/api/projects/${currentProjectSlug}/aging-wip?threshold=${_agingState.threshold}${qs ? "&" + qs : ""}`;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        _agingState.items = d.items || [];
+        _agingState.summary = d.summary || null;
+        _agingState.page = 1;
+        _agingRenderSummary();
+        _agingRenderTable();
+    } catch (err) {
+        console.error("[agingWip]", err);
+    }
+}
+
+function _agingBindEvents() {
+    const slider = document.getElementById("agingThreshold");
+    if (slider && !slider._agingBound) {
+        slider._agingBound = true;
+        // Debounce input event để tránh spam request
+        let timer = null;
+        slider.addEventListener("input", (e) => {
+            const v = parseInt(e.target.value);
+            _agingState.threshold = v;
+            const label = document.getElementById("agingThresholdVal");
+            if (label) label.textContent = `${v} ngày`;
+            try { localStorage.setItem(_AGING_KEY(), String(v)); } catch (e) {}
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => _agingFetch(), 250);
+        });
+    }
+}
+
+function _agingRenderSummary() {
+    const wrap = document.getElementById("agingSummary");
+    if (!wrap || !_agingState.summary) return;
+    const s = _agingState.summary;
+    const pctAging = s.total_wip ? Math.round(100 * s.total_aging / s.total_wip) : 0;
+    wrap.innerHTML = `
+        <div class="bg-slate-50 rounded-lg p-3 border">
+            <div class="text-xs text-gray-500">Tổng WIP (In-progress)</div>
+            <div class="text-2xl font-bold text-gray-800">${s.total_wip}</div>
+        </div>
+        <div class="bg-orange-50 rounded-lg p-3 border border-orange-200">
+            <div class="text-xs text-orange-700">Aging (> ${_agingState.threshold}d)</div>
+            <div class="text-2xl font-bold text-orange-700">${s.total_aging} <span class="text-sm font-normal">(${pctAging}%)</span></div>
+        </div>
+        <div class="bg-yellow-50 rounded-lg p-3 border border-yellow-200">
+            <div class="text-xs text-yellow-700">Avg aging</div>
+            <div class="text-2xl font-bold text-yellow-700">${s.avg_aging_days} <span class="text-sm font-normal">ngày</span></div>
+        </div>
+        <div class="bg-red-50 rounded-lg p-3 border border-red-200">
+            <div class="text-xs text-red-700">Max aging</div>
+            <div class="text-2xl font-bold text-red-700">${s.max_aging_days} <span class="text-sm font-normal">ngày</span></div>
+        </div>
+    `;
+}
+
+function _agingRenderTable() {
+    const tbody = document.getElementById("agingTable");
+    if (!tbody) return;
+    const items = _agingState.items.slice().sort((a, b) => {
+        const av = a[_agingState.sortBy], bv = b[_agingState.sortBy];
+        const cmp = (av > bv ? 1 : av < bv ? -1 : 0);
+        return _agingState.sortDesc ? -cmp : cmp;
+    });
+    if (!items.length) {
+        tbody.innerHTML = `<tr><td colspan="9" class="text-center py-6 text-green-600">
+            ✅ Không có WIP nào vượt ngưỡng ${_agingState.threshold} ngày!
+        </td></tr>`;
+        const pager = document.getElementById("agingPagerWrap");
+        if (pager) pager.innerHTML = "";
+        return;
+    }
+    const start = (_agingState.page - 1) * _agingState.pageSize;
+    const pageItems = items.slice(start, start + _agingState.pageSize);
+    const overColor = (over) => over > 30 ? "text-red-700 font-bold" : over >= 7 ? "text-orange-700 font-semibold" : "text-yellow-700";
+    tbody.innerHTML = pageItems.map(it => `
+        <tr class="border-b hover:bg-slate-50">
+            <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.ma_cn || "—")}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.ten_cn || "")}</td>
+            <td class="px-2 py-1.5 text-blue-700">${escapeHtml(it.module || "")}</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.phase || "")}</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.pic || "—")}</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.start_date || "—")}</td>
+            <td class="px-2 py-1.5 text-right font-semibold">${it.aging_days}d</td>
+            <td class="px-2 py-1.5 text-right ${overColor(it.over_by_days)}">+${it.over_by_days}d</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.priority || "")}</td>
+        </tr>
+    `).join("");
+    const totalPages = Math.max(1, Math.ceil(items.length / _agingState.pageSize));
+    const pager = document.getElementById("agingPagerWrap");
+    if (pager) {
+        pager.innerHTML = `
+            <div class="flex items-center justify-between text-xs text-gray-600">
+                <div>Hiển thị ${start + 1}–${Math.min(start + pageItems.length, items.length)} / ${items.length}</div>
+                <div class="flex items-center gap-1">
+                    <button onclick="_agingGoPage(${_agingState.page - 1})" class="px-2 py-0.5 border rounded ${_agingState.page <= 1 ? "opacity-40 cursor-not-allowed" : "hover:bg-slate-100"}" ${_agingState.page <= 1 ? "disabled" : ""}>◀</button>
+                    <span>Trang ${_agingState.page}/${totalPages}</span>
+                    <button onclick="_agingGoPage(${_agingState.page + 1})" class="px-2 py-0.5 border rounded ${_agingState.page >= totalPages ? "opacity-40 cursor-not-allowed" : "hover:bg-slate-100"}" ${_agingState.page >= totalPages ? "disabled" : ""}>▶</button>
+                </div>
+            </div>
+        `;
+    }
+}
+
+window._agingSort = function (col) {
+    if (_agingState.sortBy === col) _agingState.sortDesc = !_agingState.sortDesc;
+    else { _agingState.sortBy = col; _agingState.sortDesc = true; }
+    _agingRenderTable();
+};
+
+window._agingGoPage = function (p) {
+    const totalPages = Math.max(1, Math.ceil(_agingState.items.length / _agingState.pageSize));
+    _agingState.page = Math.max(1, Math.min(p, totalPages));
+    _agingRenderTable();
+};
+
+window.exportAgingWip = function () {
+    const qs = _buildFilterQuery();
+    const url = `/api/projects/${currentProjectSlug}/export-aging-wip?threshold=${_agingState.threshold}${qs ? "&" + qs : ""}`;
     window.location.href = url;
 };
