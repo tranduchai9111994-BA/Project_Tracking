@@ -976,14 +976,25 @@
 
         <section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <div id="section-module" class="bg-white dashboard-card rounded-xl shadow-md p-5">
-                <div class="flex items-center justify-between gap-2 mb-1">
+                <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-module">📊 Tổng quan theo Module</h3>
-                    <button onclick="exportChartData('module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <div class="flex items-center gap-2 no-print">
+                        <!-- Task 17: segmented control nhóm theo -->
+                        <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+                            <button data-mo-group="module" onclick="setModuleGroupBy('module')"
+                                    class="mo-group-btn px-2 py-1 bg-blue-600 text-white">Module</button>
+                            <button data-mo-group="process" onclick="setModuleGroupBy('process')"
+                                    class="mo-group-btn px-2 py-1 border-l hover:bg-blue-50">Quy trình</button>
+                            <button data-mo-group="both" onclick="setModuleGroupBy('both')"
+                                    class="mo-group-btn px-2 py-1 border-l hover:bg-blue-50">Cả 2</button>
+                        </div>
+                        <button onclick="exportChartData('module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
+                    </div>
                 </div>
                 <p class="chart-scope"></p>
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm">
-                        <thead>
+                        <thead id="moduleTableHead">
                             <tr class="bg-blue-800 text-white">
                                 <th class="px-2 py-2 text-left">#</th>
                                 <th class="px-2 py-2 text-left">Module</th>
@@ -1001,9 +1012,18 @@
 
             <div id="section-tasktype" class="bg-white dashboard-card rounded-xl shadow-md p-5 relative">
                 <button class="fs-btn no-print" onclick="fullscreenChart('chartTaskType')">⛶</button>
-                <div class="flex items-center justify-between gap-2 pr-8">
+                <div class="flex items-center justify-between gap-2 pr-8 flex-wrap">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-tasktype">📈 Tiến độ theo công việc</h3>
-                    <button onclick="exportChartData('task_type')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <div class="flex items-center gap-2 no-print">
+                        <!-- Task 17: nhóm theo Module/Quy trình -->
+                        <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+                            <button data-tt-group="module" onclick="setTaskTypeGroupBy('module')"
+                                    class="tt-group-btn px-2 py-1 bg-blue-600 text-white">Module</button>
+                            <button data-tt-group="process" onclick="setTaskTypeGroupBy('process')"
+                                    class="tt-group-btn px-2 py-1 border-l hover:bg-blue-50">Quy trình</button>
+                        </div>
+                        <button onclick="exportChartData('task_type')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
+                    </div>
                 </div>
                 <p class="chart-subtitle">% function Closed trung bình theo loại công việc (click cột để xem chi tiết)</p>
                 <p class="chart-scope"></p>

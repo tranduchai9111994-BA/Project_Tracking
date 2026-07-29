@@ -1860,6 +1860,28 @@ def project_custom_dashboard_export(slug: str, item_id: str):
 
 
 # ==========================================================================
+# Task 17: overview theo `module | process | both` (rebuild bảng khi user
+# đổi segmented control mà không cần full re-fetch dashboard).
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/module-overview")
+def project_module_overview(slug: str):
+    from analyzer.dashboard_engine import DashboardEngine
+    state, err = _require_state(slug)
+    if err:
+        return err
+    group_by = (request.args.get("group_by") or "module").lower()
+    if group_by not in ("module", "process", "both"):
+        group_by = "module"
+    # DashboardEngine.__init__(today=None, ...): pass no arg → dùng date.today().
+    engine = DashboardEngine()
+    return jsonify({
+        "group_by": group_by,
+        "rows": engine._overview_by(state["data"], group_by=group_by),
+    })
+
+
+# ==========================================================================
 # Kanban (Task 10 — Kanban theo tuần)
 # ==========================================================================
 

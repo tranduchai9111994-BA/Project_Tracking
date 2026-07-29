@@ -175,48 +175,88 @@ class DashboardEngine:
     # ------------------------------------------------------------------
 
     def _module_overview(self, data: ParsedData) -> list[dict]:
+        return self._overview_by(data, group_by="module")
+
+    def _overview_by(self, data: ParsedData, group_by: str = "module") -> list[dict]:
+        """Task 17: aggregate overview theo `module` | `process` | `both`.
+
+        - `module`  → 1 row / module (như cũ).
+        - `process` → 1 row / (module, quy_trinh), giữ cột module để phân biệt.
+        - `both`    → giống module + attach `children[]` là các process rows
+          của module đó → FE render nested/expand.
+        """
+        gb = (group_by or "module").lower().strip()
+        if gb == "process":
+            return self._overview_by_process(data)
+        if gb == "both":
+            mod_rows = self._overview_by(data, group_by="module")
+            proc_rows = self._overview_by_process(data)
+            by_mod: dict[str, list[dict]] = {}
+            for pr in proc_rows:
+                by_mod.setdefault(pr["module"], []).append(pr)
+            for m in mod_rows:
+                m["children"] = by_mod.get(m["module"], [])
+            return mod_rows
+        # default: module
         result = []
         module_rows = self._group_by_module(data)
-        last_phase = data.all_phases[-1] if data.all_phases else None
-
         for idx, module in enumerate(data.all_modules, 1):
             rows = module_rows.get(module, [])
-            total = len(rows)
-
-            # Đếm quy trình unique
-            quy_trinh_set = {r.meta.get("quy_trinh") for r in rows if r.meta.get("quy_trinh")}
-            quy_trinh_count = len(quy_trinh_set)
-
-            # % weighted_all: closed_records / (row × phase)
-            all_phases_cnt = len(data.all_phases)
-            if total > 0 and all_phases_cnt > 0:
-                closed_records = sum(
-                    1
-                    for r in rows
-                    for ph in data.all_phases
-                    if r.phases.get(ph, PhaseData()).status == "Closed"
-                )
-                progress_pct = round(closed_records / (total * all_phases_cnt) * 100, 2)
-            else:
-                progress_pct = 0
-
-            # Phase đang active nhiều nhất (trạng thái chung)
-            active_phase = self._detect_active_phase(rows, data.all_phases)
-
-            # Đếm overdue
-            overdue_in_module = sum(1 for r in rows if self._row_has_overdue(r))
-
-            result.append({
-                "stt": idx,
-                "module": module,
-                "total": total,
-                "quy_trinh_count": quy_trinh_count,
-                "progress_pct": progress_pct,
-                "active_phase": active_phase,
-                "overdue_count": overdue_in_module,
-            })
-
+            result.append(self._one_overview_entry(
+                data, rows, idx=idx, label=module, module=module,
+            ))
         return result
+
+    def _overview_by_process(self, data: ParsedData) -> list[dict]:
+        """1 row / (module, quy_trinh) — sort theo module rồi process."""
+        by_key: dict[tuple[str, str], list] = {}
+        for r in data.rows:
+            m = r.meta.get("module") or ""
+            p = r.meta.get("quy_trinh") or ""
+            if not p:
+                continue  # skip row không có quy_trinh
+            by_key.setdefault((m, p), []).append(r)
+        sorted_keys = sorted(by_key.keys(), key=lambda t: (t[0], t[1]))
+        result = []
+        for idx, (m, p) in enumerate(sorted_keys, 1):
+            rows = by_key[(m, p)]
+            result.append(self._one_overview_entry(
+                data, rows, idx=idx, label=p, module=m, process=p,
+            ))
+        return result
+
+    def _one_overview_entry(
+        self, data: ParsedData, rows, *, idx: int, label: str,
+        module: str, process: str = "",
+    ) -> dict:
+        """Đóng gói 1 entry overview theo weighted_all formula."""
+        total = len(rows)
+        all_phases_cnt = len(data.all_phases)
+        quy_trinh_set = {r.meta.get("quy_trinh") for r in rows if r.meta.get("quy_trinh")}
+        quy_trinh_count = len(quy_trinh_set)
+        if total > 0 and all_phases_cnt > 0:
+            closed_records = sum(
+                1
+                for r in rows
+                for ph in data.all_phases
+                if r.phases.get(ph, PhaseData()).status == "Closed"
+            )
+            progress_pct = round(closed_records / (total * all_phases_cnt) * 100, 2)
+        else:
+            progress_pct = 0
+        active_phase = self._detect_active_phase(rows, data.all_phases)
+        overdue_count = sum(1 for r in rows if self._row_has_overdue(r))
+        return {
+            "stt": idx,
+            "module": module,
+            "process": process,
+            "label": label,
+            "total": total,
+            "quy_trinh_count": quy_trinh_count,
+            "progress_pct": progress_pct,
+            "active_phase": active_phase,
+            "overdue_count": overdue_count,
+        }
 
     # ------------------------------------------------------------------
     # Phase × Status matrix
@@ -276,28 +316,39 @@ class DashboardEngine:
                 task_types.append(tt)
                 seen.add(tt)
 
-        # Tính % closed mỗi module × task_type (weighted_all).
-        # Denominator = len(rows_module) × len(phases_for_tt) — coi phase blank là chưa làm.
-        by_module = {}
-        for module in data.all_modules:
-            rows = [r for r in data.rows if r.meta.get("module") == module]
-            by_module[module] = {}
-            for tt in task_types:
-                phases_for_tt = task_phase_map[tt]
-                total_records = len(rows) * len(phases_for_tt)
-                closed_count = sum(
-                    1
-                    for r in rows
-                    for ph in phases_for_tt
-                    if r.phases.get(ph, PhaseData()).status == "Closed"
-                )
-                pct = round(closed_count / total_records * 100, 2) if total_records > 0 else 0
-                by_module[module][tt] = pct
+        # Tính % closed mỗi group × task_type (weighted_all).
+        # Denominator = len(rows_group) × len(phases_for_tt) — coi phase blank là chưa làm.
+        def _aggregate_by(get_key):
+            grouped: dict = defaultdict(list)
+            for r in data.rows:
+                k = get_key(r)
+                if k:
+                    grouped[k].append(r)
+            out: dict = {}
+            for key, rows in grouped.items():
+                out[key] = {}
+                for tt in task_types:
+                    phases_for_tt = task_phase_map[tt]
+                    total_records = len(rows) * len(phases_for_tt)
+                    closed_count = sum(
+                        1
+                        for r in rows
+                        for ph in phases_for_tt
+                        if r.phases.get(ph, PhaseData()).status == "Closed"
+                    )
+                    pct = round(closed_count / total_records * 100, 2) if total_records > 0 else 0
+                    out[key][tt] = pct
+            return out
+
+        by_module = _aggregate_by(lambda r: r.meta.get("module") or "")
+        # Task 17: thêm by_process cho toggle nhóm theo Quy trình.
+        by_process = _aggregate_by(lambda r: r.meta.get("quy_trinh") or "")
 
         return {
             "task_types": task_types,
             "task_phase_map": {k: v for k, v in task_phase_map.items()},
             "by_module": by_module,
+            "by_process": by_process,
         }
 
     # ------------------------------------------------------------------

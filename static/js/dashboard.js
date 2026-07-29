@@ -1147,8 +1147,11 @@ function renderDashboard() {
     };
 
     _safe("summary", renderSummaryCards);
-    _safe("module", renderModuleTable);
-    _safe("taskType", renderTaskTypeChart);
+    _safe("module", () => {
+        _loadModuleGroupBy();
+        _fetchModuleOverview();
+    });
+    _safe("taskType", () => { _loadTaskTypeGroupBy(); renderTaskTypeChart(); });
     _safe("phaseMatrix", renderPhaseMatrix);
     _safe("phaseStacked", renderPhaseStackedChart);
     _safe("pic", renderPICChart);
@@ -1246,13 +1249,168 @@ function renderSummaryCards() {
 // ========================================================================
 // 2. MODULE TABLE
 // ========================================================================
+// Task 17: state cho segmented control "Nhóm theo" của Tổng quan Module.
+// Persist trong localStorage cho từng project.
+let _moduleGroupBy = "module";   // "module" | "process" | "both"
+const _MO_EXPANDED = new Set();  // module names đang expand khi group_by=both
+let _taskTypeGroupBy = "module"; // "module" | "process" cho chart task-type
+
+function _ttKey() { return `taskTypeGroupBy:${currentProjectSlug || "default"}`; }
+function _loadTaskTypeGroupBy() {
+    try { _taskTypeGroupBy = localStorage.getItem(_ttKey()) || "module"; }
+    catch(e) { _taskTypeGroupBy = "module"; }
+    _syncTtGroupButtons();
+}
+function _syncTtGroupButtons() {
+    document.querySelectorAll(".tt-group-btn").forEach(btn => {
+        const active = btn.dataset.ttGroup === _taskTypeGroupBy;
+        btn.classList.toggle("bg-blue-600", active);
+        btn.classList.toggle("text-white", active);
+        btn.classList.toggle("hover:bg-blue-50", !active);
+    });
+}
+window.setTaskTypeGroupBy = function (mode) {
+    _taskTypeGroupBy = mode;
+    try { localStorage.setItem(_ttKey(), mode); } catch(e){}
+    _syncTtGroupButtons();
+    renderTaskTypeChart();
+};
+
+function _mgKey() { return `moduleGroupBy:${currentProjectSlug || "default"}`; }
+function _loadModuleGroupBy() {
+    try { _moduleGroupBy = localStorage.getItem(_mgKey()) || "module"; }
+    catch(e) { _moduleGroupBy = "module"; }
+    _syncMoGroupButtons();
+}
+function _syncMoGroupButtons() {
+    document.querySelectorAll(".mo-group-btn").forEach(btn => {
+        const active = btn.dataset.moGroup === _moduleGroupBy;
+        btn.classList.toggle("bg-blue-600", active);
+        btn.classList.toggle("text-white", active);
+        btn.classList.toggle("hover:bg-blue-50", !active);
+    });
+}
+
+window.setModuleGroupBy = async function (mode) {
+    _moduleGroupBy = mode;
+    try { localStorage.setItem(_mgKey(), mode); } catch(e){}
+    _syncMoGroupButtons();
+    await _fetchModuleOverview();
+};
+
+async function _fetchModuleOverview() {
+    if (_moduleGroupBy === "module") {
+        // Dùng data đã có sẵn trong metricsData (backward-compat).
+        renderModuleTable();
+        return;
+    }
+    // Fetch từ endpoint mới
+    try {
+        const url = `/api/projects/${currentProjectSlug}/module-overview?group_by=${_moduleGroupBy}`;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        _renderModuleTableCustom(d.rows, _moduleGroupBy);
+    } catch (err) {
+        console.error("[moduleOverview]", err);
+        showToast("Lỗi tải overview: " + err.message, "red");
+    }
+}
+
+function _mgProgressColor(pct) {
+    return pct >= 80 ? "#22c55e"
+         : pct >= 50 ? "#eab308"
+         : pct >= 20 ? "#f97316" : "#ef4444";
+}
+
+function _mgRowHtml(r, opts = {}) {
+    const color = _mgProgressColor(r.progress_pct);
+    const indent = opts.indent ? "pl-6" : "";
+    const clickAttr = opts.onclick
+        ? `onclick="${opts.onclick}"`
+        : `onclick="_moduleRowClickGeneric(this)"`;
+    const dataAttrs = `data-mod="${escapeAttr(r.module || "")}" data-proc="${escapeAttr(r.process || "")}"`;
+    return `<tr class="border-b hover:bg-blue-50 cursor-pointer" ${dataAttrs} ${clickAttr}>
+        <td class="px-2 py-2 text-center">${r.stt}</td>
+        <td class="px-2 py-2 font-semibold text-blue-700 ${indent}">
+            ${opts.prefix || ""}${escapeHtml(r.label || r.module)}
+        </td>
+        <td class="px-2 py-2 text-center">${r.total}</td>
+        <td class="px-2 py-2 text-center">${r.quy_trinh_count}</td>
+        <td class="px-2 py-2">
+            <div class="progress-bar-wrap">
+                <div class="progress-bar-fill" style="width:${Math.max(r.progress_pct, 8)}%;background:${color}">
+                    ${r.progress_pct}%
+                </div>
+            </div>
+        </td>
+        <td class="px-2 py-2 text-center text-xs">${escapeHtml(r.active_phase || "")}</td>
+        <td class="px-2 py-2 text-center ${r.overdue_count > 0 ? 'text-red-600 font-bold' : ''}">${r.overdue_count}</td>
+    </tr>`;
+}
+
+function _renderModuleTableCustom(rows, mode) {
+    const tbody = document.getElementById("moduleTable");
+    if (!tbody) return;
+    if (mode === "process") {
+        // 1 hàng / (module, process) — nhưng col Module đang hiện label từ meta.
+        // Trong table header col 2 là "Module" — để tránh mất context, hiển thị
+        // "MOD · PROCESS" trong col label.
+        tbody.innerHTML = rows.map((r, i) => {
+            r.label = `${r.module} · ${r.process}`;
+            r.stt = i + 1;
+            return _mgRowHtml(r, {
+                onclick: "_moduleRowClickGeneric(this)",
+            });
+        }).join("");
+        return;
+    }
+    if (mode === "both") {
+        const parts = [];
+        rows.forEach(m => {
+            const expanded = _MO_EXPANDED.has(m.module);
+            const arrow = expanded ? "▼ " : "▶ ";
+            parts.push(_mgRowHtml(m, {
+                prefix: `<span class="mo-toggle" data-mod="${escapeAttr(m.module)}">${arrow}</span>`,
+                onclick: "_moToggleExpand(this)",
+            }));
+            if (expanded && (m.children || []).length) {
+                m.children.forEach((c, ci) => {
+                    c.stt = `${m.stt}.${ci + 1}`;
+                    parts.push(_mgRowHtml(
+                        { ...c, label: c.process },
+                        { indent: true, onclick: "_moduleRowClickGeneric(this)" },
+                    ));
+                });
+            }
+        });
+        tbody.innerHTML = parts.join("");
+        return;
+    }
+    // fallback = module
+    renderModuleTable();
+}
+
+window._moToggleExpand = function (el) {
+    const mod = el.dataset.mod;
+    if (!mod) return;
+    if (_MO_EXPANDED.has(mod)) _MO_EXPANDED.delete(mod);
+    else _MO_EXPANDED.add(mod);
+    _fetchModuleOverview();
+};
+
+window._moduleRowClickGeneric = function (el) {
+    const mod = el.dataset.mod;
+    const proc = el.dataset.proc;
+    if (proc) return openDrillDown("module", { module: mod, process: proc });
+    if (mod)  return openDrillDown("module", { module: mod });
+};
+
 function renderModuleTable() {
     const tbody = document.getElementById("moduleTable");
     const rows = metricsData.module_overview;
     tbody.innerHTML = rows.map(r => {
-        const color = r.progress_pct >= 80 ? "#22c55e"
-                    : r.progress_pct >= 50 ? "#eab308"
-                    : r.progress_pct >= 20 ? "#f97316" : "#ef4444";
+        const color = _mgProgressColor(r.progress_pct);
         return `<tr class="border-b hover:bg-blue-50 cursor-pointer"
                     data-mod="${escapeAttr(r.module)}" onclick="_moduleRowClick(this)"
                     title="Click để xem chi tiết ${escapeAttr(r.total)} function của module ${escapeAttr(r.module)}">
@@ -1328,12 +1486,14 @@ function renderTaskTypeChart() {
         const ctx = getCanvas("chartTaskType");
         if (!ctx) return;
 
-        // Aggregate: trung bình % Closed của các module có dữ liệu cho từng task_type
-        const byMod = d.by_module || {};
-        const modules = Object.keys(byMod);
+        // Task 17: aggregate theo Module (mặc định) hoặc theo Quy trình.
+        // Trung bình % Closed của các group có dữ liệu cho từng task_type.
+        const groupBy = _taskTypeGroupBy || "module";
+        const bySource = groupBy === "process" ? (d.by_process || {}) : (d.by_module || {});
+        const groups = Object.keys(bySource);
         const values = taskTypes.map(tt => {
-            const vals = modules
-                .map(m => byMod[m]?.[tt])
+            const vals = groups
+                .map(g => bySource[g]?.[tt])
                 .filter(v => v !== undefined && v !== null);
             if (!vals.length) return 0;
             return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
