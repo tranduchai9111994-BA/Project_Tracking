@@ -1895,6 +1895,82 @@ def project_module_overview(slug: str):
 
 
 # ==========================================================================
+# T24 — Bookmarks + Notes
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/bookmarks", methods=["GET"])
+def project_bookmarks_get(slug: str):
+    from analyzer import project_store as ps
+    state, err = _require_state(slug)
+    if err:
+        return err
+    pdir = _project_dir_for(slug)
+    bookmarks = ps.load_bookmarks(pdir)
+    notes = ps.load_function_notes(pdir)
+    # Enrich với thông tin function (ten_cn, module) để hiển thị nhanh
+    by_ma = {}
+    for row in state["data"].rows:
+        mc = str(row.meta.get("ma_cn") or "").strip()
+        if mc:
+            by_ma[mc] = {
+                "row_num": row.row_num,
+                "ten_cn": str(row.meta.get("ten_cn") or ""),
+                "module": str(row.meta.get("module") or ""),
+                "quy_trinh": str(row.meta.get("quy_trinh") or ""),
+            }
+    items = []
+    for mc in bookmarks:
+        base = by_ma.get(mc, {"ten_cn": "(đã xóa/không tìm thấy)", "module": ""})
+        items.append({
+            "ma_cn": mc,
+            "note": (notes.get(mc) or {}).get("note", ""),
+            "note_updated_at": (notes.get(mc) or {}).get("updated_at", ""),
+            **base,
+        })
+    return jsonify({"items": items, "count": len(items)})
+
+
+@app.route("/api/projects/<slug>/bookmarks/toggle", methods=["POST"])
+def project_bookmark_toggle(slug: str):
+    from analyzer import project_store as ps
+    state, err = _require_state(slug)
+    if err:
+        return err
+    payload = request.get_json(silent=True) or {}
+    ma_cn = str(payload.get("ma_cn") or "").strip()
+    if not ma_cn:
+        return jsonify({"error": "ma_cn required"}), 400
+    is_now, all_bm = ps.toggle_bookmark(_project_dir_for(slug), ma_cn)
+    return jsonify({"bookmarked": is_now, "bookmarks": all_bm})
+
+
+@app.route("/api/projects/<slug>/notes/<path:ma_cn>", methods=["GET"])
+def project_note_get(slug: str, ma_cn: str):
+    from analyzer import project_store as ps
+    _, err = _require_state(slug)
+    if err:
+        return err
+    notes = ps.load_function_notes(_project_dir_for(slug))
+    n = notes.get(ma_cn) or {}
+    return jsonify({"ma_cn": ma_cn, "note": n.get("note", ""), "updated_at": n.get("updated_at", "")})
+
+
+@app.route("/api/projects/<slug>/notes/<path:ma_cn>", methods=["PUT", "DELETE"])
+def project_note_save(slug: str, ma_cn: str):
+    from analyzer import project_store as ps
+    _, err = _require_state(slug)
+    if err:
+        return err
+    if request.method == "DELETE":
+        ps.save_function_note(_project_dir_for(slug), ma_cn, "")
+        return jsonify({"ma_cn": ma_cn, "deleted": True})
+    payload = request.get_json(silent=True) or {}
+    note = str(payload.get("note") or "").strip()
+    ps.save_function_note(_project_dir_for(slug), ma_cn, note)
+    return jsonify({"ma_cn": ma_cn, "note": note, "saved": True})
+
+
+# ==========================================================================
 # T22 — Aging WIP tracking
 # ==========================================================================
 

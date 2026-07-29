@@ -59,6 +59,7 @@
     <a href="#section-digest">Weekly Digest</a>
     <a href="#section-dataquality">Data Quality</a>
     <a href="#section-aging-wip">Aging WIP</a>
+    <a href="#section-my-bookmarks">Bookmarks</a>
     <a href="#section-history">Upload history</a>
 </nav>
 
@@ -449,8 +450,34 @@
                 </div>
                 <h2 class="text-lg font-bold text-gray-800 dark:text-gray-100 mt-0.5" id="fnDetailTenCn">Hồ sơ chức năng</h2>
             </div>
+            <!-- T24: Bookmark + Notes toggle icons trên header (chỉ hiển thị khi
+                 có ma_cn hợp lệ — JS set data-macn). -->
+            <div class="flex items-center gap-1 shrink-0">
+                <button id="fnDetailBookmarkBtn" onclick="toggleBookmarkCurrent()"
+                        class="text-xl px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
+                        title="Bookmark chức năng này (⭐)">☆</button>
+                <button id="fnDetailNoteBtn" onclick="openNoteEditor()"
+                        class="text-xl px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
+                        title="Ghi chú riêng (📝)">📝</button>
+            </div>
             <button onclick="closeFunctionDetail()"
                     class="text-gray-500 hover:text-gray-800 dark:hover:text-white text-2xl leading-none px-2 shrink-0">×</button>
+        </div>
+
+        <!-- T24: Note editor inline (hiện khi user click 📝, hidden mặc định) -->
+        <div id="fnDetailNoteEditor" class="hidden border-b border-yellow-200 bg-yellow-50 dark:bg-slate-900 dark:border-slate-700 px-5 py-3">
+            <div class="text-xs text-yellow-800 dark:text-yellow-300 mb-1 flex items-center justify-between">
+                <span>📝 Ghi chú riêng (chỉ lưu trong project này)</span>
+                <span id="fnDetailNoteUpdatedAt" class="text-gray-500"></span>
+            </div>
+            <textarea id="fnDetailNoteTextarea" rows="3"
+                      class="w-full text-sm p-2 rounded border border-yellow-300 focus:outline-none focus:ring-2 focus:ring-yellow-400 dark:bg-slate-800 dark:border-slate-600"
+                      placeholder="Nhập ghi chú (Ctrl+Enter để lưu, Esc để đóng)…"></textarea>
+            <div class="flex items-center gap-2 mt-2">
+                <button onclick="saveCurrentNote()" class="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1 rounded text-xs">💾 Lưu</button>
+                <button onclick="deleteCurrentNote()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1 rounded text-xs">🗑️ Xóa</button>
+                <button onclick="closeNoteEditor()" class="text-slate-600 hover:text-slate-800 px-3 py-1 rounded text-xs">Đóng</button>
+            </div>
         </div>
 
         <!-- Body -->
@@ -1683,6 +1710,24 @@
                 </table>
             </div>
             <div id="dqPagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- ========================================================================
+             T24 — MY BOOKMARKS
+             Danh sách chức năng user đã bookmark ⭐ + preview note.
+             Ẩn nếu chưa có bookmark nào.
+             ======================================================================== -->
+        <section id="section-my-bookmarks" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">⭐ Bookmark của tôi</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Chức năng đã đánh dấu để theo dõi riêng — kèm ghi chú</p>
+                </div>
+                <span class="text-xs bg-yellow-100 text-yellow-800 px-3 py-1.5 rounded border border-yellow-300">
+                    Tổng: <b id="bmTotal">0</b>
+                </span>
+            </div>
+            <div id="bmList" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
         </section>
 
         <!-- ========================================================================

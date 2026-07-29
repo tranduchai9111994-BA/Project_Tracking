@@ -1203,6 +1203,9 @@ function renderDashboard() {
     // T22: Aging WIP tracking
     _safe("agingWip", loadAgingWip);
 
+    // T24: Bookmarks section
+    _safe("bookmarks", loadBookmarks);
+
     // Populate PIC dropdown (export by pic)
     _safe("picExport", populatePicExportSelect);
 }
@@ -3848,6 +3851,9 @@ async function openFunctionDetail(rowNum) {
         }
         const data = await r.json();
         _renderFunctionDetail(data);
+        // T24: sync bookmark + note state cho function này (Mã CN từ meta)
+        _currentFnMaCn = String(data?.meta?.ma_cn || "").trim();
+        _syncBookmarkNoteUi();
     } catch (e) {
         document.getElementById("fnDetailBody").innerHTML =
             `<div class="text-red-600 text-center py-10">Lỗi mạng: ${escapeHtml(e.message)}</div>`;
@@ -9544,6 +9550,191 @@ document.addEventListener("DOMContentLoaded", () => {
         } else if (e.key === "Escape" && !modal.classList.contains("hidden")) {
             e.preventDefault();
             closeCmdPalette();
+        }
+    });
+});
+
+// ========================================================================
+// T24 — BOOKMARK + NOTES (per-function)
+// ========================================================================
+let _currentFnMaCn = "";     // Mã CN đang mở trong functionDetailModal
+let _bookmarksCache = new Set();
+let _notesCache = {};        // { ma_cn: {note, updated_at} }
+
+async function loadBookmarks() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/bookmarks`);
+        if (!r.ok) return;
+        const d = await r.json();
+        _bookmarksCache = new Set((d.items || []).map(it => it.ma_cn));
+        _notesCache = {};
+        for (const it of (d.items || [])) {
+            if (it.note) _notesCache[it.ma_cn] = { note: it.note, updated_at: it.note_updated_at };
+        }
+        _renderBookmarkSection(d.items || []);
+    } catch (err) {
+        console.error("[loadBookmarks]", err);
+    }
+}
+
+function _renderBookmarkSection(items) {
+    const section = document.getElementById("section-my-bookmarks");
+    const list = document.getElementById("bmList");
+    const total = document.getElementById("bmTotal");
+    if (!section || !list) return;
+    if (total) total.textContent = items.length;
+    if (!items.length) {
+        section.classList.add("hidden");
+        return;
+    }
+    section.classList.remove("hidden");
+    list.innerHTML = items.map(it => `
+        <div class="border rounded-lg p-3 bg-yellow-50 hover:bg-yellow-100 cursor-pointer transition"
+             onclick="openFunctionDetailByMaCn('${escapeAttr(it.ma_cn)}')">
+            <div class="flex items-start justify-between gap-2">
+                <div class="flex-1 min-w-0">
+                    <div class="text-xs font-mono text-gray-500">${escapeHtml(it.ma_cn)}</div>
+                    <div class="text-sm font-semibold text-gray-800 truncate">${escapeHtml(it.ten_cn || "")}</div>
+                    <div class="text-xs text-blue-700 mt-0.5">${escapeHtml(it.module || "")} · ${escapeHtml(it.quy_trinh || "")}</div>
+                    ${it.note ? `<div class="text-xs text-gray-700 mt-2 line-clamp-2 border-l-2 border-yellow-400 pl-2 italic">📝 ${escapeHtml(it.note)}</div>` : ""}
+                </div>
+                <button onclick="event.stopPropagation(); toggleBookmarkByMaCn('${escapeAttr(it.ma_cn)}')"
+                        class="text-yellow-600 hover:text-red-500 text-lg" title="Bỏ bookmark">⭐</button>
+            </div>
+        </div>
+    `).join("");
+}
+
+async function openFunctionDetailByMaCn(maCn) {
+    // Tra row_num từ metricsData (nếu có), fallback gọi function-search
+    let rowNum = null;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/function-search?q=${encodeURIComponent(maCn)}&limit=5`);
+        if (r.ok) {
+            const d = await r.json();
+            const match = (d.items || []).find(x => String(x.ma_cn).trim() === maCn);
+            if (match) rowNum = match.row_num;
+        }
+    } catch (e) {}
+    if (!rowNum) {
+        showToast(`Không tìm thấy function ${maCn}`, "red");
+        return;
+    }
+    openFunctionDetail(rowNum);
+}
+
+function _syncBookmarkNoteUi() {
+    if (!_currentFnMaCn) return;
+    const isBm = _bookmarksCache.has(_currentFnMaCn);
+    const btn = document.getElementById("fnDetailBookmarkBtn");
+    if (btn) {
+        btn.textContent = isBm ? "⭐" : "☆";
+        btn.title = isBm ? "Bỏ bookmark" : "Bookmark chức năng này";
+    }
+    // Note preload vào textarea (chưa mở editor)
+    const ta = document.getElementById("fnDetailNoteTextarea");
+    const noteInfo = document.getElementById("fnDetailNoteUpdatedAt");
+    const noteBtn = document.getElementById("fnDetailNoteBtn");
+    const cached = _notesCache[_currentFnMaCn];
+    if (ta) ta.value = cached?.note || "";
+    if (noteInfo) noteInfo.textContent = cached?.updated_at ? `Cập nhật: ${cached.updated_at}` : "";
+    if (noteBtn) {
+        noteBtn.textContent = cached?.note ? "📝" : "🗒️";
+        noteBtn.title = cached?.note ? "Sửa ghi chú (đã có)" : "Thêm ghi chú";
+    }
+}
+
+window.toggleBookmarkCurrent = async function () {
+    if (!_currentFnMaCn) { showToast("Không có mã CN để bookmark", "red"); return; }
+    return toggleBookmarkByMaCn(_currentFnMaCn);
+};
+
+window.toggleBookmarkByMaCn = async function (maCn) {
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/bookmarks/toggle`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ ma_cn: maCn }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        if (d.bookmarked) _bookmarksCache.add(maCn);
+        else _bookmarksCache.delete(maCn);
+        showToast(d.bookmarked ? `⭐ Đã bookmark ${maCn}` : `☆ Bỏ bookmark ${maCn}`);
+        _syncBookmarkNoteUi();
+        loadBookmarks();  // Refresh section
+    } catch (err) {
+        console.error("[toggleBookmark]", err);
+        showToast("Lỗi bookmark: " + err.message, "red");
+    }
+};
+
+window.openNoteEditor = function () {
+    if (!_currentFnMaCn) { showToast("Không có mã CN", "red"); return; }
+    const editor = document.getElementById("fnDetailNoteEditor");
+    if (!editor) return;
+    editor.classList.remove("hidden");
+    const ta = document.getElementById("fnDetailNoteTextarea");
+    if (ta) setTimeout(() => ta.focus(), 50);
+};
+
+window.closeNoteEditor = function () {
+    const editor = document.getElementById("fnDetailNoteEditor");
+    if (editor) editor.classList.add("hidden");
+};
+
+window.saveCurrentNote = async function () {
+    if (!_currentFnMaCn) return;
+    const ta = document.getElementById("fnDetailNoteTextarea");
+    const note = (ta?.value || "").trim();
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/notes/${encodeURIComponent(_currentFnMaCn)}`, {
+            method: "PUT",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ note }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        if (note) _notesCache[_currentFnMaCn] = { note, updated_at: new Date().toISOString().slice(0, 19) };
+        else delete _notesCache[_currentFnMaCn];
+        showToast("💾 Đã lưu ghi chú");
+        _syncBookmarkNoteUi();
+        closeNoteEditor();
+        loadBookmarks();
+    } catch (err) {
+        showToast("Lỗi lưu note: " + err.message, "red");
+    }
+};
+
+window.deleteCurrentNote = async function () {
+    if (!_currentFnMaCn) return;
+    if (!confirm(`Xóa ghi chú của ${_currentFnMaCn}?`)) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/notes/${encodeURIComponent(_currentFnMaCn)}`, {
+            method: "DELETE",
+        });
+        if (!r.ok) throw new Error(await r.text());
+        delete _notesCache[_currentFnMaCn];
+        showToast("🗑️ Đã xóa ghi chú");
+        _syncBookmarkNoteUi();
+        closeNoteEditor();
+        loadBookmarks();
+    } catch (err) {
+        showToast("Lỗi xóa: " + err.message, "red");
+    }
+};
+
+// Ctrl+Enter trong textarea = save; Esc = close editor
+document.addEventListener("DOMContentLoaded", () => {
+    const ta = document.getElementById("fnDetailNoteTextarea");
+    if (!ta) return;
+    ta.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            e.preventDefault();
+            saveCurrentNote();
+        } else if (e.key === "Escape") {
+            e.preventDefault();
+            closeNoteEditor();
         }
     });
 });

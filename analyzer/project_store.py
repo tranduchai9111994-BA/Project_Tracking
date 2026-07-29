@@ -72,6 +72,87 @@ def capacity_mh_for_pic(capacity: dict[str, Any], pic: str) -> float:
 
 
 # ------------------------------------------------------------------
+# T24: Bookmarks + Notes per-function
+# ------------------------------------------------------------------
+# Cấu trúc:
+#   bookmarks.json: {"functions": ["MA_CN_1", "MA_CN_2", ...]}
+#   function_notes.json: {"MA_CN_1": {"note": "text", "updated_at": iso}, ...}
+# Key dùng Mã CN (stable qua các lần upload — row_num thay đổi khi user
+# insert/delete row Excel; Mã CN là identifier ổn định nhất).
+
+def load_bookmarks(project_dir: str) -> list[str]:
+    data = _read_json(_path(project_dir, "bookmarks.json"), {"functions": []})
+    if not isinstance(data, dict):
+        return []
+    funcs = data.get("functions") or []
+    # Dedupe giữ thứ tự
+    seen, out = set(), []
+    for f in funcs:
+        s = str(f).strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def save_bookmarks(project_dir: str, ma_cns: list[str]) -> list[str]:
+    cleaned = []
+    seen = set()
+    for m in (ma_cns or []):
+        s = str(m).strip()
+        if s and s not in seen:
+            seen.add(s)
+            cleaned.append(s)
+    _write_json(_path(project_dir, "bookmarks.json"), {"functions": cleaned})
+    return cleaned
+
+
+def toggle_bookmark(project_dir: str, ma_cn: str) -> tuple[bool, list[str]]:
+    """Toggle bookmark 1 function. Return (is_bookmarked_now, all_bookmarks)."""
+    ma_cn = str(ma_cn).strip()
+    if not ma_cn:
+        return (False, load_bookmarks(project_dir))
+    bookmarks = load_bookmarks(project_dir)
+    if ma_cn in bookmarks:
+        bookmarks.remove(ma_cn)
+        is_now = False
+    else:
+        bookmarks.append(ma_cn)
+        is_now = True
+    save_bookmarks(project_dir, bookmarks)
+    return (is_now, bookmarks)
+
+
+def load_function_notes(project_dir: str) -> dict[str, dict]:
+    data = _read_json(_path(project_dir, "function_notes.json"), {})
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for k, v in data.items():
+        if isinstance(v, dict) and v.get("note"):
+            out[str(k)] = {
+                "note": str(v.get("note") or ""),
+                "updated_at": str(v.get("updated_at") or ""),
+            }
+    return out
+
+
+def save_function_note(project_dir: str, ma_cn: str, note: str) -> dict[str, dict]:
+    """Lưu note (rỗng = xoá). Return full notes map."""
+    ma_cn = str(ma_cn).strip()
+    if not ma_cn:
+        return load_function_notes(project_dir)
+    notes = load_function_notes(project_dir)
+    note_txt = (note or "").strip()
+    if note_txt:
+        notes[ma_cn] = {"note": note_txt, "updated_at": datetime.now().isoformat(timespec="seconds")}
+    elif ma_cn in notes:
+        del notes[ma_cn]
+    _write_json(_path(project_dir, "function_notes.json"), notes)
+    return notes
+
+
+# ------------------------------------------------------------------
 # Saved views
 # ------------------------------------------------------------------
 
