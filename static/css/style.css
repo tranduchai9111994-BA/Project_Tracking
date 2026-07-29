@@ -1311,6 +1311,14 @@ html.dark #pfCompareTable th, html.dark #pfCompareTable td {
     .dashboard-card { break-inside: avoid; box-shadow: none !important; border: 1px solid #ccc; }
 }
 
+/* ==== Task 10 — Kanban board styling ==== */
+.kanban-col { min-width: 220px; }
+.kanban-card {
+    transition: transform 0.1s, box-shadow 0.1s;
+}
+.kanban-card:hover { transform: translateY(-1px); }
+.kanban-ghost { opacity: 0.4; background: #dbeafe !important; }
+
 /* ==== Task 7 — PDF capture mode ==== */
 /* Trong lúc html2canvas render, tạm ẩn các UI element không nên xuất hiện
    trên PDF (sticky, drag handle, gear, toast, modal, sidebar...). */

@@ -325,6 +325,15 @@ function applyDashboardResponse(data) {
     try {
         if (typeof loadCustomDashboards === "function") setTimeout(loadCustomDashboards, 400);
     } catch (e) {}
+    // Task 10: Kanban theo tuần (cần role map trước để card hiện role chip)
+    try {
+        if (typeof loadPicRoles === "function") {
+            setTimeout(async () => {
+                await loadPicRoles();
+                if (typeof loadKanban === "function") loadKanban();
+            }, 500);
+        }
+    } catch (e) {}
 }
 
 // ========================================================================
@@ -6864,6 +6873,266 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 800);
 });
 
+
+// ========================================================================
+// TASK 10 — KANBAN THEO TUẦN + PIC → ROLE MAP
+// ========================================================================
+
+let _kanbanWeekOffset = 0;
+let _kanbanReloadTimer = null;
+let _kanbanSortables = [];
+let _kanbanRoleMap = {};   // {pic: role}
+let _kanbanAllPics = [];   // list unique PIC từ backend
+let _kanbanAllRoles = [];
+
+async function loadKanban() {
+    if (!currentProjectSlug) return;
+    const params = new URLSearchParams();
+    params.set("week_offset", String(_kanbanWeekOffset));
+    const q = document.getElementById("kanbanSearch")?.value?.trim();
+    if (q) params.set("search", q);
+    const mod = document.getElementById("kanbanFilterModule")?.value;
+    if (mod) params.set("module", mod);
+    const proc = document.getElementById("kanbanFilterProcess")?.value;
+    if (proc) params.set("process", proc);
+    const pic = document.getElementById("kanbanFilterPic")?.value;
+    if (pic) params.set("pic", pic);
+    const role = document.getElementById("kanbanFilterRole")?.value;
+    if (role) params.set("role", role);
+    try {
+        const r = await fetch(_apiUrl("kanban") + "?" + params.toString());
+        if (!r.ok) return;
+        const data = await r.json();
+        _renderKanban(data);
+    } catch (err) {
+        console.error("[loadKanban]", err);
+    }
+}
+
+function _renderKanban(data) {
+    const sec = document.getElementById("section-kanban");
+    if (!sec) return;
+    sec.classList.remove("hidden");
+    const sub = document.getElementById("kanbanSubtitle");
+    if (sub) {
+        sub.textContent = `Tuần ${data.week.monday_iso} → ${data.week.sunday_iso} · Hôm nay ${data.week.today_iso} · ${data.total_after_filter} function`;
+    }
+    const wl = document.getElementById("kanbanWeekLabel");
+    if (wl) {
+        wl.textContent = _kanbanWeekOffset === 0 ? "Tuần này"
+            : _kanbanWeekOffset > 0 ? `+${_kanbanWeekOffset} tuần`
+            : `${_kanbanWeekOffset} tuần`;
+    }
+
+    // Populate filter dropdowns (chỉ lần đầu)
+    _kanbanEnsureFilterOptions();
+
+    const board = document.getElementById("kanbanBoard");
+    if (!board) return;
+    board.innerHTML = data.columns.map(col => `
+        <div class="kanban-col border rounded-lg bg-slate-50 dark:bg-slate-900 flex flex-col" data-col="${col.key}">
+            <div class="px-3 py-2 border-b bg-white dark:bg-slate-800 sticky top-0 rounded-t-lg z-10">
+                <div class="font-semibold text-sm">${escapeHtml(col.title)}</div>
+                <div class="text-[10px] text-gray-500">${col.count} function</div>
+            </div>
+            <div class="kanban-col-body p-2 space-y-2 flex-1 overflow-y-auto" data-col-key="${col.key}"
+                 style="max-height: 60vh; min-height: 200px;">
+                ${col.cards.map(_kanbanCardHtml).join("") ||
+                  `<div class="text-xs text-gray-400 italic text-center py-4">Trống</div>`}
+            </div>
+        </div>
+    `).join("");
+
+    _kanbanBindCardClicks();
+    _kanbanInitSortables();
+}
+
+function _kanbanCardHtml(c) {
+    const prio = c.priority || "";
+    let prioIcon = "";
+    if (/must|high/i.test(prio)) prioIcon = "🔴";
+    else if (/should|med/i.test(prio)) prioIcon = "🟡";
+    else if (prio) prioIcon = "🟢";
+    const statusClass = _fnStatusBadgeClass ? _fnStatusBadgeClass(c.phase_status) : "bg-gray-200 text-gray-700";
+    const dl = c.deadline_iso ? c.deadline_iso.slice(5).replace("-", "/") : "";
+    const roles = c.roles?.length ? `<span class="text-[9px] bg-indigo-100 text-indigo-700 px-1 rounded">${escapeHtml(c.roles.join(","))}</span>` : "";
+    const aging = c.aging_days
+        ? `<span class="text-[10px] font-semibold ${c.aging_days > 7 ? 'text-red-600' : 'text-amber-600'}">⏱️ ${c.aging_days}d</span>` : "";
+    return `
+        <div class="kanban-card border rounded p-2 bg-white dark:bg-slate-800 cursor-pointer hover:shadow-md text-xs"
+             data-row-num="${c.row_num}">
+            <div class="flex items-start justify-between gap-1 mb-1">
+                <div class="font-mono text-[10px] text-gray-500">${escapeHtml(c.ma_cn)}</div>
+                <span>${prioIcon}</span>
+            </div>
+            <div class="font-semibold text-[11px] leading-tight mb-1" title="${escapeAttr(c.ten_cn)}">
+                ${escapeHtml(c.ten_cn.substring(0, 60))}${c.ten_cn.length > 60 ? "…" : ""}
+            </div>
+            <div class="flex flex-wrap gap-1 mb-1 text-[9px]">
+                ${c.module ? `<span class="bg-blue-100 text-blue-700 px-1 rounded">${escapeHtml(c.module)}</span>` : ""}
+                ${c.process ? `<span class="bg-purple-100 text-purple-700 px-1 rounded">${escapeHtml(c.process.substring(0, 20))}</span>` : ""}
+            </div>
+            ${c.phase ? `<div class="flex items-center gap-1 mb-1">
+                <span class="text-[9px] px-1 rounded ${statusClass}">${escapeHtml(c.phase)} · ${escapeHtml(c.phase_status || "?")}</span>
+            </div>` : ""}
+            <div class="flex items-center justify-between text-[10px]">
+                <span class="text-gray-600 dark:text-gray-400">
+                    ${c.pics?.length ? "👤 " + escapeHtml(c.pics.slice(0, 2).join(", ")) + (c.pics.length > 2 ? " +" + (c.pics.length - 2) : "") : "🚫 chưa PIC"}
+                    ${roles}
+                </span>
+                <span class="text-gray-500">${dl ? "📅 " + dl : ""} ${aging}</span>
+            </div>
+        </div>
+    `;
+}
+
+function _kanbanEnsureFilterOptions() {
+    // Chỉ populate 1 lần khi dropdown còn rỗng option
+    const structure = structureCache || {};
+    const fillSelect = (id, values) => {
+        const sel = document.getElementById(id);
+        if (!sel || sel.options.length > 1) return; // đã fill
+        values.forEach(v => {
+            const opt = document.createElement("option");
+            opt.value = v;
+            opt.textContent = v;
+            sel.appendChild(opt);
+        });
+    };
+    fillSelect("kanbanFilterModule", structure.all_modules || []);
+    fillSelect("kanbanFilterProcess", structure.all_processes || []);
+    fillSelect("kanbanFilterPic", structure.all_pics || _kanbanAllPics || []);
+    // Roles: from map values
+    fillSelect("kanbanFilterRole", _kanbanAllRoles);
+}
+
+function _kanbanBindCardClicks() {
+    document.querySelectorAll("#kanbanBoard .kanban-card").forEach(card => {
+        card.onclick = () => {
+            const rowNum = parseInt(card.dataset.rowNum, 10);
+            if (typeof openFunctionDetail === "function") {
+                openFunctionDetail(rowNum);
+            }
+        };
+    });
+}
+
+function _kanbanInitSortables() {
+    // Destroy old
+    _kanbanSortables.forEach(s => { try { s.destroy(); } catch(e){} });
+    _kanbanSortables = [];
+    if (typeof Sortable === "undefined") return;
+    document.querySelectorAll("#kanbanBoard .kanban-col-body").forEach(body => {
+        const s = Sortable.create(body, {
+            group: "kanban",
+            animation: 150,
+            ghostClass: "kanban-ghost",
+            onEnd: (evt) => {
+                if (evt.from === evt.to) return; // reorder cùng cột — skip
+                const cardEl = evt.item;
+                const rowNum = cardEl.dataset.rowNum;
+                const toCol = evt.to.dataset.colKey;
+                const colTitle = evt.to.closest(".kanban-col")?.querySelector(".font-semibold")?.textContent?.trim() || toCol;
+                const ten = cardEl.querySelector(".font-semibold")?.textContent?.trim() || rowNum;
+                showToast(`⚠️ Ghi nhận đề xuất chuyển "${ten}" → "${colTitle}". Không cập nhật file gốc, chỉ hiển thị.`, "amber");
+            },
+        });
+        _kanbanSortables.push(s);
+    });
+}
+
+window._kanbanScheduleReload = function () {
+    clearTimeout(_kanbanReloadTimer);
+    _kanbanReloadTimer = setTimeout(loadKanban, 350);
+};
+
+window._kanbanShiftWeek = function (delta) {
+    if (delta === 0) _kanbanWeekOffset = 0;
+    else _kanbanWeekOffset += delta;
+    loadKanban();
+};
+
+// --- PIC → Role Modal ---
+
+async function loadPicRoles() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(_apiUrl("pic-roles"));
+        if (!r.ok) return;
+        const d = await r.json();
+        _kanbanRoleMap = d.map || {};
+        _kanbanAllPics = d.all_pics || [];
+        _kanbanAllRoles = d.all_roles || [];
+    } catch (err) {
+        console.error("[loadPicRoles]", err);
+    }
+}
+
+window.openPicRoleModal = async function () {
+    await loadPicRoles();
+    _renderPicRoleTable();
+    const m = document.getElementById("picRoleModal");
+    if (m) { m.classList.remove("hidden"); m.classList.add("flex"); }
+};
+
+window.closePicRoleModal = function () {
+    const m = document.getElementById("picRoleModal");
+    if (m) { m.classList.add("hidden"); m.classList.remove("flex"); }
+};
+
+function _renderPicRoleTable() {
+    const body = document.getElementById("picRoleTable");
+    if (!body) return;
+    const COMMON_ROLES = ["", "BA", "Dev", "Tester", "PM", "Lead", "Analyst", "Support"];
+    body.innerHTML = _kanbanAllPics.map(pic => {
+        const cur = _kanbanRoleMap[pic] || "";
+        return `<tr>
+            <td class="px-2 py-1">${escapeHtml(pic)}</td>
+            <td class="px-2 py-1">
+                <input type="text" list="_prRoleList" data-pic="${escapeAttr(pic)}"
+                    value="${escapeAttr(cur)}"
+                    class="border rounded px-1 py-0.5 text-xs w-full dark:bg-slate-700"
+                    placeholder="VD: Dev, BA, Tester…">
+            </td>
+        </tr>`;
+    }).join("") + `<datalist id="_prRoleList">${COMMON_ROLES.map(r => `<option value="${r}">`).join("")}</datalist>`;
+}
+
+window._prSave = async function () {
+    const map = {};
+    document.querySelectorAll("#picRoleTable input[data-pic]").forEach(inp => {
+        const p = inp.dataset.pic;
+        const v = inp.value.trim();
+        if (v) map[p] = v;
+    });
+    try {
+        const r = await fetch(_apiUrl("pic-roles"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ map }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        _kanbanRoleMap = d.map || {};
+        _kanbanAllRoles = d.all_roles || [];
+        showToast("Đã lưu PIC-Role map");
+        closePicRoleModal();
+        // Reload kanban để hiện role mới
+        await loadKanban();
+    } catch (err) {
+        showToast("Lưu thất bại: " + err.message, "red");
+    }
+};
+
+window._prImportExcel = async function (evt) {
+    const file = evt.target.files?.[0];
+    if (!file) return;
+    // Dùng thư viện đơn giản: đọc bằng SheetJS nếu có; nếu không có → thông báo
+    // Vì chưa add SheetJS, chỉ thông báo user nhập tay hoặc TODO cho session sau.
+    // Fallback: đọc dưới dạng text CSV kiểu Excel simple → skip cho MVP.
+    showToast("Import Excel PIC-Role chưa hỗ trợ tự động — hãy nhập tay ở bảng dưới.", "amber");
+    evt.target.value = "";
+};
 
 // ========================================================================
 // TASK 9 — DYNAMIC DASHBOARD BUILDER

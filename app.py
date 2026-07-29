@@ -1859,6 +1859,70 @@ def project_custom_dashboard_export(slug: str, item_id: str):
                      download_name=os.path.basename(fpath))
 
 
+# ==========================================================================
+# Kanban (Task 10 — Kanban theo tuần)
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/kanban")
+def project_kanban(slug: str):
+    """
+    Query params:
+      week_offset: int (default 0) — 0=tuần này, 1=tuần sau, -1=tuần trước
+      module, process, pic, role: multi (comma hoặc repeat)
+      search: text
+    """
+    from analyzer import project_store as ps
+    from analyzer.kanban import compute_kanban
+    state, err = _require_state(slug)
+    if err:
+        return err
+    try:
+        offset = int(request.args.get("week_offset") or 0)
+    except ValueError:
+        offset = 0
+    filters = {
+        "modules": _parse_multi_arg("module"),
+        "processes": _parse_multi_arg("process"),
+        "pics": _parse_multi_arg("pic"),
+        "roles": _parse_multi_arg("role"),
+        "search": request.args.get("search") or "",
+    }
+    role_map = ps.load_pic_role_map(_project_dir_for(slug))
+    return jsonify(compute_kanban(
+        state["data"],
+        week_offset=offset,
+        pic_role_map=role_map,
+        filters=filters,
+    ))
+
+
+@app.route("/api/projects/<slug>/pic-roles", methods=["GET", "POST"])
+def project_pic_roles(slug: str):
+    """GET → {map, all_pics, all_roles}. POST → save toàn bộ map từ body {map}."""
+    from analyzer import project_store as ps
+    from analyzer.kanban import unique_pics
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    state = _get_state(slug)
+    all_pics = unique_pics(state["data"]) if state and state.get("data") else []
+    if request.method == "GET":
+        m = ps.load_pic_role_map(folder)
+        return jsonify({
+            "map": m,
+            "all_pics": all_pics,
+            "all_roles": sorted(set(m.values())),
+        })
+    body = request.get_json(silent=True) or {}
+    m = body.get("map") or {}
+    saved = ps.save_pic_role_map(folder, m)
+    return jsonify({
+        "map": saved,
+        "all_pics": all_pics,
+        "all_roles": sorted(set(saved.values())),
+    })
+
+
 @app.route("/api/projects/<slug>/chart-aggregate", methods=["POST"])
 def project_chart_aggregate(slug: str):
     """

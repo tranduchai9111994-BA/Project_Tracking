@@ -365,6 +365,33 @@ def delete_custom_dashboard(project_dir: str, item_id: str) -> list[dict]:
     return items
 
 
+# ------------------------------------------------------------------
+# PIC → Role map (Task 10 — Kanban filter theo tổ chức)
+# ------------------------------------------------------------------
+# File: pic_role_map.json = {pic_name: role_string}
+# Role không hạn chế enum — user tự đặt (BA, Dev, Tester, PM, Lead, ...).
+# ------------------------------------------------------------------
+
+_PIC_ROLE_FILE = "pic_role_map.json"
+
+
+def load_pic_role_map(project_dir: str) -> dict[str, str]:
+    data = _read_json(_path(project_dir, _PIC_ROLE_FILE), {})
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v)[:32] for k, v in data.items() if k and v}
+
+
+def save_pic_role_map(project_dir: str, mapping: dict[str, str]) -> dict[str, str]:
+    if not isinstance(mapping, dict):
+        return {}
+    cleaned = {str(k).strip()[:80]: str(v).strip()[:32]
+               for k, v in mapping.items()
+               if str(k).strip() and str(v).strip()}
+    _write_json(_path(project_dir, _PIC_ROLE_FILE), cleaned)
+    return cleaned
+
+
 def delete_saved_view(project_dir: str, view_id: str) -> list[dict]:
     views = [v for v in load_saved_views(project_dir)
              if v.get("id") != view_id and v.get("name") != view_id]
