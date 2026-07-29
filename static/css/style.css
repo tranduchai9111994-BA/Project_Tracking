@@ -182,7 +182,83 @@ html.dark .sidebar-nav a:hover { background: #1e40af; color: white; }
 html.dark .sidebar-toggle-btn { background: #3b82f6; }
 html.dark .sidebar-toggle-btn:hover { background: #60a5fa; }
 
-/* ==== UX7: ?? View icon button trong b?ng l??i ==== */
+/* ==== T25: PRESENTATION MODE (full-screen 1 section) ==== */
+body.presentation-mode {
+    background: #0f172a;
+}
+body.presentation-mode header,
+body.presentation-mode aside,
+body.presentation-mode .sidebar,
+body.presentation-mode #sidebar,
+body.presentation-mode #globalFilterBar,
+body.presentation-mode .sidebar-toggle-btn {
+    display: none !important;
+}
+body.presentation-mode #presentHud {
+    display: flex !important;
+}
+body.presentation-mode #dashboard {
+    max-width: 100vw !important;
+    margin: 0 !important;
+    padding: 60px 40px 40px 40px !important;
+}
+body.presentation-mode .present-off {
+    display: none !important;
+}
+body.presentation-mode .present-active {
+    display: block !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    border-radius: 16px !important;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6) !important;
+    padding: 24px !important;
+    min-height: calc(100vh - 100px);
+    max-width: 1400px;
+    margin: 0 auto !important;
+    animation: presentFadeIn 0.35s ease;
+}
+html.dark body.presentation-mode .present-active {
+    background: #1e293b !important;
+    color: #f1f5f9 !important;
+}
+@keyframes presentFadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.present-hud {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: rgba(15, 23, 42, 0.85);
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 999px;
+    font-size: 13px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(6px);
+    pointer-events: none;
+}
+.present-hud-index {
+    font-weight: 700;
+    color: #fbbf24;
+}
+.present-hud-title {
+    max-width: 60vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.present-hud-hint {
+    font-size: 11px;
+    color: #94a3b8;
+}
+
+/* ==== UX7: View icon button trong bang luoi ==== */
 .view-icon-btn {
     display: inline-flex;
     align-items: center;

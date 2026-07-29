@@ -9237,6 +9237,155 @@ window.resetSectionOrder = async function () {
 };
 
 // ========================================================================
+// T25 — PRESENTATION MODE
+// ========================================================================
+// Trình chiếu 1 section/lúc. Arrow keys ← → điều hướng, Esc thoát.
+// Respect thứ tự hiện tại của DOM (đã apply custom order từ backend) và
+// bỏ qua section đang có class 'hidden'. Ẩn header + sidebar để giao diện
+// full-screen cho meeting/review.
+const _presentState = {
+    active: false,
+    sections: [],   // array of section IDs eligible
+    index: 0,
+    prevBodyClass: "",
+    keyHandler: null,
+};
+
+function _presentCollectSections() {
+    const dash = document.getElementById("dashboard");
+    if (!dash) return [];
+    const out = [];
+    Array.from(dash.children).forEach(el => {
+        if (!el.id) return;
+        if (el.id === "section-summary-header") return;  // header-only
+        if (el.classList.contains("hidden")) return;
+        // Bỏ qua các section đang bị chart-config ẩn (data-hidden="true")
+        if (el.getAttribute("data-hidden") === "true") return;
+        out.push(el.id);
+    });
+    return out;
+}
+
+function _presentApplyIndex() {
+    const dash = document.getElementById("dashboard");
+    if (!dash || !_presentState.sections.length) return;
+    // Ẩn tất cả top-level (dùng class 'present-off'), rồi bỏ ẩn cái đang chọn
+    Array.from(dash.children).forEach(el => {
+        if (!el.id || el.id === "section-summary-header") {
+            el.classList.add("present-off");
+            return;
+        }
+        el.classList.add("present-off");
+    });
+    const active = document.getElementById(_presentState.sections[_presentState.index]);
+    if (active) {
+        active.classList.remove("present-off");
+        active.classList.add("present-active");
+        // Scroll vào giữa
+        try { active.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
+    }
+    // Update HUD (progress + tên section)
+    const hud = document.getElementById("presentHud");
+    if (hud) {
+        const titleEl = active ? active.querySelector("h3, h2") : null;
+        const label = titleEl ? titleEl.textContent.trim().slice(0, 80) : (active ? active.id : "");
+        hud.innerHTML = `
+            <span class="present-hud-index">${_presentState.index + 1} / ${_presentState.sections.length}</span>
+            <span class="present-hud-title">${escapeHtml(label)}</span>
+            <span class="present-hud-hint">← → điều hướng · Esc thoát</span>
+        `;
+    }
+}
+
+function _presentGo(delta) {
+    if (!_presentState.active) return;
+    const n = _presentState.sections.length;
+    if (!n) return;
+    _presentState.index = (_presentState.index + delta + n) % n;
+    _presentApplyIndex();
+}
+
+function _presentEnsureHud() {
+    let hud = document.getElementById("presentHud");
+    if (!hud) {
+        hud = document.createElement("div");
+        hud.id = "presentHud";
+        hud.className = "present-hud no-print";
+        document.body.appendChild(hud);
+    }
+    return hud;
+}
+
+window.togglePresentationMode = function () {
+    if (_presentState.active) {
+        _presentExit();
+    } else {
+        _presentEnter();
+    }
+};
+
+function _presentEnter() {
+    const sections = _presentCollectSections();
+    if (!sections.length) {
+        showToast("Chưa có section nào để trình chiếu", "red");
+        return;
+    }
+    _presentState.active = true;
+    _presentState.sections = sections;
+    _presentState.index = 0;
+    _presentState.prevBodyClass = document.body.className;
+    document.body.classList.add("presentation-mode");
+    _presentEnsureHud();
+    _presentApplyIndex();
+    // Register keys (arrow + esc)
+    _presentState.keyHandler = (ev) => {
+        // Tránh interfere khi user đang gõ trong input/textarea
+        const t = ev.target;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+        if (ev.key === "ArrowRight" || ev.key === "PageDown" || ev.key === " ") {
+            ev.preventDefault();
+            _presentGo(1);
+        } else if (ev.key === "ArrowLeft" || ev.key === "PageUp") {
+            ev.preventDefault();
+            _presentGo(-1);
+        } else if (ev.key === "Escape") {
+            ev.preventDefault();
+            _presentExit();
+        } else if (ev.key === "Home") {
+            _presentState.index = 0; _presentApplyIndex();
+        } else if (ev.key === "End") {
+            _presentState.index = _presentState.sections.length - 1; _presentApplyIndex();
+        }
+    };
+    document.addEventListener("keydown", _presentState.keyHandler);
+    const btn = document.getElementById("btnPresentMode");
+    if (btn) { btn.textContent = "❌ Thoát trình chiếu"; btn.title = "Thoát trình chiếu (Esc)"; }
+    showToast("Trình chiếu — ← → điều hướng, Esc thoát");
+}
+
+function _presentExit() {
+    _presentState.active = false;
+    document.body.className = _presentState.prevBodyClass || "";
+    document.body.classList.remove("presentation-mode");
+    // Restore all sections
+    const dash = document.getElementById("dashboard");
+    if (dash) {
+        Array.from(dash.children).forEach(el => {
+            el.classList.remove("present-off");
+            el.classList.remove("present-active");
+        });
+    }
+    if (_presentState.keyHandler) {
+        document.removeEventListener("keydown", _presentState.keyHandler);
+        _presentState.keyHandler = null;
+    }
+    const hud = document.getElementById("presentHud");
+    if (hud) hud.remove();
+    const btn = document.getElementById("btnPresentMode");
+    if (btn) { btn.textContent = "🎬 Trình chiếu"; btn.title = "Chế độ trình chiếu (1 section/lần, ← → điều hướng, Esc thoát)"; }
+}
+
+// ========================================================================
 // T21 — DATA QUALITY PANEL
 // ========================================================================
 let _dqState = {
