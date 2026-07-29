@@ -129,12 +129,18 @@ def _row_to_dict(
 # ==========================================================================
 
 def _filter_phase_matrix(data: ParsedData, filters: dict, today: date) -> list[dict]:
-    """Filter theo module + phase (bắt buộc cả 2). Show phase đó."""
+    """Filter cho matrix Phase × (Module|Quy trình). Bắt buộc phase; module
+    HOẶC process (b9: bổ sung process — matrix nhóm theo quy trình khi
+    user toggle 'Nhóm theo Quy trình').
+    """
     module = filters.get("module", "")
+    process = filters.get("process", "")
     phase = filters.get("phase", "")
     result = []
     for row in data.rows:
-        if row.meta.get("module") != module:
+        if module and row.meta.get("module") != module:
+            continue
+        if process and row.meta.get("quy_trinh") != process:
             continue
         pd = row.phases.get(phase)
         if pd is None:
@@ -546,7 +552,8 @@ def drill_down(
 def build_title(chart: str, filters: dict) -> str:
     """Sinh tiêu đề mặc định cho modal/export dựa vào chart + filter."""
     if chart == "phase_matrix":
-        return f"{filters.get('module', '')} × {filters.get('phase', '')}"
+        key = filters.get("module") or filters.get("process", "")
+        return f"{key} × {filters.get('phase', '')}"
     if chart == "phase_stacked":
         return f"Phase {filters.get('phase', '')} — Status: {filters.get('status', '')}"
     if chart == "pic_workload":

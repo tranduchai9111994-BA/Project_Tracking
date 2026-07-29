@@ -787,6 +787,10 @@ async function onGlobalFilterChange() {
 
 async function _doGlobalFilterFetch() {
     try {
+        // b9: reset matrix cache khi filter đổi — nếu user đang xem mode
+        // process, sẽ auto re-fetch qua renderPhaseMatrix; nếu mode module
+        // → dùng data mới từ /dashboard.
+        _matrixCache = null;
         const url = _buildDashboardUrl();
         const r = await fetch(url);
         if (!r.ok) {
@@ -795,6 +799,10 @@ async function _doGlobalFilterFetch() {
         }
         const data = await r.json();
         applyDashboardResponse(data);
+        // Nếu user đang ở mode process, refetch matrix với filter mới.
+        if (_matrixGroupBy === "process") {
+            setMatrixGroupBy("process", /*force=*/true);
+        }
         if (data.applied_filter) {
             const rc = data.applied_filter.row_count;
             if (rc === 0) {
@@ -1583,21 +1591,79 @@ function renderTaskTypeChart() {
 // ========================================================================
 // 4. PHASE × MODULE MATRIX
 // ========================================================================
+// b9: Matrix group_by state — chỉ session, không persist (đơn giản như Gantt).
+let _matrixGroupBy = "module";
+let _matrixCache = null;  // Cache dữ liệu group_by=process khi user toggle qua/lại
+
 function renderPhaseMatrix() {
-    const m = metricsData.phase_status_matrix;
-    const phases = m.phases;
-    const modules = m.modules;
+    // Nếu đang ở mode process và đã có cache → render từ cache; ngược lại
+    // render từ metricsData (mode module là default). Không tự gọi backend
+    // ở đây (renderPhaseMatrix chạy trong pipeline renderDashboard) — chuyển
+    // mode qua nút → setMatrixGroupBy fetch riêng.
+    const m = (_matrixGroupBy === "process" && _matrixCache)
+        ? _matrixCache
+        : metricsData.phase_status_matrix;
+    if (!m) return;
+    _renderPhaseMatrixFrom(m);
+}
+
+/** Toggle Module/Quy trình cho matrix (public — dùng qua onclick). */
+window.setMatrixGroupBy = async function (gb, force = false) {
+    gb = (gb === "process") ? "process" : "module";
+    if (!force && gb === _matrixGroupBy && _matrixGroupBy === "module") return;
+    // Cho phép re-fetch mode 'process' khi filter đổi
+    if (!force && gb === _matrixGroupBy && gb === "process" && _matrixCache) return;
+    _matrixGroupBy = gb;
+    _syncMatrixToggleBtns();
+    if (gb === "module") {
+        _renderPhaseMatrixFrom(metricsData.phase_status_matrix);
+        return;
+    }
+    try {
+        const url = new URL(`/api/projects/${currentProjectSlug}/phase-matrix`, window.location.origin);
+        url.searchParams.set("group_by", "process");
+        (globalFilters.modules || []).forEach(v => url.searchParams.append("module", v));
+        (globalFilters.processes || []).forEach(v => url.searchParams.append("process", v));
+        (globalFilters.pics || []).forEach(v => url.searchParams.append("pic", v));
+        const r = await fetch(url.toString());
+        if (!r.ok) throw new Error(await r.text());
+        _matrixCache = await r.json();
+        _renderPhaseMatrixFrom(_matrixCache);
+    } catch (err) {
+        showToast("Lỗi tải Phase × Quy trình: " + err.message, "red");
+    }
+};
+
+function _syncMatrixToggleBtns() {
+    const bMod = document.getElementById("matrixGroupModule");
+    const bProc = document.getElementById("matrixGroupProcess");
+    const label = document.getElementById("matrixModeLabel");
+    const active = "bg-blue-600 text-white border-blue-600";
+    const inactive = "bg-white text-gray-700 border-gray-300 hover:bg-gray-50";
+    if (bMod && bProc) {
+        bMod.className = `text-xs px-3 py-1 rounded border ${_matrixGroupBy === "module" ? active : inactive}`;
+        bProc.className = `text-xs px-3 py-1 rounded border ${_matrixGroupBy === "process" ? active : inactive}`;
+    }
+    if (label) label.textContent = _matrixGroupBy === "process" ? "Quy trình" : "Module";
+}
+
+function _renderPhaseMatrixFrom(m) {
+    const phases = m.phases || [];
+    // row_labels ưu tiên (mới), fallback modules (cũ) cho backward compat
+    const rowLabels = m.row_labels || m.modules || [];
+    const gb = m.group_by || "module";
+    const rowHeader = gb === "process" ? "Quy trình" : "Module";
 
     const thead = document.getElementById("matrixHead");
     thead.innerHTML = `<tr class="bg-gray-800 text-white text-xs">
-        <th class="px-2 py-2 text-left">Module</th>
-        ${phases.map(p => `<th class="px-2 py-2 text-center">${p}</th>`).join("")}
+        <th class="px-2 py-2 text-left">${rowHeader}</th>
+        ${phases.map(p => `<th class="px-2 py-2 text-center">${escapeHtml(p)}</th>`).join("")}
     </tr>`;
 
     const tbody = document.getElementById("matrixBody");
-    tbody.innerHTML = modules.map(mod => {
+    tbody.innerHTML = rowLabels.map(label => {
         const cells = phases.map(ph => {
-            const cell = m.data[mod]?.[ph] || {};
+            const cell = m.data[label]?.[ph] || {};
             const pct = cell.pct_closed || 0;
             const total = cell.total || 0;
             const closed = cell.Closed || 0;
@@ -1611,12 +1677,14 @@ function renderPhaseMatrix() {
                      : pct >= 20 ? "#f97316" : "#ef4444";
             const textColor = (pct >= 80 && total > 0) || total === 0 ? "white" : "#1e293b";
             const tooltip = total > 0
-                ? `${mod} × ${ph} · ${closed}/${total} Closed (${pct}%) · In-prog: ${inprog} · Assign: ${assigned} · Open: ${open}`
+                ? `${label} × ${ph} · ${closed}/${total} Closed (${pct}%) · In-prog: ${inprog} · Assign: ${assigned} · Open: ${open}`
                 : "Không có dữ liệu";
+            // b9: click → drill (phase_matrix). Với mode process, filter dùng
+            // process; mode module dùng module. openDrillDown('phase_matrix', ...)
+            // supported params: module, phase.
             const clickAttr = total > 0
-                ? `data-mod="${escapeAttr(mod)}" data-ph="${escapeAttr(ph)}" onclick="_matrixCellClick(this)" style="cursor:pointer"`
+                ? `data-key="${escapeAttr(label)}" data-ph="${escapeAttr(ph)}" data-gb="${gb}" onclick="_matrixCellClick(this)" style="cursor:pointer"`
                 : "";
-
             return `<td class="px-1 py-1 text-center" ${clickAttr} title="${escapeAttr(tooltip)}">
                 <div class="heatmap-cell rounded px-2 py-2 text-xs font-semibold"
                      style="background:${bg};color:${total === 0 ? '#9ca3af' : textColor}">
@@ -1625,8 +1693,11 @@ function renderPhaseMatrix() {
                 </div>
             </td>`;
         }).join("");
-        return `<tr class="border-b"><td class="px-2 py-2 font-semibold text-sm">${mod}</td>${cells}</tr>`;
+        // Cột đầu: tên đầy đủ (không truncate) — với mode process là "PRM.BP.03 - …"
+        return `<tr class="border-b"><td class="px-2 py-2 font-semibold text-sm" title="${escapeAttr(label)}">${escapeHtml(label)}</td>${cells}</tr>`;
     }).join("");
+
+    _syncMatrixToggleBtns();
 }
 
 // ========================================================================
@@ -4915,10 +4986,22 @@ function _chartClickHandler(chart, buildFilterFn) {
 
 // Click handler cho ô Phase Matrix (HTML table)
 function _matrixCellClick(el) {
-    openDrillDown("phase_matrix", {
-        module: el.dataset.mod,
-        phase: el.dataset.ph,
-    });
+    // b9: hỗ trợ cả mode module + process (drill 'phase_matrix' chỉ nhận
+    // module + phase; với mode process, chuyển key sang param 'process' để
+    // FE openDrillDown thêm filter tương ứng qua drill-adapter).
+    const gb = el.dataset.gb || "module";
+    const key = el.dataset.key ?? el.dataset.mod;
+    if (gb === "process") {
+        openDrillDown("phase_matrix", {
+            process: key,
+            phase: el.dataset.ph,
+        });
+    } else {
+        openDrillDown("phase_matrix", {
+            module: key,
+            phase: el.dataset.ph,
+        });
+    }
 }
 
 /**

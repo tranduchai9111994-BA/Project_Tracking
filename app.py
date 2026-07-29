@@ -1864,6 +1864,35 @@ def project_custom_dashboard_export(slug: str, item_id: str):
 # đổi segmented control mà không cần full re-fetch dashboard).
 # ==========================================================================
 
+@app.route("/api/projects/<slug>/phase-matrix")
+def project_phase_matrix(slug: str):
+    """b9: Matrix Phase × (Module|Quy trình) theo global filter.
+
+    Tránh double-compute khi user chỉ toggle mode: FE gọi endpoint này với
+    group_by=process khi user chuyển; group_by=module dùng data cached từ
+    /dashboard (không cần fetch lại). Endpoint áp dụng
+    ``_filtered_data_from_request`` để tôn trọng module/process/pic global filter.
+    """
+    from analyzer.dashboard_engine import DashboardEngine
+    state, err = _require_state(slug)
+    if err:
+        return err
+    group_by = (request.args.get("group_by") or "module").lower()
+    if group_by not in ("module", "process"):
+        group_by = "module"
+    data = _filtered_data_from_request(state)
+    engine = DashboardEngine()
+    return jsonify({
+        "group_by": group_by,
+        **engine._phase_status_matrix(data, group_by=group_by),
+        "applied_filter": {
+            "modules": _parse_multi_arg("module"),
+            "processes": _parse_multi_arg("process"),
+            "pics": _parse_multi_arg("pic"),
+        },
+    })
+
+
 @app.route("/api/projects/<slug>/module-overview")
 def project_module_overview(slug: str):
     """

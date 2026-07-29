@@ -1071,8 +1071,18 @@
         </section>
 
         <section id="section-matrix" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
-            <h3 class="text-lg font-semibold text-gray-800 mb-4" data-help="section-matrix">🔥 Chi tiết Phase × Module (% Closed)</h3>
-            <div class="overflow-x-auto">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-matrix">🔥 Chi tiết Phase × <span id="matrixModeLabel">Module</span> (% Closed)</h3>
+                <div class="flex items-center gap-1 no-print">
+                    <span class="text-xs text-gray-500 mr-1">Nhóm theo:</span>
+                    <button id="matrixGroupModule" onclick="setMatrixGroupBy('module')"
+                            class="text-xs px-3 py-1 rounded border bg-blue-600 text-white border-blue-600">Module</button>
+                    <button id="matrixGroupProcess" onclick="setMatrixGroupBy('process')"
+                            class="text-xs px-3 py-1 rounded border bg-white text-gray-700 border-gray-300 hover:bg-gray-50">Quy trình</button>
+                </div>
+            </div>
+            <p class="chart-scope"></p>
+            <div class="overflow-x-auto mt-2">
                 <table class="w-full text-sm" id="matrixTable">
                     <thead id="matrixHead"></thead>
                     <tbody id="matrixBody"></tbody>

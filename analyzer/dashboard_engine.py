@@ -262,15 +262,43 @@ class DashboardEngine:
     # Phase × Status matrix
     # ------------------------------------------------------------------
 
-    def _phase_status_matrix(self, data: ParsedData) -> dict:
-        matrix = {}
+    def _phase_status_matrix(self, data: ParsedData, group_by: str = "module") -> dict:
+        """Ma trận rows × phases với % Closed và status counts.
+
+        group_by:
+        - "module"  → rows là module (như cũ, backward compatible).
+        - "process" → rows là quy trình (giữ nguyên tên đầy đủ, VD
+          "PRM.BP.03 - Quy trình tính lương sản phẩm"), kèm meta module
+          để hiển thị cột phụ.
+        """
+        gb = (group_by or "module").lower().strip()
         all_statuses_ordered = ["Closed", "In-progress", "Assigned", "Resolved", "Open", "Pending", "Cancelled"]
 
-        for module in data.all_modules:
-            matrix[module] = {}
-            rows = [r for r in data.rows if r.meta.get("module") == module]
-            total_rows = len(rows)
+        if gb == "process":
+            # Group rows theo quy trình → sort theo tên (giữ prefix "PRM.BP.03…" ổn định).
+            by_proc: dict[str, list[FunctionRow]] = {}
+            proc_module_map: dict[str, str] = {}
+            for r in data.rows:
+                proc = str(r.meta.get("quy_trinh") or "").strip()
+                if not proc:
+                    continue
+                by_proc.setdefault(proc, []).append(r)
+                # Ghi lại module đại diện (module đầu tiên gặp) — trong data thực
+                # 1 quy trình thường chỉ nằm trong 1 module.
+                if proc not in proc_module_map:
+                    proc_module_map[proc] = str(r.meta.get("module") or "")
+            row_labels = sorted(by_proc.keys())
+        else:
+            gb = "module"
+            by_proc = {m: [r for r in data.rows if r.meta.get("module") == m] for m in data.all_modules}
+            proc_module_map = {m: m for m in data.all_modules}
+            row_labels = list(data.all_modules)
 
+        matrix: dict[str, dict] = {}
+        for label in row_labels:
+            matrix[label] = {}
+            rows = by_proc.get(label, [])
+            total_rows = len(rows)
             for phase_name in data.all_phases:
                 status_counts = Counter()
                 total_with_status = 0
@@ -281,20 +309,25 @@ class DashboardEngine:
                         total_with_status += 1
 
                 closed = status_counts.get("Closed", 0)
-                # weighted_all: denominator = total_rows (không phải total_with_status).
-                # Phase blank = "chưa làm" → đếm vào mẫu số → không bị 100% giả.
+                # weighted_all: denominator = total_rows (phase blank vẫn là mẫu số
+                # → tránh 100% giả khi chỉ 1 phase đã fill).
                 pct_closed = round(closed / total_rows * 100, 1) if total_rows > 0 else 0
 
-                matrix[module][phase_name] = {
-                    "total": total_rows,                    # tổng rows CÓ THỂ có phase này
-                    "total_with_status": total_with_status, # rows đã điền status (info phụ)
+                matrix[label][phase_name] = {
+                    "total": total_rows,
+                    "total_with_status": total_with_status,
                     "pct_closed": pct_closed,
                     **{s: status_counts.get(s, 0) for s in all_statuses_ordered},
                 }
 
         return {
             "phases": data.all_phases,
-            "modules": data.all_modules,
+            # Backward compat: 'modules' key luôn có (là row labels), nhưng
+            # thêm 'row_labels' + 'group_by' + 'row_module_map' cho FE mode process.
+            "modules": row_labels,
+            "row_labels": row_labels,
+            "group_by": gb,
+            "row_module_map": proc_module_map,
             "statuses": all_statuses_ordered,
             "data": matrix,
         }
