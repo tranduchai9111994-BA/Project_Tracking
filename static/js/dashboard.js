@@ -75,13 +75,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     input.addEventListener("change", () => { if (input.files.length) handleFile(input.files[0]); });
 
-    // Overdue filter events — mỗi lần đổi filter thì reset pagination về trang 1
-    ["filterModule", "filterPIC", "filterPhase"].forEach(id => {
-        document.getElementById(id).addEventListener("change", () => {
+    // Overdue filter events — chỉ còn PIC là single-select native. Module/Phase
+    // đã chuyển sang multi-select (createMultiSelect) → set onChange trong
+    // populateFilters(). Mỗi lần đổi filter → reset pagination về trang 1.
+    const picEl = document.getElementById("filterPIC");
+    if (picEl) {
+        picEl.addEventListener("change", () => {
             pageState.overdue.page = 1;
             renderOverdueTable();
         });
-    });
+    }
 
     // Compare upload
     const cmpInput = document.getElementById("compareUpload");
@@ -1829,11 +1832,43 @@ function renderGiaiDoanChart() {
 // ========================================================================
 function populateFilters() {
     const s = metricsData.structure;
-    fillSelect("filterModule", s.all_modules, "Tất cả Module");
-    fillSelect("filterPhase", s.all_phases, "Tất cả Phase");
+    // Task 15: Module + Phase dùng multi-select; PIC giữ single-select vì
+    // có thể quá nhiều (list PIC riêng cho Overdue chỉ những người thực sự
+    // có task trễ → dropdown scroll đủ dùng).
     const overduePics = new Set();
     metricsData.overdue_list.forEach(item => item.pic.forEach(p => overduePics.add(p)));
     fillSelect("filterPIC", [...overduePics].sort(), "Tất cả PIC");
+
+    const onFilterChange = () => {
+        pageState.overdue.page = 1;
+        renderOverdueTable();
+    };
+    if (!_msInstances.overdueModule) {
+        createMultiSelect({
+            el: "#filterModuleMS",
+            key: "overdueModule",
+            label: "Module",
+            options: s.all_modules || [],
+            selected: [],
+            allText: "Tất cả Module",
+            onChange: onFilterChange,
+        });
+    } else {
+        _msInstances.overdueModule.setOptions(s.all_modules || [], /*dropInvalid=*/false);
+    }
+    if (!_msInstances.overduePhase) {
+        createMultiSelect({
+            el: "#filterPhaseMS",
+            key: "overduePhase",
+            label: "Phase",
+            options: s.all_phases || [],
+            selected: [],
+            allText: "Tất cả Phase",
+            onChange: onFilterChange,
+        });
+    } else {
+        _msInstances.overduePhase.setOptions(s.all_phases || [], /*dropInvalid=*/false);
+    }
 }
 
 function fillSelect(id, options, defaultText) {
@@ -1845,12 +1880,13 @@ function fillSelect(id, options, defaultText) {
 function renderOverdueTable() {
     const tbody = document.getElementById("overdueTable");
     let items = metricsData.overdue_list;
-    const fm = document.getElementById("filterModule").value;
-    const fp = document.getElementById("filterPIC").value;
-    const fph = document.getElementById("filterPhase").value;
-    if (fm) items = items.filter(i => i.module === fm);
+    // Task 15: Module + Phase multi-select → array; PIC single-select → string.
+    const fmArr = _msInstances.overdueModule?.getSelected?.() || [];
+    const fphArr = _msInstances.overduePhase?.getSelected?.() || [];
+    const fp = document.getElementById("filterPIC")?.value || "";
+    if (fmArr.length) items = items.filter(i => fmArr.includes(i.module));
     if (fp) items = items.filter(i => i.pic.includes(fp));
-    if (fph) items = items.filter(i => i.phase === fph);
+    if (fphArr.length) items = items.filter(i => fphArr.includes(i.phase));
 
     const { start, end, pageItems } = _pageSlice("overdue", items);
     tbody.innerHTML = pageItems.map((item, idx) => {
@@ -1879,13 +1915,15 @@ function renderOverdueTable() {
 }
 
 async function exportOverdue() {
-    const fm = document.getElementById("filterModule").value;
-    const fp = document.getElementById("filterPIC").value;
-    const fph = document.getElementById("filterPhase").value;
+    // Task 15: Module + Phase multi-select → comma-sep (backend
+    // _parse_multi_arg tự tách).
+    const fmArr = _msInstances.overdueModule?.getSelected?.() || [];
+    const fphArr = _msInstances.overduePhase?.getSelected?.() || [];
+    const fp = document.getElementById("filterPIC")?.value || "";
     const params = new URLSearchParams();
-    if (fm) params.set("module", fm);
+    if (fmArr.length) params.set("module", fmArr.join(","));
     if (fp) params.set("pic", fp);
-    if (fph) params.set("phase", fph);
+    if (fphArr.length) params.set("phase", fphArr.join(","));
     await downloadFile(`/api/projects/${currentProjectSlug}/export-overdue?` + params.toString(), "Overdue_Report.xlsx");
 }
 
@@ -6934,16 +6972,17 @@ async function loadKanban() {
 
     // Merge global filter (top bar) + local Kanban filter — nếu 2 nguồn cùng
     // set 1 field, hợp union (comma-sep). Backend _parse_multi_arg đã tách
-    // được đa giá trị. Trước đây chỉ gửi local filter → Kanban bỏ qua global
-    // filter → mismatch với các bảng khác.
-    const mergeField = (globalArr, localSel, paramName) => {
-        const local = document.getElementById(localSel)?.value?.trim();
-        const combined = new Set([...(globalArr || []), ...(local ? [local] : [])].filter(Boolean));
+    // được đa giá trị.
+    // Task 15: Module + Quy trình đã đổi sang multi-select → đọc từ
+    // _msInstances.kanbanModule / .kanbanProcess (array).
+    const mergeArray = (globalArr, localArr, paramName) => {
+        const combined = new Set([...(globalArr || []), ...(localArr || [])].filter(Boolean));
         if (combined.size) params.set(paramName, [...combined].join(","));
     };
-    mergeField(globalFilters?.modules,   "kanbanFilterModule",  "module");
-    mergeField(globalFilters?.processes, "kanbanFilterProcess", "process");
-    mergeField(globalFilters?.pics,      "kanbanFilterPic",     "pic");
+    mergeArray(globalFilters?.modules,   _msInstances.kanbanModule?.getSelected?.()  || [], "module");
+    mergeArray(globalFilters?.processes, _msInstances.kanbanProcess?.getSelected?.() || [], "process");
+    const localPic = document.getElementById("kanbanFilterPic")?.value?.trim();
+    mergeArray(globalFilters?.pics, localPic ? [localPic] : [], "pic");
 
     const role = document.getElementById("kanbanFilterRole")?.value;
     if (role) params.set("role", role);
@@ -7042,11 +7081,39 @@ function _kanbanCardHtml(c) {
 }
 
 function _kanbanEnsureFilterOptions() {
-    // Chỉ populate 1 lần khi dropdown còn rỗng option
     const structure = structureCache || {};
+    // Task 15: Module + Quy trình dùng multi-select (createMultiSelect).
+    // Init 1 lần rồi setOptions mỗi lần structure đổi.
+    if (!_msInstances.kanbanModule) {
+        createMultiSelect({
+            el: "#kanbanFilterModuleMS",
+            key: "kanbanModule",
+            label: "Module",
+            options: structure.all_modules || [],
+            selected: [],
+            allText: "Tất cả Module",
+            onChange: () => _kanbanScheduleReload(),
+        });
+    } else {
+        _msInstances.kanbanModule.setOptions(structure.all_modules || [], /*dropInvalid=*/false);
+    }
+    if (!_msInstances.kanbanProcess) {
+        createMultiSelect({
+            el: "#kanbanFilterProcessMS",
+            key: "kanbanProcess",
+            label: "Quy trình",
+            options: structure.all_processes || [],
+            selected: [],
+            allText: "Tất cả Quy trình",
+            onChange: () => _kanbanScheduleReload(),
+        });
+    } else {
+        _msInstances.kanbanProcess.setOptions(structure.all_processes || [], /*dropInvalid=*/false);
+    }
+    // PIC + Role vẫn single-select
     const fillSelect = (id, values) => {
         const sel = document.getElementById(id);
-        if (!sel || sel.options.length > 1) return; // đã fill
+        if (!sel || sel.options.length > 1) return;
         values.forEach(v => {
             const opt = document.createElement("option");
             opt.value = v;
@@ -7054,11 +7121,7 @@ function _kanbanEnsureFilterOptions() {
             sel.appendChild(opt);
         });
     };
-    fillSelect("kanbanFilterModule", structure.all_modules || []);
-    fillSelect("kanbanFilterProcess", structure.all_processes || []);
     fillSelect("kanbanFilterPic", structure.all_pics || _kanbanAllPics || []);
-    // Roles: from map values
-    fillSelect("kanbanFilterRole", _kanbanAllRoles);
 }
 
 function _kanbanBindCardClicks() {

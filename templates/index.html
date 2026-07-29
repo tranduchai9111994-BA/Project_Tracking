@@ -839,15 +839,12 @@
             <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <h3 class="text-lg font-semibold text-red-700" data-help="section-overdue">⚠️ Danh sách trễ deadline</h3>
                 <div class="flex flex-wrap gap-2 items-center no-print">
-                    <select id="filterModule" class="text-sm border rounded px-2 py-1">
-                        <option value="">Tất cả Module</option>
-                    </select>
+                    <!-- Task 15: Module + Phase multi-select; PIC giữ single-select vì có thể nhiều PIC -->
+                    <div id="filterModuleMS" class="text-sm min-w-[150px]"></div>
                     <select id="filterPIC" class="text-sm border rounded px-2 py-1">
                         <option value="">Tất cả PIC</option>
                     </select>
-                    <select id="filterPhase" class="text-sm border rounded px-2 py-1">
-                        <option value="">Tất cả Phase</option>
-                    </select>
+                    <div id="filterPhaseMS" class="text-sm min-w-[150px]"></div>
                     <button id="btnExport" onclick="exportOverdue()"
                             class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm">
                         📥 Xuất Excel
@@ -1510,8 +1507,9 @@
             <!-- Filter mini bar -->
             <div class="flex items-center gap-2 flex-wrap mb-3 text-xs">
                 <input type="text" id="kanbanSearch" oninput="_kanbanScheduleReload()" placeholder="🔍 Tìm nhanh mã/tên/module…" class="border rounded px-2 py-1 flex-1 min-w-[200px]">
-                <select id="kanbanFilterModule" onchange="_kanbanScheduleReload()" class="border rounded px-2 py-1 dark:bg-slate-700"><option value="">Module (tất cả)</option></select>
-                <select id="kanbanFilterProcess" onchange="_kanbanScheduleReload()" class="border rounded px-2 py-1 dark:bg-slate-700"><option value="">Quy trình</option></select>
+                <!-- Task 15: multi-select Module + Quy trình cho Kanban -->
+                <div id="kanbanFilterModuleMS" class="min-w-[140px]"></div>
+                <div id="kanbanFilterProcessMS" class="min-w-[160px]"></div>
                 <select id="kanbanFilterPic" onchange="_kanbanScheduleReload()" class="border rounded px-2 py-1 dark:bg-slate-700"><option value="">PIC</option></select>
                 <select id="kanbanFilterRole" onchange="_kanbanScheduleReload()" class="border rounded px-2 py-1 dark:bg-slate-700">
                     <option value="">Role (tất cả)</option>

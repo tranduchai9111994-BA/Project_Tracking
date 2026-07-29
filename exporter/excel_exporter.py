@@ -135,15 +135,26 @@ def export_overdue_report(
     Returns:
         Filepath of created .xlsx file
     """
-    # Áp dụng filter nếu có
+    # Áp dụng filter nếu có. Task 15: chấp nhận cả single string ("A") lẫn
+    # multi comma-sep ("A,B") — module/phase multi-select. Nếu list values
+    # (dạng "A,B") → check membership; single value → giữ hành vi cũ.
+    def _norm_multi(v):
+        if not v:
+            return []
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return [x.strip() for x in str(v).split(",") if x.strip()]
+
     items = overdue_list
     if filters:
-        if filters.get("module"):
-            items = [i for i in items if i.get("module") == filters["module"]]
+        mods = _norm_multi(filters.get("module"))
+        if mods:
+            items = [i for i in items if i.get("module") in mods]
         if filters.get("pic"):
             items = [i for i in items if filters["pic"] in i.get("pic", [])]
-        if filters.get("phase"):
-            items = [i for i in items if i.get("phase") == filters["phase"]]
+        phases = _norm_multi(filters.get("phase"))
+        if phases:
+            items = [i for i in items if i.get("phase") in phases]
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -163,12 +174,14 @@ def export_overdue_report(
     filter_text = ""
     if filters:
         parts = []
-        if filters.get("module"):
-            parts.append(f"Module: {filters['module']}")
+        mods = _norm_multi(filters.get("module"))
+        if mods:
+            parts.append(f"Module: {', '.join(mods)}")
         if filters.get("pic"):
             parts.append(f"PIC: {filters['pic']}")
-        if filters.get("phase"):
-            parts.append(f"Phase: {filters['phase']}")
+        phases = _norm_multi(filters.get("phase"))
+        if phases:
+            parts.append(f"Phase: {', '.join(phases)}")
         filter_text = " | ".join(parts)
     sub_cell.value = f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}" + (f"  |  Bộ lọc: {filter_text}" if filter_text else "")
     sub_cell.font = Font(name="Arial", size=10, italic=True, color="666666")
