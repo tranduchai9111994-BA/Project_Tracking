@@ -1626,6 +1626,40 @@ def project_delete_saved_view(slug: str, view_id: str):
     return jsonify({"views": views})
 
 
+# ==========================================================================
+# Section order (Task 4b — drag-drop customize)
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/section-order", methods=["GET", "POST"])
+def project_section_order(slug: str):
+    """
+    GET → trả section_order hiện tại (list id string, hoặc [] nếu chưa set).
+    POST → body {order: [id1, id2, ...]} — lưu và trả về order đã lưu.
+    """
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({"order": ps.load_section_order(folder)})
+    body = request.get_json(silent=True) or {}
+    order = body.get("order") or body.get("section_order") or []
+    if not isinstance(order, list):
+        return jsonify({"error": "order phải là list"}), 400
+    saved = ps.save_section_order(folder, order)
+    return jsonify({"order": saved})
+
+
+@app.route("/api/projects/<slug>/section-order/reset", methods=["POST"])
+def project_section_order_reset(slug: str):
+    """Xoá custom section_order → FE fallback về HTML default."""
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    ps.reset_section_order(_project_dir_for(slug))
+    return jsonify({"order": []})
+
+
 @app.route("/api/projects/<slug>/upload-history")
 def project_upload_history(slug: str):
     from analyzer import project_store as ps

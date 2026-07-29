@@ -85,13 +85,18 @@ def save_saved_views(project_dir: str, views: list[dict]) -> list[dict]:
     for v in views:
         if not isinstance(v, dict) or not v.get("name"):
             continue
-        cleaned.append({
+        entry = {
             "id": str(v.get("id") or v["name"]),
             "name": str(v["name"]),
             "modules": list(v.get("modules") or []),
             "processes": list(v.get("processes") or []),
             "pics": list(v.get("pics") or []),
-        })
+        }
+        # Task 4b: optional per-view section_order (nếu view chỉ định layout riêng)
+        so = v.get("section_order")
+        if isinstance(so, list):
+            entry["section_order"] = [str(x) for x in so if x]
+        cleaned.append(entry)
     _write_json(_path(project_dir, "saved_views.json"), cleaned)
     return cleaned
 
@@ -100,14 +105,49 @@ def upsert_saved_view(project_dir: str, view: dict) -> list[dict]:
     views = load_saved_views(project_dir)
     vid = str(view.get("id") or view.get("name") or "")
     views = [v for v in views if v.get("id") != vid and v.get("name") != view.get("name")]
-    views.append({
+    entry = {
         "id": vid or str(view.get("name")),
         "name": str(view.get("name")),
         "modules": list(view.get("modules") or []),
         "processes": list(view.get("processes") or []),
         "pics": list(view.get("pics") or []),
-    })
+    }
+    so = view.get("section_order")
+    if isinstance(so, list):
+        entry["section_order"] = [str(x) for x in so if x]
+    views.append(entry)
     return save_saved_views(project_dir, views)
+
+
+# ------------------------------------------------------------------
+# Section order (Task 4b) — drag-drop layout, global cho project
+# ------------------------------------------------------------------
+# File: section_order.json = ["id1", "id2", ...] (thứ tự các section id trong dashboard).
+# Không set → FE dùng thứ tự HTML mặc định.
+# ------------------------------------------------------------------
+
+def load_section_order(project_dir: str) -> list[str]:
+    data = _read_json(_path(project_dir, "section_order.json"), [])
+    if not isinstance(data, list):
+        return []
+    return [str(x) for x in data if x]
+
+
+def save_section_order(project_dir: str, order: list[str]) -> list[str]:
+    cleaned = [str(x).strip() for x in (order or []) if str(x).strip()]
+    _write_json(_path(project_dir, "section_order.json"), cleaned)
+    return cleaned
+
+
+def reset_section_order(project_dir: str) -> None:
+    """Xoá file section_order.json → FE fallback về HTML default."""
+    import os as _os
+    p = _path(project_dir, "section_order.json")
+    if _os.path.exists(p):
+        try:
+            _os.remove(p)
+        except OSError:
+            pass
 
 
 def delete_saved_view(project_dir: str, view_id: str) -> list[dict]:

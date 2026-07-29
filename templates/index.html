@@ -17,6 +17,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <!-- Plugin hiển thị data label ngay trên chart (số / % ở đỉnh cột, giữa segment…) -->
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+    <!-- Task 4b: SortableJS cho drag-drop reorder section -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_ver('css/style.css') }}">
 </head>
 <body class="bg-slate-50 min-h-screen">
@@ -100,6 +102,19 @@
                 <div class="text-blue-200">File: <span id="fileName" class="text-white font-medium"></span></div>
                 <div class="text-blue-200">Tổng: <span id="rowCount" class="text-white font-medium"></span> chức năng</div>
                 <div class="text-blue-200">Upload: <span id="uploadTime" class="text-white"></span></div>
+            </div>
+            <!-- Task 4b: Toggle drag-drop reorder + reset -->
+            <div class="flex items-center gap-1 no-print">
+                <button id="btnLayoutEdit" onclick="toggleLayoutEditMode()"
+                        class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
+                        title="Bật/tắt drag-drop chỉnh thứ tự section">
+                    <span id="layoutEditLabel">🔧 Chỉnh thứ tự</span>
+                </button>
+                <button id="btnLayoutReset" onclick="resetSectionOrder()"
+                        class="hidden bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
+                        title="Reset về thứ tự mặc định">
+                    ↺ Reset
+                </button>
             </div>
             <button id="btnTheme" onclick="toggleTheme()"
                     class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm">

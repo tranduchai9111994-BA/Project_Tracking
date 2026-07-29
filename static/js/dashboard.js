@@ -313,6 +313,9 @@ function applyDashboardResponse(data) {
     try { if (typeof loadFunctionDiff === "function") setTimeout(loadFunctionDiff, 150); } catch (e) {}
     try { if (typeof loadSavedViews === "function") setTimeout(loadSavedViews, 120); } catch (e) {}
     try { if (typeof _updateDeepLink === "function") _updateDeepLink(); } catch (e) {}
+    // Task 4b: Load custom section order (nếu user đã customize) — apply DOM reorder
+    // TRƯỚC khi user nhìn thấy dashboard (idempotent: nếu order khớp default sẽ no-op).
+    try { if (typeof loadSectionOrder === "function") loadSectionOrder(); } catch (e) {}
 }
 
 // ========================================================================
@@ -6721,6 +6724,11 @@ window.applySavedView = function (viewId) {
     _refreshPicOptions();
     onGlobalFilterChange();
     _updateDeepLink();
+    // Task 4b: Nếu view kèm section_order → apply reorder (không post lên server,
+    // đây là layout tạm thời của view, project global order không đổi).
+    if (Array.isArray(v.section_order) && v.section_order.length) {
+        applySectionOrderToDom(v.section_order);
+    }
     showToast(`Đã áp view "${v.name}"`);
 };
 
@@ -6737,6 +6745,8 @@ window.saveCurrentView = async function () {
         modules: globalFilters.modules,
         processes: globalFilters.processes,
         pics: globalFilters.pics,
+        // Task 4b: kèm section_order hiện tại vào view (nếu user đã customize)
+        section_order: _readCurrentSectionOrderFromDom(),
     };
     try {
         const r = await fetch(_apiUrl("saved-views"), {
@@ -6835,4 +6845,176 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }, 800);
 });
+
+
+// ========================================================================
+// TASK 4b — DRAG-DROP REORDER SECTION + PERSIST
+// ========================================================================
+//
+// Cơ chế:
+// - Dashboard root = <div id="dashboard">. Bên trong có 2 loại top-level element:
+//   (a) <section id="section-XYZ">     (direct child)
+//   (b) <section class="grid ..."> wrapper chứa <div id="section-XYZ"> con.
+//   Drag-drop chỉ áp cho TOP-LEVEL children của #dashboard → đảm bảo giữ
+//   nguyên cấu trúc grid (module+tasktype, pic+effort).
+// - Section order lưu là "top-level id" — với grid wrapper, id = "grid:<child1>+<child2>"
+//   để có thể restore đúng ngay cả khi user drag qua các grid.
+//   (Cơ chế đơn giản: khi save, dùng data-section-key attribute; khi load, match theo key.)
+// ========================================================================
+
+let _sortableInstance = null;
+let _originalDashboardHtml = null;
+
+/** Lấy "key" ổn định cho top-level element trong dashboard. */
+function _topLevelKey(el) {
+    if (!el) return "";
+    if (el.id && el.id.startsWith("section-")) return el.id;
+    // Grid wrapper: build key từ id của các con trực tiếp
+    const children = Array.from(el.querySelectorAll(":scope > [id^='section-']"))
+        .map(c => c.id).filter(Boolean);
+    if (children.length) return "grid:" + children.join("+");
+    return "";
+}
+
+/** Đọc thứ tự top-level hiện tại từ DOM. */
+function _readCurrentSectionOrderFromDom() {
+    const dash = document.getElementById("dashboard");
+    if (!dash) return [];
+    // Bỏ qua section-summary-header (là <div> nội bộ, không phải section top-level cần reorder)
+    return Array.from(dash.children)
+        .filter(el => el.id !== "section-summary-header")
+        .map(_topLevelKey)
+        .filter(Boolean);
+}
+
+/** Reorder DOM top-level theo `order` (list of keys). */
+function applySectionOrderToDom(order) {
+    const dash = document.getElementById("dashboard");
+    if (!dash || !Array.isArray(order) || !order.length) return;
+    const byKey = new Map();
+    Array.from(dash.children).forEach(el => {
+        const k = _topLevelKey(el);
+        if (k) byKey.set(k, el);
+    });
+    // Append theo order (bỏ những key không match); những element không nằm trong
+    // order → giữ nguyên ở cuối (tránh mất hoàn toàn nếu có section mới sau upgrade).
+    const seen = new Set();
+    order.forEach(k => {
+        const el = byKey.get(k);
+        if (el) { dash.appendChild(el); seen.add(k); }
+    });
+    byKey.forEach((el, k) => {
+        if (!seen.has(k)) dash.appendChild(el);
+    });
+}
+
+/** Load custom order từ backend + apply nếu có. */
+async function loadSectionOrder() {
+    if (!currentProjectSlug) return;
+    // Snapshot HTML gốc lần đầu tiên (cho reset)
+    if (_originalDashboardHtml === null) {
+        const dash = document.getElementById("dashboard");
+        if (dash) _originalDashboardHtml = dash.innerHTML;
+    }
+    try {
+        const r = await fetch(_apiUrl("section-order"));
+        if (!r.ok) return;
+        const data = await r.json();
+        if (Array.isArray(data.order) && data.order.length) {
+            applySectionOrderToDom(data.order);
+            // Show nút reset khi có custom order
+            const btnReset = document.getElementById("btnLayoutReset");
+            if (btnReset) btnReset.classList.remove("hidden");
+        }
+    } catch (err) {
+        console.error("[loadSectionOrder]", err);
+    }
+}
+
+/** Persist order lên backend. */
+async function saveSectionOrder() {
+    if (!currentProjectSlug) return;
+    const order = _readCurrentSectionOrderFromDom();
+    try {
+        const r = await fetch(_apiUrl("section-order"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ order }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const btnReset = document.getElementById("btnLayoutReset");
+        if (btnReset) btnReset.classList.remove("hidden");
+        showToast("Đã lưu thứ tự section");
+    } catch (err) {
+        console.error("[saveSectionOrder]", err);
+        showToast("Lưu thứ tự thất bại: " + err.message, "red");
+    }
+}
+
+/** Toggle chế độ chỉnh thứ tự (bật/tắt drag-drop). */
+window.toggleLayoutEditMode = function () {
+    const on = !document.body.classList.contains("layout-edit");
+    document.body.classList.toggle("layout-edit", on);
+    const label = document.getElementById("layoutEditLabel");
+    if (label) label.textContent = on ? "✅ Xong" : "🔧 Chỉnh thứ tự";
+    if (on) {
+        _initSortable();
+        showToast("Đang bật chế độ kéo thả — kéo section để đổi thứ tự");
+    } else {
+        _destroySortable();
+        showToast("Đã tắt chế độ chỉnh thứ tự");
+    }
+};
+
+function _initSortable() {
+    if (_sortableInstance) return;
+    if (typeof Sortable === "undefined") {
+        showToast("SortableJS chưa load — reload trang.", "red");
+        return;
+    }
+    const dash = document.getElementById("dashboard");
+    if (!dash) return;
+    _sortableInstance = Sortable.create(dash, {
+        animation: 180,
+        ghostClass: "sortable-ghost",
+        chosenClass: "sortable-chosen",
+        dragClass: "sortable-drag",
+        // Không drag section-summary-header (div nội bộ, không phải section top-level)
+        filter: "#section-summary-header",
+        preventOnFilter: false,
+        onEnd: () => {
+            saveSectionOrder();
+        },
+    });
+}
+
+function _destroySortable() {
+    if (_sortableInstance) {
+        _sortableInstance.destroy();
+        _sortableInstance = null;
+    }
+}
+
+/** Reset về default HTML (xoá custom order). */
+window.resetSectionOrder = async function () {
+    if (!confirm("Reset về thứ tự mặc định?")) return;
+    try {
+        const r = await fetch(_apiUrl("section-order/reset"), { method: "POST" });
+        if (!r.ok) throw new Error(await r.text());
+        // Restore HTML gốc từ snapshot
+        if (_originalDashboardHtml !== null) {
+            const dash = document.getElementById("dashboard");
+            if (dash) {
+                // Note: không reload innerHTML để tránh mất Chart.js instances.
+                // Thay vào đó → reload page giữ scroll top.
+                location.reload();
+                return;
+            }
+        }
+        location.reload();
+    } catch (err) {
+        console.error("[resetSectionOrder]", err);
+        showToast("Reset thất bại: " + err.message, "red");
+    }
+};
 

@@ -1310,3 +1310,51 @@ html.dark #pfCompareTable th, html.dark #pfCompareTable td {
     .no-print, header, .sidebar-nav, .sidebar-toggle-btn, #uploadZone { display: none !important; }
     .dashboard-card { break-inside: avoid; box-shadow: none !important; border: 1px solid #ccc; }
 }
+
+/* ==== Task 4b — Layout Edit Mode (drag-drop reorder sections) ==== */
+/* Class .layout-edit thêm vào <body> khi user bật "🔧 Chỉnh thứ tự". */
+body.layout-edit #dashboard [id^="section-"]:not(#section-summary-header),
+body.layout-edit #dashboard > section {
+    cursor: grab;
+    outline: 2px dashed #3b82f6;
+    outline-offset: 4px;
+    transition: box-shadow 0.15s, outline-color 0.15s;
+    position: relative;
+}
+body.layout-edit #dashboard [id^="section-"]:not(#section-summary-header):hover,
+body.layout-edit #dashboard > section:hover {
+    outline-color: #2563eb;
+    box-shadow: 0 6px 24px rgba(37, 99, 235, 0.25);
+}
+body.layout-edit #dashboard [id^="section-"]:not(#section-summary-header):active,
+body.layout-edit #dashboard > section:active { cursor: grabbing; }
+
+/* Drag handle overlay ⋮⋮ ở góc trái-trên section */
+body.layout-edit #dashboard [id^="section-"]:not(#section-summary-header)::before,
+body.layout-edit #dashboard > section::before {
+    content: "⋮⋮";
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    background: rgba(59, 130, 246, 0.9);
+    color: white;
+    font-weight: 900;
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    z-index: 30;
+    pointer-events: none;
+    letter-spacing: -2px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* SortableJS ghost / chosen styling */
+.sortable-ghost { opacity: 0.4; background: #dbeafe !important; }
+.sortable-chosen { box-shadow: 0 10px 30px rgba(37, 99, 235, 0.4) !important; }
+.sortable-drag { opacity: 0.9; }
+
+/* Nút Reset chỉ hiện khi layout-edit ON hoặc khi có custom order */
+body.layout-edit #btnLayoutReset { display: inline-flex; }
+body.layout-edit #btnLayoutEdit {
+    background: rgba(16, 185, 129, 0.4) !important;
+}
