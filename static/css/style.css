@@ -1311,6 +1311,40 @@ html.dark #pfCompareTable th, html.dark #pfCompareTable td {
     .dashboard-card { break-inside: avoid; box-shadow: none !important; border: 1px solid #ccc; }
 }
 
+/* ==== Task 5 — Sticky Global Filter Bar ==== */
+/*
+ * Filter bar (Module / Quy trình / PIC + saved views) luôn hiện khi scroll.
+ * Top offset = header height (đo bằng JS, gán vào --header-h). Fallback 64px.
+ * z-index: 20 < header (z-30) → header vẫn nằm trên nếu overlap khi scroll.
+ */
+#section-globalfilter {
+    position: sticky;
+    top: var(--header-h, 64px);
+    z-index: 20;
+    /* Semi-transparent bg + backdrop blur giúp filter đọc rõ khi có content
+       phía sau lướt qua. Giữ dark mode variant. */
+    background-color: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: box-shadow 0.2s ease;
+}
+html.dark #section-globalfilter {
+    background-color: rgba(30, 41, 59, 0.95); /* card dark */
+}
+/* Khi scroll xuống → thêm class `is-scrolled` (JS) → shadow đậm hơn để phân
+   biệt với content phía sau. */
+#section-globalfilter.is-scrolled {
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+}
+html.dark #section-globalfilter.is-scrolled {
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+/* Trong layout-edit mode: tạm tắt sticky để user drag không bị stuck */
+body.layout-edit #section-globalfilter {
+    position: relative;
+    top: auto;
+}
+
 /* ==== Task 4b — Layout Edit Mode (drag-drop reorder sections) ==== */
 /* Class .layout-edit thêm vào <body> khi user bật "🔧 Chỉnh thứ tự". */
 body.layout-edit #dashboard [id^="section-"]:not(#section-summary-header),

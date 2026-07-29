@@ -6848,6 +6848,35 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
 // ========================================================================
+// TASK 5 — STICKY GLOBAL FILTER: đo header height + shadow khi scroll
+// ========================================================================
+
+function _updateStickyHeaderVar() {
+    const header = document.querySelector("header.no-print");
+    if (!header) return;
+    const h = header.offsetHeight;
+    if (h > 0) {
+        document.documentElement.style.setProperty("--header-h", `${h}px`);
+    }
+}
+
+function _updateFilterScrolledClass() {
+    const filter = document.getElementById("section-globalfilter");
+    if (!filter) return;
+    // Thêm shadow đậm khi user đã scroll xuống > 40px
+    filter.classList.toggle("is-scrolled", window.scrollY > 40);
+}
+
+// Init 1 lần khi DOM ready + mỗi resize (header có thể wrap trên mobile)
+window.addEventListener("DOMContentLoaded", () => {
+    _updateStickyHeaderVar();
+    _updateFilterScrolledClass();
+});
+window.addEventListener("resize", _updateStickyHeaderVar);
+window.addEventListener("scroll", _updateFilterScrolledClass, { passive: true });
+
+
+// ========================================================================
 // TASK 4b — DRAG-DROP REORDER SECTION + PERSIST
 // ========================================================================
 //
