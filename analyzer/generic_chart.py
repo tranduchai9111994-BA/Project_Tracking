@@ -396,6 +396,104 @@ def aggregate_chart(
     }
 
 
+def drill_chart(
+    data: ParsedData,
+    x_field: str,
+    x_value: str,
+    series_field: Optional[str] = None,
+    series_value: Optional[str] = None,
+    filters: Optional[dict] = None,
+    today: Optional[date] = None,
+    limit: int = 500,
+) -> dict:
+    """T27 — Trả về danh sách FunctionRow rơi vào bucket (x_value, series_value)
+    của aggregate_chart. Dùng cho drill-down modal khi user click bar/pie.
+
+    Rules:
+    - Apply cùng filters + explode logic như aggregate_chart để đảm bảo count khớp.
+    - Nếu 1 row có nhiều x_value (VD PIC multi) chỉ match theo x_value được click.
+    - Sắp xếp: overdue trước, sau đó theo priority Must-have, cuối theo ma_cn.
+
+    Returns:
+        {
+            "x_field": ..., "x_value": ..., "series_field": ..., "series_value": ...,
+            "items": [...],  # tối đa `limit` rows
+            "total": <int>,
+        }
+    """
+    today = today or date.today()
+    x_field_norm = (x_field or "").strip().lower()
+    x_target = str(x_value or "").strip()
+    s_target = str(series_value or "").strip() if series_field else ""
+
+    # 1) filter theo filters
+    rows_filtered = [r for r in data.rows if _row_passes_filters(r, filters or {}, today)]
+
+    # 2) chọn rows match x_value (và optional series_value)
+    matched: list[FunctionRow] = []
+    seen_row_ids: set[int] = set()   # dedupe row nếu explode cho match trùng
+    for r in rows_filtered:
+        x_vals = _row_field_values(r, x_field) or ["(Trống)"]
+        if x_target not in x_vals:
+            continue
+        if series_field and s_target:
+            s_vals = _row_field_values(r, series_field) or ["(Trống)"]
+            if s_target not in s_vals:
+                continue
+        rid = id(r)
+        if rid in seen_row_ids:
+            continue
+        seen_row_ids.add(rid)
+        matched.append(r)
+
+    total = len(matched)
+
+    # 3) Sort: overdue first, Must-have priority, ma_cn
+    def _sort_key(r: FunctionRow):
+        meta = r.meta or {}
+        prio = str(meta.get("priority") or "")
+        return (
+            0 if _row_is_overdue(r, today) else 1,
+            0 if "Must" in prio else 1,
+            str(meta.get("ma_cn") or ""),
+        )
+    matched.sort(key=_sort_key)
+
+    # 4) Serialize (chỉ field cần cho drill modal)
+    items = []
+    for r in matched[:limit]:
+        meta = r.meta or {}
+        # Phase gần nhất có end_date để hiển thị deadline
+        latest_end = _row_latest_end(r)
+        items.append({
+            "ma_cn":     str(meta.get("ma_cn") or ""),
+            "ten_cn":    str(meta.get("ten_cn") or ""),
+            "module":    str(meta.get("module") or ""),
+            "quy_trinh": str(meta.get("quy_trinh") or meta.get("process") or ""),
+            "priority":  str(meta.get("priority") or ""),
+            "complexity": str(meta.get("complexity") or ""),
+            "fit_gap":   str(meta.get("fit_gap") or meta.get("fitgap") or ""),
+            "giai_doan": str(meta.get("giai_doan") or ""),
+            "status":    _row_overall_status(r) or "",
+            "pic":       _row_pics_all(r),
+            "end_date":  latest_end.isoformat() if latest_end else "",
+            "is_overdue": _row_is_overdue(r, today),
+            "duration_days": _row_duration_days(r),
+            "total_mh":  round(_row_total_mh(r), 1),
+            "row_num":   int(meta.get("row_num") or 0) or None,
+        })
+
+    return {
+        "x_field": x_field,
+        "x_value": x_value,
+        "series_field": series_field,
+        "series_value": series_value if series_field else None,
+        "items": items,
+        "total": total,
+        "truncated": total > limit,
+    }
+
+
 def get_available_fields() -> dict:
     """Trả cấu trúc field + measure + palette + chart types cho FE dropdown."""
     return {

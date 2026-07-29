@@ -7783,6 +7783,22 @@ function _cdBuildChart(canvas, agg, cfg) {
         };
     }
 
+    // T27 — Drill-down inline: click bar/pie segment → mở modal drill.
+    // Chỉ enable khi item có id (chart đã lưu, không phải preview trong wizard).
+    if (cfg && cfg.id) {
+        extraOpts.onClick = (evt, elements, chart) => {
+            if (!elements || !elements.length) return;
+            const el = elements[0];
+            const label = chart.data.labels[el.index];
+            const seriesLabel = cfg.series_field ? chart.data.datasets[el.datasetIndex]?.label : "";
+            openCustomDashDrill(cfg, label, seriesLabel);
+        };
+        // Hover cursor pointer để hint clickable
+        extraOpts.onHover = (evt, elements) => {
+            evt.native.target.style.cursor = elements && elements.length ? "pointer" : "default";
+        };
+    }
+
     try {
         new Chart(canvas, {
             type: chartType,
@@ -7793,6 +7809,86 @@ function _cdBuildChart(canvas, agg, cfg) {
         console.error("[cdBuildChart]", err);
     }
 }
+
+// T27 — Drill-down modal cho custom dashboard.
+// Click bar/pie/segment → fetch /custom-dashboard/<id>/drill?x_value=...&series_value=...
+// Modal hiển thị bảng function match. Sử dụng lại `_viewIconCell` (UX7) để
+// mở function detail modal khi cần deep-dive.
+window.openCustomDashDrill = async function (cfg, xValue, seriesValue) {
+    if (!cfg || !cfg.id) return;
+    const modal = document.getElementById("cdDrillModal");
+    if (!modal) return;
+    // Show loading state
+    const titleEl = document.getElementById("cdDrillTitle");
+    const subEl = document.getElementById("cdDrillSubtitle");
+    const metaEl = document.getElementById("cdDrillMeta");
+    const tbody = document.getElementById("cdDrillTbody");
+    const empty = document.getElementById("cdDrillEmpty");
+    if (titleEl) titleEl.textContent = cfg.title || "Chi tiết";
+    if (subEl) subEl.textContent = `${cfg.x_field || ""} = "${xValue}"` + (seriesValue ? ` · ${cfg.series_field} = "${seriesValue}"` : "");
+    if (metaEl) metaEl.innerHTML = `<span class="italic text-gray-500">Đang tải...</span>`;
+    if (tbody) tbody.innerHTML = "";
+    if (empty) empty.classList.add("hidden");
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+
+    try {
+        const params = new URLSearchParams({ x_value: xValue || "" });
+        if (seriesValue && cfg.series_field) params.set("series_value", seriesValue);
+        const qs = _buildFilterQuery();
+        const url = _apiUrl(`custom-dashboard/${encodeURIComponent(cfg.id)}/drill?${params.toString()}${qs ? "&" + qs : ""}`);
+        const r = await fetch(url);
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            if (metaEl) metaEl.innerHTML = `<span class="text-red-500">Lỗi: ${escapeHtml(err.error || r.statusText)}</span>`;
+            return;
+        }
+        const d = await r.json();
+        _renderCdDrillTable(d);
+    } catch (err) {
+        if (metaEl) metaEl.innerHTML = `<span class="text-red-500">Lỗi mạng: ${escapeHtml(err.message)}</span>`;
+    }
+};
+
+window.closeCdDrillModal = function () {
+    const modal = document.getElementById("cdDrillModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+};
+
+function _renderCdDrillTable(d) {
+    const metaEl = document.getElementById("cdDrillMeta");
+    const tbody = document.getElementById("cdDrillTbody");
+    const empty = document.getElementById("cdDrillEmpty");
+    if (!tbody) return;
+    const items = d.items || [];
+    if (metaEl) {
+        const truncNote = d.truncated ? ` <span class="text-orange-600">(hiển thị ${items.length}/${d.total} — cap để giữ UI mượt)</span>` : "";
+        metaEl.innerHTML = `Tổng: <b>${d.total}</b> function${truncNote}`;
+    }
+    if (!items.length) {
+        tbody.innerHTML = "";
+        if (empty) empty.classList.remove("hidden");
+        return;
+    }
+    if (empty) empty.classList.add("hidden");
+    tbody.innerHTML = items.map(it => {
+        const overdueCls = it.is_overdue ? "text-red-600 font-semibold" : "";
+        return `<tr class="border-b hover:bg-slate-50 dark:hover:bg-slate-700">
+            <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.ma_cn)}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.ten_cn)}</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.module)}</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.quy_trinh || "")}</td>
+            <td class="px-2 py-1.5 text-center text-xs">${escapeHtml(it.priority)}</td>
+            <td class="px-2 py-1.5 text-center">${statusBadge(it.status)}</td>
+            <td class="px-2 py-1.5 text-center text-xs ${overdueCls}">${escapeHtml(it.end_date || "-")}</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml((it.pic || []).join(", "))}</td>
+            ${_viewIconCell(it.ma_cn, {title: "Xem chi tiết function"})}
+        </tr>`;
+    }).join("");
+}
+
 
 /** b15 (d): format 1 giá trị theo measure format hint từ backend. */
 function _fmtMeasureValue(v, fmt) {

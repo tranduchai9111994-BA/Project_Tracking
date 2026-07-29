@@ -1806,6 +1806,62 @@ def project_custom_dashboard_data(slug: str, item_id: str):
     return jsonify(result)
 
 
+@app.route("/api/projects/<slug>/custom-dashboard/<item_id>/drill")
+def project_custom_dashboard_drill(slug: str, item_id: str):
+    """T27 — Drill-down cho 1 bucket của custom dashboard.
+
+    Query params:
+        x_value        (bắt buộc) — label bucket trên trục X
+        series_value   (optional) — nếu chart có series/group field
+        limit          (optional, default 500) — cap số row trả
+    """
+    from analyzer import project_store as ps
+    from analyzer.generic_chart import drill_chart
+    state, err = _require_state(slug)
+    if err:
+        return err
+    items = ps.load_custom_dashboards(_project_dir_for(slug))
+    item = next((i for i in items if i.get("id") == item_id), None)
+    if not item:
+        return jsonify({"error": "Custom dashboard không tồn tại"}), 404
+    x_value = request.args.get("x_value")
+    if not x_value:
+        return jsonify({"error": "Thiếu x_value"}), 400
+    series_value = request.args.get("series_value") or ""
+    try:
+        limit = max(1, min(2000, int(request.args.get("limit", 500))))
+    except (TypeError, ValueError):
+        limit = 500
+    filters = dict(item.get("filters") or {})
+    # Merge global filter
+    for k, gk in [("modules", "module"), ("processes", "process"), ("pics", "pic")]:
+        gv = _parse_multi_arg(gk)
+        if gv:
+            filters[k] = list(set(filters.get(k, []) + gv)) or gv
+    try:
+        result = drill_chart(
+            state["data"],
+            x_field=item["x_field"],
+            x_value=x_value,
+            series_field=item.get("series_field") or None,
+            series_value=series_value or None,
+            filters=filters,
+            limit=limit,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Drill failed: {e}"}), 400
+    # Kèm meta dashboard để FE hiển thị title/caption trong modal
+    result["dashboard"] = {
+        "id": item.get("id"),
+        "title": item.get("title"),
+        "caption": item.get("caption"),
+        "x_field": item.get("x_field"),
+        "y_measure": item.get("y_measure"),
+        "series_field": item.get("series_field"),
+    }
+    return jsonify(result)
+
+
 @app.route("/api/projects/<slug>/custom-dashboard/<item_id>/export")
 def project_custom_dashboard_export(slug: str, item_id: str):
     """Xuất Excel — 1 sheet chứa aggregated data + 1 sheet metadata."""
