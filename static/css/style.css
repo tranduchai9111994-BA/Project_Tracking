@@ -1667,3 +1667,79 @@ body.layout-edit #btnLayoutEdit {
     min-width: 120px;
 }
 
+
+/* Task 18: Sticky top block with auto-collapse */
+.sticky-top-block {
+    position: sticky;
+    top: 0;
+    z-index: 45;
+    background: rgba(249, 250, 251, 0.96);
+    backdrop-filter: blur(4px);
+    padding: 8px 0 0 0;
+    margin-bottom: 8px;
+    transition: box-shadow 0.3s, padding 0.3s;
+}
+html.dark .sticky-top-block { background: rgba(15, 23, 42, 0.94); }
+
+.sticky-top-block.scrolled {
+    box-shadow: 0 6px 18px -8px rgba(0,0,0,0.18);
+}
+
+/* Compact mode: shrink cards + hide header, keep filter */
+.sticky-top-block.compact #section-summary-header { display: none; }
+.sticky-top-block.compact #section-summary {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 6px;
+    transition: gap 0.3s;
+}
+.sticky-top-block.compact #section-summary > div {
+    padding: 4px 8px !important;
+    min-height: auto;
+}
+.sticky-top-block.compact #section-summary .text-2xl {
+    font-size: 1.0rem !important;
+    line-height: 1.1;
+}
+.sticky-top-block.compact #section-summary .text-xs,
+.sticky-top-block.compact #section-summary .summary-sub {
+    display: none;
+}
+.sticky-top-block.compact #section-summary > div > .text-2xl:first-child {
+    /* keep icon */
+    display: inline-block;
+    margin-right: 4px;
+}
+.sticky-top-block.compact #section-globalfilter {
+    padding: 6px 10px;
+    margin-bottom: 0;
+}
+.sticky-top-block.compact #stickyUploadBtn { display: inline-flex !important; }
+
+.sticky-toggle-btn, .sticky-upload-btn {
+    position: absolute;
+    top: 4px;
+    z-index: 46;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: white;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.sticky-toggle-btn { right: 8px; }
+.sticky-upload-btn { right: 44px; }
+.sticky-toggle-btn:hover, .sticky-upload-btn:hover {
+    background: #eff6ff;
+}
+html.dark .sticky-toggle-btn,
+html.dark .sticky-upload-btn {
+    background: rgba(30, 41, 59, 0.9);
+    color: white;
+    border-color: rgba(100, 116, 139, 0.5);
+}

@@ -8681,6 +8681,62 @@ window.addEventListener("scroll", _updateFilterScrolledClass, { passive: true })
 
 
 // ========================================================================
+// TASK 18 — Sticky top block với auto-collapse compact mode khi scroll
+// ========================================================================
+// Threshold: 200px. Manual toggle (nút 🔼/🔽) override auto — nếu user
+// force-compact hoặc force-full, ignore scroll cho đến khi user nhấn lại.
+
+let _stickyManualState = null;   // null = auto; "compact" | "full" = manual
+
+function _stickyApplyMode(mode) {
+    const block = document.getElementById("stickyTopBlock");
+    if (!block) return;
+    const uploadBtn = document.getElementById("stickyUploadBtn");
+    if (mode === "compact") {
+        block.classList.add("compact", "scrolled");
+        if (uploadBtn) uploadBtn.classList.remove("hidden");
+    } else {
+        block.classList.remove("compact");
+        // Chỉ giữ shadow nếu đã scroll xuống thật (auto-detect)
+        block.classList.toggle("scrolled", window.scrollY > 40);
+        if (uploadBtn) uploadBtn.classList.add("hidden");
+    }
+    const btn = document.getElementById("stickyToggleBtn");
+    if (btn) btn.textContent = mode === "compact" ? "🔽" : "🔼";
+    // Update CSS var --header-h dùng cho sticky offset các phần tử khác
+    if (typeof _updateStickyHeaderVar === "function") _updateStickyHeaderVar();
+}
+
+function _stickyAutoUpdate() {
+    if (_stickyManualState) return;  // manual override
+    const mode = window.scrollY >= 200 ? "compact" : "full";
+    _stickyApplyMode(mode);
+}
+
+window._toggleStickyCompact = function () {
+    const block = document.getElementById("stickyTopBlock");
+    if (!block) return;
+    const currentlyCompact = block.classList.contains("compact");
+    _stickyManualState = currentlyCompact ? "full" : "compact";
+    _stickyApplyMode(_stickyManualState);
+    // Sau 5s không hoạt động manual → cho phép auto tiếp tục
+    clearTimeout(window._stickyManualTimer);
+    window._stickyManualTimer = setTimeout(() => {
+        _stickyManualState = null;
+        _stickyAutoUpdate();
+    }, 5000);
+};
+
+window._scrollToUpload = function () {
+    const uz = document.getElementById("uploadZone");
+    if (uz) uz.scrollIntoView({ behavior: "smooth", block: "start" });
+};
+
+window.addEventListener("scroll", _stickyAutoUpdate, { passive: true });
+window.addEventListener("DOMContentLoaded", _stickyAutoUpdate);
+
+
+// ========================================================================
 // TASK 4b — DRAG-DROP REORDER SECTION + PERSIST
 // ========================================================================
 //

@@ -673,6 +673,15 @@
 
         <!-- ============ NHÓM 1: EXECUTIVE ============ -->
 
+        <!-- Task 18: Sticky top block — wrap 5 summary cards + filter bar.
+             Có 2 mode: full (scrollY<200) / compact (scrollY>=200). Toggle
+             "🔼/🔽" thủ công có thể override auto. -->
+        <div id="stickyTopBlock" class="sticky-top-block">
+            <button id="stickyToggleBtn" type="button" onclick="_toggleStickyCompact()"
+                    class="sticky-toggle-btn no-print" title="Thu gọn / mở rộng">🔼</button>
+            <button id="stickyUploadBtn" type="button" onclick="_scrollToUpload()"
+                    class="sticky-upload-btn no-print hidden" title="Upload file mới">📤</button>
+
         <!-- ==== SECTION: SUMMARY ====
              Header nhỏ (S1) để gắn nút ? — grid cards giữ id section-summary cho anchor. -->
         <div id="section-summary-header" class="flex items-center gap-2 mb-2">
@@ -775,6 +784,7 @@
                 </div>
             </div>
         </section>
+        </div><!-- /#stickyTopBlock -->
 
         <section id="section-compare" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex items-center justify-between flex-wrap gap-3 mb-2">
