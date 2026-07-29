@@ -1866,6 +1866,13 @@ def project_custom_dashboard_export(slug: str, item_id: str):
 
 @app.route("/api/projects/<slug>/module-overview")
 def project_module_overview(slug: str):
+    """
+    BUG P0-B fix: endpoint TRƯỚC ĐÂY dùng `state["data"]` (raw, không filter).
+    Khi user chọn group_by=process kèm global filter (VD chỉ 1 module), backend
+    vẫn tính trên toàn bộ data → bảng hiển thị ALL processes, không apply filter.
+    Fix: dùng `_filtered_data_from_request()` để tôn trọng module/process/pic
+    truyền qua query params.
+    """
     from analyzer.dashboard_engine import DashboardEngine
     state, err = _require_state(slug)
     if err:
@@ -1873,11 +1880,17 @@ def project_module_overview(slug: str):
     group_by = (request.args.get("group_by") or "module").lower()
     if group_by not in ("module", "process", "both"):
         group_by = "module"
+    data = _filtered_data_from_request(state)
     # DashboardEngine.__init__(today=None, ...): pass no arg → dùng date.today().
     engine = DashboardEngine()
     return jsonify({
         "group_by": group_by,
-        "rows": engine._overview_by(state["data"], group_by=group_by),
+        "rows": engine._overview_by(data, group_by=group_by),
+        "applied_filter": {
+            "modules": _parse_multi_arg("module"),
+            "processes": _parse_multi_arg("process"),
+            "pics": _parse_multi_arg("pic"),
+        },
     })
 
 

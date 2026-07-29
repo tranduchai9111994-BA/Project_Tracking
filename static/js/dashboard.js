@@ -1327,9 +1327,12 @@ async function _fetchModuleOverview() {
         renderModuleTable();
         return;
     }
-    // Fetch từ endpoint mới
+    // Fetch từ endpoint mới. BUG P0-B fix: bổ sung global filter query để
+    // backend áp filter (trước đây endpoint trả ALL kể cả khi user filter
+    // theo module/process/pic).
     try {
-        const url = `/api/projects/${currentProjectSlug}/module-overview?group_by=${_moduleGroupBy}`;
+        const qsFilter = _buildFilterQuery();
+        const url = `/api/projects/${currentProjectSlug}/module-overview?group_by=${_moduleGroupBy}${qsFilter ? "&" + qsFilter : ""}`;
         const r = await fetch(url);
         if (!r.ok) throw new Error(await r.text());
         const d = await r.json();
