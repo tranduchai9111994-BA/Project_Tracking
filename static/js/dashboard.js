@@ -7904,9 +7904,10 @@ function _fmtMeasureValue(v, fmt) {
 
 window.openCustomDashModal = async function () {
     _cdEditingId = null;
-    _cdResetForm();
     await _ensureChartFields();
     _cdPopulateWizardDropdowns();
+    _cdInitFilterMs();  // T28 init 7 filter MS
+    _cdResetForm();     // reset sau khi init để clear selected
     const modal = document.getElementById("customDashModal");
     if (modal) {
         modal.classList.remove("hidden");
@@ -7923,8 +7924,11 @@ window.closeCustomDashModal = function () {
     if (_cdPreviewChart) { _cdPreviewChart.destroy(); _cdPreviewChart = null; }
 };
 
+// T28 — Chart Config filter multi-select instances (giữ trong closure module).
+const _cdMsInstances = {};
+
 function _cdResetForm() {
-    ["cdTitle", "cdCaption", "cdChatInput", "cdFilterModules", "cdFilterFitgaps"].forEach(id => {
+    ["cdTitle", "cdCaption", "cdChatInput"].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = "";
     });
@@ -7932,9 +7936,56 @@ function _cdResetForm() {
         const el = document.getElementById(id);
         if (el) el.checked = false;
     });
+    // Reset multi-selects
+    Object.values(_cdMsInstances).forEach(ms => ms?.setSelected?.([]));
     document.getElementById("cdPreviewWrap")?.classList.add("hidden");
     document.getElementById("cdChatSuggestion")?.classList.add("hidden");
 }
+
+/** T28 — Khởi tạo hoặc refresh option cho 7 multi-select filter trong wizard.
+ *  Domain values lấy từ structureCache (đã load lần đầu) fallback về
+ *  metricsData.structure. Nếu structure chưa có thì skip (chart chưa load).
+ *  Live preview: onChange gọi _cdOnFilterChange -> re-preview nếu wrap visible.
+ */
+function _cdInitFilterMs() {
+    const s = structureCache || (metricsData && metricsData.structure) || {};
+    const defs = [
+        { key: "cdMsModule",     msKey: "cdModules",     label: "Module",     opts: s.all_modules || [] },
+        { key: "cdMsProcess",    msKey: "cdProcesses",   label: "Quy trình",  opts: s.all_processes || [] },
+        { key: "cdMsPic",        msKey: "cdPics",        label: "PIC",        opts: s.all_pics || [] },
+        { key: "cdMsStatus",     msKey: "cdStatuses",    label: "Status",     opts: s.all_statuses || [] },
+        { key: "cdMsPriority",   msKey: "cdPriorities",  label: "Priority",   opts: s.all_priorities || [] },
+        { key: "cdMsComplexity", msKey: "cdComplexities", label: "Complexity", opts: s.all_complexities || [] },
+        { key: "cdMsFitgap",     msKey: "cdFitgaps",     label: "FIT/GAP",    opts: s.all_fit_gap || ["FIT", "GAP"] },
+    ];
+    defs.forEach(def => {
+        const container = document.getElementById(def.key);
+        if (!container) return;
+        // Nếu đã init trước → chỉ refresh option (giữ selection)
+        if (_cdMsInstances[def.msKey]) {
+            _cdMsInstances[def.msKey].setOptions?.(def.opts);
+            return;
+        }
+        _cdMsInstances[def.msKey] = createMultiSelect({
+            el: container,
+            key: def.msKey,
+            label: def.label,
+            options: def.opts,
+            selected: [],
+            allText: `Tất cả ${def.label.toLowerCase()}`,
+            onChange: () => _cdOnFilterChange(),
+        });
+    });
+}
+
+/** T28 — Callback khi filter đổi; refresh preview nếu đang show. */
+window._cdOnFilterChange = function () {
+    const wrap = document.getElementById("cdPreviewWrap");
+    if (!wrap || wrap.classList.contains("hidden")) return;
+    // Debounce nhẹ để tránh spam khi user click nhanh nhiều option
+    if (_cdOnFilterChange._t) clearTimeout(_cdOnFilterChange._t);
+    _cdOnFilterChange._t = setTimeout(() => _cdPreview(), 220);
+};
 
 function _cdPopulateWizardDropdowns() {
     const fields = _chartFieldsCache || {};
@@ -8052,6 +8103,7 @@ window._cdApplyChatDraft = function () {
     const draft = box?._cdDraft;
     if (!draft) return;
     _cdSetMode("wizard");
+    _cdInitFilterMs();   // T28 đảm bảo MS đã init trước khi setSelected
     document.querySelector(`input[name="cdChartType"][value="${draft.chart_type}"]`)?.click();
     if (draft.x_field) document.getElementById("cdXField").value = draft.x_field;
     if (draft.y_measure) document.getElementById("cdYMeasure").value = draft.y_measure;
@@ -8059,18 +8111,31 @@ window._cdApplyChatDraft = function () {
     document.getElementById("cdTitle").value = draft.title.slice(0, 100);
     document.getElementById("cdFilterOverdue").checked = !!draft.filters.overdue_only;
     document.getElementById("cdFilterOpenOnly").checked = !!draft.filters.open_only;
-    if (draft.filters.fitgaps) document.getElementById("cdFilterFitgaps").value = draft.filters.fitgaps.join(",");
+    // T28: fitgaps áp vào MS thay vì input plain-text
+    if (draft.filters.fitgaps && _cdMsInstances.cdFitgaps) {
+        _cdMsInstances.cdFitgaps.setSelected(draft.filters.fitgaps);
+    }
 };
 
 // --- Read form → payload ---
 
 function _cdReadForm() {
     const chartType = document.querySelector('input[name="cdChartType"]:checked')?.value || "bar";
+    // T28: đọc từ 7 multi-select thay vì input plain-text.
     const filters = {};
-    const mods = document.getElementById("cdFilterModules")?.value.trim();
-    if (mods) filters.modules = mods.split(",").map(s => s.trim()).filter(Boolean);
-    const fg = document.getElementById("cdFilterFitgaps")?.value.trim();
-    if (fg) filters.fitgaps = fg.split(",").map(s => s.trim()).filter(Boolean);
+    const msMap = [
+        ["cdModules", "modules"],
+        ["cdProcesses", "processes"],
+        ["cdPics", "pics"],
+        ["cdStatuses", "statuses"],
+        ["cdPriorities", "priorities"],
+        ["cdComplexities", "complexities"],
+        ["cdFitgaps", "fitgaps"],
+    ];
+    msMap.forEach(([msKey, filterKey]) => {
+        const sel = _cdMsInstances[msKey]?.getSelected?.() || [];
+        if (sel.length) filters[filterKey] = sel;
+    });
     if (document.getElementById("cdFilterOverdue")?.checked) filters.overdue_only = true;
     if (document.getElementById("cdFilterOpenOnly")?.checked) filters.open_only = true;
     return {
@@ -8144,6 +8209,7 @@ window._cdEditItem = function (id) {
     _cdEditingId = id;
     _ensureChartFields().then(() => {
         _cdPopulateWizardDropdowns();
+        _cdInitFilterMs();   // T28 init MS trước khi setSelected
         _cdSetMode("wizard");
         document.querySelector(`input[name="cdChartType"][value="${item.chart_type}"]`)?.click();
         document.getElementById("cdXField").value = item.x_field;
@@ -8153,8 +8219,19 @@ window._cdEditItem = function (id) {
         document.getElementById("cdTitle").value = item.title;
         document.getElementById("cdCaption").value = item.caption || "";
         const f = item.filters || {};
-        document.getElementById("cdFilterModules").value = (f.modules || []).join(",");
-        document.getElementById("cdFilterFitgaps").value = (f.fitgaps || []).join(",");
+        // T28: set MS instead of input plain
+        const msSet = [
+            ["cdModules",     f.modules],
+            ["cdProcesses",   f.processes],
+            ["cdPics",        f.pics],
+            ["cdStatuses",    f.statuses],
+            ["cdPriorities",  f.priorities],
+            ["cdComplexities", f.complexities],
+            ["cdFitgaps",     f.fitgaps],
+        ];
+        msSet.forEach(([msKey, arr]) => {
+            _cdMsInstances[msKey]?.setSelected?.(Array.isArray(arr) ? arr : []);
+        });
         document.getElementById("cdFilterOverdue").checked = !!f.overdue_only;
         document.getElementById("cdFilterOpenOnly").checked = !!f.open_only;
         const modal = document.getElementById("customDashModal");

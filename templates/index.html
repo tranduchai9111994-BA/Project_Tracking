@@ -616,25 +616,28 @@
                         <label class="block text-xs font-semibold mb-1">Caption / mô tả</label>
                         <input type="text" id="cdCaption" class="w-full border rounded p-2 text-sm" placeholder="Ghi chú hiển thị dưới chart">
                     </div>
-                    <details>
+                    <!-- T28: Filter multi-select — reuse createMultiSelect.
+                         Chọn nhiều value/dimension; preview live khi đổi. -->
+                    <details open>
                         <summary class="text-sm font-semibold cursor-pointer">🎯 Filter riêng cho chart này (tuỳ chọn)</summary>
-                        <div class="mt-2 grid grid-cols-2 gap-2 text-xs">
-                            <label class="block">
-                                Chỉ Module (cách , phân tách):
-                                <input type="text" id="cdFilterModules" class="w-full border rounded p-1 mt-1">
-                            </label>
-                            <label class="block">
-                                Chỉ FIT/GAP (VD: GAP):
-                                <input type="text" id="cdFilterFitgaps" class="w-full border rounded p-1 mt-1">
-                            </label>
-                            <label class="flex items-center gap-2">
-                                <input type="checkbox" id="cdFilterOverdue">
-                                <span>Chỉ overdue</span>
-                            </label>
-                            <label class="flex items-center gap-2">
-                                <input type="checkbox" id="cdFilterOpenOnly">
-                                <span>Chỉ đang mở (chưa Closed)</span>
-                            </label>
+                        <div class="mt-2 grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+                            <div id="cdMsModule" class="min-w-[160px]"></div>
+                            <div id="cdMsProcess" class="min-w-[160px]"></div>
+                            <div id="cdMsPic" class="min-w-[160px]"></div>
+                            <div id="cdMsStatus" class="min-w-[160px]"></div>
+                            <div id="cdMsPriority" class="min-w-[160px]"></div>
+                            <div id="cdMsComplexity" class="min-w-[160px]"></div>
+                            <div id="cdMsFitgap" class="min-w-[160px]"></div>
+                            <div class="flex flex-col gap-1 col-span-2 md:col-span-2">
+                                <label class="flex items-center gap-2">
+                                    <input type="checkbox" id="cdFilterOverdue" onchange="_cdOnFilterChange()">
+                                    <span>Chỉ overdue</span>
+                                </label>
+                                <label class="flex items-center gap-2">
+                                    <input type="checkbox" id="cdFilterOpenOnly" onchange="_cdOnFilterChange()">
+                                    <span>Chỉ đang mở (chưa Closed)</span>
+                                </label>
+                            </div>
                         </div>
                     </details>
                     <div>

@@ -81,6 +81,19 @@ class DashboardEngine:
             m: sorted(pics) for m, pics in pics_by_module.items()
         }
 
+        # T28 — Chart Config filter multi-select cần luôn full domain values
+        # cho các trường FIT/GAP + Task type. Compute từ rows để không phải
+        # đổi parser dataclass.
+        all_fit_gap: set[str] = set()
+        for r in data.rows:
+            v = str(r.meta.get("fit_gap") or "").strip()
+            if not v:
+                continue
+            # Cell có thể là "FIT" / "GAP" / "FIT / GAP" / "FIT, GAP"
+            for token in v.replace("/", ",").split(","):
+                token = token.strip()
+                if token:
+                    all_fit_gap.add(token)
         return {
             "all_modules": data.all_modules,
             "all_phases": data.all_phases,
@@ -90,6 +103,7 @@ class DashboardEngine:
             "all_complexities": data.all_complexities,
             "all_giai_doan": data.all_giai_doan,
             "all_processes": data.all_processes,
+            "all_fit_gap": sorted(all_fit_gap),
             "processes_by_module": processes_by_module_sorted,
             "pics_by_module": pics_by_module_sorted,
             "phase_groups": [
