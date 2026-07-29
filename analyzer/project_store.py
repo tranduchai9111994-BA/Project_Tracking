@@ -281,6 +281,90 @@ def reset_chart_configs(project_dir: str) -> None:
             pass
 
 
+# ------------------------------------------------------------------
+# Custom dashboards (Task 9 — Dynamic Dashboard Builder)
+# ------------------------------------------------------------------
+# File: custom_dashboards.json = list of {id, title, caption, chart_type,
+#   x_field, y_measure, series_field, filters, palette, created_at}
+# Mỗi item = 1 chart user tạo qua wizard/chat.
+# ------------------------------------------------------------------
+
+_CUSTOM_DASH_FILE = "custom_dashboards.json"
+
+
+def _sanitize_custom_dashboard(entry: dict) -> Optional[dict]:
+    if not isinstance(entry, dict):
+        return None
+    title = str(entry.get("title") or "").strip()
+    x_field = str(entry.get("x_field") or "").strip()
+    if not title or not x_field:
+        return None
+    out = {
+        "id": str(entry.get("id") or "").strip()[:60],
+        "title": title[:200],
+        "caption": str(entry.get("caption") or "").strip()[:500],
+        "chart_type": str(entry.get("chart_type") or "bar").strip()[:32],
+        "x_field": x_field[:32],
+        "y_measure": str(entry.get("y_measure") or "count").strip()[:32],
+        "series_field": (str(entry.get("series_field") or "").strip()[:32] or None),
+        "palette": str(entry.get("palette") or "default").strip()[:32],
+        "created_at": str(entry.get("created_at") or "")[:32],
+        "filters": {},
+    }
+    fo = entry.get("filters") or {}
+    if isinstance(fo, dict):
+        for k in ("modules", "processes", "pics", "priorities", "complexities",
+                  "fitgaps", "statuses"):
+            v = fo.get(k)
+            if isinstance(v, list) and v:
+                out["filters"][k] = [str(x)[:80] for x in v if x][:100]
+        for k in ("overdue_only", "closed_only", "open_only"):
+            if fo.get(k) is True:
+                out["filters"][k] = True
+    if not out["id"]:
+        # Auto-gen id từ timestamp
+        import time
+        out["id"] = f"custom_{int(time.time() * 1000)}"
+    if not out["created_at"]:
+        out["created_at"] = datetime.now().isoformat(timespec="seconds")
+    return out
+
+
+def load_custom_dashboards(project_dir: str) -> list[dict]:
+    data = _read_json(_path(project_dir, _CUSTOM_DASH_FILE), [])
+    if not isinstance(data, list):
+        return []
+    cleaned: list[dict] = []
+    for e in data:
+        s = _sanitize_custom_dashboard(e)
+        if s:
+            cleaned.append(s)
+    return cleaned
+
+
+def _save_custom_dashboards(project_dir: str, items: list[dict]) -> list[dict]:
+    _write_json(_path(project_dir, _CUSTOM_DASH_FILE), items)
+    return items
+
+
+def upsert_custom_dashboard(project_dir: str, entry: dict) -> Optional[dict]:
+    """Thêm mới hoặc update 1 custom dashboard. Trả entry đã lưu (hoặc None nếu invalid)."""
+    s = _sanitize_custom_dashboard(entry)
+    if not s:
+        return None
+    items = load_custom_dashboards(project_dir)
+    items = [i for i in items if i.get("id") != s["id"]]
+    items.append(s)
+    _save_custom_dashboards(project_dir, items)
+    return s
+
+
+def delete_custom_dashboard(project_dir: str, item_id: str) -> list[dict]:
+    items = [i for i in load_custom_dashboards(project_dir) if i.get("id") != item_id]
+    _save_custom_dashboards(project_dir, items)
+    return items
+
+
 def delete_saved_view(project_dir: str, view_id: str) -> list[dict]:
     views = [v for v in load_saved_views(project_dir)
              if v.get("id") != view_id and v.get("name") != view_id]

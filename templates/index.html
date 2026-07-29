@@ -118,6 +118,12 @@
                         title="Reset về thứ tự mặc định">
                     ↺ Reset
                 </button>
+                <!-- Task 9: Dashboard builder -->
+                <button id="btnCustomDash" onclick="openCustomDashModal()"
+                        class="bg-purple-500/80 hover:bg-purple-500 px-3 py-1.5 rounded text-sm font-semibold"
+                        title="Tạo dashboard chart mới (wizard hoặc chat)">
+                    ➕ Dashboard
+                </button>
                 <!-- Task 7: Xuất PDF báo cáo tuần -->
                 <button id="btnExportPdf" onclick="openPdfExportModal()"
                         class="bg-emerald-500/80 hover:bg-emerald-500 px-3 py-1.5 rounded text-sm font-semibold"
@@ -469,6 +475,106 @@
             </div>
             <button onclick="document.getElementById('refreshBanner').classList.add('hidden')"
                     class="text-amber-700 hover:text-amber-900 font-bold px-2">✕</button>
+        </div>
+    </div>
+
+    <!-- ============ TASK 9: MODAL DASHBOARD BUILDER ============ -->
+    <div id="customDashModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"
+         onclick="if(event.target===this)closeCustomDashModal()">
+        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-3xl flex flex-col max-h-[90vh]">
+            <div class="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between">
+                <h3 class="text-lg font-bold">➕ Tạo dashboard tuỳ chỉnh</h3>
+                <button onclick="closeCustomDashModal()" class="text-gray-500 hover:text-red-500 text-xl">✕</button>
+            </div>
+            <div class="border-b border-gray-200 dark:border-slate-700 flex">
+                <button id="cdMode-chat" onclick="_cdSetMode('chat')" class="px-4 py-2 border-b-2 border-blue-500 font-semibold text-blue-600 text-sm">💬 Chat</button>
+                <button id="cdMode-wizard" onclick="_cdSetMode('wizard')" class="px-4 py-2 border-b-2 border-transparent text-gray-500 text-sm hover:text-blue-600">🧙 Wizard</button>
+            </div>
+            <div class="p-5 flex-1 overflow-y-auto space-y-4">
+                <!-- CHAT MODE -->
+                <div id="cdPane-chat" class="space-y-3">
+                    <label class="block text-sm font-semibold">Mô tả bằng tiếng Việt</label>
+                    <input type="text" id="cdChatInput" class="w-full border rounded p-2 text-sm"
+                           placeholder="VD: workload PIC theo phase Coding · hoặc: số GAP theo module tuần này · so sánh priority các phân hệ"
+                           oninput="_cdOnChatInput()">
+                    <div class="text-xs text-gray-500">
+                        Từ khoá được nhận dạng: workload / khối lượng / GAP / theo (module/PIC/phase/quy trình/priority/complexity) / trễ / tuần này / coding / analysis / UAT / so sánh / tỷ lệ / xu hướng
+                    </div>
+                    <div id="cdChatSuggestion" class="hidden bg-blue-50 dark:bg-slate-700 rounded p-3 text-sm">
+                        <div class="font-semibold mb-1">📝 Bản nháp từ mô tả:</div>
+                        <div id="cdChatDraftContent" class="text-xs"></div>
+                        <button onclick="_cdApplyChatDraft()" class="mt-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs">Áp vào Wizard →</button>
+                    </div>
+                </div>
+                <!-- WIZARD MODE -->
+                <div id="cdPane-wizard" class="hidden space-y-4">
+                    <div>
+                        <label class="block text-sm font-semibold mb-1">Loại biểu đồ</label>
+                        <div class="grid grid-cols-4 gap-2" id="cdTypeGrid">
+                            <!-- populated by JS -->
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-3">
+                        <div>
+                            <label class="block text-xs font-semibold mb-1">Trục X *</label>
+                            <select id="cdXField" class="w-full border rounded p-2 text-sm"></select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold mb-1">Measure Y *</label>
+                            <select id="cdYMeasure" class="w-full border rounded p-2 text-sm"></select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold mb-1">Group / stack theo</label>
+                            <select id="cdSeriesField" class="w-full border rounded p-2 text-sm"></select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-semibold mb-1">Palette màu</label>
+                            <select id="cdPalette" class="w-full border rounded p-2 text-sm"></select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold mb-1">Tiêu đề *</label>
+                            <input type="text" id="cdTitle" class="w-full border rounded p-2 text-sm" placeholder="VD: Workload PIC theo phase">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold mb-1">Caption / mô tả</label>
+                        <input type="text" id="cdCaption" class="w-full border rounded p-2 text-sm" placeholder="Ghi chú hiển thị dưới chart">
+                    </div>
+                    <details>
+                        <summary class="text-sm font-semibold cursor-pointer">🎯 Filter riêng cho chart này (tuỳ chọn)</summary>
+                        <div class="mt-2 grid grid-cols-2 gap-2 text-xs">
+                            <label class="block">
+                                Chỉ Module (cách , phân tách):
+                                <input type="text" id="cdFilterModules" class="w-full border rounded p-1 mt-1">
+                            </label>
+                            <label class="block">
+                                Chỉ FIT/GAP (VD: GAP):
+                                <input type="text" id="cdFilterFitgaps" class="w-full border rounded p-1 mt-1">
+                            </label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" id="cdFilterOverdue">
+                                <span>Chỉ overdue</span>
+                            </label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" id="cdFilterOpenOnly">
+                                <span>Chỉ đang mở (chưa Closed)</span>
+                            </label>
+                        </div>
+                    </details>
+                    <div>
+                        <button onclick="_cdPreview()" class="bg-gray-200 hover:bg-gray-300 dark:bg-slate-700 px-3 py-1.5 rounded text-sm">🔍 Xem trước</button>
+                        <div id="cdPreviewWrap" class="hidden mt-3 bg-slate-50 dark:bg-slate-900 rounded p-2" style="height: 240px;">
+                            <canvas id="cdPreviewCanvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="px-5 py-3 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
+                <button onclick="closeCustomDashModal()" class="px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-slate-700 text-sm">Huỷ</button>
+                <button id="cdSaveBtn" onclick="_cdSave()" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm font-semibold">💾 Lưu dashboard</button>
+            </div>
         </div>
     </div>
 
@@ -1384,6 +1490,22 @@
                 </table>
             </div>
             <div id="fdiffPagerWrap" class="mt-2"></div>
+        </section>
+
+        <!-- Task 9: Custom dashboards (Dynamic Dashboard Builder) -->
+        <section id="section-custom-dashboards" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">🎨 Dashboard tuỳ chỉnh</h3>
+                    <p class="chart-subtitle">Các chart do bạn tự tạo qua Wizard/Chat. Bấm ➕ Dashboard ở header để tạo thêm.</p>
+                </div>
+                <button onclick="openCustomDashModal()" class="text-xs bg-purple-100 hover:bg-purple-200 text-purple-800 px-3 py-1.5 rounded font-medium">
+                    ➕ Thêm chart
+                </button>
+            </div>
+            <div id="customDashList" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <!-- Populated by JS -->
+            </div>
         </section>
 
         <!-- ============ NHÓM: 7: ADVANCED ANALYTICS (hidden mặc định) ============ -->

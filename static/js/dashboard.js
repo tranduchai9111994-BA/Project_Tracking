@@ -321,6 +321,10 @@ function applyDashboardResponse(data) {
         if (typeof injectChartConfigGears === "function") setTimeout(injectChartConfigGears, 250);
         if (typeof loadChartConfigs === "function") setTimeout(loadChartConfigs, 260);
     } catch (e) {}
+    // Task 9: Load custom dashboards + render section
+    try {
+        if (typeof loadCustomDashboards === "function") setTimeout(loadCustomDashboards, 400);
+    } catch (e) {}
 }
 
 // ========================================================================
@@ -6859,6 +6863,414 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }, 800);
 });
+
+
+// ========================================================================
+// TASK 9 — DYNAMIC DASHBOARD BUILDER
+// ========================================================================
+//
+// User có thể tạo chart mới qua 2 mode:
+//   - Chat: nhập tiếng Việt tự do, parseNaturalQuery → draft config
+//   - Wizard: điền form 3 phần (loại chart / trục + measure / filter + title)
+// Custom charts lưu ở /custom-dashboard endpoint, render trong
+// section-custom-dashboards. Mỗi card có nút ⚙️ (edit) / 🗑️ (delete) /
+// 📥 (export) / ⛶ (fullscreen).
+// ========================================================================
+
+let _customDashItems = [];
+let _cdPreviewChart = null;
+let _cdEditingId = null;   // null = tạo mới; string = đang edit
+
+async function loadCustomDashboards() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(_apiUrl("custom-dashboard"));
+        if (!r.ok) return;
+        const data = await r.json();
+        _customDashItems = data.items || [];
+        _renderCustomDashSection();
+    } catch (err) {
+        console.error("[loadCustomDashboards]", err);
+    }
+}
+
+function _renderCustomDashSection() {
+    const sec = document.getElementById("section-custom-dashboards");
+    const wrap = document.getElementById("customDashList");
+    if (!sec || !wrap) return;
+    if (!_customDashItems.length) {
+        sec.classList.add("hidden");
+        wrap.innerHTML = "";
+        return;
+    }
+    sec.classList.remove("hidden");
+    wrap.innerHTML = _customDashItems.map(item => `
+        <div class="border rounded-lg p-3 dashboard-card bg-slate-50 dark:bg-slate-900" data-cd-id="${escapeAttr(item.id)}">
+            <div class="flex items-start justify-between gap-2 mb-2">
+                <div class="flex-1 min-w-0">
+                    <h4 class="font-semibold text-sm truncate">${escapeHtml(item.title)}</h4>
+                    ${item.caption ? `<p class="text-xs text-gray-500 mt-0.5">${escapeHtml(item.caption)}</p>` : ""}
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                    <button onclick="_cdEditItem('${escapeAttr(item.id)}')" class="text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800 rounded p-1 text-sm" title="Sửa">⚙️</button>
+                    <button onclick="_cdExportItem('${escapeAttr(item.id)}')" class="text-emerald-600 hover:bg-emerald-50 dark:hover:bg-slate-800 rounded p-1 text-sm" title="Xuất Excel">📥</button>
+                    <button onclick="_cdDeleteItem('${escapeAttr(item.id)}')" class="text-red-600 hover:bg-red-50 dark:hover:bg-slate-800 rounded p-1 text-sm" title="Xoá">🗑️</button>
+                </div>
+            </div>
+            <div style="height: 220px;">
+                <canvas id="cdChart_${escapeAttr(item.id)}"></canvas>
+            </div>
+            <div class="text-[10px] text-gray-400 mt-1">${escapeHtml(item.chart_type)} · X: ${escapeHtml(item.x_field)} · Y: ${escapeHtml(item.y_measure)}${item.series_field ? " · Group: " + escapeHtml(item.series_field) : ""}</div>
+        </div>
+    `).join("");
+    // Render each chart
+    _customDashItems.forEach(item => _cdRenderChart(item));
+}
+
+async function _cdRenderChart(item) {
+    try {
+        const r = await fetch(_apiUrl(`custom-dashboard/${encodeURIComponent(item.id)}/data`));
+        if (!r.ok) return;
+        const agg = await r.json();
+        const canvas = document.getElementById(`cdChart_${item.id}`);
+        if (!canvas) return;
+        _cdBuildChart(canvas, agg, item);
+    } catch (err) {
+        console.error("[cdRenderChart]", err);
+    }
+}
+
+/** Build Chart.js instance từ aggregated data + item config. Shared với preview. */
+function _cdBuildChart(canvas, agg, cfg) {
+    const existing = Chart.getChart(canvas);
+    if (existing) existing.destroy();
+
+    const fields = _chartFieldsCache || { palettes: {} };
+    let colors = fields.palettes[cfg.palette] || fields.palettes.default ||
+        ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
+
+    const ut = cfg.chart_type || "bar";
+    let chartType = "bar";
+    let extraOpts = { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { font: { size: 10 } } } } };
+    let stacked = false;
+    if (ut === "horizontalBar") { chartType = "bar"; extraOpts.indexAxis = "y"; }
+    else if (ut === "line") chartType = "line";
+    else if (ut === "area") chartType = "line";
+    else if (ut === "pie") chartType = "pie";
+    else if (ut === "doughnut") chartType = "doughnut";
+    else if (ut === "stackedBar") { chartType = "bar"; stacked = true; }
+    else if (ut === "groupedBar") chartType = "bar";
+
+    const datasets = agg.datasets.map((ds, i) => ({
+        label: ds.label,
+        data: ds.data,
+        backgroundColor: (chartType === "pie" || chartType === "doughnut")
+            ? ds.data.map((_, j) => colors[j % colors.length])
+            : colors[i % colors.length],
+        borderColor: colors[i % colors.length],
+        borderWidth: chartType === "line" ? 2 : 0,
+        fill: ut === "area",
+        tension: chartType === "line" ? 0.3 : 0,
+    }));
+    if (stacked) {
+        extraOpts.scales = { x: { stacked: true }, y: { stacked: true, beginAtZero: true } };
+    } else if (chartType === "bar") {
+        extraOpts.scales = { y: { beginAtZero: true } };
+    }
+    try {
+        new Chart(canvas, {
+            type: chartType,
+            data: { labels: agg.labels, datasets },
+            options: extraOpts,
+        });
+    } catch (err) {
+        console.error("[cdBuildChart]", err);
+    }
+}
+
+// --- Modal management ---
+
+window.openCustomDashModal = async function () {
+    _cdEditingId = null;
+    _cdResetForm();
+    await _ensureChartFields();
+    _cdPopulateWizardDropdowns();
+    const modal = document.getElementById("customDashModal");
+    if (modal) {
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+    }
+};
+
+window.closeCustomDashModal = function () {
+    const modal = document.getElementById("customDashModal");
+    if (modal) {
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+    }
+    if (_cdPreviewChart) { _cdPreviewChart.destroy(); _cdPreviewChart = null; }
+};
+
+function _cdResetForm() {
+    ["cdTitle", "cdCaption", "cdChatInput", "cdFilterModules", "cdFilterFitgaps"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+    });
+    ["cdFilterOverdue", "cdFilterOpenOnly"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.checked = false;
+    });
+    document.getElementById("cdPreviewWrap")?.classList.add("hidden");
+    document.getElementById("cdChatSuggestion")?.classList.add("hidden");
+}
+
+function _cdPopulateWizardDropdowns() {
+    const fields = _chartFieldsCache || {};
+    const optHtml = (map) => Object.entries(map || {}).map(
+        ([k, v]) => `<option value="${escapeAttr(k)}">${escapeHtml(v)}</option>`
+    ).join("");
+    const setSel = (id, opts, prependEmpty = false, defaultVal = "") => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.innerHTML = (prependEmpty ? `<option value="">— Không —</option>` : "") + opts;
+        if (defaultVal) el.value = defaultVal;
+    };
+    setSel("cdXField", optHtml(fields.fields), true);
+    setSel("cdYMeasure", optHtml(fields.measures), false, "count");
+    setSel("cdSeriesField", optHtml(fields.fields), true);
+    const palOpts = Object.keys(fields.palettes || {}).map(p =>
+        `<option value="${p}">${p}</option>`
+    ).join("");
+    setSel("cdPalette", palOpts, false, "default");
+    // Chart type icons
+    const grid = document.getElementById("cdTypeGrid");
+    if (grid) {
+        const ICONS = { bar: "📊", horizontalBar: "📊", line: "📈", area: "📉", pie: "🥧", doughnut: "🍩", stackedBar: "🧱", groupedBar: "🎯" };
+        grid.innerHTML = Object.entries(fields.chart_types || {}).map(
+            ([k, v]) => `<label class="border rounded p-2 cursor-pointer hover:bg-purple-50 dark:hover:bg-slate-700 flex items-center gap-2">
+                <input type="radio" name="cdChartType" value="${k}" ${k === "bar" ? "checked" : ""}>
+                <span class="text-lg">${ICONS[k] || "📊"}</span>
+                <span class="text-xs">${escapeHtml(v)}</span>
+            </label>`
+        ).join("");
+    }
+}
+
+window._cdSetMode = function (mode) {
+    document.getElementById("cdPane-chat")?.classList.toggle("hidden", mode !== "chat");
+    document.getElementById("cdPane-wizard")?.classList.toggle("hidden", mode !== "wizard");
+    document.getElementById("cdMode-chat")?.classList.toggle("border-blue-500", mode === "chat");
+    document.getElementById("cdMode-chat")?.classList.toggle("text-blue-600", mode === "chat");
+    document.getElementById("cdMode-chat")?.classList.toggle("border-transparent", mode !== "chat");
+    document.getElementById("cdMode-chat")?.classList.toggle("text-gray-500", mode !== "chat");
+    document.getElementById("cdMode-wizard")?.classList.toggle("border-blue-500", mode === "wizard");
+    document.getElementById("cdMode-wizard")?.classList.toggle("text-blue-600", mode === "wizard");
+    document.getElementById("cdMode-wizard")?.classList.toggle("border-transparent", mode !== "wizard");
+    document.getElementById("cdMode-wizard")?.classList.toggle("text-gray-500", mode !== "wizard");
+};
+
+// --- NL parser rule-based ---
+
+function _cdParseNaturalQuery(text) {
+    if (!text) return null;
+    const t = text.toLowerCase();
+    const cfg = {
+        title: text.trim(),
+        chart_type: "bar",
+        x_field: null, y_measure: "count", series_field: null,
+        filters: {},
+    };
+    // Chart type keywords
+    if (/(so sánh|so sanh|by|vs)/.test(t)) cfg.chart_type = "bar";
+    if (/(tỷ lệ|ty le|phân bố|phan bo)/.test(t)) cfg.chart_type = "doughnut";
+    if (/(xu hướng|xu huong|trend|theo tuần|theo tuan)/.test(t)) cfg.chart_type = "line";
+    if (/(stacked|xếp chồng|xep chong)/.test(t)) cfg.chart_type = "stackedBar";
+    // X field
+    if (/(theo module|by module|per module|phân hệ|phan he)/.test(t)) cfg.x_field = "module";
+    else if (/(theo pic|by pic|theo người|theo nguoi|nhân sự|nhan su|người phụ trách|nguoi phu trach)/.test(t)) cfg.x_field = "pic";
+    else if (/(theo phase|per phase|by phase|giai đoạn|giai doan)/.test(t)) cfg.x_field = "phase";
+    else if (/(theo quy trình|theo quy trinh|by process|per process)/.test(t)) cfg.x_field = "process";
+    else if (/(theo priority|theo ưu tiên|theo uu tien|by priority)/.test(t)) cfg.x_field = "priority";
+    else if (/(theo complexity|theo độ phức tạp|theo do phuc tap)/.test(t)) cfg.x_field = "complexity";
+    else if (/(theo fit\/gap|theo fitgap|by fitgap)/.test(t)) cfg.x_field = "fitgap";
+    else if (/(theo status|theo trạng thái|theo trang thai)/.test(t)) cfg.x_field = "status";
+    else if (/(theo task type|theo loại|theo loai)/.test(t)) cfg.x_field = "task_type";
+    else if (/(theo tuần|theo tuan|by week)/.test(t)) cfg.x_field = "week_start";
+    // Measure
+    if (/(workload|khối lượng|khoi luong|man\.?hours|mh|md|hours)/.test(t)) cfg.y_measure = "sum_mh";
+    if (/(tỷ lệ closed|ty le closed|% closed|percent closed)/.test(t)) cfg.y_measure = "pct_closed";
+    if (/(tỷ lệ trễ|ty le tre|% overdue|percent overdue)/.test(t)) cfg.y_measure = "pct_overdue";
+    if (/(duration trung bình|duration trung binh|avg duration|trung bình ngày|trung binh ngay)/.test(t)) cfg.y_measure = "avg_duration";
+    // Filters
+    if (/(gap|đang mở gap|dang mo gap)/.test(t) && !/fit\/gap/.test(t)) cfg.filters.fitgaps = ["GAP"];
+    if (/(overdue|trễ|tre|quá hạn|qua han)/.test(t)) cfg.filters.overdue_only = true;
+    if (/(chưa closed|chua closed|chưa xong|chua xong|đang mở|dang mo)/.test(t)) cfg.filters.open_only = true;
+    // Fallback x_field
+    if (!cfg.x_field) cfg.x_field = "module";
+    return cfg;
+}
+
+window._cdOnChatInput = function () {
+    const text = document.getElementById("cdChatInput")?.value || "";
+    if (text.trim().length < 5) {
+        document.getElementById("cdChatSuggestion")?.classList.add("hidden");
+        return;
+    }
+    const draft = _cdParseNaturalQuery(text);
+    if (!draft) return;
+    const box = document.getElementById("cdChatSuggestion");
+    const content = document.getElementById("cdChatDraftContent");
+    if (!box || !content) return;
+    const fields = _chartFieldsCache || {};
+    const flabel = (k) => fields.fields?.[k] || k;
+    const mlabel = (k) => fields.measures?.[k] || k;
+    content.innerHTML = `
+        <div>• <b>Loại:</b> ${escapeHtml(fields.chart_types?.[draft.chart_type] || draft.chart_type)}</div>
+        <div>• <b>Trục X:</b> ${escapeHtml(flabel(draft.x_field))}</div>
+        <div>• <b>Measure Y:</b> ${escapeHtml(mlabel(draft.y_measure))}</div>
+        ${draft.series_field ? `<div>• <b>Group:</b> ${escapeHtml(flabel(draft.series_field))}</div>` : ""}
+        ${Object.keys(draft.filters).length ? `<div>• <b>Filter:</b> ${escapeHtml(JSON.stringify(draft.filters))}</div>` : ""}
+    `;
+    box.classList.remove("hidden");
+    box._cdDraft = draft;
+};
+
+window._cdApplyChatDraft = function () {
+    const box = document.getElementById("cdChatSuggestion");
+    const draft = box?._cdDraft;
+    if (!draft) return;
+    _cdSetMode("wizard");
+    document.querySelector(`input[name="cdChartType"][value="${draft.chart_type}"]`)?.click();
+    if (draft.x_field) document.getElementById("cdXField").value = draft.x_field;
+    if (draft.y_measure) document.getElementById("cdYMeasure").value = draft.y_measure;
+    if (draft.series_field) document.getElementById("cdSeriesField").value = draft.series_field;
+    document.getElementById("cdTitle").value = draft.title.slice(0, 100);
+    document.getElementById("cdFilterOverdue").checked = !!draft.filters.overdue_only;
+    document.getElementById("cdFilterOpenOnly").checked = !!draft.filters.open_only;
+    if (draft.filters.fitgaps) document.getElementById("cdFilterFitgaps").value = draft.filters.fitgaps.join(",");
+};
+
+// --- Read form → payload ---
+
+function _cdReadForm() {
+    const chartType = document.querySelector('input[name="cdChartType"]:checked')?.value || "bar";
+    const filters = {};
+    const mods = document.getElementById("cdFilterModules")?.value.trim();
+    if (mods) filters.modules = mods.split(",").map(s => s.trim()).filter(Boolean);
+    const fg = document.getElementById("cdFilterFitgaps")?.value.trim();
+    if (fg) filters.fitgaps = fg.split(",").map(s => s.trim()).filter(Boolean);
+    if (document.getElementById("cdFilterOverdue")?.checked) filters.overdue_only = true;
+    if (document.getElementById("cdFilterOpenOnly")?.checked) filters.open_only = true;
+    return {
+        id: _cdEditingId || undefined,
+        title: document.getElementById("cdTitle")?.value.trim() || "",
+        caption: document.getElementById("cdCaption")?.value.trim() || "",
+        chart_type: chartType,
+        x_field: document.getElementById("cdXField")?.value || "",
+        y_measure: document.getElementById("cdYMeasure")?.value || "count",
+        series_field: document.getElementById("cdSeriesField")?.value || null,
+        palette: document.getElementById("cdPalette")?.value || "default",
+        filters,
+    };
+}
+
+window._cdPreview = async function () {
+    const payload = _cdReadForm();
+    if (!payload.x_field) {
+        showToast("Chọn trục X trước", "red");
+        return;
+    }
+    try {
+        const r = await fetch(_apiUrl("chart-aggregate"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                x_field: payload.x_field,
+                y_measure: payload.y_measure,
+                series_field: payload.series_field,
+                filters: payload.filters,
+            }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const agg = await r.json();
+        document.getElementById("cdPreviewWrap")?.classList.remove("hidden");
+        const canvas = document.getElementById("cdPreviewCanvas");
+        _cdBuildChart(canvas, agg, payload);
+    } catch (err) {
+        showToast("Preview thất bại: " + err.message, "red");
+    }
+};
+
+window._cdSave = async function () {
+    const payload = _cdReadForm();
+    if (!payload.title || !payload.x_field) {
+        showToast("Cần nhập Title + chọn Trục X", "red");
+        return;
+    }
+    try {
+        const method = _cdEditingId ? "PUT" : "POST";
+        const url = _cdEditingId
+            ? _apiUrl(`custom-dashboard/${encodeURIComponent(_cdEditingId)}`)
+            : _apiUrl("custom-dashboard");
+        const r = await fetch(url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        showToast(`Đã ${_cdEditingId ? "cập nhật" : "tạo"} dashboard`);
+        closeCustomDashModal();
+        await loadCustomDashboards();
+    } catch (err) {
+        showToast("Lưu dashboard thất bại: " + err.message, "red");
+    }
+};
+
+window._cdEditItem = function (id) {
+    const item = _customDashItems.find(i => i.id === id);
+    if (!item) return;
+    _cdEditingId = id;
+    _ensureChartFields().then(() => {
+        _cdPopulateWizardDropdowns();
+        _cdSetMode("wizard");
+        document.querySelector(`input[name="cdChartType"][value="${item.chart_type}"]`)?.click();
+        document.getElementById("cdXField").value = item.x_field;
+        document.getElementById("cdYMeasure").value = item.y_measure;
+        document.getElementById("cdSeriesField").value = item.series_field || "";
+        document.getElementById("cdPalette").value = item.palette || "default";
+        document.getElementById("cdTitle").value = item.title;
+        document.getElementById("cdCaption").value = item.caption || "";
+        const f = item.filters || {};
+        document.getElementById("cdFilterModules").value = (f.modules || []).join(",");
+        document.getElementById("cdFilterFitgaps").value = (f.fitgaps || []).join(",");
+        document.getElementById("cdFilterOverdue").checked = !!f.overdue_only;
+        document.getElementById("cdFilterOpenOnly").checked = !!f.open_only;
+        const modal = document.getElementById("customDashModal");
+        modal?.classList.remove("hidden");
+        modal?.classList.add("flex");
+    });
+};
+
+window._cdDeleteItem = async function (id) {
+    const item = _customDashItems.find(i => i.id === id);
+    if (!item) return;
+    if (!confirm(`Xoá custom chart "${item.title}"?`)) return;
+    try {
+        const r = await fetch(_apiUrl(`custom-dashboard/${encodeURIComponent(id)}`), {
+            method: "DELETE",
+        });
+        if (!r.ok) throw new Error(await r.text());
+        showToast("Đã xoá");
+        await loadCustomDashboards();
+    } catch (err) {
+        showToast("Xoá thất bại: " + err.message, "red");
+    }
+};
+
+window._cdExportItem = function (id) {
+    window.open(_apiUrl(`custom-dashboard/${encodeURIComponent(id)}/export`), "_blank");
+};
 
 
 // ========================================================================

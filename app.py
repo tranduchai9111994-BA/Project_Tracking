@@ -1724,6 +1724,141 @@ def project_chart_fields(slug: str):
     return jsonify(get_available_fields())
 
 
+# ==========================================================================
+# Custom dashboards (Task 9 — Dynamic Dashboard Builder)
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/custom-dashboard", methods=["GET", "POST"])
+def project_custom_dashboards(slug: str):
+    """GET → list toàn bộ. POST → thêm/update 1 custom dashboard."""
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({"items": ps.load_custom_dashboards(folder)})
+    body = request.get_json(silent=True) or {}
+    saved = ps.upsert_custom_dashboard(folder, body)
+    if not saved:
+        return jsonify({"error": "Dữ liệu không hợp lệ (thiếu title hoặc x_field)"}), 400
+    return jsonify({"item": saved, "items": ps.load_custom_dashboards(folder)})
+
+
+@app.route("/api/projects/<slug>/custom-dashboard/<item_id>", methods=["PUT", "DELETE"])
+def project_custom_dashboard_item(slug: str, item_id: str):
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "PUT":
+        body = request.get_json(silent=True) or {}
+        body["id"] = item_id
+        saved = ps.upsert_custom_dashboard(folder, body)
+        if not saved:
+            return jsonify({"error": "Dữ liệu không hợp lệ"}), 400
+        return jsonify({"item": saved})
+    items = ps.delete_custom_dashboard(folder, item_id)
+    return jsonify({"items": items})
+
+
+@app.route("/api/projects/<slug>/custom-dashboard/<item_id>/data")
+def project_custom_dashboard_data(slug: str, item_id: str):
+    """Aggregate data cho 1 custom dashboard — reuse aggregate_chart từ Task 8."""
+    from analyzer import project_store as ps
+    from analyzer.generic_chart import aggregate_chart
+    state, err = _require_state(slug)
+    if err:
+        return err
+    items = ps.load_custom_dashboards(_project_dir_for(slug))
+    item = next((i for i in items if i.get("id") == item_id), None)
+    if not item:
+        return jsonify({"error": "Custom dashboard không tồn tại"}), 404
+    filters = dict(item.get("filters") or {})
+    # Merge global filter nếu query có
+    for k, gk in [("modules", "module"), ("processes", "process"), ("pics", "pic")]:
+        gv = _parse_multi_arg(gk)
+        if gv:
+            filters[k] = list(set(filters.get(k, []) + gv)) or gv
+    try:
+        result = aggregate_chart(
+            state["data"],
+            x_field=item["x_field"],
+            y_measure=item.get("y_measure", "count"),
+            series_field=item.get("series_field") or None,
+            filters=filters,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Aggregate failed: {e}"}), 400
+    result["config"] = item
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/custom-dashboard/<item_id>/export")
+def project_custom_dashboard_export(slug: str, item_id: str):
+    """Xuất Excel — 1 sheet chứa aggregated data + 1 sheet metadata."""
+    from analyzer import project_store as ps
+    from analyzer.generic_chart import aggregate_chart, FIELDS, MEASURES
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from tempfile import mkdtemp
+    from datetime import datetime
+    import os
+    state, err = _require_state(slug)
+    if err:
+        return err
+    items = ps.load_custom_dashboards(_project_dir_for(slug))
+    item = next((i for i in items if i.get("id") == item_id), None)
+    if not item:
+        return jsonify({"error": "Custom dashboard không tồn tại"}), 404
+    agg = aggregate_chart(
+        state["data"],
+        x_field=item["x_field"],
+        y_measure=item.get("y_measure", "count"),
+        series_field=item.get("series_field") or None,
+        filters=item.get("filters") or {},
+    )
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    xlabel = FIELDS.get(item["x_field"], item["x_field"])
+    headers = [xlabel] + [ds["label"] for ds in agg["datasets"]]
+    ws.append(headers)
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="2563EB")
+    for i, x in enumerate(agg["labels"]):
+        row = [x] + [ds["data"][i] for ds in agg["datasets"]]
+        ws.append(row)
+    for col_idx, _ in enumerate(headers, 1):
+        ws.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else "A" + chr(64 + col_idx - 26)].width = 18
+    meta_ws = wb.create_sheet("Info")
+    meta_rows = [
+        ["Title", item.get("title")],
+        ["Caption", item.get("caption")],
+        ["X field", xlabel],
+        ["Y measure", MEASURES.get(item.get("y_measure"), item.get("y_measure"))],
+        ["Series field", FIELDS.get(item.get("series_field"), item.get("series_field") or "-")],
+        ["Chart type", item.get("chart_type")],
+        ["Palette", item.get("palette")],
+        ["Filters", str(item.get("filters") or {})],
+        ["Created at", item.get("created_at")],
+        ["Total rows after filter", agg["meta"].get("total_rows_after_filter")],
+        ["Exported at", datetime.now().isoformat(timespec="seconds")],
+    ]
+    for r in meta_rows:
+        meta_ws.append(r)
+    meta_ws.column_dimensions["A"].width = 22
+    meta_ws.column_dimensions["B"].width = 60
+    for c in meta_ws["A"]:
+        c.font = Font(bold=True)
+    out_dir = mkdtemp(prefix="custom_dash_")
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in item.get("title", "custom"))[:40]
+    fpath = os.path.join(out_dir, f"custom_{safe_name}_{item_id[:12]}.xlsx")
+    wb.save(fpath)
+    return send_file(fpath, as_attachment=True,
+                     download_name=os.path.basename(fpath))
+
+
 @app.route("/api/projects/<slug>/chart-aggregate", methods=["POST"])
 def project_chart_aggregate(slug: str):
     """
