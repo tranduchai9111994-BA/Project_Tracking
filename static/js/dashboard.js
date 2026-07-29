@@ -3549,7 +3549,11 @@ function renderCompareResult(r) {
         ],
     }, {
         responsive: true,
-        plugins: { legend: { position: "top" } },
+        plugins: {
+            legend: { position: "top" },
+            // b14: data label %; ẩn value = 0.
+            datalabels: _labelsForVerticalBar("%", 0),
+        },
         scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + "%" } } },
     });
 
@@ -6257,7 +6261,16 @@ function renderBurndownSection(bd) {
         plugins: {
             legend: { position: "top", labels: { boxWidth: 12, font: { size: 11 } } },
             tooltip: { mode: "index", intersect: false },
-            datalabels: { display: false },
+            // b14: data label — chỉ hiện trên bar (Closed/tuần), ẩn line
+            // Lũy kế để tránh trùng lấp. Ẩn value = 0.
+            datalabels: {
+                display: (ctx) => ctx.dataset.type !== "line"
+                    && (Number(ctx.dataset.data[ctx.dataIndex]) || 0) > 0,
+                anchor: "end", align: "end", offset: 2,
+                color: "#1e40af",
+                font: { size: 9, weight: "bold" },
+                formatter: (v) => v > 0 ? v : "",
+            },
         },
         scales: {
             y: { beginAtZero: true, position: "left", title: { display: true, text: "Closed/tuần" } },
@@ -6427,7 +6440,8 @@ function _fitgapRenderStackedBar(canvasId, rows, keyField) {
                     },
                 },
             },
-            datalabels: { display: false },
+            // b14: reuse helper stacked bar (min 6% để không đè segment nhỏ).
+            datalabels: _labelsForStackedBar(6),
         },
         scales: {
             x: { beginAtZero: true, stacked: true, ticks: { font: { size: 10 } } },
