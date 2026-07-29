@@ -138,12 +138,13 @@ class DashboardEngine:
             last_phase_pct = 0
 
         # ==== Unassigned: đếm function unique VÀ phase-level ====
+        # Dùng chung định nghĩa _is_phase_active (phase active + no PIC).
         unassigned_functions = 0
         unassigned_records = 0
         for r in data.rows:
             func_has_unassigned = False
             for _, pd in r.phases.items():
-                if pd.status and pd.status not in ("Closed", "Cancelled") and not pd.pics:
+                if self._is_phase_active(pd) and not pd.pics:
                     unassigned_records += 1
                     func_has_unassigned = True
             if func_has_unassigned:
@@ -482,24 +483,31 @@ class DashboardEngine:
     # ------------------------------------------------------------------
 
     def _unassigned_tasks(self, data: ParsedData) -> list[dict]:
-        """Danh sách phase đang active (status ≠ Closed/Cancelled) mà không có PIC."""
+        """
+        Danh sách phase đang active mà không có PIC.
+
+        Định nghĩa "active" (xem _is_phase_active): phase chưa Closed/Cancelled
+        và có ít nhất 1 dấu hiệu đã plan/làm (status có giá trị, hoặc có
+        Start/End date). Trước đây yêu cầu status truthy → mất các phase
+        đã plan ngày nhưng chưa fill status.
+        """
         results = []
         for r in data.rows:
             for phase_name, pd in r.phases.items():
-                if pd.status and pd.status not in ("Closed", "Cancelled"):
-                    if not pd.pics:
-                        results.append({
-                            "ma_cn": r.meta.get("ma_cn", ""),
-                            "ten_cn": r.meta.get("ten_cn", ""),
-                            "module": r.meta.get("module", ""),
-                            "phase": phase_name,
-                            "status": pd.status,
-                            "priority": r.meta.get("priority", ""),
-                            "complexity": r.meta.get("complexity", ""),
-                            "end_date": pd.end_date.isoformat() if pd.end_date else "",
-                            "is_overdue": self._is_overdue(pd),
-                            "days_overdue": (self.today - pd.end_date).days if self._is_overdue(pd) else 0,
-                        })
+                if self._is_phase_active(pd) and not pd.pics:
+                    results.append({
+                        "ma_cn": r.meta.get("ma_cn", ""),
+                        "ten_cn": r.meta.get("ten_cn", ""),
+                        "module": r.meta.get("module", ""),
+                        "phase": phase_name,
+                        # Nếu status blank thì hiện "(chưa fill)" cho FE dễ hiểu
+                        "status": pd.status or "(chưa fill status)",
+                        "priority": r.meta.get("priority", ""),
+                        "complexity": r.meta.get("complexity", ""),
+                        "end_date": pd.end_date.isoformat() if pd.end_date else "",
+                        "is_overdue": self._is_overdue(pd),
+                        "days_overdue": (self.today - pd.end_date).days if self._is_overdue(pd) else 0,
+                    })
         # Sort: overdue trước, sau đó Must-have trước
         results.sort(key=lambda x: (
             0 if x["is_overdue"] else 1,
@@ -962,12 +970,42 @@ class DashboardEngine:
     # ------------------------------------------------------------------
 
     def _is_overdue(self, pd: PhaseData) -> bool:
-        """Kiểm tra phase data có overdue không."""
+        """
+        Kiểm tra phase data có overdue không.
+
+        Định nghĩa (theo .cursorrules):
+          - Có End date
+          - End date < today
+          - Status KHÔNG phải "Closed" hoặc "Cancelled"
+
+        Note: Status = None/blank vẫn tính là OVERDUE nếu có End < today. Ở
+        thực tế Excel, rất nhiều phase có ngày plan nhưng người dùng quên
+        cập nhật status → đó chính là signal của overdue. TRƯỚC ĐÂY code
+        loại luôn status=None làm mất hàng chục overdue thực tế.
+        """
         if pd.end_date is None:
             return False
-        if pd.status in ("Closed", "Cancelled", None):
+        if pd.status in ("Closed", "Cancelled"):
             return False
         return pd.end_date < self.today
+
+    def _is_phase_active(self, pd: PhaseData) -> bool:
+        """
+        Phase "đang cần theo dõi": chưa Closed/Cancelled + có dấu hiệu
+        đã được plan hoặc bắt đầu làm.
+
+        Dấu hiệu:
+          - Status có giá trị (không phải None/blank), HOẶC
+          - Có Start date, HOẶC
+          - Có End date
+
+        Dùng cho unassigned detection: phase active mà không có PIC =
+        cần assign gấp. Tránh false positive với phase hoàn toàn trống
+        (chưa plan gì).
+        """
+        if pd.status in ("Closed", "Cancelled"):
+            return False
+        return bool(pd.status) or pd.start_date is not None or pd.end_date is not None
 
     def _row_has_overdue(self, row: FunctionRow) -> bool:
         """Kiểm tra function row có bất kỳ phase nào overdue."""
