@@ -2305,3 +2305,119 @@ def export_function_diff_report(
     wb.save(filepath)
     wb.close()
     return filepath
+
+
+# ==========================================================================
+# T21 — Data Quality Report
+# ==========================================================================
+
+# Mapping severity → fill (đỏ/cam/vàng) để user scan nhanh.
+_DQ_SEVERITY_FILL = {
+    "high": RED_FILL,
+    "medium": ORANGE_FILL,
+    "low": YELLOW_FILL,
+}
+
+
+def export_data_quality_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+    subtitle: str = "",
+) -> str:
+    """
+    Xuất báo cáo Excel Data Quality (2 sheet).
+
+    Args:
+        payload: dict trả về từ analyzer.data_quality.compute_data_quality()
+                 {issues: [...], summary: {...}}
+    Returns:
+        Filepath .xlsx đã tạo.
+    """
+    wb = openpyxl.Workbook()
+    summary = payload.get("summary") or {}
+    issues = payload.get("issues") or []
+
+    # === Sheet 1: Summary ===
+    ws1 = wb.active
+    ws1.title = "Summary"
+    by_sev = summary.get("by_severity") or {}
+    by_code = summary.get("by_code") or {}
+    summary_rows = [
+        ["Tổng function", summary.get("total_rows", 0)],
+        ["Function có issue", summary.get("affected_rows", 0)],
+        ["Function clean", summary.get("clean_rows", 0)],
+        ["% Clean", f"{summary.get('clean_pct', 0)}%"],
+        ["", ""],
+        ["Tổng issue", summary.get("total_issues", 0)],
+        ["  Severity: High", by_sev.get("high", 0)],
+        ["  Severity: Medium", by_sev.get("medium", 0)],
+        ["  Severity: Low", by_sev.get("low", 0)],
+    ]
+    # Thêm break-down theo code
+    if by_code:
+        summary_rows.append(["", ""])
+        summary_rows.append(["--- Chi tiết theo loại ---", ""])
+        for code, cnt in sorted(by_code.items(), key=lambda x: -x[1]):
+            summary_rows.append([f"  {code}", cnt])
+
+    _write_sheet(
+        ws1,
+        title="DATA QUALITY — TỔNG QUAN",
+        subtitle=subtitle or f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}",
+        columns=[("Chỉ số", 42), ("Giá trị", 18)],
+        data_rows=summary_rows,
+    )
+
+    # === Sheet 2: Danh sách issue chi tiết ===
+    ws2 = wb.create_sheet("Issues")
+    dq_columns = [
+        ("STT", 6),
+        ("Row #", 8),
+        ("Mã CN", 14),
+        ("Tên chức năng", 32),
+        ("Module", 10),
+        ("Phase", 16),
+        ("Loại issue", 22),
+        ("Severity", 10),
+        ("Chi tiết", 30),
+        ("Gợi ý xử lý", 40),
+    ]
+    data_rows = [
+        [
+            idx + 1,
+            it.get("row_num", ""),
+            it.get("ma_cn", ""),
+            it.get("ten_cn", ""),
+            it.get("module", ""),
+            it.get("phase", ""),
+            it.get("label", ""),
+            it.get("severity", "").upper(),
+            it.get("detail", ""),
+            it.get("suggestion", ""),
+        ]
+        for idx, it in enumerate(issues)
+    ]
+
+    def _fill(_row_idx: int, offset: int):
+        if offset >= len(issues):
+            return None
+        return _DQ_SEVERITY_FILL.get(issues[offset].get("severity"))
+
+    _write_sheet(
+        ws2,
+        title="DATA QUALITY — DANH SÁCH ISSUE CHI TIẾT",
+        subtitle=(
+            f"Tổng: {len(issues)} issue | "
+            f"High={by_sev.get('high', 0)} Medium={by_sev.get('medium', 0)} Low={by_sev.get('low', 0)} | "
+            f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+        ),
+        columns=dq_columns,
+        data_rows=data_rows,
+        row_fill_fn=_fill,
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"Data_Quality_{date.today().strftime('%Y%m%d')}.xlsx")
+    wb.save(filepath)
+    wb.close()
+    return filepath

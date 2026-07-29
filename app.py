@@ -1895,6 +1895,40 @@ def project_module_overview(slug: str):
 
 
 # ==========================================================================
+# T21 — Data Quality Panel
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/data-quality")
+def project_data_quality(slug: str):
+    """
+    Trả về data quality issues (list + summary).
+    Hỗ trợ global filter module/process/pic để user zoom vào 1 subset.
+    """
+    from analyzer.data_quality import compute_data_quality
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    return jsonify(compute_data_quality(data))
+
+
+@app.route("/api/projects/<slug>/export-data-quality")
+def project_export_data_quality(slug: str):
+    """Xuất báo cáo Data Quality ra Excel."""
+    from analyzer.data_quality import compute_data_quality
+    from exporter.excel_exporter import export_data_quality_report
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    payload = compute_data_quality(data)
+    project = _project_mgr.get_project(slug)
+    subtitle = f"Project: {project.name if project else slug} | Ngày: {date.today().strftime('%d/%m/%Y')}"
+    filepath = export_data_quality_report(payload, output_dir="uploads", subtitle=subtitle)
+    return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+
+
+# ==========================================================================
 # Kanban (Task 10 — Kanban theo tuần)
 # ==========================================================================
 

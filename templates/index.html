@@ -57,6 +57,7 @@
     <a href="#section-baseline">Baseline</a>
     <a href="#section-overdue">Overdue</a>
     <a href="#section-digest">Weekly Digest</a>
+    <a href="#section-dataquality">Data Quality</a>
     <a href="#section-history">Upload history</a>
 </nav>
 
@@ -1629,6 +1630,59 @@
         </section>
 
         <!-- ============ NHÓM: 8: OPERATIONAL ============ -->
+
+        <!-- ========================================================================
+             T21 — DATA QUALITY panel
+             Phát hiện các ô data bị lỗi/thiếu (invalid status, blank PIC, End<Start,
+             Closed thiếu End, duplicate Mã CN, thiếu Priority/Complexity/FIT-GAP).
+             Ẩn mặc định; JS gọi endpoint /data-quality khi renderDashboard.
+             ======================================================================== -->
+        <section id="section-dataquality" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800">🩺 Data Quality</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Phát hiện dữ liệu lỗi/thiếu để clean trước khi báo cáo</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <select id="dqSeverityFilter" class="text-sm border rounded px-2 py-1">
+                        <option value="all">Tất cả severity</option>
+                        <option value="high">🔴 High</option>
+                        <option value="medium">🟠 Medium</option>
+                        <option value="low">🟡 Low</option>
+                    </select>
+                    <select id="dqCodeFilter" class="text-sm border rounded px-2 py-1">
+                        <option value="all">Tất cả loại</option>
+                    </select>
+                    <button onclick="exportDataQuality()"
+                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
+                        📥 Xuất Excel
+                    </button>
+                </div>
+            </div>
+
+            <!-- Summary cards -->
+            <div id="dqSummaryCards" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
+
+            <!-- Chi tiết bảng issue -->
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-100 text-gray-700">
+                        <tr>
+                            <th class="px-2 py-2 text-left">Row</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên chức năng</th>
+                            <th class="px-2 py-2 text-left">Module</th>
+                            <th class="px-2 py-2 text-left">Phase</th>
+                            <th class="px-2 py-2 text-left">Issue</th>
+                            <th class="px-2 py-2 text-left">Chi tiết</th>
+                            <th class="px-2 py-2 text-left">Gợi ý</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dqTable"></tbody>
+                </table>
+            </div>
+            <div id="dqPagerWrap" class="mt-2"></div>
+        </section>
 
         <section id="section-history" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">

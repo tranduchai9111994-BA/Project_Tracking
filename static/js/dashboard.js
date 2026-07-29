@@ -1197,6 +1197,9 @@ function renderDashboard() {
     // Compare section (chỉ hiện nếu có >= 2 snapshots)
     _safe("compare", renderCompareSection);
 
+    // T21: Data Quality panel (lazy fetch — không block render chính)
+    _safe("dataQuality", loadDataQuality);
+
     // Populate PIC dropdown (export by pic)
     _safe("picExport", populatePicExportSelect);
 }
@@ -8967,3 +8970,181 @@ window.resetSectionOrder = async function () {
     }
 };
 
+// ========================================================================
+// T21 — DATA QUALITY PANEL
+// ========================================================================
+let _dqState = {
+    issues: [],
+    summary: null,
+    filterSeverity: "all",
+    filterCode: "all",
+    page: 1,
+    pageSize: 30,
+};
+
+async function loadDataQuality() {
+    const section = document.getElementById("section-dataquality");
+    if (!section) return;
+    try {
+        const qsFilter = _buildFilterQuery();
+        const url = `/api/projects/${currentProjectSlug}/data-quality${qsFilter ? "?" + qsFilter : ""}`;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        _dqState.issues = d.issues || [];
+        _dqState.summary = d.summary || null;
+        _dqState.page = 1;
+
+        // Populate code filter dropdown
+        _dqPopulateCodeFilter();
+        // Bind filter events (idempotent)
+        _dqBindEvents();
+
+        // Show section (dù có 0 issue vẫn hiện — user cần biết dữ liệu clean)
+        section.classList.remove("hidden");
+        _dqRenderSummaryCards();
+        _dqRenderTable();
+    } catch (err) {
+        console.error("[loadDataQuality]", err);
+        section.classList.add("hidden");
+    }
+}
+
+function _dqPopulateCodeFilter() {
+    const sel = document.getElementById("dqCodeFilter");
+    if (!sel) return;
+    const codes = Object.keys((_dqState.summary?.by_code) || {}).sort();
+    // Labels map (đồng bộ với ISSUE_META tiếng Việt)
+    const labelMap = {};
+    for (const it of _dqState.issues) labelMap[it.code] = it.label;
+    sel.innerHTML = '<option value="all">Tất cả loại</option>' +
+        codes.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(labelMap[c] || c)} (${_dqState.summary.by_code[c]})</option>`).join("");
+    sel.value = _dqState.filterCode;
+}
+
+function _dqBindEvents() {
+    const sev = document.getElementById("dqSeverityFilter");
+    const code = document.getElementById("dqCodeFilter");
+    if (sev && !sev._dqBound) {
+        sev._dqBound = true;
+        sev.addEventListener("change", () => {
+            _dqState.filterSeverity = sev.value;
+            _dqState.page = 1;
+            _dqRenderTable();
+        });
+    }
+    if (code && !code._dqBound) {
+        code._dqBound = true;
+        code.addEventListener("change", () => {
+            _dqState.filterCode = code.value;
+            _dqState.page = 1;
+            _dqRenderTable();
+        });
+    }
+}
+
+function _dqRenderSummaryCards() {
+    const wrap = document.getElementById("dqSummaryCards");
+    if (!wrap) return;
+    const s = _dqState.summary || {};
+    const sev = s.by_severity || {};
+    const cleanPct = s.clean_pct ?? 100;
+    const cleanColor = cleanPct >= 95 ? "text-green-700" : cleanPct >= 80 ? "text-yellow-700" : "text-red-700";
+    wrap.innerHTML = `
+        <div class="bg-slate-50 rounded-lg p-3 border">
+            <div class="text-xs text-gray-500">Tổng function</div>
+            <div class="text-2xl font-bold text-gray-800">${s.total_rows || 0}</div>
+        </div>
+        <div class="bg-green-50 rounded-lg p-3 border border-green-200">
+            <div class="text-xs text-green-700">Function clean</div>
+            <div class="text-2xl font-bold ${cleanColor}">${s.clean_rows || 0} <span class="text-sm font-normal">(${cleanPct}%)</span></div>
+        </div>
+        <div class="bg-red-50 rounded-lg p-3 border border-red-200">
+            <div class="text-xs text-red-700">🔴 High</div>
+            <div class="text-2xl font-bold text-red-700">${sev.high || 0}</div>
+        </div>
+        <div class="bg-orange-50 rounded-lg p-3 border border-orange-200">
+            <div class="text-xs text-orange-700">🟠 Medium</div>
+            <div class="text-2xl font-bold text-orange-700">${sev.medium || 0}</div>
+        </div>
+        <div class="bg-yellow-50 rounded-lg p-3 border border-yellow-200">
+            <div class="text-xs text-yellow-700">🟡 Low</div>
+            <div class="text-2xl font-bold text-yellow-700">${sev.low || 0}</div>
+        </div>
+    `;
+}
+
+function _dqFilteredIssues() {
+    const s = _dqState.filterSeverity;
+    const c = _dqState.filterCode;
+    return _dqState.issues.filter(it => {
+        if (s !== "all" && it.severity !== s) return false;
+        if (c !== "all" && it.code !== c) return false;
+        return true;
+    });
+}
+
+function _dqRenderTable() {
+    const tbody = document.getElementById("dqTable");
+    if (!tbody) return;
+    const items = _dqFilteredIssues();
+    if (!items.length) {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-green-600">
+            ✅ Không có issue nào phù hợp filter. Dữ liệu clean!
+        </td></tr>`;
+        const pager = document.getElementById("dqPagerWrap");
+        if (pager) pager.innerHTML = "";
+        return;
+    }
+    const start = (_dqState.page - 1) * _dqState.pageSize;
+    const pageItems = items.slice(start, start + _dqState.pageSize);
+    // Badge màu severity
+    const sevBadge = (sev) => {
+        const map = {
+            high: "bg-red-100 text-red-700 border-red-300",
+            medium: "bg-orange-100 text-orange-700 border-orange-300",
+            low: "bg-yellow-100 text-yellow-700 border-yellow-300",
+        };
+        return `<span class="inline-block text-xs px-2 py-0.5 rounded border ${map[sev] || ""}">${sev.toUpperCase()}</span>`;
+    };
+    tbody.innerHTML = pageItems.map(it => `
+        <tr class="border-b hover:bg-slate-50">
+            <td class="px-2 py-1.5 text-gray-500">${it.row_num}</td>
+            <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.ma_cn || "—")}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.ten_cn || "")}</td>
+            <td class="px-2 py-1.5 text-blue-700">${escapeHtml(it.module || "")}</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.phase || "")}</td>
+            <td class="px-2 py-1.5">${sevBadge(it.severity)} ${escapeHtml(it.label)}</td>
+            <td class="px-2 py-1.5 text-xs text-gray-600">${escapeHtml(it.detail)}</td>
+            <td class="px-2 py-1.5 text-xs text-gray-700">${escapeHtml(it.suggestion)}</td>
+        </tr>
+    `).join("");
+    // Pager đơn giản
+    const totalPages = Math.max(1, Math.ceil(items.length / _dqState.pageSize));
+    const pager = document.getElementById("dqPagerWrap");
+    if (pager) {
+        pager.innerHTML = `
+            <div class="flex items-center justify-between text-xs text-gray-600">
+                <div>Hiển thị ${start + 1}–${Math.min(start + pageItems.length, items.length)} / ${items.length} issue</div>
+                <div class="flex items-center gap-1">
+                    <button onclick="_dqGoPage(${_dqState.page - 1})" class="px-2 py-0.5 border rounded ${_dqState.page <= 1 ? "opacity-40 cursor-not-allowed" : "hover:bg-slate-100"}" ${_dqState.page <= 1 ? "disabled" : ""}>◀</button>
+                    <span>Trang ${_dqState.page}/${totalPages}</span>
+                    <button onclick="_dqGoPage(${_dqState.page + 1})" class="px-2 py-0.5 border rounded ${_dqState.page >= totalPages ? "opacity-40 cursor-not-allowed" : "hover:bg-slate-100"}" ${_dqState.page >= totalPages ? "disabled" : ""}>▶</button>
+                </div>
+            </div>
+        `;
+    }
+}
+
+window._dqGoPage = function (p) {
+    const items = _dqFilteredIssues();
+    const totalPages = Math.max(1, Math.ceil(items.length / _dqState.pageSize));
+    _dqState.page = Math.max(1, Math.min(p, totalPages));
+    _dqRenderTable();
+};
+
+window.exportDataQuality = function () {
+    const qs = _buildFilterQuery();
+    const url = `/api/projects/${currentProjectSlug}/export-data-quality${qs ? "?" + qs : ""}`;
+    window.location.href = url;
+};

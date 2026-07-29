@@ -1,0 +1,272 @@
+"""
+Data Quality Analyzer — phát hiện các vấn đề chất lượng dữ liệu trong Function List.
+
+Mục đích: giúp PM/BA nhận ra các ô data bị lỗi/thiếu (invalid status, blank
+PIC/Priority, End < Start, Closed nhưng thiếu End date, duplicate Mã CN...)
+để clean data trước khi báo cáo cấp trên.
+
+Không có dependency ngoài Python stdlib + parser.excel_parser.
+"""
+from __future__ import annotations
+from collections import Counter
+from datetime import date
+from typing import Any
+
+from parser.excel_parser import ParsedData, FunctionRow, VALID_STATUSES
+
+
+# === Các loại issue ===
+# Mỗi issue có: `code`, `severity` (high/medium/low), `label` (VN), `suggestion` (VN).
+ISSUE_META: dict[str, dict[str, str]] = {
+    "invalid_status": {
+        "severity": "high",
+        "label": "Status không hợp lệ",
+        "suggestion": "Đổi về 1 trong: Open, Assigned, In-progress, Resolved, Closed, Pending, Cancelled.",
+    },
+    "end_before_start": {
+        "severity": "high",
+        "label": "End date < Start date",
+        "suggestion": "Kiểm tra lại ngày Start/End — có thể user nhập ngược 2 ô.",
+    },
+    "closed_no_end": {
+        "severity": "medium",
+        "label": "Status Closed nhưng thiếu End date",
+        "suggestion": "Bổ sung End date thực tế để tính overdue/aging chính xác.",
+    },
+    "blank_pic": {
+        "severity": "medium",
+        "label": "Phase active nhưng thiếu PIC",
+        "suggestion": "Gán PIC phụ trách để track công việc.",
+    },
+    "blank_priority": {
+        "severity": "low",
+        "label": "Thiếu Priority",
+        "suggestion": "Chọn Must-have / Should-have / Could-have / Won't-have.",
+    },
+    "blank_complexity": {
+        "severity": "low",
+        "label": "Thiếu Complexity",
+        "suggestion": "Chọn Low / Medium / High.",
+    },
+    "blank_fitgap": {
+        "severity": "low",
+        "label": "Thiếu FIT/GAP",
+        "suggestion": "Chọn FIT hoặc GAP.",
+    },
+    "duplicate_ma_cn": {
+        "severity": "high",
+        "label": "Trùng Mã CN",
+        "suggestion": "Đổi lại Mã CN để duy nhất — mỗi function 1 mã.",
+    },
+}
+
+
+def _norm_status(s: Any) -> str:
+    """Chuẩn hóa status về string strip. Nếu là số (Excel Estimate MH lệch cột)
+    thì coi như invalid — nhưng đã được parser lọc, ở đây chỉ nhận string."""
+    if s is None:
+        return ""
+    return str(s).strip()
+
+
+def _is_closed_status(status: str) -> bool:
+    return status.lower() in ("closed", "cancelled")
+
+
+def _is_active_status(status: str) -> bool:
+    """Phase 'active' = có kế hoạch làm nhưng chưa xong (không phải Closed/Cancelled)."""
+    if not status:
+        return False
+    return status.lower() in ("open", "assigned", "in-progress", "resolved", "pending")
+
+
+def _row_ma_cn(row: FunctionRow) -> str:
+    return str(row.meta.get("ma_cn") or "").strip()
+
+
+def _row_ten_cn(row: FunctionRow) -> str:
+    return str(row.meta.get("ten_cn") or "").strip()
+
+
+def _row_module(row: FunctionRow) -> str:
+    return str(row.meta.get("module") or "").strip()
+
+
+def _row_process(row: FunctionRow) -> str:
+    # meta key chuẩn là "quy_trinh" (giữ backward-compat với "process")
+    return str(row.meta.get("quy_trinh") or row.meta.get("process") or "").strip()
+
+
+def _has_planned_dates(pd) -> bool:
+    """Phase 'có kế hoạch' = có ít nhất 1 trong start/end date."""
+    return bool(pd.start_date or pd.end_date)
+
+
+def compute_data_quality(data: ParsedData) -> dict[str, Any]:
+    """
+    Quét toàn bộ ParsedData → trả về:
+      {
+        "issues": [ {row_num, ma_cn, ten_cn, module, phase, code, severity,
+                     label, detail, suggestion}, ... ],
+        "summary": {
+            "total_issues": N,
+            "by_severity": {"high": x, "medium": y, "low": z},
+            "by_code": {code: count, ...},
+            "affected_rows": N (số function có ít nhất 1 issue),
+            "clean_rows": N (số function không có issue),
+            "total_rows": N (tổng function),
+            "clean_pct": float,
+        }
+      }
+    """
+    issues: list[dict[str, Any]] = []
+
+    # === 1. Detect trùng Mã CN (làm 1 pass để nhóm) ===
+    ma_cn_counter: Counter = Counter()
+    ma_cn_first_row: dict[str, int] = {}
+    for row in data.rows:
+        mc = _row_ma_cn(row)
+        if mc:
+            ma_cn_counter[mc] += 1
+            ma_cn_first_row.setdefault(mc, row.row_num)
+
+    duplicated_codes = {k for k, v in ma_cn_counter.items() if v > 1}
+
+    # === 2. Duyệt từng row → detect các issue ===
+    for row in data.rows:
+        ma_cn = _row_ma_cn(row)
+        ten_cn = _row_ten_cn(row)
+        module = _row_module(row)
+
+        # ---- Row-level issues (không phụ thuộc phase) ----
+        # Duplicate Mã CN
+        if ma_cn and ma_cn in duplicated_codes:
+            issues.append({
+                "row_num": row.row_num,
+                "ma_cn": ma_cn,
+                "ten_cn": ten_cn,
+                "module": module,
+                "phase": "",
+                "code": "duplicate_ma_cn",
+                "severity": ISSUE_META["duplicate_ma_cn"]["severity"],
+                "label": ISSUE_META["duplicate_ma_cn"]["label"],
+                "detail": f"Mã CN '{ma_cn}' xuất hiện {ma_cn_counter[ma_cn]} lần trong file",
+                "suggestion": ISSUE_META["duplicate_ma_cn"]["suggestion"],
+            })
+
+        # Meta-level blanks — chỉ cảnh báo nếu row có Mã CN (row rỗng bỏ qua)
+        if ma_cn:
+            if not str(row.meta.get("priority") or "").strip():
+                issues.append({
+                    "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                    "module": module, "phase": "",
+                    "code": "blank_priority",
+                    "severity": ISSUE_META["blank_priority"]["severity"],
+                    "label": ISSUE_META["blank_priority"]["label"],
+                    "detail": "Cột Priority trống",
+                    "suggestion": ISSUE_META["blank_priority"]["suggestion"],
+                })
+            if not str(row.meta.get("complexity") or "").strip():
+                issues.append({
+                    "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                    "module": module, "phase": "",
+                    "code": "blank_complexity",
+                    "severity": ISSUE_META["blank_complexity"]["severity"],
+                    "label": ISSUE_META["blank_complexity"]["label"],
+                    "detail": "Cột Complexity trống",
+                    "suggestion": ISSUE_META["blank_complexity"]["suggestion"],
+                })
+            if not str(row.meta.get("fit_gap") or "").strip():
+                issues.append({
+                    "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                    "module": module, "phase": "",
+                    "code": "blank_fitgap",
+                    "severity": ISSUE_META["blank_fitgap"]["severity"],
+                    "label": ISSUE_META["blank_fitgap"]["label"],
+                    "detail": "Cột FIT/GAP trống",
+                    "suggestion": ISSUE_META["blank_fitgap"]["suggestion"],
+                })
+
+        # ---- Phase-level issues ----
+        for phase_name, pd in row.phases.items():
+            status = _norm_status(pd.status)
+
+            # Invalid status (không rỗng nhưng không nằm trong danh sách hợp lệ)
+            if status and status not in VALID_STATUSES:
+                issues.append({
+                    "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                    "module": module, "phase": phase_name,
+                    "code": "invalid_status",
+                    "severity": ISSUE_META["invalid_status"]["severity"],
+                    "label": ISSUE_META["invalid_status"]["label"],
+                    "detail": f"Status '{status}' không thuộc VALID_STATUSES",
+                    "suggestion": ISSUE_META["invalid_status"]["suggestion"],
+                })
+
+            # End < Start
+            if pd.start_date and pd.end_date and pd.end_date < pd.start_date:
+                issues.append({
+                    "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                    "module": module, "phase": phase_name,
+                    "code": "end_before_start",
+                    "severity": ISSUE_META["end_before_start"]["severity"],
+                    "label": ISSUE_META["end_before_start"]["label"],
+                    "detail": f"Start={pd.start_date.isoformat()} > End={pd.end_date.isoformat()}",
+                    "suggestion": ISSUE_META["end_before_start"]["suggestion"],
+                })
+
+            # Closed nhưng không có End date
+            if _is_closed_status(status) and not pd.end_date and _has_planned_dates(pd):
+                issues.append({
+                    "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                    "module": module, "phase": phase_name,
+                    "code": "closed_no_end",
+                    "severity": ISSUE_META["closed_no_end"]["severity"],
+                    "label": ISSUE_META["closed_no_end"]["label"],
+                    "detail": f"Status={status} nhưng ô End trống",
+                    "suggestion": ISSUE_META["closed_no_end"]["suggestion"],
+                })
+
+            # Blank PIC nhưng phase đang active hoặc có kế hoạch
+            if (_is_active_status(status) or _has_planned_dates(pd)) and not _is_closed_status(status):
+                if not pd.pics:
+                    issues.append({
+                        "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                        "module": module, "phase": phase_name,
+                        "code": "blank_pic",
+                        "severity": ISSUE_META["blank_pic"]["severity"],
+                        "label": ISSUE_META["blank_pic"]["label"],
+                        "detail": f"Phase '{phase_name}' có kế hoạch/đang làm nhưng chưa gán PIC",
+                        "suggestion": ISSUE_META["blank_pic"]["suggestion"],
+                    })
+
+    # === 3. Summary ===
+    by_severity: Counter = Counter()
+    by_code: Counter = Counter()
+    affected_row_nums: set[int] = set()
+    for it in issues:
+        by_severity[it["severity"]] += 1
+        by_code[it["code"]] += 1
+        affected_row_nums.add(it["row_num"])
+
+    total_rows = len(data.rows)
+    affected = len(affected_row_nums)
+    clean = max(0, total_rows - affected)
+    clean_pct = round(100.0 * clean / total_rows, 1) if total_rows else 100.0
+
+    return {
+        "issues": issues,
+        "summary": {
+            "total_issues": len(issues),
+            "by_severity": {
+                "high": by_severity.get("high", 0),
+                "medium": by_severity.get("medium", 0),
+                "low": by_severity.get("low", 0),
+            },
+            "by_code": dict(by_code),
+            "affected_rows": affected,
+            "clean_rows": clean,
+            "total_rows": total_rows,
+            "clean_pct": clean_pct,
+        },
+    }
