@@ -7003,7 +7003,14 @@ function _kanbanCardHtml(c) {
     else if (prio) prioIcon = "🟢";
     const statusClass = _fnStatusBadgeClass ? _fnStatusBadgeClass(c.phase_status) : "bg-gray-200 text-gray-700";
     const dl = c.deadline_iso ? c.deadline_iso.slice(5).replace("-", "/") : "";
-    const roles = c.roles?.length ? `<span class="text-[9px] bg-indigo-100 text-indigo-700 px-1 rounded">${escapeHtml(c.roles.join(","))}</span>` : "";
+    // Task 14: chip role auto-detect — BA=tím, Dev=xanh dương.
+    const roleChip = (r) => {
+        const cls = r === "Dev" ? "bg-blue-100 text-blue-700"
+                   : r === "BA" ? "bg-purple-100 text-purple-700"
+                   : "bg-indigo-100 text-indigo-700";
+        return `<span class="text-[9px] ${cls} px-1 rounded">${escapeHtml(r)}</span>`;
+    };
+    const roles = c.roles?.length ? c.roles.map(roleChip).join(" ") : "";
     const aging = c.aging_days
         ? `<span class="text-[10px] font-semibold ${c.aging_days > 7 ? 'text-red-600' : 'text-amber-600'}">⏱️ ${c.aging_days}d</span>` : "";
     return `
@@ -7100,7 +7107,9 @@ window._kanbanShiftWeek = function (delta) {
     loadKanban();
 };
 
-// --- PIC → Role Modal ---
+// --- PIC → Role auto-detect (Task 14) ---
+// Role được suy ra từ phase mà PIC xuất hiện (BA/Dev). UI map tay đã bỏ.
+// Function này chỉ fetch derived map từ backend để hiển thị chip trên card.
 
 async function loadPicRoles() {
     if (!currentProjectSlug) return;
@@ -7110,77 +7119,11 @@ async function loadPicRoles() {
         const d = await r.json();
         _kanbanRoleMap = d.map || {};
         _kanbanAllPics = d.all_pics || [];
-        _kanbanAllRoles = d.all_roles || [];
+        _kanbanAllRoles = d.all_roles || ["BA", "Dev"];
     } catch (err) {
         console.error("[loadPicRoles]", err);
     }
 }
-
-window.openPicRoleModal = async function () {
-    await loadPicRoles();
-    _renderPicRoleTable();
-    const m = document.getElementById("picRoleModal");
-    if (m) { m.classList.remove("hidden"); m.classList.add("flex"); }
-};
-
-window.closePicRoleModal = function () {
-    const m = document.getElementById("picRoleModal");
-    if (m) { m.classList.add("hidden"); m.classList.remove("flex"); }
-};
-
-function _renderPicRoleTable() {
-    const body = document.getElementById("picRoleTable");
-    if (!body) return;
-    const COMMON_ROLES = ["", "BA", "Dev", "Tester", "PM", "Lead", "Analyst", "Support"];
-    body.innerHTML = _kanbanAllPics.map(pic => {
-        const cur = _kanbanRoleMap[pic] || "";
-        return `<tr>
-            <td class="px-2 py-1">${escapeHtml(pic)}</td>
-            <td class="px-2 py-1">
-                <input type="text" list="_prRoleList" data-pic="${escapeAttr(pic)}"
-                    value="${escapeAttr(cur)}"
-                    class="border rounded px-1 py-0.5 text-xs w-full dark:bg-slate-700"
-                    placeholder="VD: Dev, BA, Tester…">
-            </td>
-        </tr>`;
-    }).join("") + `<datalist id="_prRoleList">${COMMON_ROLES.map(r => `<option value="${r}">`).join("")}</datalist>`;
-}
-
-window._prSave = async function () {
-    const map = {};
-    document.querySelectorAll("#picRoleTable input[data-pic]").forEach(inp => {
-        const p = inp.dataset.pic;
-        const v = inp.value.trim();
-        if (v) map[p] = v;
-    });
-    try {
-        const r = await fetch(_apiUrl("pic-roles"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ map }),
-        });
-        if (!r.ok) throw new Error(await r.text());
-        const d = await r.json();
-        _kanbanRoleMap = d.map || {};
-        _kanbanAllRoles = d.all_roles || [];
-        showToast("Đã lưu PIC-Role map");
-        closePicRoleModal();
-        // Reload kanban để hiện role mới
-        await loadKanban();
-    } catch (err) {
-        showToast("Lưu thất bại: " + err.message, "red");
-    }
-};
-
-window._prImportExcel = async function (evt) {
-    const file = evt.target.files?.[0];
-    if (!file) return;
-    // Dùng thư viện đơn giản: đọc bằng SheetJS nếu có; nếu không có → thông báo
-    // Vì chưa add SheetJS, chỉ thông báo user nhập tay hoặc TODO cho session sau.
-    // Fallback: đọc dưới dạng text CSV kiểu Excel simple → skip cho MVP.
-    showToast("Import Excel PIC-Role chưa hỗ trợ tự động — hãy nhập tay ở bảng dưới.", "amber");
-    evt.target.value = "";
-};
 
 // ========================================================================
 // TASK 9 — DYNAMIC DASHBOARD BUILDER

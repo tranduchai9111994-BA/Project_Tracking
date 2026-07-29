@@ -204,3 +204,47 @@ def unique_pics(data: ParsedData) -> list[str]:
     for r in data.rows:
         s.update(_row_pics_all(r))
     return sorted(s)
+
+
+# Task 14 — Auto-detect role từ phase (không đọc map tay nữa).
+# Rule đơn giản:
+#   - PIC ở phase tên chứa các từ khoá dev/coding → Dev
+#   - Còn lại (Analysis, Config-Test, UAT, Golive, Doc, ...) → BA
+#   - Nếu 1 PIC xuất hiện ở cả 2 nhóm → primary role = nhóm có count cao hơn;
+#     tied → ưu tiên Dev (tay code thường "hiếm" hơn nên coi là identity chính).
+_DEV_KEYWORDS = ("cod", "dev", "lập trình", "lap trinh", "programming", "coding")
+
+
+def _phase_is_dev(phase_name: str) -> bool:
+    n = (phase_name or "").strip().lower()
+    return any(k in n for k in _DEV_KEYWORDS)
+
+
+def infer_pic_roles(data: ParsedData) -> dict[str, str]:
+    """
+    Trả `{pic_name: "BA"|"Dev"}` derived từ `data.rows`.
+
+    Với mỗi (row, phase) mà PIC xuất hiện:
+      dev_count[pic] += 1  nếu phase là Dev, else ba_count[pic] += 1
+    Primary role = max(dev, ba); tied → Dev.
+    """
+    dev_count: dict[str, int] = {}
+    ba_count: dict[str, int] = {}
+    for r in data.rows:
+        for phase_name, pd in r.phases.items():
+            pics = pd.pics or []
+            if not pics:
+                continue
+            bucket = dev_count if _phase_is_dev(phase_name) else ba_count
+            for p in pics:
+                p = (p or "").strip()
+                if not p:
+                    continue
+                bucket[p] = bucket.get(p, 0) + 1
+    roles: dict[str, str] = {}
+    all_pics = set(dev_count.keys()) | set(ba_count.keys())
+    for p in all_pics:
+        d, b = dev_count.get(p, 0), ba_count.get(p, 0)
+        # Tied hoặc Dev thắng → Dev; else BA.
+        roles[p] = "Dev" if d >= b and d > 0 else "BA"
+    return roles

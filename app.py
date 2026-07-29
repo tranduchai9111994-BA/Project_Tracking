@@ -1887,7 +1887,9 @@ def project_kanban(slug: str):
         "roles": _parse_multi_arg("role"),
         "search": request.args.get("search") or "",
     }
-    role_map = ps.load_pic_role_map(_project_dir_for(slug))
+    # Task 14: role_map auto-detect từ phase (không đọc pic_role_map cũ nữa).
+    from analyzer.kanban import infer_pic_roles
+    role_map = infer_pic_roles(state["data"])
     return jsonify(compute_kanban(
         state["data"],
         week_offset=offset,
@@ -1898,28 +1900,33 @@ def project_kanban(slug: str):
 
 @app.route("/api/projects/<slug>/pic-roles", methods=["GET", "POST"])
 def project_pic_roles(slug: str):
-    """GET → {map, all_pics, all_roles}. POST → save toàn bộ map từ body {map}."""
-    from analyzer import project_store as ps
-    from analyzer.kanban import unique_pics
+    """Task 14: role auto-detect từ phase — GET vẫn trả map derived, POST no-op.
+
+    - GET → `{map, all_pics, all_roles: ["BA","Dev"]}` — map derived,
+      không đọc từ store.
+    - POST → return 200 với warning "Role auto-detected, manual map disabled".
+    """
+    from analyzer.kanban import unique_pics, infer_pic_roles
     if not _project_mgr.project_exists(slug):
         return jsonify({"error": "Project không tồn tại"}), 404
-    folder = _project_dir_for(slug)
     state = _get_state(slug)
     all_pics = unique_pics(state["data"]) if state and state.get("data") else []
+    derived_map = infer_pic_roles(state["data"]) if state and state.get("data") else {}
     if request.method == "GET":
-        m = ps.load_pic_role_map(folder)
         return jsonify({
-            "map": m,
+            "map": derived_map,
             "all_pics": all_pics,
-            "all_roles": sorted(set(m.values())),
+            "all_roles": ["BA", "Dev"],
+            "auto_detected": True,
         })
-    body = request.get_json(silent=True) or {}
-    m = body.get("map") or {}
-    saved = ps.save_pic_role_map(folder, m)
+    # POST — no-op (backward-compat). Client cũ có thể vẫn call save.
+    app.logger.warning("[pic-roles] POST ignored: role auto-detected from phase (Task 14).")
     return jsonify({
-        "map": saved,
+        "map": derived_map,
         "all_pics": all_pics,
-        "all_roles": sorted(set(saved.values())),
+        "all_roles": ["BA", "Dev"],
+        "auto_detected": True,
+        "warning": "Role auto-detected từ phase, manual map đã bị vô hiệu.",
     })
 
 
