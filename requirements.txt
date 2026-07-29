@@ -1,2 +1,29 @@
-flask==3.1.1
+# iHRP Function List Tracker — Python runtime dependencies.
+# KHÔNG cài pandas/numpy: parser tự đọc Excel qua openpyxl để tiết kiệm dung
+# lượng. Chart aggregate viết tay bằng Python vanilla + collections.
+
+# --- Web framework ---
+Flask==3.1.1
+# Flask transitives (pin để đảm bảo repro):
+Werkzeug==3.1.8
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+itsdangerous==2.2.0
+click==8.4.2
+blinker==1.9.0
+colorama==0.4.6
+
+# --- Excel I/O (parser + exporter) ---
 openpyxl==3.1.5
+et_xmlfile==2.0.0
+
+# --- Type hints (Python 3.9+ compat) ---
+typing_extensions==4.16.0
+
+# --- Dev / testing (optional cho user cuối) ---
+pytest==8.3.4
+pytest-cov==6.0.0
+coverage==7.15.2
+iniconfig==2.3.0
+pluggy==1.6.0
+packaging==26.2

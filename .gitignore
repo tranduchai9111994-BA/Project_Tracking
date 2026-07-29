@@ -1,18 +1,44 @@
+# === Python & venv ===
 venv/
 __pycache__/
 *.pyc
 *.pyo
-uploads/*.xlsx
-uploads/*.xls
-.DS_Store
+.coverage
 .pytest_cache/
-projects/
-snapshots/
-exports/
-*.log
+
+# === IDE / OS ===
+.DS_Store
 .vscode/
 .idea/
 assets/
-_dbg*.py
-_smoke*.py
+
+# === Node (Playwright test) ===
 node_modules/
+_tmp_node/
+
+# === Debug & smoke artifacts (không commit) ===
+_dbg_*
+_smoke_*
+_commitmsg*
+_tmp_*
+_pdf_downloads/
+
+# === Runtime logs / temp state ===
+*.log
+_flask_*.log
+server*.log
+
+# === Project data (per-user, không đưa vào repo) ===
+# Uploads root: chỉ commit files trong uploads/ nếu là sample cho test;
+# tất cả nội dung project-scoped (project_store) NẰM TRONG uploads/projects/
+# đều là dữ liệu của user, KHÔNG commit.
+uploads/projects/
+uploads/snapshots/
+uploads/*.xlsx
+uploads/*.xls
+!uploads/sample_functionlist.xlsx
+
+# Snapshot legacy paths
+projects/
+snapshots/
+exports/
