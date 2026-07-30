@@ -3531,7 +3531,11 @@ def project_upload_history(slug: str):
     from analyzer import project_store as ps
     if not _project_mgr.project_exists(slug):
         return jsonify({"error": "Project không tồn tại"}), 404
-    return jsonify({"items": ps.load_upload_history(_project_dir_for(slug))})
+    items = ps.load_upload_history(_project_dir_for(slug))
+    return jsonify({
+        "items": items,
+        "max_entries": ps.MAX_UPLOAD_HISTORY,
+    })
 
 
 @app.route("/api/projects/<slug>/settings", methods=["GET", "PUT", "POST"])

@@ -324,7 +324,7 @@ Data cũ vẫn giữ nguyên ở vị trí gốc (để user có thể rollback 
 | `archived` | `true` → file đã gzip vào `snapshots/archive/`. Load vẫn transparent (decompress in-memory). |
 | `archived_at` | ISO datetime khi archive (chỉ khi `archived=true`). |
 
-Cùng ngày upload nhiều lần → ghi đè bản cũ. Giới hạn tổng 30 snapshots hot (bản cũ nhất tự xóa / có thể auto-archive trước). Xem [`ARCHIVE_GUIDE.md`](ARCHIVE_GUIDE.md).
+Cùng ngày upload nhiều lần → ghi đè bản cũ. Giới hạn tổng 10 snapshots gần nhất (bản cũ hơn: archive nếu enabled, else xóa). Xem [`ARCHIVE_GUIDE.md`](ARCHIVE_GUIDE.md).
 
 ## V4 — Bookmark / Notes / Digest / Settings
 

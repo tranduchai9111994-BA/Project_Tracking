@@ -642,6 +642,11 @@ def delete_saved_view(project_dir: str, view_id: str) -> list[dict]:
 # Upload history (meta only — không copy file)
 # ------------------------------------------------------------------
 
+# Giới hạn lịch sử UI/meta — đồng bộ với MAX_SNAPSHOTS (snapshot_manager).
+# Có thể đưa vào Settings sau này; hardcode 10 OK.
+MAX_UPLOAD_HISTORY = 10
+
+
 def append_upload_history(
     project_dir: str,
     *,
@@ -650,11 +655,12 @@ def append_upload_history(
     checksum: str = "",
     source: str = "upload",
     extra: Optional[dict] = None,
-    max_entries: int = 50,
+    max_entries: int = MAX_UPLOAD_HISTORY,
 ) -> list[dict]:
     """
-    Ghi 1 entry lịch sử upload/sync.
+    Ghi 1 entry lịch sử upload/sync (upload thủ công hoặc sync).
 
+    Chỉ giữ ``max_entries`` bản ghi mới nhất (mặc định MAX_UPLOAD_HISTORY).
     source: \"upload\" (thủ công) hoặc \"sync:<integ_id>:<endpoint_id>\".
     """
     hist = load_upload_history(project_dir)
@@ -668,13 +674,17 @@ def append_upload_history(
     if extra:
         entry.update(extra)
     hist.insert(0, entry)
-    hist = hist[:max_entries]
+    hist = hist[: max(1, int(max_entries))]
     _write_json(_path(project_dir, "upload_history.json"), hist)
     return hist
 
 
 def load_upload_history(project_dir: str) -> list[dict]:
-    """Load lịch sử. Entry cũ không có source → default \"upload\"."""
+    """
+    Load lịch sử. Entry cũ không có source → default \"upload\".
+
+    Migration: nếu file đang > MAX_UPLOAD_HISTORY → prune về N mới nhất và ghi lại.
+    """
     data = _read_json(_path(project_dir, "upload_history.json"), [])
     if not isinstance(data, list):
         return []
@@ -685,6 +695,9 @@ def load_upload_history(project_dir: str) -> list[dict]:
         if not e.get("source"):
             e = {**e, "source": "upload"}
         out.append(e)
+    if len(out) > MAX_UPLOAD_HISTORY:
+        out = out[:MAX_UPLOAD_HISTORY]
+        _write_json(_path(project_dir, "upload_history.json"), out)
     return out
 
 

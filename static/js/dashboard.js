@@ -7871,6 +7871,11 @@ function renderUploadHistorySection(hist) {
         items = items.filter(it => (it.source || "").startsWith("sync:"));
     }
     document.getElementById("historyTotal").textContent = items.length;
+    const hintEl = document.getElementById("historyCapHint");
+    if (hintEl) {
+        const cap = (hist && hist.max_entries) || 10;
+        hintEl.textContent = `Giữ ${cap} lần gần nhất`;
+    }
 
     const wrap = document.getElementById("uploadHistoryTableWrap");
     if (!wrap) return;

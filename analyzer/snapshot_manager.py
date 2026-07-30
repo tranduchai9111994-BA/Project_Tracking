@@ -5,7 +5,9 @@ Mỗi lần upload, một bản copy file .xlsx được lưu vào `uploads/snap
 kèm theo file JSON index chứa metadata (tổng function, % done, overdue count...).
 
 Cùng ngày upload nhiều lần → ghi đè snapshot của ngày đó.
-Giới hạn 30 snapshot gần nhất, snapshot cũ hơn sẽ bị xóa.
+Giới hạn MAX_SNAPSHOTS (10) gần nhất — đồng bộ MAX_UPLOAD_HISTORY.
+Snapshot cũ hơn: archive (nếu archive enabled) rồi bỏ khỏi index; else xóa file.
+Không đụng current.xlsx / project khác.
 """
 import json
 import os
@@ -17,7 +19,8 @@ from typing import Any, Optional
 from parser.excel_parser import ParsedData
 
 
-MAX_SNAPSHOTS = 30
+# Đồng bộ với analyzer.project_store.MAX_UPLOAD_HISTORY
+MAX_SNAPSHOTS = 10
 INDEX_FILE = "snapshot_index.json"
 PICKLE_SUFFIX = ".parsed.pkl"
 
@@ -79,18 +82,13 @@ class SnapshotManager:
 
         # Update index
         index = self._load_index()
-        # Xóa entry cũ cùng ngày (nếu có)
-        index = [e for e in index if e["date"] != today_str]
+        # Xóa entry cũ cùng ngày (nếu có) — file đã ghi đè ở trên
+        index = [e for e in index if e.get("date") != today_str]
         index.append(entry)
         # Sort giảm dần theo ngày
-        index.sort(key=lambda x: x["date"], reverse=True)
+        index.sort(key=lambda x: x.get("date", ""), reverse=True)
 
-        # Giới hạn số snapshot
-        if len(index) > MAX_SNAPSHOTS:
-            for old in index[MAX_SNAPSHOTS:]:
-                self._delete_files(old)
-            index = index[:MAX_SNAPSHOTS]
-
+        index = self._prune_overflow(index)
         self._save_index(index)
         return entry
 
@@ -99,9 +97,11 @@ class SnapshotManager:
 
         Backward compat: entry cũ không có `source` → default \"upload\".
         Thêm field `archived` (bool) cho UI Hot/Archived badge.
+        Migration: prune index > MAX_SNAPSHOTS nếu cần.
         """
+        index = self._prune_overflow(self._load_index(), persist=True)
         out = []
-        for e in self._load_index():
+        for e in index:
             entry = dict(e)
             if "source" not in entry or not entry.get("source"):
                 entry["source"] = "upload"
@@ -186,3 +186,58 @@ class SnapshotManager:
                     os.remove(path)
                 except OSError:
                     pass
+
+    def _archive_enabled(self) -> bool:
+        """Đọc archive_settings của project cha (uploads/projects/<slug>/)."""
+        try:
+            from analyzer import project_store as ps
+            project_dir = os.path.dirname(self.dir.rstrip("/\\"))
+            return bool(ps.load_archive_settings(project_dir).get("enabled"))
+        except Exception:
+            return False
+
+    def _retire_overflow_entry(self, entry: dict) -> None:
+        """
+        Xử lý snapshot vượt MAX_SNAPSHOTS:
+        - Archive enabled → gzip vào archive/ (xóa hot), bỏ khỏi index (caller).
+          File .gz giữ lại (nhẹ hơn hot) — purge theo archive_settings.
+        - Đã archived sẵn → giữ .gz, không đụng hot (đã xóa).
+        - Else → xóa hot xlsx/pkl.
+        Không đụng current.xlsx (nằm ngoài snapshots/).
+        """
+        if entry.get("archived"):
+            return
+        snap_id = entry.get("date") or ""
+        if snap_id and self._archive_enabled():
+            try:
+                from analyzer.archive_manager import archive_snapshot
+                archive_snapshot(self.dir, snap_id)
+                return
+            except Exception:
+                pass
+        self._delete_files(entry)
+
+    def _prune_overflow(
+        self,
+        index: list[dict],
+        *,
+        persist: bool = False,
+    ) -> list[dict]:
+        """Giữ MAX_SNAPSHOTS newest; retire phần còn lại. Không bao giờ cắt newest."""
+        if not index:
+            return index
+        # Sort desc theo date để newest luôn ở đầu
+        sorted_idx = sorted(index, key=lambda x: x.get("date", ""), reverse=True)
+        if len(sorted_idx) <= MAX_SNAPSHOTS:
+            if persist and sorted_idx != index:
+                self._save_index(sorted_idx)
+            return sorted_idx
+        keep = sorted_idx[:MAX_SNAPSHOTS]
+        for old in sorted_idx[MAX_SNAPSHOTS:]:
+            # Bảo vệ: không retire nếu trùng date với keep (không xảy ra nếu unique date)
+            if any(k.get("date") == old.get("date") for k in keep):
+                continue
+            self._retire_overflow_entry(old)
+        if persist:
+            self._save_index(keep)
+        return keep

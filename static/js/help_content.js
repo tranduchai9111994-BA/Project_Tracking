@@ -519,10 +519,10 @@ const HELP_CONTENT = {
     "history": {
         category: "Tùy chỉnh",
         title: "Upload History (lịch sử upload)",
-        purpose: "Lịch sử các lần upload file — tên file, timestamp, ai upload, số function.",
+        purpose: "Lịch sử các lần upload/sync — tên file, timestamp, số function. Chỉ giữ 10 lần gần nhất.",
         steps: [
             "Xem timestamp để biết data này refresh khi nào",
-            "Có thể restore snapshot cũ nếu cần",
+            "Có thể restore snapshot cũ (trong 10 bản gần nhất) nếu cần",
         ],
         example: "Thấy file gần nhất upload lúc Thứ Hai 9h → data hôm nay là cũ 4 ngày, cần refresh.",
         tips: [

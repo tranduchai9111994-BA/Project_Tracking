@@ -3307,7 +3307,7 @@
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800" data-help-id="history">📜 Lịch sử upload</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Meta-only — chỉ lưu filename, row count, checksum (không copy file)</p>
+                    <p class="text-xs text-gray-500 mt-0.5">Meta-only — chỉ lưu filename, row count, checksum · Giữ 10 lần gần nhất</p>
                 </div>
                 <div class="flex items-center gap-2">
                     <!-- T35 Task 4 — Filter theo nguồn Upload/Sync -->
@@ -3319,7 +3319,7 @@
                         <option value="sync">Chỉ sync</option>
                     </select>
                     <span class="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded border">
-                        Tổng: <b id="historyTotal">0</b> lần
+                        Tổng: <b id="historyTotal">0</b> lần · <span id="historyCapHint" class="text-gray-500">Giữ 10 lần gần nhất</span>
                     </span>
                 </div>
             </div>
