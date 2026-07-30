@@ -395,8 +395,8 @@ class _StubSnapshotMgr:
     def __init__(self):
         self.saved = []
 
-    def save_snapshot(self, path, parsed, metrics):
-        entry = {"date": "2026-07-30", "path": path}
+    def save_snapshot(self, path, parsed, metrics, source="upload"):
+        entry = {"date": "2026-07-30", "path": path, "source": source}
         self.saved.append(entry)
         return entry
 

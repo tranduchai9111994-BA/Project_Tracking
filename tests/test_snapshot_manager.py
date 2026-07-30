@@ -99,3 +99,40 @@ def test_index_persists_between_instances(tmp_path, sample_xlsx_path, parsed_dat
     mgr2 = SnapshotManager(str(tmp_path))
     assert len(mgr2.list_snapshots()) == 1
     assert mgr2.list_snapshots()[0]["date"] == entry["date"]
+
+
+def test_save_snapshot_stores_source(tmp_path, sample_xlsx_path, parsed_data, metrics):
+    """T35 Task 4 — source field được lưu + list trả về đúng."""
+    mgr = SnapshotManager(str(tmp_path))
+    entry = mgr.save_snapshot(
+        sample_xlsx_path, parsed_data, metrics,
+        source="sync:integ1:ep1",
+    )
+    assert entry["source"] == "sync:integ1:ep1"
+    listed = mgr.list_snapshots()
+    assert listed[0]["source"] == "sync:integ1:ep1"
+
+
+def test_list_snapshots_defaults_source_upload(tmp_path):
+    """Entry cũ không có source → list_snapshots default 'upload'."""
+    mgr = SnapshotManager(str(tmp_path))
+    with open(mgr.index_path, "w", encoding="utf-8") as f:
+        json.dump([{
+            "date": "2026-01-01",
+            "filename": "x.xlsx",
+            "pickle": "x.pkl",
+            "total_functions": 1,
+            "overall_pct": 0,
+            "overdue_count": 0,
+            "unassigned_count": 0,
+            "high_risk_count": 0,
+            "upload_time": "2026-01-01T00:00:00",
+        }], f)
+    listed = mgr.list_snapshots()
+    assert listed[0]["source"] == "upload"
+
+
+def test_save_snapshot_default_source_upload(tmp_path, sample_xlsx_path, parsed_data, metrics):
+    mgr = SnapshotManager(str(tmp_path))
+    entry = mgr.save_snapshot(sample_xlsx_path, parsed_data, metrics)
+    assert entry["source"] == "upload"

@@ -3038,9 +3038,19 @@
                     <h3 class="text-lg font-semibold text-gray-800" data-help-id="history">📜 Lịch sử upload</h3>
                     <p class="text-xs text-gray-500 mt-0.5">Meta-only — chỉ lưu filename, row count, checksum (không copy file)</p>
                 </div>
-                <span class="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded border">
-                    Tổng: <b id="historyTotal">0</b> lần
-                </span>
+                <div class="flex items-center gap-2">
+                    <!-- T35 Task 4 — Filter theo nguồn Upload/Sync -->
+                    <select id="historySourceFilter"
+                            onchange="renderUploadHistorySection(_lastHistoryData)"
+                            class="text-xs border rounded px-2 py-1.5 bg-white">
+                        <option value="all">Tất cả nguồn</option>
+                        <option value="upload">Chỉ upload</option>
+                        <option value="sync">Chỉ sync</option>
+                    </select>
+                    <span class="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded border">
+                        Tổng: <b id="historyTotal">0</b> lần
+                    </span>
+                </div>
             </div>
             <div id="uploadHistoryTableWrap" class="overflow-x-auto"></div>
             <div id="historyPagerWrap" class="mt-2"></div>

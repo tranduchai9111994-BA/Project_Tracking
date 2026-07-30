@@ -39,12 +39,14 @@ class SnapshotManager:
         source_xlsx: str,
         parsed_data: ParsedData,
         metrics: dict,
+        source: str = "upload",
     ) -> dict:
         """
         Lưu 1 snapshot:
         - Copy file .xlsx vào snapshots/{date}_functionlist.xlsx
         - Serialize ParsedData vào snapshots/{date}_functionlist.parsed.pkl
         - Update snapshot_index.json
+        - source: "upload" | "sync:<integ_id>:<endpoint_id>" (T35 Task 4)
         Return: entry đã lưu.
         """
         today_str = date.today().isoformat()  # YYYY-MM-DD
@@ -61,6 +63,7 @@ class SnapshotManager:
             pickle.dump(parsed_data, f)
 
         summary = metrics.get("summary", {})
+        src = (source or "upload").strip() or "upload"
         entry = {
             "date": today_str,
             "filename": xlsx_name,
@@ -71,6 +74,7 @@ class SnapshotManager:
             "unassigned_count": summary.get("unassigned_count", 0),
             "high_risk_count": summary.get("high_risk_count", 0),
             "upload_time": datetime.now().isoformat(timespec="seconds"),
+            "source": src,
         }
 
         # Update index
@@ -91,8 +95,16 @@ class SnapshotManager:
         return entry
 
     def list_snapshots(self) -> list[dict]:
-        """Return list of snapshot metadata (sorted giảm dần theo ngày)."""
-        return self._load_index()
+        """Return list of snapshot metadata (sorted giảm dần theo ngày).
+
+        Backward compat: entry cũ không có `source` → default \"upload\".
+        """
+        out = []
+        for e in self._load_index():
+            if "source" not in e or not e.get("source"):
+                e = {**e, "source": "upload"}
+            out.append(e)
+        return out
 
     def load_snapshot(self, snapshot_date: str) -> Optional[dict]:
         """

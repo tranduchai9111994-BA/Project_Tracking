@@ -596,26 +596,28 @@ def delete_saved_view(project_dir: str, view_id: str) -> list[dict]:
 # Upload history (meta only — không copy file)
 # ------------------------------------------------------------------
 
-def load_upload_history(project_dir: str) -> list[dict]:
-    data = _read_json(_path(project_dir, "upload_history.json"), [])
-    return data if isinstance(data, list) else []
-
-
 def append_upload_history(
     project_dir: str,
     *,
     filename: str,
     row_count: int,
     checksum: str = "",
+    source: str = "upload",
     extra: Optional[dict] = None,
     max_entries: int = 50,
 ) -> list[dict]:
+    """
+    Ghi 1 entry lịch sử upload/sync.
+
+    source: \"upload\" (thủ công) hoặc \"sync:<integ_id>:<endpoint_id>\".
+    """
     hist = load_upload_history(project_dir)
     entry = {
         "time": datetime.now().isoformat(timespec="seconds"),
         "filename": filename,
         "row_count": row_count,
         "checksum": checksum,
+        "source": (source or "upload").strip() or "upload",
     }
     if extra:
         entry.update(extra)
@@ -623,6 +625,21 @@ def append_upload_history(
     hist = hist[:max_entries]
     _write_json(_path(project_dir, "upload_history.json"), hist)
     return hist
+
+
+def load_upload_history(project_dir: str) -> list[dict]:
+    """Load lịch sử. Entry cũ không có source → default \"upload\"."""
+    data = _read_json(_path(project_dir, "upload_history.json"), [])
+    if not isinstance(data, list):
+        return []
+    out = []
+    for e in data:
+        if not isinstance(e, dict):
+            continue
+        if not e.get("source"):
+            e = {**e, "source": "upload"}
+        out.append(e)
+    return out
 
 
 # ------------------------------------------------------------------

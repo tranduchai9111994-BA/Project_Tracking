@@ -7608,12 +7608,20 @@ function renderUploadHistorySection(hist) {
     _lastHistoryData = hist;
     const section = document.getElementById("section-history");
     if (!section) return;
-    const items = hist?.items || [];
+    let items = hist?.items || [];
     if (items.length === 0) {
         section.classList.add("hidden");
         return;
     }
     section.classList.remove("hidden");
+
+    // T35 Task 4 — Filter theo nguồn (client-side)
+    const srcFilter = (document.getElementById("historySourceFilter") || {}).value || "all";
+    if (srcFilter === "upload") {
+        items = items.filter(it => !(it.source || "upload").startsWith("sync:"));
+    } else if (srcFilter === "sync") {
+        items = items.filter(it => (it.source || "").startsWith("sync:"));
+    }
     document.getElementById("historyTotal").textContent = items.length;
 
     const wrap = document.getElementById("uploadHistoryTableWrap");
@@ -7630,6 +7638,7 @@ function renderUploadHistorySection(hist) {
             <thead class="bg-gray-100 text-gray-700">
                 <tr>
                     <th class="px-2 py-1 text-left">Thời gian</th>
+                    <th class="px-2 py-1 text-left">Nguồn</th>
                     <th class="px-2 py-1 text-left">Filename</th>
                     <th class="px-2 py-1 text-right">Số function</th>
                     <th class="px-2 py-1 text-right">Δ so với lần trước</th>
@@ -7653,6 +7662,7 @@ function renderUploadHistorySection(hist) {
                 return `
                 <tr class="border-b ${globalIdx === 0 ? "bg-blue-50" : "hover:bg-gray-50"}">
                     <td class="px-2 py-1 whitespace-nowrap">${escapeHtml(timeTxt)} ${globalIdx === 0 ? '<span class="text-[10px] bg-blue-200 text-blue-800 px-1 rounded ml-1">mới nhất</span>' : ""}</td>
+                    <td class="px-2 py-1">${_historySourceBadge(it.source)}</td>
                     <td class="px-2 py-1 font-mono text-[11px]">${escapeHtml(it.filename)}</td>
                     <td class="px-2 py-1 text-right font-bold">${it.row_count}</td>
                     <td class="px-2 py-1 text-right">${deltaTxt}</td>
@@ -7665,6 +7675,33 @@ function renderUploadHistorySection(hist) {
         </table>`;
     renderPager("historyPagerWrap", "history", withDelta.length,
         () => renderUploadHistorySection(_lastHistoryData));
+}
+
+/**
+ * T35 Task 4 — Badge nguồn Upload/Sync cho lịch sử.
+ * source="upload" → xám; source="sync:integ:ep" → cyan + tooltip tên integration.
+ */
+function _historySourceBadge(source) {
+    const src = source || "upload";
+    if (src.startsWith("sync:")) {
+        const parts = src.split(":");
+        const integId = parts[1] || "";
+        const epId = parts[2] || "";
+        // Lookup tên từ cache integrations nếu có
+        let tip = src;
+        try {
+            const list = (window._integState && window._integState.integrations) || [];
+            const integ = list.find(x => x.id === integId);
+            if (integ) {
+                const ep = (integ.endpoints || []).find(e => e.id === epId);
+                tip = `${integ.name || integId}${ep ? " · " + (ep.name || epId) : ""}`;
+            }
+        } catch (e) {}
+        return `<span class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-800 border border-cyan-300"
+                      title="${escapeAttr(tip)}">🔄 Sync</span>`;
+    }
+    return `<span class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 border border-gray-300"
+                  title="Upload thủ công">📄 Upload</span>`;
 }
 
 function renderBaselineSection(bsl) {

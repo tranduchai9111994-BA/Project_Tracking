@@ -540,7 +540,7 @@ def _upload_and_process(slug: str) -> tuple:
 
         # Auto lưu snapshot vào folder snapshots của project
         smgr = _project_mgr.get_snapshot_manager(slug)
-        smgr.save_snapshot(filepath, data, metrics)
+        smgr.save_snapshot(filepath, data, metrics, source="upload")
 
         # Cập nhật last_upload_at cho project
         _project_mgr.touch_last_upload(slug)
@@ -561,6 +561,7 @@ def _upload_and_process(slug: str) -> tuple:
             filename=file.filename,
             row_count=len(data.rows),
             checksum=checksum,
+            source="upload",
             extra={
                 "modules": len(data.all_modules),
                 "phases": len(data.all_phases),
@@ -801,7 +802,7 @@ def upload_confirm():
         }
 
         smgr = _project_mgr.get_snapshot_manager(slug)
-        smgr.save_snapshot(filepath, data, metrics)
+        smgr.save_snapshot(filepath, data, metrics, source="upload")
         _project_mgr.touch_last_upload(slug)
 
         # Cleanup tmp file (đã copy vào project)

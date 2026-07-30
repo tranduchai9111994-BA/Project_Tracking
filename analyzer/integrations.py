@@ -1293,11 +1293,32 @@ def _run_database_sync(
     snapshot_entry = None
     try:
         smgr = project_manager.get_snapshot_manager(project_slug)
-        snapshot_entry = smgr.save_snapshot(target_path, parsed, metrics)
+        snapshot_entry = smgr.save_snapshot(
+            target_path, parsed, metrics,
+            source=f"sync:{integration_id}:{endpoint.get('id') or 'db'}",
+        )
         if target_action == "replace":
             import shutil as _sh
             _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
             project_manager.touch_last_upload(project_slug)
+        # Ghi lịch sử upload với source=sync:...
+        try:
+            from analyzer import project_store as _ps
+            ep_id = endpoint.get("id") or "db"
+            _ps.append_upload_history(
+                project_dir,
+                filename=filename or os.path.basename(target_path),
+                row_count=rows_count,
+                source=f"sync:{integration_id}:{ep_id}",
+                extra={
+                    "modules": len(getattr(parsed, "all_modules", []) or []),
+                    "phases": len(getattr(parsed, "all_phases", []) or []),
+                    "integration_id": integration_id,
+                    "endpoint_id": ep_id,
+                },
+            )
+        except Exception:
+            pass
     except Exception as e:
         msg = f"Lưu snapshot lỗi: {type(e).__name__}: {str(e)[:200]}"
         _update_last_status(project_dir, integration_id, "error", msg)
@@ -1497,13 +1518,33 @@ def sync_integration(
         snapshot_entry = None
         try:
             smgr = project_manager.get_snapshot_manager(project_slug)
-            snapshot_entry = smgr.save_snapshot(target_path, parsed, metrics)
+            snapshot_entry = smgr.save_snapshot(
+                target_path, parsed, metrics,
+                source=f"sync:{integration_id}:{endpoint_id}",
+            )
             # replace → copy đè current.xlsx để dashboard load ngay dữ liệu mới.
             # append/snapshot chỉ append, không đổi current.xlsx.
             if target_action == "replace":
                 import shutil as _sh
                 _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
                 project_manager.touch_last_upload(project_slug)
+            # T35 Task 4 — ghi lịch sử với source sync
+            try:
+                from analyzer import project_store as _ps
+                _ps.append_upload_history(
+                    project_dir,
+                    filename=filename or os.path.basename(target_path),
+                    row_count=rows_count,
+                    source=f"sync:{integration_id}:{endpoint_id}",
+                    extra={
+                        "modules": len(getattr(parsed, "all_modules", []) or []),
+                        "phases": len(getattr(parsed, "all_phases", []) or []),
+                        "integration_id": integration_id,
+                        "endpoint_id": endpoint_id,
+                    },
+                )
+            except Exception:
+                pass
         except Exception as e:
             msg = f"Lưu snapshot lỗi: {type(e).__name__}: {str(e)[:200]}"
             _update_last_status(project_dir, integration_id, "error", msg)
