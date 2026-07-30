@@ -253,9 +253,112 @@ async function loadProjectList() {
 
 function updateUploadTargetLabel() {
     const p = allProjects.find(x => x.slug === currentProjectSlug);
+    const name = p ? p.name : (currentProjectSlug || "Default");
     const el = document.getElementById("uploadTargetProject");
-    if (el && p) el.textContent = p.name;
+    if (el) el.textContent = name;
+    const elC = document.getElementById("uploadTargetProjectCompact");
+    if (elC) elC.textContent = name;
 }
+
+// ========================================================================
+// UPLOAD ZONE COLLAPSE (sync-first UX)
+// ========================================================================
+// Mặc định Đồng bộ là chính → khi project đã có snapshot/data, thu gọn vùng
+// kéo thả. User mở lại bằng nút toolbar «⬆ Upload Excel» hoặc compact bar.
+// Pref: localStorage `ihrp_upload_zone_collapsed_<slug>` = "1"|"0"
+//   - chưa có key + có data → collapsed
+//   - project trống (404) → luôn expanded (bỏ qua pref)
+
+function _uploadZonePrefKey(slug) {
+    return `ihrp_upload_zone_collapsed_${slug || currentProjectSlug || "default"}`;
+}
+
+function _readUploadZoneCollapsedPref(hasData) {
+    try {
+        const v = localStorage.getItem(_uploadZonePrefKey());
+        if (v === "1") return true;
+        if (v === "0") return false;
+    } catch (e) { /* localStorage disabled */ }
+    return !!hasData;
+}
+
+function _writeUploadZoneCollapsedPref(collapsed) {
+    try {
+        localStorage.setItem(_uploadZonePrefKey(), collapsed ? "1" : "0");
+    } catch (e) { /* ignore */ }
+}
+
+/** true nếu zone đang thu gọn (class trên #uploadZone). */
+function isUploadZoneCollapsed() {
+    const zone = document.getElementById("uploadZone");
+    return !!(zone && zone.classList.contains("upload-zone-collapsed"));
+}
+
+/**
+ * Áp trạng thái thu gọn / mở rộng upload zone.
+ * @param {boolean} collapsed
+ * @param {{persist?: boolean}} [opts] — persist=true ghi localStorage
+ */
+function setUploadZoneCollapsed(collapsed, opts) {
+    const persist = !opts || opts.persist !== false;
+    const zone = document.getElementById("uploadZone");
+    const compact = document.getElementById("uploadZoneCompact");
+    const body = document.getElementById("uploadZoneBody");
+    const toolbarBtn = document.getElementById("btnToggleUploadZone");
+    if (!zone) return;
+
+    zone.classList.toggle("upload-zone-collapsed", !!collapsed);
+    if (compact) {
+        compact.classList.toggle("hidden", !collapsed);
+        // CSS dùng display:flex khi collapsed; đảm bảo không bị Tailwind hidden
+        if (collapsed) compact.classList.remove("hidden");
+        else compact.classList.add("hidden");
+    }
+    if (body) {
+        body.classList.toggle("hidden", !!collapsed);
+    }
+    if (toolbarBtn) {
+        toolbarBtn.textContent = collapsed ? "⬆ Upload Excel" : "▴ Thu gọn upload";
+        toolbarBtn.title = collapsed
+            ? "Hiện vùng kéo thả Function List (upload Excel tay)"
+            : "Thu gọn vùng upload (ưu tiên Đồng bộ)";
+    }
+    if (persist) _writeUploadZoneCollapsedPref(!!collapsed);
+}
+
+/** Đồng bộ UI theo hasData + preference (không ghi đè pref). */
+function syncUploadZoneVisibility(hasData) {
+    if (!hasData) {
+        // Project trống → luôn hiện zone để user upload lần đầu
+        setUploadZoneCollapsed(false, { persist: false });
+        // Ẩn nút «Thu gọn» trong zone khi chưa có data (không cần thu)
+        const collapseBtn = document.getElementById("btnCollapseUploadZone");
+        if (collapseBtn) collapseBtn.classList.add("hidden");
+        return;
+    }
+    const collapseBtn = document.getElementById("btnCollapseUploadZone");
+    if (collapseBtn) collapseBtn.classList.remove("hidden");
+    setUploadZoneCollapsed(_readUploadZoneCollapsedPref(true), { persist: false });
+}
+
+window.collapseUploadZone = function () {
+    setUploadZoneCollapsed(true, { persist: true });
+};
+
+window.expandUploadZone = function () {
+    setUploadZoneCollapsed(false, { persist: true });
+    const zone = document.getElementById("uploadZone");
+    if (zone) zone.scrollIntoView({ behavior: "smooth", block: "start" });
+};
+
+/** Toolbar: nếu đang thu → mở; nếu đang mở → thu. */
+window.toggleUploadZoneExpand = function () {
+    if (isUploadZoneCollapsed()) {
+        expandUploadZone();
+    } else {
+        collapseUploadZone();
+    }
+};
 
 /** Chuyển sang project khác — reload dashboard. */
 async function switchProject(slug) {
@@ -285,8 +388,11 @@ async function tryLoadDashboardForCurrent(preserveFilters = false) {
         try {
             data = await apiJson(url);
         } catch (e) {
-            // 404 = project chưa có data — im lặng
-            if (e && e.status === 404) return;
+            // 404 = project chưa có data — im lặng, hiện upload zone
+            if (e && e.status === 404) {
+                syncUploadZoneVisibility(false);
+                return;
+            }
             throw e;
         }
         applyDashboardResponse(data);
@@ -409,6 +515,8 @@ function applyDashboardResponse(data) {
         document.getElementById("dashboard").classList.remove("hidden");
         document.getElementById("dashboard").classList.add("fade-in");
     });
+
+    _step("uploadZone", () => syncUploadZoneVisibility(true));
 
     _step("refreshReminder", () => checkRefreshReminder());
 
@@ -10327,7 +10435,15 @@ window._toggleStickyCompact = function () {
 
 window._scrollToUpload = function () {
     const uz = document.getElementById("uploadZone");
-    if (uz) uz.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!uz) return;
+    // Sticky compact btn: mở zone nếu đang thu rồi mới scroll
+    if (typeof isUploadZoneCollapsed === "function" && isUploadZoneCollapsed()) {
+        if (typeof expandUploadZone === "function") {
+            expandUploadZone();
+            return;
+        }
+    }
+    uz.scrollIntoView({ behavior: "smooth", block: "start" });
 };
 
 window.addEventListener("scroll", _stickyAutoUpdate, { passive: true });

@@ -219,6 +219,12 @@
                         <!-- Populated by JS -->
                     </div>
                 </div>
+                <!-- Upload Excel tay — mở lại vùng kéo thả khi đã thu gọn (sync-first UX) -->
+                <button id="btnToggleUploadZone" type="button" onclick="toggleUploadZoneExpand()"
+                        class="bg-blue-500/80 hover:bg-blue-500 px-3 py-1.5 rounded text-sm font-semibold"
+                        title="Hiện / thu gọn vùng kéo thả Function List (upload Excel tay)">
+                    ⬆ Upload Excel
+                </button>
                 <!-- T29: Settings modal -->
                 <button id="btnSettings" onclick="openSettingsModal()"
                         class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
@@ -1839,33 +1845,65 @@
         </div>
     </div>
 
-    <!-- ============ UPLOAD ZONE ============ -->
+    <!-- ============ UPLOAD ZONE ============
+         Sync-first UX: khi project đã có data → mặc định thu gọn (compact bar).
+         Mở lại bằng nút «⬆ Upload Excel» trên toolbar hoặc compact bar. -->
     <div id="uploadZone" class="bg-white dashboard-card rounded-xl shadow-md p-8 mb-6 border-2 border-dashed border-blue-300 text-center hover:border-blue-500 cursor-pointer no-print">
-        <div class="text-5xl mb-3">📁</div>
-        <h2 class="text-xl font-semibold text-gray-700 mb-2">Kéo thả file Function List vào đây</h2>
-        <p class="text-gray-500 text-sm mb-1">
-            File sẽ được lưu vào project: <b id="uploadTargetProject" class="text-blue-700">Default</b>
-            — <a href="#" onclick="openProjectManager(); return false;" class="text-blue-600 underline hover:text-blue-800">đổi project</a>
-        </p>
-        <p class="text-gray-500 mb-4">Chọn file (.xlsx). Mỗi lần upload sẽ tự lưu snapshot để so sánh sau này.</p>
-        <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden">
-        <button onclick="document.getElementById('fileInput').click()"
-                class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition">
-            Chọn file Excel
-        </button>
-        <!-- T32: Column Mapping Wizard toggle -->
-        <div class="mt-3 text-xs text-gray-500 flex items-center justify-center gap-2">
-            <label class="inline-flex items-center gap-1 cursor-pointer">
-                <input type="checkbox" id="uploadSkipWizardChk" onchange="_uploadSaveSkipWizardPref()"
-                       class="align-middle">
-                <span>Bỏ qua Column Mapping wizard (file chuẩn iHRP → auto-detect ngay)</span>
-            </label>
-        </div>
-        <div id="uploadProgress" class="hidden mt-4">
-            <div class="w-64 mx-auto bg-gray-200 rounded-full h-2">
-                <div class="bg-blue-600 h-2 rounded-full animate-pulse" style="width: 100%"></div>
+        <!-- Compact bar — hiện khi zone thu gọn (project đã có snapshot/sync) -->
+        <div id="uploadZoneCompact" class="hidden items-center justify-between gap-3 flex-wrap text-left">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="text-xl shrink-0">📁</span>
+                <div class="min-w-0">
+                    <div class="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                        Vùng tải Function List đã thu gọn
+                    </div>
+                    <div class="text-xs text-gray-500 truncate">
+                        Project: <b id="uploadTargetProjectCompact" class="text-blue-700">Default</b>
+                        — kéo thả file vào đây hoặc bấm «Hiện vùng tải file»
+                    </div>
+                </div>
             </div>
-            <p class="text-gray-500 text-sm mt-2">Đang xử lý...</p>
+            <button type="button" onclick="expandUploadZone(); return false;"
+                    class="shrink-0 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium">
+                ⬆ Hiện vùng tải file
+            </button>
+        </div>
+
+        <!-- Full body — kéo thả / chọn file / Column Mapping pref -->
+        <div id="uploadZoneBody">
+            <div class="flex items-start justify-end mb-1">
+                <button type="button" id="btnCollapseUploadZone" onclick="collapseUploadZone(); return false;"
+                        class="text-xs text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 px-2 py-1 rounded border border-transparent hover:border-gray-300"
+                        title="Thu gọn vùng upload (dùng Đồng bộ là chính)">
+                    ▴ Thu gọn
+                </button>
+            </div>
+            <div class="text-5xl mb-3">📁</div>
+            <h2 class="text-xl font-semibold text-gray-700 mb-2">Kéo thả file Function List vào đây</h2>
+            <p class="text-gray-500 text-sm mb-1">
+                File sẽ được lưu vào project: <b id="uploadTargetProject" class="text-blue-700">Default</b>
+                — <a href="#" onclick="openProjectManager(); return false;" class="text-blue-600 underline hover:text-blue-800">đổi project</a>
+            </p>
+            <p class="text-gray-500 mb-4">Chọn file (.xlsx). Mỗi lần upload sẽ tự lưu snapshot để so sánh sau này.</p>
+            <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden">
+            <button type="button" onclick="document.getElementById('fileInput').click()"
+                    class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition">
+                Chọn file Excel
+            </button>
+            <!-- T32: Column Mapping Wizard toggle -->
+            <div class="mt-3 text-xs text-gray-500 flex items-center justify-center gap-2">
+                <label class="inline-flex items-center gap-1 cursor-pointer">
+                    <input type="checkbox" id="uploadSkipWizardChk" onchange="_uploadSaveSkipWizardPref()"
+                           class="align-middle">
+                    <span>Bỏ qua Column Mapping wizard (file chuẩn iHRP → auto-detect ngay)</span>
+                </label>
+            </div>
+            <div id="uploadProgress" class="hidden mt-4">
+                <div class="w-64 mx-auto bg-gray-200 rounded-full h-2">
+                    <div class="bg-blue-600 h-2 rounded-full animate-pulse" style="width: 100%"></div>
+                </div>
+                <p class="text-gray-500 text-sm mt-2">Đang xử lý...</p>
+            </div>
         </div>
     </div>
 
