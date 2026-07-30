@@ -10434,14 +10434,17 @@ let _dqState = {
     summary: null,
     filterSeverity: "all",
     filterCode: "all",
+    filterModules: [],   // T35 Task 3 — local Module filter (client-side)
     page: 1,
     pageSize: 30,
 };
+let _dqModuleMs = null;  // createMultiSelect instance
 
 async function loadDataQuality() {
     const section = document.getElementById("section-dataquality");
     if (!section) return;
     try {
+        // Global filter (module/process/pic) đã được BE áp dụng qua _filtered_data_from_request
         const qsFilter = _buildFilterQuery();
         const url = `/api/projects/${currentProjectSlug}/data-quality${qsFilter ? "?" + qsFilter : ""}`;
         const r = await fetch(url);
@@ -10451,8 +10454,9 @@ async function loadDataQuality() {
         _dqState.summary = d.summary || null;
         _dqState.page = 1;
 
-        // Populate code filter dropdown
+        // Populate code + module filters
         _dqPopulateCodeFilter();
+        _dqPopulateModuleFilter();
         // Bind filter events (idempotent)
         _dqBindEvents();
 
@@ -10476,6 +10480,41 @@ function _dqPopulateCodeFilter() {
     sel.innerHTML = '<option value="all">Tất cả loại</option>' +
         codes.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(labelMap[c] || c)} (${_dqState.summary.by_code[c]})</option>`).join("");
     sel.value = _dqState.filterCode;
+}
+
+/**
+ * T35 Task 3 — Populate local Module multi-select từ danh sách module
+ * xuất hiện trong issues hiện tại (sau global filter).
+ */
+function _dqPopulateModuleFilter() {
+    const el = document.getElementById("dqModuleFilter");
+    if (!el || typeof createMultiSelect !== "function") return;
+    const mods = [...new Set(
+        (_dqState.issues || []).map(it => it.module).filter(Boolean)
+    )].sort();
+    // Giữ selection còn hợp lệ sau khi data đổi
+    const keep = (_dqState.filterModules || []).filter(m => mods.includes(m));
+    _dqState.filterModules = keep;
+    if (!_dqModuleMs) {
+        _dqModuleMs = createMultiSelect({
+            el,
+            key: "dqModules",
+            label: "Module",
+            options: mods,
+            selected: keep,
+            allText: "Tất cả module",
+            onChange: (arr) => {
+                _dqState.filterModules = arr || [];
+                _dqState.page = 1;
+                _dqRenderTable();
+            },
+        });
+    } else if (typeof _dqModuleMs.setOptions === "function") {
+        _dqModuleMs.setOptions(mods);
+        if (typeof _dqModuleMs.setSelected === "function") {
+            _dqModuleMs.setSelected(keep);
+        }
+    }
 }
 
 function _dqBindEvents() {
@@ -10533,9 +10572,12 @@ function _dqRenderSummaryCards() {
 function _dqFilteredIssues() {
     const s = _dqState.filterSeverity;
     const c = _dqState.filterCode;
+    const mods = _dqState.filterModules || [];
     return _dqState.issues.filter(it => {
         if (s !== "all" && it.severity !== s) return false;
         if (c !== "all" && it.code !== c) return false;
+        // T35 Task 3 — local Module filter
+        if (mods.length && !mods.includes(it.module || "")) return false;
         return true;
     });
 }
@@ -10600,7 +10642,31 @@ window._dqGoPage = function (p) {
 };
 
 window.exportDataQuality = function () {
-    const qs = _buildFilterQuery();
+    // T35 Task 3 — Export respect cả global filter + local Module filter.
+    // Local modules (nếu chọn) giao với global modules → gửi param `module`.
+    const p = new URLSearchParams();
+    const localMods = _dqState.filterModules || [];
+    const globalMods = (typeof globalFilters !== "undefined" && globalFilters.modules) || [];
+    let modules;
+    if (localMods.length && globalMods.length) {
+        const gSet = new Set(globalMods);
+        modules = localMods.filter(m => gSet.has(m));
+        if (!modules.length) modules = localMods; // fallback: local thắng nếu giao rỗng
+    } else if (localMods.length) {
+        modules = localMods;
+    } else if (globalMods.length) {
+        modules = globalMods;
+    }
+    if (modules && modules.length) p.set("module", modules.join(","));
+    if (typeof globalFilters !== "undefined") {
+        if (globalFilters.processes && globalFilters.processes.length) {
+            p.set("process", globalFilters.processes.join(","));
+        }
+        if (globalFilters.pics && globalFilters.pics.length) {
+            p.set("pic", globalFilters.pics.join(","));
+        }
+    }
+    const qs = p.toString();
     const url = `/api/projects/${currentProjectSlug}/export-data-quality${qs ? "?" + qs : ""}`;
     window.location.href = url;
 };

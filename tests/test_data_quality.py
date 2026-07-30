@@ -119,3 +119,37 @@ def test_row_empty_ma_cn_skipped_for_blank_meta():
     codes = [i["code"] for i in out["issues"]]
     assert "blank_priority" not in codes
     assert "blank_complexity" not in codes
+
+
+# ==========================================================================
+# T35 Task 3 — API endpoint respects global module filter
+# ==========================================================================
+def test_data_quality_endpoint_respects_module_filter(flask_client, sample_xlsx_path):
+    """GET /data-quality?module=X chỉ trả issue thuộc module X."""
+    import io
+    with open(sample_xlsx_path, "rb") as f:
+        flask_client.post(
+            "/api/projects/default/upload",
+            data={"file": (io.BytesIO(f.read()), "sample.xlsx")},
+            content_type="multipart/form-data",
+        )
+    r_all = flask_client.get("/api/projects/default/data-quality")
+    assert r_all.status_code == 200
+    all_payload = r_all.get_json()
+    modules = sorted({
+        (it.get("module") or "")
+        for it in (all_payload.get("issues") or [])
+        if it.get("module")
+    })
+    if not modules:
+        # Sample không có DQ issue → endpoint vẫn 200 là đủ
+        return
+    target = modules[0]
+    r_f = flask_client.get(f"/api/projects/default/data-quality?module={target}")
+    assert r_f.status_code == 200
+    filtered = r_f.get_json()
+    for it in filtered.get("issues") or []:
+        assert it.get("module") == target, f"Issue {it} không thuộc module {target}"
+    assert (filtered.get("summary") or {}).get("total_issues", 0) <= (
+        all_payload.get("summary") or {}
+    ).get("total_issues", 0)

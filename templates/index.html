@@ -2894,7 +2894,9 @@
                     <h3 class="text-lg font-semibold text-gray-800" data-help-id="dataquality">🩺 Data Quality</h3>
                     <p class="text-xs text-gray-500 mt-0.5">Phát hiện dữ liệu lỗi/thiếu để clean trước khi báo cáo</p>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <!-- T35 Task 3 — Local Module filter (bổ sung global filter) -->
+                    <div id="dqModuleFilter" class="text-sm" style="min-width:140px"></div>
                     <select id="dqSeverityFilter" class="text-sm border rounded px-2 py-1">
                         <option value="all">Tất cả severity</option>
                         <option value="high">🔴 High</option>
