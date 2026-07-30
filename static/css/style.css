@@ -986,6 +986,16 @@ html.dark .help-tip:hover {
 }
 .treemap-cell .tm-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
 .treemap-cell .tm-info { font-size: 10px; opacity: 0.9; }
+.treemap-cell .tm-order {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    opacity: 0.85;
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 3px;
+    padding: 0 4px;
+    margin-right: 2px;
+}
 
 /* ==== RISK SCORE BAR ==== */
 .risk-bar-wrap {

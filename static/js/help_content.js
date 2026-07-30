@@ -302,12 +302,14 @@ const HELP_CONTENT = {
         title: "Process Analysis (theo Quy trình)",
         purpose: "Progress từng quy trình (BP.01, BP.02, ...). Zoom vào workflow-level thay vì module-level.",
         steps: [
-            "Bảng list mọi quy trình + % progress + số function",
-            "Filter tìm 1 quy trình cụ thể",
+            "Xem tile từng quy trình + % Closed + số function",
+            "Lọc local Module (multi-select) và/hoặc Tình trạng (Tốt ≥80% / Trung bình / Thấp / Có overdue)",
+            "Badge đếm và banner scope cập nhật theo filter; tôn trọng global filter",
         ],
         example: "Quy trình 'TMS.BP.01 - Chấm công' có 15 function, 60% Closed → tracking chi tiết đủ tin cậy.",
         tips: [
             "'Quy trình' derive từ cột 'Quy trình' / 'Process' — nếu file không có → section này ẩn",
+            "Local filter AND với global filter (Module/Process/PIC/Mã dự án)",
         ],
     },
     "slow": {
