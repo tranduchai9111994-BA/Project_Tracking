@@ -832,10 +832,13 @@ def upload_preview():
 
     # Nếu FE có gửi project_slug trong query → trả kèm list preset đã lưu
     presets: list[dict] = []
+    matched_preset = None
+    fingerprint = cm_mod.header_fingerprint(headers)
     slug = (request.args.get("project_slug") or "").strip()
     if slug and _project_mgr.project_exists(slug):
         from analyzer import project_store as ps
         presets = ps.list_mapping_presets(_project_dir_for(slug))
+        matched_preset = cm_mod.match_preset_by_fingerprint(presets, fingerprint)
 
     return jsonify({
         "success": True,
@@ -848,6 +851,8 @@ def upload_preview():
         "auto_suggest": suggestion,
         "column_types": column_types,  # T34 Task 3 (A+B): {header: {type, badge, samples}}
         "presets": presets,
+        "header_fingerprint": fingerprint,
+        "matched_preset": matched_preset,  # U06 — auto-apply nếu khớp
     })
 
 
@@ -957,7 +962,10 @@ def project_mapping_presets(slug: str):
     if not isinstance(mapping, dict):
         return jsonify({"error": "'mapping' phải là object"}), 400
     try:
-        presets = ps.save_mapping_preset(folder, name, mapping)
+        presets = ps.save_mapping_preset(
+            folder, name, mapping,
+            fingerprint=str(body.get("fingerprint") or body.get("header_fingerprint") or ""),
+        )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"presets": presets}), 201
@@ -2933,7 +2941,13 @@ def project_integrations(slug: str):
     folder = _project_dir_for(slug)
     if request.method == "GET":
         return jsonify({
-            "integrations": integ_mod.list_integrations(folder),
+            "integrations": integ_mod.list_integrations(
+                folder,
+                source_app=request.args.get("source_app") or "",
+                env=request.args.get("env") or "",
+                visibility=request.args.get("visibility") or "",
+                q=request.args.get("q") or "",
+            ),
             "capabilities": integ_mod.integration_capabilities(),
         })
     body = request.get_json(silent=True) or {}
@@ -4311,6 +4325,7 @@ def public_tokens_collection(slug: str):
             project_dir,
             name=body.get("name"),
             scope=body.get("scope"),
+            expires_in_days=body.get("expires_in_days"),
         )
     except _pubapi.PublicApiError as e:
         return jsonify({"error": str(e)}), e.status_code

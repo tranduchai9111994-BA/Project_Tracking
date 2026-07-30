@@ -40,7 +40,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 
@@ -160,8 +160,38 @@ def _mask_token_view(entry: dict) -> dict:
         "scope": entry.get("scope") or [],
         "created_at": entry.get("created_at"),
         "last_used_at": entry.get("last_used_at"),
+        "expires_at": entry.get("expires_at"),
+        "expires_in_days": entry.get("expires_in_days"),
         "revoked": bool(entry.get("revoked")),
+        "expired": _is_expired(entry),
     }
+
+
+def _parse_iso_utc(s: Any) -> Optional[datetime]:
+    """Parse ISO8601 (có/không Z) → aware UTC datetime."""
+    if not s:
+        return None
+    text = str(s).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _is_expired(entry: dict, now: Optional[datetime] = None) -> bool:
+    """True nếu expires_at đã qua (token còn hạn nếu không có expires_at)."""
+    exp = _parse_iso_utc(entry.get("expires_at"))
+    if exp is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return now >= exp
 
 
 # ---------- Public CRUD ----------
@@ -187,12 +217,15 @@ def create_token(
     project_dir: str,
     name: str,
     scope: Any,
+    expires_in_days: Optional[int] = None,
 ) -> tuple[str, dict]:
     """
     Tạo token mới. Trả (plaintext_token, masked_entry).
 
     plaintext_token CHỈ trả 1 lần này — sau đó chỉ còn hash. FE cần show
     modal "Copy ngay, sẽ không hiện lại" cho user.
+
+    expires_in_days: U19 — tự revoke sau N ngày (None/0 = không hết hạn).
 
     Raises:
         PublicApiError nếu name rỗng / scope không hợp lệ / vượt cap.
@@ -217,6 +250,21 @@ def create_token(
             f"Vượt giới hạn {_MAX_TOKENS_PER_PROJECT} token active — hãy revoke bớt"
         )
 
+    # U19 — expiry
+    days: Optional[int] = None
+    expires_at: Optional[str] = None
+    if expires_in_days is not None:
+        try:
+            days = int(expires_in_days)
+        except (TypeError, ValueError):
+            days = None
+        if days is not None and days <= 0:
+            days = None
+        if days is not None:
+            days = max(1, min(3650, days))  # 1 ngày → 10 năm
+            exp_dt = datetime.now(timezone.utc) + timedelta(days=days)
+            expires_at = exp_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     plaintext = _generate_token()
     entry = {
         "id": uuid.uuid4().hex,
@@ -226,6 +274,8 @@ def create_token(
         "scope": clean_scope,
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "last_used_at": None,
+        "expires_at": expires_at,
+        "expires_in_days": days,
         "revoked": False,
     }
     tokens.append(entry)
@@ -286,6 +336,15 @@ def verify_token(
         raise InvalidTokenError("Token không tồn tại")
     if match.get("revoked"):
         raise InvalidTokenError("Token đã bị revoke")
+
+    # U19 — hết hạn → auto-revoke rồi deny
+    if _is_expired(match):
+        try:
+            match["revoked"] = True
+            _write_tokens_raw(project_dir, raw)
+        except Exception:
+            pass
+        raise InvalidTokenError("Token đã hết hạn (auto-revoked)")
 
     if required_scope:
         scope_list = match.get("scope") or []
