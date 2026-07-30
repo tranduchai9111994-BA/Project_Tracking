@@ -19,7 +19,7 @@ from typing import Any, Optional
 from parser.excel_parser import ParsedData
 
 
-# Đồng bộ với analyzer.project_store.MAX_UPLOAD_HISTORY
+# Đồng bộ với analyzer.project_store.MAX_UPLOAD_HISTORY (default)
 MAX_SNAPSHOTS = 10
 INDEX_FILE = "snapshot_index.json"
 PICKLE_SUFFIX = ".parsed.pkl"
@@ -28,10 +28,26 @@ PICKLE_SUFFIX = ".parsed.pkl"
 class SnapshotManager:
     """Lưu, load, list, delete snapshots."""
 
-    def __init__(self, snapshot_dir: str):
+    def __init__(self, snapshot_dir: str, max_snapshots: int | None = None):
         self.dir = snapshot_dir
         os.makedirs(self.dir, exist_ok=True)
         self.index_path = os.path.join(self.dir, INDEX_FILE)
+        # U27 — override từ constructor; nếu None → đọc settings / default
+        self._max_snapshots_override = max_snapshots
+
+    def _max_keep(self) -> int:
+        """Số snapshot giữ lại — ưu tiên override, rồi project settings, rồi default."""
+        if self._max_snapshots_override is not None:
+            return max(3, min(50, int(self._max_snapshots_override)))
+        try:
+            from analyzer import project_store as ps
+            project_dir = self._project_dir()
+            if project_dir:
+                n = int(ps.load_project_settings(project_dir).get("max_snapshots") or MAX_SNAPSHOTS)
+                return max(3, min(50, n))
+        except Exception:
+            pass
+        return MAX_SNAPSHOTS
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,10 +207,16 @@ class SnapshotManager:
         """Đọc archive_settings của project cha (uploads/projects/<slug>/)."""
         try:
             from analyzer import project_store as ps
-            project_dir = os.path.dirname(self.dir.rstrip("/\\"))
+            project_dir = self._project_dir()
+            if not project_dir:
+                return False
             return bool(ps.load_archive_settings(project_dir).get("enabled"))
         except Exception:
             return False
+
+    def _project_dir(self) -> Optional[str]:
+        """snapshots/ nằm trong project_dir → parent = project_dir."""
+        return os.path.dirname(self.dir.rstrip("/\\")) or None
 
     def _retire_overflow_entry(self, entry: dict) -> None:
         """
@@ -223,17 +245,18 @@ class SnapshotManager:
         *,
         persist: bool = False,
     ) -> list[dict]:
-        """Giữ MAX_SNAPSHOTS newest; retire phần còn lại. Không bao giờ cắt newest."""
+        """Giữ N newest (U27 configurable); retire phần còn lại. Không bao giờ cắt newest."""
         if not index:
             return index
+        cap = self._max_keep()
         # Sort desc theo date để newest luôn ở đầu
         sorted_idx = sorted(index, key=lambda x: x.get("date", ""), reverse=True)
-        if len(sorted_idx) <= MAX_SNAPSHOTS:
+        if len(sorted_idx) <= cap:
             if persist and sorted_idx != index:
                 self._save_index(sorted_idx)
             return sorted_idx
-        keep = sorted_idx[:MAX_SNAPSHOTS]
-        for old in sorted_idx[MAX_SNAPSHOTS:]:
+        keep = sorted_idx[:cap]
+        for old in sorted_idx[cap:]:
             # Bảo vệ: không retire nếu trùng date với keep (không xảy ra nếu unique date)
             if any(k.get("date") == old.get("date") for k in keep):
                 continue

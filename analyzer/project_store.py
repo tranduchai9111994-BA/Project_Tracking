@@ -674,6 +674,14 @@ def append_upload_history(
     if extra:
         entry.update(extra)
     hist.insert(0, entry)
+    # U27 — nếu caller không truyền max_entries custom, đọc từ settings
+    if max_entries == MAX_UPLOAD_HISTORY:
+        try:
+            max_entries = int(
+                load_project_settings(project_dir).get("max_upload_history") or MAX_UPLOAD_HISTORY
+            )
+        except Exception:
+            max_entries = MAX_UPLOAD_HISTORY
     hist = hist[: max(1, int(max_entries))]
     _write_json(_path(project_dir, "upload_history.json"), hist)
     return hist
@@ -683,7 +691,8 @@ def load_upload_history(project_dir: str) -> list[dict]:
     """
     Load lịch sử. Entry cũ không có source → default \"upload\".
 
-    Migration: nếu file đang > MAX_UPLOAD_HISTORY → prune về N mới nhất và ghi lại.
+    Migration: nếu file đang > cap (U27 settings hoặc MAX_UPLOAD_HISTORY)
+    → prune về N mới nhất và ghi lại.
     """
     data = _read_json(_path(project_dir, "upload_history.json"), [])
     if not isinstance(data, list):
@@ -695,8 +704,13 @@ def load_upload_history(project_dir: str) -> list[dict]:
         if not e.get("source"):
             e = {**e, "source": "upload"}
         out.append(e)
-    if len(out) > MAX_UPLOAD_HISTORY:
-        out = out[:MAX_UPLOAD_HISTORY]
+    try:
+        cap = int(load_project_settings(project_dir).get("max_upload_history") or MAX_UPLOAD_HISTORY)
+        cap = max(3, min(50, cap))
+    except Exception:
+        cap = MAX_UPLOAD_HISTORY
+    if len(out) > cap:
+        out = out[:cap]
         _write_json(_path(project_dir, "upload_history.json"), out)
     return out
 
@@ -750,6 +764,12 @@ def load_project_settings(project_dir: str) -> dict[str, Any]:
             "closed_soon": max(0, min(100, int(thresholds.get("closed_soon", 70)))),
         },
         "aging_wip_threshold": max(1, int(data.get("aging_wip_threshold", DEFAULT_AGING_WIP_THRESHOLD))),
+        # U27 — số snapshot / upload history giữ (thay hardcode 10)
+        "max_snapshots": max(3, min(50, int(data.get("max_snapshots", MAX_UPLOAD_HISTORY)))),
+        "max_upload_history": max(3, min(50, int(data.get(
+            "max_upload_history",
+            data.get("max_snapshots", MAX_UPLOAD_HISTORY),
+        )))),
     }
 
 
@@ -787,6 +807,16 @@ def save_project_settings(project_dir: str, payload: dict[str, Any]) -> dict[str
             )
     if "aging_wip_threshold" in payload:
         current["aging_wip_threshold"] = max(1, int(payload["aging_wip_threshold"]))
+    # U27 — retention
+    if "max_snapshots" in payload:
+        current["max_snapshots"] = max(3, min(50, int(payload["max_snapshots"])))
+    if "max_upload_history" in payload:
+        current["max_upload_history"] = max(3, min(50, int(payload["max_upload_history"])))
+    # Nếu chỉ gửi 1 trong 2 → đồng bộ cả hai (UI dùng 1 ô)
+    if "max_snapshots" in payload and "max_upload_history" not in payload:
+        current["max_upload_history"] = current["max_snapshots"]
+    if "max_upload_history" in payload and "max_snapshots" not in payload:
+        current["max_snapshots"] = current["max_upload_history"]
     _write_json(_path(project_dir, "project_settings.json"), current)
     return current
 
