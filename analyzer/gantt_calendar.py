@@ -22,12 +22,18 @@ from parser.excel_parser import FunctionRow, ParsedData, PhaseData
 # ==========================================================================
 # Map task_type (tiếng Việt, do parser.excel_parser.TASK_TYPE_RULES sinh) →
 # category dùng cho tô màu bar. Key khớp label FE hiển thị trong legend.
+# PHẢI cover đủ label mà TASK_TYPE_RULES trả về — thiếu → fallback "summary"
+# xám vô nghĩa (bug: Config Local / Config UAT / Document / Golive bị xám).
 _TASK_TYPE_CATEGORY: dict[str, str] = {
-    "Phân tích": "phase1",       # Analysis/Design/Config — xanh
-    "Lập trình": "phase2",       # Dev — cam
-    "Config+Test": "phase2",     # config/test cũng Phase 2
-    "UAT": "phase3",             # UAT — tím
-    "Golive": "milestone",       # Golive/Deploy — xanh lá (milestone)
+    "Phân tích": "phase1",          # Analysis
+    "Tài liệu": "phase1",           # Document
+    "Lập trình": "phase2",          # Dev
+    "Kiểm thử": "phase2",           # Config Local / Test
+    "Cấu hình UAT": "phase2",       # Config UAT
+    "Config+Test": "phase2",        # legacy alias
+    "UAT": "phase3",                # UAT
+    "Cấu hình Golive": "milestone", # Config PROD / Golive
+    "Golive": "milestone",          # legacy alias
 }
 
 # Màu hex cho từng category (đồng bộ với FE `_GANTT_CAT_COLOR` + Excel).
@@ -278,28 +284,24 @@ def _detect_row_category(
     rows: list[FunctionRow],
     all_phases: list[str],
     task_type_map: dict[str, str],
-    is_aggregate: bool,
+    is_aggregate: bool = False,
 ) -> tuple[str, str]:
     """
-    Xác định (category, active_phase) cho 1 row aggregate.
+    Xác định (category, active_phase) cho 1 row.
 
-    - Nếu aggregate mode (module/process): category = "summary".
-    - Nếu function mode: category = phase category của phase "đang active nhất".
-      Phase active = phase có nhiều task chưa Closed nhất; nếu tất cả Closed
-      → "milestone" (đã golive).
+    Category = phase "đang active nhất" (áp dụng cả function lẫn aggregate).
+    Không còn ép aggregate → "summary" xám — bar tô màu theo phase segments;
+    category ở đây dùng làm fallback + tag active_phase trên label.
+
+    Phase active = phase có nhiều task chưa Closed/Cancelled nhất; nếu tất cả
+    Closed → category của phase cuối (thường Golive/milestone).
     """
     if not rows or not all_phases:
         return ("idle", "")
-    if is_aggregate:
-        return ("summary", "")
-    # Function mode: phase active nhất
     phase_active_count: Counter[str] = Counter()
-    all_closed = True
     for r in rows:
         for ph in all_phases:
             pd = r.phases.get(ph, PhaseData())
-            if pd.status not in ("Closed", "Cancelled"):
-                all_closed = all_closed and (pd.status is None or pd.status == "Closed")
             if pd.status and pd.status not in ("Closed", "Cancelled"):
                 phase_active_count[ph] += 1
     if not phase_active_count:
@@ -361,10 +363,129 @@ def _aggregate_rows(
     agg.total_slots = total
     agg.overdue_count = overdue
     agg.pct = round(closed / total * 100) if total > 0 else 0
+    # Category theo phase active (cả function lẫn aggregate) — không ép "summary".
     agg.category, agg.active_phase = _detect_row_category(
-        rows, all_phases, task_type_map, is_aggregate,
+        rows, all_phases, task_type_map,
     )
     return agg
+
+
+def _phase_date_bounds(
+    rows: list[FunctionRow],
+    phase_name: str,
+    today: date,
+) -> tuple[Optional[date], Optional[date], int, int]:
+    """
+    Min start / max end của 1 phase trên nhóm rows (bỏ outlier).
+
+    Return: (start, end, closed_count, touched_count)
+      - touched = số function có status khác None trên phase này
+      - Nếu chỉ có start hoặc chỉ có end → coi là point (start=end=ngày đó)
+    """
+    starts: list[date] = []
+    ends: list[date] = []
+    closed = 0
+    touched = 0
+    for r in rows:
+        pd = r.phases.get(phase_name, PhaseData())
+        if pd.start_date and not _is_outlier_date(pd.start_date, today):
+            starts.append(pd.start_date)
+        if pd.end_date and not _is_outlier_date(pd.end_date, today):
+            ends.append(pd.end_date)
+        if pd.status:
+            touched += 1
+            if pd.status == "Closed":
+                closed += 1
+    if starts and ends:
+        return min(starts), max(ends), closed, touched
+    if starts:
+        d = min(starts)
+        return d, d, closed, touched
+    if ends:
+        d = max(ends)
+        return d, d, closed, touched
+    return None, None, closed, touched
+
+
+def _span_cols_for_range(
+    start: date,
+    end: date,
+    columns: list[dict],
+) -> tuple[Optional[int], Optional[int]]:
+    """Tìm (span_start_col, span_end_col) overlap [start, end] với columns."""
+    start_iso = start.isoformat()
+    end_iso = end.isoformat()
+    span_start: Optional[int] = None
+    span_end: Optional[int] = None
+    for c in columns:
+        if c["end"] >= start_iso and c["start"] <= end_iso:
+            if span_start is None:
+                span_start = c["idx"]
+            span_end = c["idx"]
+    return span_start, span_end
+
+
+def _build_phase_segments(
+    rows: list[FunctionRow],
+    all_phases: list[str],
+    task_type_map: dict[str, str],
+    columns: list[dict],
+    today: date,
+) -> tuple[list[dict], list[Optional[str]], list[bool], Optional[int], Optional[int]]:
+    """
+    Build multi-segment theo phase cho 1 row (function hoặc aggregate).
+
+    Mỗi phase có Start/End hợp lệ → 1 segment {phase, category, start, end,
+    span_*, pct}. Cell overlap nhiều phase → phase sau trong all_phases thắng
+    (tiến độ pipeline đè lên phase trước).
+
+    Return: (segments, cell_categories, cells, span_start, span_end)
+      - cell_categories[i] = category str hoặc None (idle)
+      - cells[i] = True nếu có segment cover
+      - span_start/end = overall min/max col có bar
+    """
+    n = len(columns)
+    segments: list[dict] = []
+    cell_categories: list[Optional[str]] = [None] * n
+    # Paint theo thứ tự phase — phase sau overwrite (stack visual)
+    for ph in all_phases:
+        seg_start, seg_end, closed, touched = _phase_date_bounds(rows, ph, today)
+        if seg_start is None or seg_end is None:
+            continue
+        # Guard: nếu start > end (data lỗi) → swap
+        if seg_start > seg_end:
+            seg_start, seg_end = seg_end, seg_start
+        col_s, col_e = _span_cols_for_range(seg_start, seg_end, columns)
+        if col_s is None or col_e is None:
+            continue
+        cat = _phase_category(ph, task_type_map)
+        # Không dùng "summary" xám cho phase đã có ngày — fallback phase1
+        if cat == "summary":
+            cat = "phase1"
+        pct = round(closed / touched * 100) if touched > 0 else 0
+        segments.append({
+            "phase": ph,
+            "category": cat,
+            "start": seg_start.isoformat(),
+            "end": seg_end.isoformat(),
+            "span_start_col": col_s,
+            "span_end_col": col_e,
+            "pct": pct,
+            "closed": closed,
+            "touched": touched,
+        })
+        for i in range(col_s, col_e + 1):
+            cell_categories[i] = cat
+
+    cells = [c is not None for c in cell_categories]
+    overall_start: Optional[int] = None
+    overall_end: Optional[int] = None
+    for i, active in enumerate(cells):
+        if active:
+            if overall_start is None:
+                overall_start = i
+            overall_end = i
+    return segments, cell_categories, cells, overall_start, overall_end
 
 
 # ==========================================================================
@@ -450,9 +571,11 @@ def compute_gantt_calendar(
         today_col: int | None,
         rows: [{
           name, module, process, func_count, start, end, pct,
-          category, active_phase, overdue_count,
+          category, active_phase, overdue_count, is_aggregate,
           span_start_col, span_end_col,
-          cells: [bool...]   # length = len(columns)
+          cells: [bool...],
+          cell_categories: [str|null...],  # màu phase tại mỗi cột
+          segments: [{phase, category, start, end, span_*, pct, ...}]
         }],
         legend: {category → {label, color}}
       }
@@ -531,7 +654,31 @@ def compute_gantt_calendar(
             is_aggregate=is_aggregate, today=today,
             module=module, process=process,
         )
-        cells, span_start, span_end = _cells_for_row(agg, columns)
+        segments, cell_cats, cells, span_start, span_end = _build_phase_segments(
+            group_rows, data.all_phases, task_type_map, columns, today,
+        )
+        # Nếu không có segment nào (không phase nào có ngày) nhưng agg có
+        # start/end overall → fallback single-span (idle chỉ khi thật sự trống).
+        if not segments and agg.start is not None and agg.end is not None:
+            cells, span_start, span_end = _cells_for_row(agg, columns)
+            cat = agg.category if agg.category != "summary" else "phase1"
+            cell_cats = [cat if a else None for a in cells]
+            if span_start is not None and span_end is not None:
+                segments = [{
+                    "phase": agg.active_phase or "",
+                    "category": cat,
+                    "start": agg.start.isoformat(),
+                    "end": agg.end.isoformat(),
+                    "span_start_col": span_start,
+                    "span_end_col": span_end,
+                    "pct": agg.pct,
+                    "closed": agg.closed_records,
+                    "touched": agg.total_slots,
+                }]
+        # Idle khi không có ngày thật
+        if not segments and agg.start is None and agg.end is None:
+            agg.category = "idle"
+
         rows_out.append({
             "name": agg.name,
             "module": agg.module,
@@ -541,11 +688,14 @@ def compute_gantt_calendar(
             "end": agg.end.isoformat() if agg.end else None,
             "pct": agg.pct,
             "category": agg.category,
+            "is_aggregate": is_aggregate,
             "active_phase": agg.active_phase,
             "overdue_count": agg.overdue_count,
             "span_start_col": span_start,
             "span_end_col": span_end,
             "cells": cells,
+            "cell_categories": cell_cats,
+            "segments": segments,
         })
 
     return {
@@ -598,6 +748,5 @@ def _legend_dict() -> dict[str, dict[str, str]]:
         "phase2":    {"label": "Lập trình / Test",    "color": CATEGORY_COLORS["phase2"]},
         "phase3":    {"label": "UAT",                 "color": CATEGORY_COLORS["phase3"]},
         "milestone": {"label": "Golive / Milestone",  "color": CATEGORY_COLORS["milestone"]},
-        "summary":   {"label": "Tổng hợp (aggregate)", "color": CATEGORY_COLORS["summary"]},
         "idle":      {"label": "Chưa có ngày",         "color": CATEGORY_COLORS["idle"]},
     }

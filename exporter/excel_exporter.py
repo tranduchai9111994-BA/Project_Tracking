@@ -2706,19 +2706,16 @@ def export_gantt_calendar_report(
             extra_parts.append(f"⚠ {row['overdue_count']} trễ")
         suffix = f" ({' · '.join(extra_parts)})" if extra_parts else ""
         cell = ws.cell(row=excel_row, column=1, value=f"{name}{suffix}")
-        cell.font = Font(name="Arial", bold=(row.get("category") == "summary"), size=10)
+        cell.font = Font(name="Arial", bold=bool(row.get("is_aggregate")), size=10)
         cell.alignment = Alignment(vertical="center", wrap_text=True)
         cell.border = THIN_BORDER
 
-        # Timeline cells
+        # Timeline cells — tô theo cell_categories (phase segment), không còn
+        # 1 màu summary xám full-span.
         cells_flags = row.get("cells") or []
+        cell_cats = row.get("cell_categories") or []
         span_start = row.get("span_start_col")
         span_end = row.get("span_end_col")
-        cat = row.get("category") or "summary"
-        color_hex = CATEGORY_COLORS.get(cat, CATEGORY_COLORS["summary"])
-        # Bar fill = màu nhạt để text pct dễ đọc; text pct bold màu đậm.
-        bar_argb = _hex_to_argb(_lighten_hex(color_hex, 0.35))
-        text_argb = _hex_to_argb(color_hex).replace("00", "FF", 1)  # ARGB alpha=FF
 
         for i, active in enumerate(cells_flags):
             col = 2 + i
@@ -2729,7 +2726,13 @@ def export_gantt_calendar_report(
                 excel_cell.fill = today_fill
             if not active:
                 continue
-            # Cell active → tô màu bar; ghi text pct ở cell giữa
+            cat = (cell_cats[i] if i < len(cell_cats) and cell_cats[i] else None) \
+                or row.get("category") or "phase1"
+            if cat == "summary":
+                cat = "phase1"
+            color_hex = CATEGORY_COLORS.get(cat, CATEGORY_COLORS["phase1"])
+            bar_argb = _hex_to_argb(_lighten_hex(color_hex, 0.35))
+            text_argb = _hex_to_argb(color_hex).replace("00", "FF", 1)  # ARGB alpha=FF
             excel_cell.fill = PatternFill(
                 start_color=bar_argb[2:], end_color=bar_argb[2:], fill_type="solid",
             )

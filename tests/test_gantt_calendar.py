@@ -153,7 +153,7 @@ def test_gantt_calendar_5_functions_range_detect():
 
 
 def test_gantt_calendar_group_by_module_aggregates():
-    """Group by module → mỗi module 1 row, aggregate min/max/pct."""
+    """Group by module → mỗi module 1 row, aggregate min/max/pct + phase segments."""
     data = _make_data(TODAY, [
         {"ma_cn": "F1", "module": "M1", "phases": {
             "Analysis": {"start": -30, "end": -25, "status": "Closed"},
@@ -180,8 +180,18 @@ def test_gantt_calendar_group_by_module_aggregates():
     assert date.fromisoformat(m1["end"]) == TODAY + timedelta(days=5)
     # M1: 2 function × 3 phase = 6 slots; closed=4 (Analysis*2, Dev*2) → 66%
     assert m1["pct"] == pytest.approx(round(4 / 6 * 100), abs=1)
-    # M1 category = summary (aggregate mode)
-    assert m1["category"] == "summary"
+    # Aggregate: category theo phase active (UAT), KHÔNG còn ép "summary" xám
+    assert m1["category"] == "phase3"
+    assert m1["active_phase"] == "UAT"
+    assert m1["is_aggregate"] is True
+    # Multi-segment theo phase
+    assert len(m1["segments"]) >= 2
+    seg_phases = {s["phase"] for s in m1["segments"]}
+    assert "Analysis" in seg_phases and "UAT" in seg_phases
+    # Cell categories không phải summary xám
+    cats_used = {c for c in m1["cell_categories"] if c}
+    assert "summary" not in cats_used
+    assert "phase1" in cats_used or "phase2" in cats_used or "phase3" in cats_used
     # M1 func_count = 2
     assert m1["func_count"] == 2
     # M2 chỉ 1 func, Analysis Closed → pct = 1/3
@@ -278,7 +288,7 @@ def test_gantt_calendar_group_by_phan_he_alias():
 
 
 def test_gantt_calendar_category_for_function_mode_reflects_active_phase():
-    """Function mode: category theo phase đang active."""
+    """Function mode: category theo phase đang active + multi-segment màu."""
     data = _make_data(TODAY, [
         {"ma_cn": "F1", "module": "M1", "phases": {
             "Analysis": {"start": -30, "end": -20, "status": "Closed"},
@@ -290,18 +300,132 @@ def test_gantt_calendar_category_for_function_mode_reflects_active_phase():
     # Dev đang In-progress → category = phase2 (Lập trình)
     assert row["category"] == "phase2"
     assert row["active_phase"] == "Dev"
+    assert row["is_aggregate"] is False
+    # Có segment riêng cho Analysis (phase1) và Dev (phase2)
+    assert len(row["segments"]) == 2
+    by_ph = {s["phase"]: s for s in row["segments"]}
+    assert by_ph["Analysis"]["category"] == "phase1"
+    assert by_ph["Dev"]["category"] == "phase2"
+    # Cell categories phản ánh phase tại từng cột
+    cats = {c for c in row["cell_categories"] if c}
+    assert "phase1" in cats and "phase2" in cats
+
+
+# ==========================================================================
+# Phase-colored segments (aggregate + task_type map)
+# ==========================================================================
+
+
+def test_aggregate_process_emits_phase_colored_segments():
+    """
+    group_by=process → mỗi phase 1 segment màu riêng, KHÔNG 1 khối summary xám.
+    """
+    data = _make_data(TODAY, [
+        {"ma_cn": "F1", "module": "PR", "quy_trinh": "PRM.BP.03", "phases": {
+            "Analysis": {"start": -20, "end": -10, "status": "Closed"},
+            "Dev":      {"start":  -8, "end":   5, "status": "In-progress"},
+            "UAT":      {"start":   6, "end":  15, "status": "Open"},
+        }},
+        {"ma_cn": "F2", "module": "PR", "quy_trinh": "PRM.BP.03", "phases": {
+            "Analysis": {"start": -18, "end": -12, "status": "Closed"},
+            "Dev":      {"start":  -5, "end":   8, "status": "In-progress"},
+        }},
+    ])
+    payload = compute_gantt_calendar(
+        data, group_by="process", granularity="day", today=TODAY,
+    )
+    assert len(payload["rows"]) == 1
+    row = payload["rows"][0]
+    assert row["is_aggregate"] is True
+    assert row["category"] != "summary"
+    assert len(row["segments"]) >= 2
+    for seg in row["segments"]:
+        assert seg["category"] in ("phase1", "phase2", "phase3", "milestone")
+        assert seg["category"] != "summary"
+        assert seg["span_start_col"] is not None
+        assert seg["span_end_col"] >= seg["span_start_col"]
+    # Analysis segment phải là phase1; Dev = phase2
+    by_ph = {s["phase"]: s["category"] for s in row["segments"]}
+    assert by_ph.get("Analysis") == "phase1"
+    assert by_ph.get("Dev") == "phase2"
+    # cell_categories không chứa summary / None-only
+    used = {c for c in row["cell_categories"] if c}
+    assert used
+    assert "summary" not in used
+    assert "idle" not in used
+
+
+def test_task_type_category_covers_parser_labels():
+    """
+    TASK_TYPE_RULES labels (Kiểm thử, Cấu hình UAT, Cấu hình Golive, Tài liệu)
+    phải map ra phase color — không fallback summary xám.
+    """
+    from analyzer.gantt_calendar import _TASK_TYPE_CATEGORY, _phase_category
+
+    # Simulate task_type_map như parser sinh
+    tt_map = {
+        "Analysis": "Phân tích",
+        "Dev": "Lập trình",
+        "Config Local": "Kiểm thử",
+        "Config UAT": "Cấu hình UAT",
+        "Document": "Tài liệu",
+        "Config PROD": "Cấu hình Golive",
+        "UAT": "UAT",
+        "Golive": "Cấu hình Golive",
+    }
+    expected = {
+        "Analysis": "phase1",
+        "Dev": "phase2",
+        "Config Local": "phase2",
+        "Config UAT": "phase2",
+        "Document": "phase1",
+        "Config PROD": "milestone",
+        "UAT": "phase3",
+        "Golive": "milestone",
+    }
+    for ph, cat in expected.items():
+        assert _phase_category(ph, tt_map) == cat, f"{ph} → {_phase_category(ph, tt_map)}"
+    # Mọi label trong map phải có entry
+    for label in tt_map.values():
+        assert label in _TASK_TYPE_CATEGORY, f"Missing map for {label!r}"
+
+
+def test_idle_only_when_no_dates():
+    """Row không có Start/End hợp lệ → category idle, segments rỗng."""
+    data = _make_data(TODAY, [
+        {"ma_cn": "F1", "module": "M1", "phases": {
+            "Analysis": {"start": None, "end": None, "status": "Open"},
+        }},
+    ])
+    # Empty dataset → empty payload; build 1 row via function group với date
+    # sibling để không empty toàn bộ.
+    data2 = _make_data(TODAY, [
+        {"ma_cn": "F1", "module": "M1", "phases": {
+            "Analysis": {"start": None, "end": None, "status": "Open"},
+        }},
+        {"ma_cn": "F2", "module": "M2", "phases": {
+            "Analysis": {"start": -5, "end": 5, "status": "Open"},
+        }},
+    ])
+    payload = compute_gantt_calendar(data2, group_by="module", granularity="week", today=TODAY)
+    m1 = next(r for r in payload["rows"] if r["module"] == "M1")
+    assert m1["category"] == "idle"
+    assert m1["segments"] == []
+    assert not any(m1["cells"])
 
 
 def test_gantt_calendar_legend_matches_category_colors():
-    """Legend trả về đủ 6 category với màu khớp CATEGORY_COLORS."""
+    """Legend trả về phase categories (không còn 'summary' xám aggregate)."""
     data = _make_data(TODAY, [
         {"ma_cn": "F1", "module": "M1", "phases": {"Analysis": {"start": -5, "end": 5, "status": "Open"}}},
     ])
     payload = compute_gantt_calendar(data, group_by="module", granularity="week", today=TODAY)
     lg = payload["legend"]
-    for key in ("phase1", "phase2", "phase3", "milestone", "summary", "idle"):
+    for key in ("phase1", "phase2", "phase3", "milestone", "idle"):
         assert key in lg
         assert lg[key]["color"] == CATEGORY_COLORS[key]
+    # summary không còn trong legend (không dùng tô bar aggregate)
+    assert "summary" not in lg
 
 
 def test_gantt_calendar_auto_granularity_short_range():

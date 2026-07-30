@@ -13642,22 +13642,23 @@ function _renderGanttCalendar(data) {
     const todayCol = data.today_col;
     let tbodyHtml = "";
     data.rows.forEach(row => {
-        const catHex = catColor(row.category || "summary");
-        // Bar nhạt (dùng cho fill) + text đậm cho pct
-        const barLight = _hexLighten(catHex, 0.4);
-        const barText = catHex;
-        const isSummary = row.category === "summary";
-        const rowCls = isSummary ? "summary-row" : "";
+        const isAgg = row.is_aggregate === true || (data.group_by !== "function");
+        const rowCls = isAgg ? "summary-row" : "";
         const labelExtras = [];
         if (row.func_count) labelExtras.push(`${row.func_count} func`);
         if (row.overdue_count) labelExtras.push(`<span class="text-red-600">⚠ ${row.overdue_count} trễ</span>`);
         const labelSuffix = labelExtras.length ? `<span class="text-[10px] text-gray-500 ml-1">(${labelExtras.join(" · ")})</span>` : "";
         const activePhaseTag = row.active_phase ? `<span class="text-[9px] text-gray-500 ml-1">[${escapeHtml(row.active_phase)}]</span>` : "";
+        const segTitle = (row.segments || []).map(s =>
+            `${s.phase}: ${s.start}→${s.end} (${s.pct}%)`
+        ).join(" · ") || `${row.start || "-"} → ${row.end || "-"}`;
         tbodyHtml += `<tr class="${rowCls}">
-            <td class="gantt-cal-label" title="Start: ${row.start || "-"} · End: ${row.end || "-"} · ${row.pct}%">
+            <td class="gantt-cal-label" title="${escapeAttr(segTitle)} · overall ${row.pct}%">
                 ${escapeHtml(row.name)}${activePhaseTag}${labelSuffix}
             </td>`;
         const cells = row.cells || [];
+        const cellCats = row.cell_categories || [];
+        // % overall in giữa overall span (không phải từng segment)
         const midIdx = (row.span_start_col !== null && row.span_end_col !== null)
             ? Math.floor((row.span_start_col + row.span_end_col) / 2) : null;
         cells.forEach((active, i) => {
@@ -13668,9 +13669,13 @@ function _renderGanttCalendar(data) {
             let style = "";
             let inner = "";
             if (active) {
+                // Ưu tiên màu theo phase segment tại cell; fallback row.category
+                const catKey = cellCats[i] || row.category || "phase1";
+                const catHex = catColor(catKey);
+                const barLight = _hexLighten(catHex, 0.4);
                 style = `background:${barLight};`;
                 if (midIdx === i) {
-                    inner = `<span class="gantt-cal-pct" style="color:${barText}">${row.pct}%</span>`;
+                    inner = `<span class="gantt-cal-pct" style="color:${catHex}">${row.pct}%</span>`;
                 }
             }
             tbodyHtml += `<td class="${classes.join(" ")}" style="${style}">${inner}</td>`;

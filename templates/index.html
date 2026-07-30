@@ -49,7 +49,7 @@
         .gantt-cal-table td.gantt-cal-cell.active {
             /* Nền màu bar được set inline theo category từ JS */
         }
-        .gantt-cal-table td.gantt-cal-cell.today-col { background: #fce7f3 !important; }
+        .gantt-cal-table td.gantt-cal-cell.today-col:not(.active) { background: #fce7f3; }
         .gantt-cal-table td.gantt-cal-cell.today-col.active {
             box-shadow: inset 0 0 0 2px #ec4899;
         }
@@ -1952,17 +1952,17 @@
                 <!-- Saved views (Phase 3): ẩn cho đến khi wire xong FE để tránh
                      ReferenceError khi click. Bỏ hidden khi implement xong. -->
                 <div id="savedViewsWrap" class="hidden flex items-center gap-2">
-                    <select id="savedViewSelect" onchange="applySavedView(this.value)"
-                            class="border rounded px-2 py-1 text-xs bg-white max-w-[160px]"
-                            title="View đã lưu">
-                        <option value="">📂 View đã lưu…</option>
-                    </select>
-                    <button type="button" onclick="saveCurrentView()"
-                            class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded text-xs"
-                            title="Lưu bộ lọc hiện tại">💾 Lưu</button>
-                    <button type="button" onclick="deleteCurrentSavedView()"
-                            class="bg-gray-400 hover:bg-gray-500 text-white px-2 py-1 rounded text-xs"
-                            title="Xóa view đang chọn">🗑</button>
+                <select id="savedViewSelect" onchange="applySavedView(this.value)"
+                        class="border rounded px-2 py-1 text-xs bg-white max-w-[160px]"
+                        title="View đã lưu">
+                    <option value="">📂 View đã lưu…</option>
+                </select>
+                <button type="button" onclick="saveCurrentView()"
+                        class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded text-xs"
+                        title="Lưu bộ lọc hiện tại">💾 Lưu</button>
+                <button type="button" onclick="deleteCurrentSavedView()"
+                        class="bg-gray-400 hover:bg-gray-500 text-white px-2 py-1 rounded text-xs"
+                        title="Xóa view đang chọn">🗑</button>
                 </div>
                 <button id="globalFilterClear" onclick="clearGlobalFilters()"
                         class="hidden bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs shrink-0">
@@ -2066,9 +2066,9 @@
                     </button>
                 </div>
             </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
                         <tr class="bg-red-800 text-white">
                             <th class="px-2 py-2">#</th>
                             <th class="px-2 py-2 text-left">Mã CN</th>
@@ -2081,11 +2081,11 @@
                             <th class="px-2 py-2 text-left">PIC</th>
                             <th class="px-2 py-2">Priority</th>
                             <th class="px-2 py-2" title="Xem chi tiết">👁</th>
-                        </tr>
-                    </thead>
+                            </tr>
+                        </thead>
                     <tbody id="overdueTable"></tbody>
-                </table>
-            </div>
+                    </table>
+                </div>
             <div id="overdueShowMoreWrap"></div>
             <div id="overdueCount" class="text-sm text-gray-500 mt-3"></div>
         </section>
@@ -2144,11 +2144,11 @@
                         </tr>
                     </thead>
                     <tbody id="riskTable"></tbody>
-                </table>
-            </div>
+                    </table>
+                </div>
             <div id="riskShowMoreWrap"></div>
             <div id="riskCount" class="text-sm text-gray-500 mt-3"></div>
-        </section>
+            </section>
 
         <section id="section-stalled" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
@@ -2206,13 +2206,13 @@
                                     class="mo-group-btn px-2 py-1 border-l hover:bg-blue-50">Quy trình</button>
                             <button data-mo-group="both" onclick="setModuleGroupBy('both')"
                                     class="mo-group-btn px-2 py-1 border-l hover:bg-blue-50">Cả 2</button>
-                        </div>
+                </div>
                         <button onclick="exportChartData('module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
-                    </div>
+            </div>
                 </div>
                 <p class="chart-scope"></p>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
                         <thead id="moduleTableHead">
                             <tr class="bg-blue-800 text-white">
                                 <th class="px-2 py-2 text-left">#</th>
@@ -2222,11 +2222,11 @@
                                 <th class="px-2 py-2 text-center">Tiến độ</th>
                                 <th class="px-2 py-2 text-center">Đang ở</th>
                                 <th class="px-2 py-2 text-center">Trễ</th>
-                            </tr>
-                        </thead>
+                        </tr>
+                    </thead>
                         <tbody id="moduleTable"></tbody>
-                    </table>
-                </div>
+                </table>
+            </div>
             </div>
 
             <div id="section-tasktype" class="bg-white dashboard-card rounded-xl shadow-md p-5 relative">
@@ -2370,29 +2370,29 @@
             </div>
             <!-- Task 16: tách heatmap full-width + PIC chart full-width; không squeeze -->
             <div class="mb-6">
-                <h4 class="text-sm font-semibold text-gray-700 mb-2">Effort Heatmap: Module × Phase</h4>
-                <div class="overflow-x-auto">
+                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Effort Heatmap: Module × Phase</h4>
+                    <div class="overflow-x-auto">
                     <table class="w-full text-xs effort-heatmap-fw" id="effortHeatmapTable">
-                        <thead id="effortHeatmapHead"></thead>
-                        <tbody id="effortHeatmapBody"></tbody>
-                    </table>
+                            <thead id="effortHeatmapHead"></thead>
+                            <tbody id="effortHeatmapBody"></tbody>
+                        </table>
+                    </div>
                 </div>
-            </div>
-            <div class="relative">
-                <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                    <h4 class="text-sm font-semibold text-gray-700">Effort theo PIC (Top 15)</h4>
-                    <select id="effortPicFilter" onchange="setEffortPicFilter(this.value)"
-                            class="text-xs border rounded px-2 py-1 no-print">
-                        <option value="all">Tất cả</option>
-                        <option value="open">Chưa done</option>
-                        <option value="closed">Closed</option>
-                    </select>
-                </div>
-                <div id="effortPicChartWrap">
-                    <button class="fs-btn no-print" onclick="fullscreenChart('chartPICEffort')">⛶</button>
+                <div class="relative">
+                    <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                        <h4 class="text-sm font-semibold text-gray-700">Effort theo PIC (Top 15)</h4>
+                        <select id="effortPicFilter" onchange="setEffortPicFilter(this.value)"
+                                class="text-xs border rounded px-2 py-1 no-print">
+                            <option value="all">Tất cả</option>
+                            <option value="open">Chưa done</option>
+                            <option value="closed">Closed</option>
+                        </select>
+                    </div>
+                    <div id="effortPicChartWrap">
+                        <button class="fs-btn no-print" onclick="fullscreenChart('chartPICEffort')">⛶</button>
                     <div class="chart-box h-80"><canvas id="chartPICEffort"></canvas></div>
-                </div>
-                <div id="effortOpenTasksWrap" class="hidden"></div>
+                    </div>
+                    <div id="effortOpenTasksWrap" class="hidden"></div>
             </div>
         </section>
 
@@ -2406,7 +2406,7 @@
                                 title="Xuất Excel — áp bộ lọc hiện tại, xuất TẤT CẢ record">📥 Xuất Excel</button>
                     </h3>
                     <p class="text-xs text-gray-500 mt-0.5">Default <b id="capDefaultMD">5</b> MD/tuần · Overload nếu remaining > 4 tuần công việc</p>
-                </div>
+            </div>
                 <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200 text-xs">
                     Overload: <b id="capOverload">0</b>
                 </span>
@@ -2456,7 +2456,7 @@
                             class="text-xs bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1"
                             title="Rút gọn cột nhãn để timeline rộng hơn (ẩn Tên chức năng, chỉ hiện Mã CN)">
                         ⇔ Rút gọn nhãn
-                    </button>
+                        </button>
                     <button onclick="toggleAllGanttModules()"
                             id="ganttToggleAllBtn"
                             class="text-xs bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1">
@@ -2530,7 +2530,7 @@
                 <button onclick="openGanttCalOutlierModal()"
                         class="ml-2 underline font-semibold text-amber-800 hover:text-amber-950">
                     Xem chi tiết →
-                </button>
+                    </button>
             </div>
             <div id="ganttCalendarInfo" class="text-[11px] text-gray-500 mb-2"></div>
             <div id="ganttCalendarContainer" class="gantt-calendar-container overflow-auto border rounded max-h-[70vh]">
@@ -2638,8 +2638,8 @@
                         </tr>
                     </thead>
                         <tbody id="durationTable"></tbody>
-                    </table>
-                </div>
+                </table>
+            </div>
                 <div id="durationShowMoreWrap"></div>
                 <div id="durationCount" class="text-sm text-gray-500 mt-3"></div>
             </section>
