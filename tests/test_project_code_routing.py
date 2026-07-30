@@ -140,6 +140,99 @@ def test_apply_sync_routing_overrides_selected_map():
     assert ep["project_code_map"] == {"OLD": "old"}
 
 
+def test_selected_map_list_filter_must_not_str_coerce():
+    """
+    Regression P0: modal gửi selected_map → filter = list mã.
+    Nếu caller str(list) thì filter thành \"['MPHG_...']\" → lọc bỏ hết.
+    """
+    records = [
+        {"project": "MPHG_IHRP_2025_PM", "id": i}
+        for i in range(10)
+    ] + [
+        {"project": "OTHER_X", "id": 99},
+        {"project": "  ", "id": 100},
+        {"id": 101},
+    ]
+    ep = {
+        "project_code_field": "project",
+        "project_code_map": {"OLD": "old"},
+        "project_code_filter": "OLD",
+    }
+    routed = integ_mod._apply_sync_routing_overrides(
+        ep,
+        selected_map={"MPHG_IHRP_2025_PM": "mphg"},
+    )
+    assert routed["project_code_map"] == {"MPHG_IHRP_2025_PM": "mphg"}
+    assert isinstance(routed["project_code_filter"], list)
+    assert routed["project_code_filter"] == ["MPHG_IHRP_2025_PM"]
+
+    # Đúng: truyền list nguyên (giống fix sync path)
+    groups, skipped = integ_mod.group_records_by_project_code(
+        records,
+        project_code_field=routed["project_code_field"],
+        project_code_map=routed["project_code_map"],
+        project_code_filter=routed["project_code_filter"] or "",
+        default_slug="mphg",
+    )
+    assert len(groups["mphg"]) == 10
+    reasons = {s["reason"]: s["count"] for s in skipped}
+    assert reasons.get("filtered") == 1  # OTHER_X
+    assert reasons.get("empty") == 2
+
+    # Sai cũ: str(list) → 0 nhóm, toàn bộ bị filtered
+    bad_groups, bad_skipped = integ_mod.group_records_by_project_code(
+        records,
+        project_code_field=routed["project_code_field"],
+        project_code_map=routed["project_code_map"],
+        project_code_filter=str(routed["project_code_filter"] or ""),
+        default_slug="mphg",
+    )
+    assert bad_groups == {}
+    assert sum(s["count"] for s in bad_skipped if s["reason"] == "filtered") == 11
+
+
+def test_group_records_whitespace_and_empty_code():
+    records = [
+        {"project": "  KEEP  ", "id": 1},
+        {"project": "", "id": 2},
+        {"project": None, "id": 3},
+        {"project": "\n", "id": 4},
+    ]
+    groups, skipped = integ_mod.group_records_by_project_code(
+        records,
+        project_code_field="project",
+        project_code_map={"KEEP": "alpha"},
+        project_code_filter=["KEEP"],
+        default_slug="default",
+    )
+    assert len(groups["alpha"]) == 1
+    assert sum(s["count"] for s in skipped if s["reason"] == "empty") == 3
+
+
+def test_selected_map_overrides_saved_filter():
+    """selected_map thay map + tự set filter = keys; bỏ filter cũ."""
+    ep = {
+        "project_code_field": "project",
+        "project_code_map": {"OLD": "old"},
+        "project_code_filter": "OLD",
+    }
+    out = integ_mod._apply_sync_routing_overrides(
+        ep,
+        selected_map={"NEW": "mphg"},
+        project_code_filter=None,
+    )
+    assert out["project_code_map"] == {"NEW": "mphg"}
+    assert out["project_code_filter"] == ["NEW"]
+    # Explicit filter vẫn thắng khi truyền kèm
+    out2 = integ_mod._apply_sync_routing_overrides(
+        ep,
+        selected_map={"NEW": "mphg", "KEEP": "keep"},
+        project_code_filter=["KEEP"],
+    )
+    assert out2["project_code_map"] == {"NEW": "mphg", "KEEP": "keep"}
+    assert out2["project_code_filter"] == ["KEEP"]
+
+
 def test_merge_endpoint_project_code_map(tmp_path):
     folder = str(tmp_path)
     created = integ_mod.create_integration(folder, {

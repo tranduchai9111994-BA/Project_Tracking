@@ -1560,11 +1560,13 @@ def _sync_records_to_projects(
         }
 
     # ---- Multi-project routing ----
+    # KHÔNG str() project_code_filter: modal/selected_map đặt filter là list mã.
+    # str(["MPHG_..."]) → "['MPHG_...']" → lệch equality → lọc bỏ hết record.
     groups, skipped = group_records_by_project_code(
         records,
         project_code_field=str(endpoint.get("project_code_field") or ""),
         project_code_map=endpoint.get("project_code_map") or {},
-        project_code_filter=str(endpoint.get("project_code_filter") or ""),
+        project_code_filter=endpoint.get("project_code_filter") or "",
         default_slug=default_slug,
     )
 
@@ -1675,7 +1677,31 @@ def _sync_records_to_projects(
         summary += " · " + "; ".join(warnings[:3])
 
     if not synced_slugs:
-        msg = f"Không sync được project nào. {summary}"
+        # UX: missing_project là lỗi cấu hình map → nói rõ slug + cách xử lý.
+        missing_slugs = sorted({
+            (pr.get("slug") or "").strip()
+            for pr in project_results
+            if pr.get("status") == "error"
+            and "không tồn tại" in str(pr.get("message") or "")
+        })
+        if missing_slugs and missing_n:
+            codes_hint = []
+            for slug in missing_slugs:
+                for c in code_by_slug.get(slug) or []:
+                    codes_hint.append(f"{c}→{slug}")
+            hint = ", ".join(codes_hint[:5]) or ", ".join(missing_slugs)
+            msg = (
+                f"Không sync được: project local chưa tồn tại ({hint}). "
+                f"Tạo project hoặc chọn lại slug trong modal. {summary}"
+            )
+        elif filtered_n and not groups:
+            filter_preview = sorted(pc_filter_set)[:5] if pc_filter_set else []
+            msg = (
+                f"Không sync được project nào. Lọc bỏ: {filtered_n}"
+                f" (filter={filter_preview or '∅'} — không khớp mã trong data). {summary}"
+            )
+        else:
+            msg = f"Không sync được project nào. {summary}"
         _update_last_status(source_project_dir, integration_id, "error", msg)
         return _err(
             msg,

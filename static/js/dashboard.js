@@ -14204,6 +14204,23 @@ async function _syncPickConfirm() {
         return;
     }
 
+    // UX: chặn sớm nếu slug map không có trong danh sách project local.
+    const knownSlugs = new Set(
+        (Array.isArray(allProjects) ? allProjects : []).map(p => p && p.slug).filter(Boolean),
+    );
+    if (knownSlugs.size) {
+        const bad = Object.entries(selectedMap)
+            .filter(([, slug]) => !knownSlugs.has(slug))
+            .map(([code, slug]) => `${code}→${slug}`);
+        if (bad.length) {
+            showToast(
+                `Project local không tồn tại: ${bad.slice(0, 3).join(", ")}. Tạo project hoặc chọn slug khác.`,
+                "red",
+            );
+            return;
+        }
+    }
+
     closeSyncProjectPickModal();
     await _integSyncEndpoint(integrationId, endpointId, {
         skipPick: true,
