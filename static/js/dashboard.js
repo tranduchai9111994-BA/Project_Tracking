@@ -8326,6 +8326,149 @@ function _pdfSetProgress(text, percent) {
     if (bar) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
 }
 
+/**
+ * Thu thập comment per-chart cho danh sách section ids đang xuất.
+ * Trả về {sectionId: commentText}. Task 2: chưa có UI → luôn empty.
+ * Task 3 sẽ override function này để đọc từ textarea trong modal +
+ * chart notes cache.
+ */
+function _pdfCollectChartNotes(_ids) {
+    return (typeof window._pdfReadChartNotes === "function")
+        ? window._pdfReadChartNotes(_ids) || {}
+        : {};
+}
+
+/**
+ * Render 1 chuỗi HTML thành canvas qua html2canvas (off-screen).
+ *
+ * Dùng cho PDF export để né bug jsPDF default font (Helvetica) KHÔNG hỗ trợ
+ * diacritic tiếng Việt + emoji → text bị mojibake "Ø=ÜÊ&Bào" thay vì
+ * "Báo cáo". Approach: mọi text trong PDF (cover, comment per-chart, footer
+ * label...) đều render qua html2canvas thành ảnh — font hiển thị đúng
+ * y hệt browser (Inter/system font). Trade-off: text không search-able,
+ * nhưng đúng > search-able theo yêu cầu user.
+ */
+async function _pdfCaptureHtml(htmlString, widthPx = 800, scale = 2) {
+    if (typeof html2canvas === "undefined") return null;
+    const wrapper = document.createElement("div");
+    // Off-screen bằng vị trí (KHÔNG dùng display:none — html2canvas cần layout).
+    wrapper.style.cssText = `
+        position: fixed; left: -20000px; top: 0;
+        width: ${widthPx}px; background: #ffffff; color: #0f172a;
+        font-family: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        z-index: -1;
+    `;
+    wrapper.innerHTML = htmlString;
+    document.body.appendChild(wrapper);
+    try {
+        return await html2canvas(wrapper, {
+            scale,
+            backgroundColor: "#ffffff",
+            logging: false,
+            useCORS: true,
+        });
+    } finally {
+        wrapper.remove();
+    }
+}
+
+/**
+ * Build HTML cho cover page. Bao gồm banner xanh + title + date + project +
+ * filter + tóm tắt chung (nếu có).
+ */
+function _pdfBuildCoverHtml(ctx) {
+    const { title, projName, dateDisplay, preset, filterLine, summary } = ctx;
+    const summaryBlock = summary
+        ? `<div style="margin-top:16px; padding:12px 14px; background:#f1f5f9;
+                      border-left:4px solid #3b82f6; border-radius:6px;
+                      font-size:13px; line-height:1.55; color:#1e293b;
+                      white-space:pre-wrap;">💬 <b>Tóm tắt báo cáo:</b><br>${escapeHtml(summary)}</div>`
+        : "";
+    return `
+        <div style="padding:0; margin:0;">
+            <div style="background:linear-gradient(90deg,#1e40af 0%, #3b82f6 100%);
+                        color:#ffffff; padding:22px 28px;
+                        border-radius:8px 8px 0 0;
+                        display:flex; align-items:center; justify-content:space-between;">
+                <div>
+                    <div style="font-size:22px; font-weight:700; letter-spacing:0.3px;">
+                        ${escapeHtml(title)}
+                    </div>
+                    <div style="font-size:12px; opacity:0.85; margin-top:4px;">
+                        Project: ${escapeHtml(projName)} · Preset: ${escapeHtml(preset)}
+                    </div>
+                </div>
+                <div style="font-size:14px; font-weight:600; text-align:right;">
+                    ${escapeHtml(dateDisplay)}
+                </div>
+            </div>
+            <div style="padding:14px 28px; background:#ffffff; border:1px solid #e2e8f0;
+                        border-top:none; border-radius:0 0 8px 8px;">
+                <div style="font-size:12px; color:#475569;">${escapeHtml(filterLine)}</div>
+                ${summaryBlock}
+            </div>
+        </div>
+    `;
+}
+
+/**
+ * Build HTML cho khối comment 1 chart. Trống comment → return "" (không
+ * thêm gì vào PDF).
+ */
+function _pdfBuildCommentHtml(comment) {
+    const trimmed = (comment || "").trim();
+    if (!trimmed) return "";
+    return `
+        <div style="margin-top:6px; padding:8px 12px;
+                    border-top:1px dashed #cbd5e1;
+                    background:#f8fafc;
+                    color:#475569; font-size:12px; font-style:italic;
+                    line-height:1.5; white-space:pre-wrap;">
+            💬 <b style="font-style:normal; color:#334155;">Nhận xét:</b>
+            ${escapeHtml(trimmed)}
+        </div>
+    `;
+}
+
+/**
+ * Helper: cắt canvas cao thành nhiều slice vừa 1 trang PDF + addImage lần lượt.
+ * Trả về cursorY mới sau khi add xong. Nếu ảnh vừa 1 trang → add trực tiếp.
+ */
+function _pdfAddCanvas(pdf, canvas, cursorY, opts) {
+    const { pageW, pageH, margin, contentW } = opts;
+    if (!canvas) return cursorY;
+    const imgW = contentW;
+    const imgH = (canvas.height * imgW) / canvas.width;
+    const remainH = pageH - cursorY - margin;
+    // Section quá cao so với chỗ còn lại → sang trang mới
+    if (imgH > remainH || cursorY > pageH - 60) {
+        pdf.addPage();
+        cursorY = margin;
+    }
+    if (imgH <= pageH - cursorY - margin) {
+        pdf.addImage(canvas.toDataURL("image/jpeg", 0.85),
+            "JPEG", margin, cursorY, imgW, imgH);
+        return cursorY + imgH + 4;
+    }
+    // Slice canvas theo trang
+    let srcY = 0;
+    const srcHPerPage = (canvas.width * (pageH - margin * 2)) / imgW;
+    while (srcY < canvas.height) {
+        const sliceH = Math.min(srcHPerPage, canvas.height - srcY);
+        const tmp = document.createElement("canvas");
+        tmp.width = canvas.width;
+        tmp.height = sliceH;
+        tmp.getContext("2d").drawImage(canvas, 0, srcY, canvas.width, sliceH,
+            0, 0, canvas.width, sliceH);
+        const dispH = (sliceH * imgW) / canvas.width;
+        pdf.addImage(tmp.toDataURL("image/jpeg", 0.85),
+            "JPEG", margin, margin, imgW, dispH);
+        srcY += sliceH;
+        if (srcY < canvas.height) pdf.addPage();
+    }
+    return pageH; // buộc trang sau bắt đầu mới
+}
+
 window.doPdfExport = async function () {
     if (typeof html2canvas === "undefined" || !window.jspdf?.jsPDF) {
         showToast("PDF library chưa load", "red");
@@ -8347,11 +8490,15 @@ window.doPdfExport = async function () {
 
     try {
         const scale = parseFloat(document.getElementById("pdfScale")?.value || "1.5");
-        const notes = document.getElementById("pdfNotes")?.value?.trim() || "";
+        // "Tóm tắt chung của báo cáo" — hiển thị ở trang cover (max 500 ký tự).
+        const summary = document.getElementById("pdfNotes")?.value?.trim() || "";
         const dateStr = document.getElementById("pdfReportDate")?.value || new Date().toISOString().slice(0, 10);
         const [yy, mm, dd] = dateStr.split("-");
         const displayDate = `${dd}/${mm}/${yy}`;
         const suffix = _pdfPresetSuffix();
+        const projName = window._projectMeta?.project?.name || currentProjectSlug;
+        // Comment per-chart: đọc từ state, key = section id
+        const chartNotes = _pdfCollectChartNotes(ids);
 
         const { jsPDF } = window.jspdf;
         const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
@@ -8359,34 +8506,21 @@ window.doPdfExport = async function () {
         const pageH = pdf.internal.pageSize.getHeight();  // 297
         const margin = 10;
         const contentW = pageW - margin * 2;
+        const addOpts = { pageW, pageH, margin, contentW };
 
-        // ==== HEADER PAGE ====
-        pdf.setFillColor(30, 64, 175);
-        pdf.rect(0, 0, pageW, 30, "F");
-        pdf.setTextColor(255, 255, 255);
-        pdf.setFontSize(16);
-        pdf.text("📊 Báo cáo tuần iHRP Function List", margin, 14);
-        pdf.setFontSize(10);
-        pdf.text(displayDate, pageW - margin, 14, { align: "right" });
-        pdf.setFontSize(9);
-        const projName = window._projectMeta?.project?.name || currentProjectSlug;
-        pdf.text(`Project: ${projName} · Preset: ${suffix}`, margin, 23);
+        // ==== COVER PAGE (render qua html2canvas → khắc phục mojibake) ====
+        // widthPx=800px tương ứng ~200mm khi scale=2 → font đẹp, không vỡ nét.
+        const coverHtml = _pdfBuildCoverHtml({
+            title: "📊 Báo cáo iHRP Function List",
+            projName, dateDisplay: displayDate, preset: suffix,
+            filterLine: _pdfFilterSubtitle(),
+            summary,
+        });
+        const coverCanvas = await _pdfCaptureHtml(coverHtml, 800, 2);
+        let cursorY = margin;
+        cursorY = _pdfAddCanvas(pdf, coverCanvas, cursorY, addOpts);
 
-        pdf.setTextColor(30, 41, 59);
-        pdf.setFontSize(9);
-        pdf.text(_pdfFilterSubtitle(), margin, 40);
-
-        let cursorY = 48;
-        if (notes) {
-            pdf.setFontSize(10);
-            pdf.setFont(undefined, "italic");
-            const wrapped = pdf.splitTextToSize(notes, contentW);
-            pdf.text(wrapped, margin, cursorY);
-            cursorY += wrapped.length * 5 + 4;
-            pdf.setFont(undefined, "normal");
-        }
-
-        // ==== CAPTURE EACH SECTION ====
+        // ==== CAPTURE EACH SECTION (+ optional comment box) ====
         let sectionIndex = 0;
         for (const sid of ids) {
             sectionIndex += 1;
@@ -8422,48 +8556,24 @@ window.doPdfExport = async function () {
             }
             if (wasHidden) sec.classList.add("hidden");
 
-            const imgW = contentW;
-            const imgH = (canvas.height * imgW) / canvas.width;
+            cursorY = _pdfAddCanvas(pdf, canvas, cursorY, addOpts);
 
-            // Nếu section quá cao (> nửa trang), start ở page mới
-            const remainH = pageH - cursorY - margin;
-            if (imgH > remainH || cursorY > pageH - 60) {
-                pdf.addPage();
-                cursorY = margin;
-            }
-
-            // Nếu section vẫn cao hơn 1 trang trọn → cắt slice
-            if (imgH <= pageH - cursorY - margin) {
-                pdf.addImage(canvas.toDataURL("image/jpeg", 0.85),
-                    "JPEG", margin, cursorY, imgW, imgH);
-                cursorY += imgH + 4;
-            } else {
-                // Slice canvas theo trang
-                let srcY = 0;
-                const srcHPerPage = (canvas.width * (pageH - margin * 2)) / imgW;
-                while (srcY < canvas.height) {
-                    const sliceH = Math.min(srcHPerPage, canvas.height - srcY);
-                    const tmp = document.createElement("canvas");
-                    tmp.width = canvas.width;
-                    tmp.height = sliceH;
-                    tmp.getContext("2d").drawImage(canvas, 0, srcY, canvas.width, sliceH,
-                        0, 0, canvas.width, sliceH);
-                    const dispH = (sliceH * imgW) / canvas.width;
-                    pdf.addImage(tmp.toDataURL("image/jpeg", 0.85),
-                        "JPEG", margin, margin, imgW, dispH);
-                    srcY += sliceH;
-                    if (srcY < canvas.height) pdf.addPage();
-                }
-                cursorY = pageH; // buộc trang sau bắt đầu mới
+            // Comment per-chart: render riêng để giữ khả năng cắt trang linh hoạt
+            const comment = chartNotes[sid];
+            if (comment && comment.trim()) {
+                const commentHtml = _pdfBuildCommentHtml(comment);
+                const commentCanvas = await _pdfCaptureHtml(commentHtml, 800, 2);
+                cursorY = _pdfAddCanvas(pdf, commentCanvas, cursorY, addOpts);
             }
         }
 
-        // ==== FOOTER: Trang X/Y ====
+        // ==== FOOTER: "Trang X/Y" — chỉ chứa ASCII an toàn (không diacritic) ====
         const totalPages = pdf.internal.getNumberOfPages();
         for (let p = 1; p <= totalPages; p++) {
             pdf.setPage(p);
             pdf.setFontSize(8);
             pdf.setTextColor(100, 116, 139);
+            // "Trang" / "Generate" không có diacritic → helvetica render OK.
             pdf.text(`Trang ${p} / ${totalPages}`, pageW - margin, pageH - 5, { align: "right" });
             pdf.text(`Generate: ${new Date().toLocaleString("vi-VN")}`, margin, pageH - 5);
         }
