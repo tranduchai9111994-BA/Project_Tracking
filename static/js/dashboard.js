@@ -1893,6 +1893,16 @@ function renderSummaryCards() {
     } else {
         document.getElementById("cardUnassignedRecords").textContent = "";
     }
+    const mdEl = document.getElementById("cardMissingDeadline");
+    if (mdEl) mdEl.textContent = s.missing_deadline_count || 0;
+    const mdRec = document.getElementById("cardMissingDeadlineRecords");
+    if (mdRec) {
+        if (s.missing_deadline_records && s.missing_deadline_records !== s.missing_deadline_count) {
+            mdRec.textContent = ` (${s.missing_deadline_records} phase)`;
+        } else {
+            mdRec.textContent = "";
+        }
+    }
     document.getElementById("cardHighRisk").textContent = s.high_risk_count || 0;
     document.getElementById("cardModules").textContent = s.modules_count;
 
@@ -1906,6 +1916,9 @@ function renderSummaryCards() {
     $sub("cardProgressSub", s.last_phase_name ? `trong ${total} function` : "");
     $sub("cardOverdueSub", total ? `${pct(s.total_overdue)}% tổng · click để xem` : "click để xem");
     $sub("cardUnassignedSub", total ? `${pct(s.unassigned_count || 0)}% tổng · click để xem` : "click để xem");
+    $sub("cardMissingDeadlineSub", total
+        ? `${pct(s.missing_deadline_count || 0)}% tổng · lọc Data Quality`
+        : "click → Data Quality");
     $sub("cardHighRiskSub", total ? `${pct(s.high_risk_count || 0)}% tổng · click để xem` : "click để xem");
     $sub("cardModulesSub", (metricsData.structure?.all_processes || []).length
         ? `${(metricsData.structure.all_processes || []).length} quy trình`
@@ -1929,6 +1942,31 @@ function renderSummaryCards() {
         });
     }
 }
+
+/** Card «Chưa cập nhật deadline» → Data Quality filter missing_deadline. */
+window.openMissingDeadlineDrill = async function () {
+    await loadDataQuality();
+    _dqState.filterCode = "missing_deadline";
+    _dqState.filterSeverity = "all";
+    _dqState.page = 1;
+    const sevSel = document.getElementById("dqSeverityFilter");
+    if (sevSel) sevSel.value = "all";
+    _dqPopulateCodeFilter();
+    const codeSel = document.getElementById("dqCodeFilter");
+    if (codeSel && ![...codeSel.options].some(o => o.value === "missing_deadline")) {
+        const opt = document.createElement("option");
+        opt.value = "missing_deadline";
+        opt.textContent = "Thiếu End khi đang làm (0)";
+        codeSel.appendChild(opt);
+    }
+    if (codeSel) codeSel.value = "missing_deadline";
+    _dqRenderTable();
+    if (typeof scrollToSection === "function") {
+        scrollToSection("section-dataquality");
+    } else {
+        document.getElementById("section-dataquality")?.scrollIntoView({ behavior: "smooth" });
+    }
+};
 
 // ========================================================================
 // 2. MODULE TABLE
@@ -10806,8 +10844,10 @@ function _dqRenderSummaryCards() {
     if (!wrap) return;
     const s = _dqState.summary || {};
     const sev = s.by_severity || {};
+    const byCode = s.by_code || {};
     const cleanPct = s.clean_pct ?? 100;
     const cleanColor = cleanPct >= 95 ? "text-green-700" : cleanPct >= 80 ? "text-yellow-700" : "text-red-700";
+    const mdCount = s.missing_deadline_count ?? byCode.missing_deadline ?? 0;
     wrap.innerHTML = `
         <div class="bg-slate-50 rounded-lg p-3 border">
             <div class="text-xs text-gray-500">Tổng function</div>
@@ -10816,6 +10856,11 @@ function _dqRenderSummaryCards() {
         <div class="bg-green-50 rounded-lg p-3 border border-green-200">
             <div class="text-xs text-green-700">Function clean</div>
             <div class="text-2xl font-bold ${cleanColor}">${s.clean_rows || 0} <span class="text-sm font-normal">(${cleanPct}%)</span></div>
+        </div>
+        <div class="bg-amber-50 rounded-lg p-3 border border-amber-200 cursor-pointer hover:bg-amber-100"
+             title="Lọc: Thiếu End khi đang làm" onclick="openMissingDeadlineDrill()">
+            <div class="text-xs text-amber-800">📅 Chưa cập nhật deadline</div>
+            <div class="text-2xl font-bold text-amber-800">${mdCount}</div>
         </div>
         <div class="bg-red-50 rounded-lg p-3 border border-red-200">
             <div class="text-xs text-red-700">🔴 High</div>
@@ -13717,11 +13762,30 @@ function _syncShowResult(success, data, endpointName) {
     }
 }
 
-/** Sync 1 endpoint — dùng chung cho list & quick menu. */
-async function _integSyncEndpoint(integrationId, endpointId) {
+/** Sync 1 endpoint — dùng chung cho list & quick menu.
+ *  Nếu endpoint có project_code_field → mở modal chọn mã trước khi sync.
+ */
+async function _integSyncEndpoint(integrationId, endpointId, opts = {}) {
+    const skipPick = !!(opts && opts.skipPick);
+    const selectedMap = opts && opts.selectedMap;
+
     const it = _integState.integrations.find(i => i.id === integrationId);
     const ep = it?.endpoints?.find(e => e.id === endpointId);
     const epName = ep?.name || "endpoint";
+    const hasField = !!(ep && String(ep.project_code_field || "").trim());
+
+    // Có cấu hình mã dự án + chưa có selectedMap → hỏi user trước
+    if (hasField && !skipPick && !selectedMap) {
+        await _openSyncProjectPickModal(integrationId, endpointId);
+        return;
+    }
+
+    const body = { endpoint_id: endpointId };
+    if (selectedMap && typeof selectedMap === "object") {
+        body.selected_map = selectedMap;
+        body.persist_map = true;
+    }
+
     _syncOpenModal(epName);
     try {
         const data = await apiJson(
@@ -13729,7 +13793,7 @@ async function _integSyncEndpoint(integrationId, endpointId) {
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ endpoint_id: endpointId }),
+                body: JSON.stringify(body),
                 timeoutMs: 120000,  // sync có thể lâu
             },
         );
@@ -13743,23 +13807,28 @@ async function _integSyncEndpoint(integrationId, endpointId) {
         if (data.status === "ok") {
             _syncShowResult(true, data, epName);
             // Reload dashboard project đang mở nếu nằm trong synced_slugs.
-            // Không phụ thuộc modal auto-close — await xong mới cho toast.
             const synced = Array.isArray(data.synced_slugs) && data.synced_slugs.length
                 ? data.synced_slugs
                 : [currentProjectSlug];
+            const reportParts = (Array.isArray(data.project_results) ? data.project_results : [])
+                .filter(p => p && p.status === "ok")
+                .map(p => {
+                    const code = p.project_code || "?";
+                    return `${code} → ${p.slug}: ${p.rows} dòng`;
+                });
             if (synced.includes(currentProjectSlug)) {
                 await tryLoadDashboardForCurrent(true);
                 const overdue = metricsData?.summary?.total_overdue;
                 const overdueHint = (overdue != null) ? ` · overdue: ${overdue}` : "";
-                showToast(`Đã đồng bộ — dashboard đã refresh${overdueHint}`);
-            } else {
-                const labels = (Array.isArray(data.project_results) ? data.project_results : [])
-                    .filter(p => p && p.status === "ok")
-                    .map(p => p.project_code || p.slug)
-                    .filter(Boolean);
-                const dest = labels.length ? labels.join(", ") : synced.join(", ");
                 showToast(
-                    `Đã ghi vào project ${dest || "?"} — chuyển project để xem`,
+                    (reportParts.length ? reportParts.join(" · ") : "Đã đồng bộ")
+                    + overdueHint,
+                );
+            } else {
+                showToast(
+                    reportParts.length
+                        ? reportParts.join(" · ")
+                        : `Đã ghi vào project ${synced.join(", ")} — chuyển project để xem`,
                     "orange",
                 );
             }
@@ -13771,6 +13840,193 @@ async function _integSyncEndpoint(integrationId, endpointId) {
         _syncShowResult(false, { message: `Lỗi: ${err.message}` }, epName);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Modal chọn Mã dự án → Project local (trước sync)
+// ---------------------------------------------------------------------------
+
+const _syncPickState = {
+    integrationId: null,
+    endpointId: null,
+    codes: [],
+    savedMap: {},
+};
+
+function closeSyncProjectPickModal() {
+    const modal = document.getElementById("syncProjectPickModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+    _syncPickState.integrationId = null;
+    _syncPickState.endpointId = null;
+}
+window.closeSyncProjectPickModal = closeSyncProjectPickModal;
+
+async function _openSyncProjectPickModal(integrationId, endpointId) {
+    const modal = document.getElementById("syncProjectPickModal");
+    if (!modal) {
+        // Fallback: sync thẳng nếu thiếu markup
+        await _integSyncEndpoint(integrationId, endpointId, { skipPick: true });
+        return;
+    }
+    const it = _integState.integrations.find(i => i.id === integrationId);
+    const ep = it?.endpoints?.find(e => e.id === endpointId);
+    _syncPickState.integrationId = integrationId;
+    _syncPickState.endpointId = endpointId;
+    _syncPickState.codes = [];
+    _syncPickState.savedMap = (ep && ep.project_code_map) || {};
+
+    const sub = document.getElementById("syncPickSubtitle");
+    if (sub) sub.textContent = `${it?.name || "Integration"} · ${ep?.name || "endpoint"}`;
+    const list = document.getElementById("syncPickList");
+    const loading = document.getElementById("syncPickLoading");
+    const errEl = document.getElementById("syncPickError");
+    if (list) list.innerHTML = "";
+    if (errEl) { errEl.classList.add("hidden"); errEl.textContent = ""; }
+    if (loading) loading.classList.remove("hidden");
+
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+
+    // Đảm bảo có danh sách project local
+    if (!Array.isArray(allProjects) || !allProjects.length) {
+        try { await loadProjectList(); } catch (_) { /* ignore */ }
+    }
+
+    try {
+        const data = await apiJson(
+            `/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}/project-codes`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ endpoint_id: endpointId }),
+                timeoutMs: 120000,
+            },
+        );
+        if (loading) loading.classList.add("hidden");
+        if (data.status !== "ok") {
+            if (errEl) {
+                errEl.textContent = data.message || "Không tải được danh sách mã dự án";
+                errEl.classList.remove("hidden");
+            }
+            return;
+        }
+        if (!data.routing_available) {
+            closeSyncProjectPickModal();
+            await _integSyncEndpoint(integrationId, endpointId, { skipPick: true });
+            return;
+        }
+        _syncPickState.savedMap = data.project_code_map || _syncPickState.savedMap || {};
+        _syncPickState.codes = Array.isArray(data.project_codes) ? data.project_codes : [];
+        if (sub) {
+            sub.textContent = `${it?.name || "Integration"} · ${ep?.name || "endpoint"}`
+                + ` · ${data.record_count || 0} dòng · field «${data.project_code_field || "?"}»`;
+        }
+        _syncPickRenderList();
+    } catch (err) {
+        if (loading) loading.classList.add("hidden");
+        if (errEl) {
+            errEl.textContent = err.message || "Lỗi tải mã dự án";
+            errEl.classList.remove("hidden");
+        }
+    }
+}
+
+function _syncPickProjectOptionsHtml(selectedSlug) {
+    const projects = Array.isArray(allProjects) ? allProjects : [];
+    const opts = [`<option value="">— Chọn project —</option>`];
+    for (const p of projects) {
+        const sel = (p.slug === selectedSlug) ? " selected" : "";
+        opts.push(`<option value="${_escapeAttr(p.slug)}"${sel}>${_escapeHtml(p.name)} (${_escapeHtml(p.slug)})</option>`);
+    }
+    return opts.join("");
+}
+
+function _syncPickRenderList() {
+    const list = document.getElementById("syncPickList");
+    if (!list) return;
+    const codes = _syncPickState.codes || [];
+    const savedMap = _syncPickState.savedMap || {};
+    if (!codes.length) {
+        list.innerHTML = `<div class="text-sm text-gray-500 p-2">Không tìm thấy mã dự án nào trên nguồn (kiểm tra project_code_field / data_path).</div>`;
+        return;
+    }
+    const hasAnyMapped = codes.some(c => savedMap[c.code]);
+    const parts = codes.map((item, idx) => {
+        const code = item.code || "";
+        const count = item.count || 0;
+        const mapped = savedMap[code] || "";
+        // Prefill: mã đã có trong map → checked; nếu map trống → check tất cả
+        const checked = hasAnyMapped ? !!mapped : true;
+        const slugPrefill = mapped || (codes.length === 1 ? currentProjectSlug : "");
+        return `
+            <label class="flex items-start gap-3 p-2.5 rounded-lg border dark:border-slate-600 hover:bg-amber-50/50 dark:hover:bg-slate-700/40 cursor-pointer"
+                   data-sync-pick-row="${idx}">
+                <input type="checkbox" data-sync-pick-check value="${_escapeAttr(code)}"
+                       class="mt-1" ${checked ? "checked" : ""}>
+                <div class="flex-1 min-w-0 space-y-1">
+                    <div class="flex items-center justify-between gap-2">
+                        <code class="text-xs font-semibold text-gray-800 dark:text-gray-100 break-all">${_escapeHtml(code)}</code>
+                        <span class="text-[10px] text-gray-500 shrink-0">${count} dòng</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-[10px] text-gray-500 shrink-0">→ Project</span>
+                        <select data-sync-pick-slug data-code="${_escapeAttr(code)}"
+                                class="flex-1 border rounded px-2 py-1 text-xs dark:bg-slate-700 dark:border-slate-600"
+                                onclick="event.stopPropagation()">
+                            ${_syncPickProjectOptionsHtml(slugPrefill)}
+                        </select>
+                    </div>
+                </div>
+            </label>`;
+    });
+    list.innerHTML = parts.join("");
+}
+
+function _syncPickSelectAll(checked) {
+    document.querySelectorAll("#syncPickList [data-sync-pick-check]").forEach(cb => {
+        cb.checked = !!checked;
+    });
+}
+window._syncPickSelectAll = _syncPickSelectAll;
+
+async function _syncPickConfirm() {
+    const integrationId = _syncPickState.integrationId;
+    const endpointId = _syncPickState.endpointId;
+    if (!integrationId || !endpointId) return;
+
+    const selectedMap = {};
+    const rows = document.querySelectorAll("#syncPickList [data-sync-pick-row]");
+    let missingSlug = false;
+    rows.forEach(row => {
+        const cb = row.querySelector("[data-sync-pick-check]");
+        const sel = row.querySelector("[data-sync-pick-slug]");
+        if (!cb || !cb.checked) return;
+        const code = cb.value;
+        const slug = (sel?.value || "").trim();
+        if (!slug) {
+            missingSlug = true;
+            return;
+        }
+        selectedMap[code] = slug;
+    });
+
+    if (!Object.keys(selectedMap).length) {
+        showToast("Chưa chọn mã dự án nào — bỏ chọn hết thì không đồng bộ", "red");
+        return;
+    }
+    if (missingSlug) {
+        showToast("Mỗi mã đã chọn cần chọn Project local", "red");
+        return;
+    }
+
+    closeSyncProjectPickModal();
+    await _integSyncEndpoint(integrationId, endpointId, {
+        skipPick: true,
+        selectedMap,
+    });
+}
+window._syncPickConfirm = _syncPickConfirm;
 
 // ---------------------------------------------------------------------------
 // Quick sync dropdown (nút "🔄 Đồng bộ" ở header)

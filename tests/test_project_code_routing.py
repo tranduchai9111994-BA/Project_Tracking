@@ -87,6 +87,85 @@ def test_sanitize_endpoint_keeps_project_routing():
     assert ep["field_mapping"]["Mã dự án"] == "project"
 
 
+def test_group_records_filter_list():
+    """project_code_filter nhận list mã."""
+    records = [
+        {"project": "A", "id": 1},
+        {"project": "B", "id": 2},
+        {"project": "C", "id": 3},
+        {"project": "A", "id": 4},
+    ]
+    groups, skipped = integ_mod.group_records_by_project_code(
+        records,
+        project_code_field="project",
+        project_code_map={"A": "alpha", "B": "beta", "C": "gamma"},
+        project_code_filter=["A", "B"],
+        default_slug="default",
+    )
+    assert set(groups.keys()) == {"alpha", "beta"}
+    assert len(groups["alpha"]) == 2
+    assert len(groups["beta"]) == 1
+    assert any(s["code"] == "C" and s["reason"] == "filtered" for s in skipped)
+
+
+def test_extract_unique_project_codes():
+    records = [
+        {"project": "MPHG", "x": 1},
+        {"project": "OTHER", "x": 2},
+        {"project": "MPHG", "x": 3},
+        {"project": "  ", "x": 4},
+        {"x": 5},
+    ]
+    codes = integ_mod.extract_unique_project_codes(records, "project")
+    assert codes == [
+        {"code": "MPHG", "count": 2},
+        {"code": "OTHER", "count": 1},
+    ]
+
+
+def test_apply_sync_routing_overrides_selected_map():
+    ep = {
+        "id": "ep1",
+        "project_code_field": "project",
+        "project_code_map": {"OLD": "old"},
+        "project_code_filter": "OLD",
+    }
+    out = integ_mod._apply_sync_routing_overrides(
+        ep,
+        selected_map={"A": "alpha", "B": "beta"},
+    )
+    assert out["project_code_map"] == {"A": "alpha", "B": "beta"}
+    assert set(out["project_code_filter"]) == {"A", "B"}
+    # Không mutate endpoint gốc
+    assert ep["project_code_map"] == {"OLD": "old"}
+
+
+def test_merge_endpoint_project_code_map(tmp_path):
+    folder = str(tmp_path)
+    created = integ_mod.create_integration(folder, {
+        "name": "T",
+        "base_url": "https://example.com",
+        "auth": {"method": "api_key", "api_key_env": "X"},
+        "endpoints": [{
+            "name": "FL",
+            "path": "/api/x",
+            "response_type": "json",
+            "project_code_field": "project",
+            "project_code_map": {"KEEP": "keep"},
+        }],
+    })
+    ep_id = created["endpoints"][0]["id"]
+    integ_mod.merge_endpoint_project_code_map(
+        folder, created["id"], ep_id,
+        {"NEW": "new-slug", "KEEP": "keep2"},
+    )
+    got = integ_mod.get_integration(folder, created["id"])
+    assert got["endpoints"][0]["project_code_map"] == {
+        "KEEP": "keep2",
+        "NEW": "new-slug",
+    }
+
+
 def test_routing_enabled_requires_field_and_map_or_filter():
     assert integ_mod._routing_enabled({"project_code_field": ""}) is False
     assert integ_mod._routing_enabled({

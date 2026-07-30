@@ -234,12 +234,26 @@ def _sanitize_project_code_map(raw: Any) -> dict[str, str]:
     return out
 
 
+def _normalize_code_filter(project_code_filter: Any) -> set[str]:
+    """Chuẩn hoá filter mã dự án: string đơn, CSV, hoặc list/tuple/set."""
+    if project_code_filter is None:
+        return set()
+    if isinstance(project_code_filter, (list, tuple, set)):
+        return {str(x).strip() for x in project_code_filter if str(x).strip()}
+    s = str(project_code_filter).strip()
+    if not s:
+        return set()
+    if "," in s:
+        return {p.strip() for p in s.split(",") if p.strip()}
+    return {s}
+
+
 def group_records_by_project_code(
     records: list[dict],
     *,
     project_code_field: str,
     project_code_map: dict[str, str],
-    project_code_filter: str = "",
+    project_code_filter: Any = "",
     default_slug: str = "",
 ) -> tuple[dict[str, list[dict]], list[dict]]:
     """
@@ -251,12 +265,13 @@ def group_records_by_project_code(
 
     Rules:
       - project_code_filter set → bỏ record khác mã (reason=filtered).
+        Hỗ trợ 1 mã (str), CSV, hoặc list mã.
       - project_code_map có code → slug = map[code].
       - map rỗng + filter khớp → slug = default_slug (filter-only mode).
       - còn lại → skip (unmapped / empty).
     """
     field = (project_code_field or "").strip()
-    code_filter = (project_code_filter or "").strip()
+    filter_set = _normalize_code_filter(project_code_filter)
     code_map = project_code_map if isinstance(project_code_map, dict) else {}
     default_slug = (default_slug or "").strip()
 
@@ -276,13 +291,13 @@ def group_records_by_project_code(
         if not code:
             _bump("", "empty")
             continue
-        if code_filter and code != code_filter:
+        if filter_set and code not in filter_set:
             _bump(code, "filtered")
             continue
         slug = ""
         if code in code_map:
             slug = code_map[code]
-        elif not code_map and code_filter and default_slug:
+        elif not code_map and filter_set and default_slug:
             # Filter-only: mọi record đã khớp filter → ghi vào project đang sync.
             slug = default_slug
         if not slug:
@@ -297,14 +312,37 @@ def group_records_by_project_code(
     return groups, skipped
 
 
+def extract_unique_project_codes(
+    records: list[dict],
+    project_code_field: str,
+) -> list[dict]:
+    """Đếm unique mã dự án trong records. Trả [{code, count}, ...] sorted."""
+    field = (project_code_field or "").strip()
+    counts: dict[str, int] = {}
+    if not field:
+        return []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        raw = _dig_json(rec, field)
+        code = "" if raw is None else str(raw).strip()
+        if not code:
+            continue
+        counts[code] = counts.get(code, 0) + 1
+    return [
+        {"code": code, "count": counts[code]}
+        for code in sorted(counts.keys())
+    ]
+
+
 def _routing_enabled(endpoint: dict) -> bool:
     """True khi endpoint cấu hình routing đa project (field + map hoặc filter)."""
     field = str(endpoint.get("project_code_field") or "").strip()
     if not field:
         return False
     code_map = endpoint.get("project_code_map") or {}
-    code_filter = str(endpoint.get("project_code_filter") or "").strip()
-    return bool(code_map) or bool(code_filter)
+    filter_set = _normalize_code_filter(endpoint.get("project_code_filter"))
+    return bool(code_map) or bool(filter_set)
 
 
 def _sanitize_auth(auth: Any) -> dict:
@@ -466,6 +504,46 @@ def update_integration(project_dir: str, integration_id: str, data: dict) -> Opt
             all_data["integrations"][idx] = sanitized
             _write(project_dir, all_data)
             return sanitized
+    return None
+
+
+def merge_endpoint_project_code_map(
+    project_dir: str,
+    integration_id: str,
+    endpoint_id: str,
+    selected_map: dict[str, str],
+) -> Optional[dict]:
+    """
+    Merge selected_map vào project_code_map của endpoint (giữ mã cũ không đụng).
+    Dùng sau sync modal để lần sau prefill.
+    """
+    clean = _sanitize_project_code_map(selected_map)
+    if not clean:
+        return get_integration(project_dir, integration_id)
+    all_data = _read(project_dir)
+    for idx, existing in enumerate(all_data["integrations"]):
+        if existing.get("id") != integration_id:
+            continue
+        endpoints = list(existing.get("endpoints") or [])
+        changed = False
+        for i, ep in enumerate(endpoints):
+            if ep.get("id") != endpoint_id:
+                continue
+            ep = dict(ep)
+            merged = dict(ep.get("project_code_map") or {})
+            merged.update(clean)
+            ep["project_code_map"] = _sanitize_project_code_map(merged)
+            endpoints[i] = ep
+            changed = True
+            break
+        if not changed:
+            return None
+        merged_input = dict(existing)
+        merged_input["endpoints"] = endpoints
+        sanitized = _sanitize_integration(merged_input, existing=existing)
+        all_data["integrations"][idx] = sanitized
+        _write(project_dir, all_data)
+        return sanitized
     return None
 
 
@@ -1492,13 +1570,13 @@ def _sync_records_to_projects(
 
     code_by_slug: dict[str, list[str]] = {}
     pc_map = endpoint.get("project_code_map") or {}
-    pc_filter = str(endpoint.get("project_code_filter") or "").strip()
+    pc_filter_set = _normalize_code_filter(endpoint.get("project_code_filter"))
     if isinstance(pc_map, dict):
         for code, slug in pc_map.items():
             if slug in groups:
                 code_by_slug.setdefault(slug, []).append(str(code))
-    if not pc_map and pc_filter and default_slug in groups:
-        code_by_slug[default_slug] = [pc_filter]
+    if not pc_map and pc_filter_set and default_slug in groups:
+        code_by_slug[default_slug] = sorted(pc_filter_set)
 
     project_results: list[dict] = []
     total_rows = 0
@@ -1680,6 +1758,30 @@ def _run_database_sync(
     )
 
 
+def _apply_sync_routing_overrides(
+    endpoint: dict,
+    *,
+    selected_map: Any = None,
+    project_code_filter: Any = None,
+) -> dict:
+    """
+    Clone endpoint và áp override từ sync body (modal chọn mã).
+    selected_map → project_code_map; filter list/str → project_code_filter.
+    """
+    ep = dict(endpoint)
+    if selected_map is not None:
+        clean = _sanitize_project_code_map(selected_map)
+        ep["project_code_map"] = clean
+        if project_code_filter is None:
+            # Chỉ sync mã có trong selected_map (unmapped = skip).
+            ep["project_code_filter"] = sorted(clean.keys())
+        else:
+            ep["project_code_filter"] = project_code_filter
+    elif project_code_filter is not None:
+        ep["project_code_filter"] = project_code_filter
+    return ep
+
+
 def sync_integration(
     project_dir: str,
     integration_id: str,
@@ -1689,6 +1791,9 @@ def sync_integration(
     project_slug: str,
     long_duration_threshold: int = 3,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    selected_map: Any = None,
+    project_code_filter: Any = None,
+    persist_map: bool = True,
 ) -> dict:
     """
     Đồng bộ 1 endpoint: auth → tải Excel HOẶC JSON → (json thì convert xlsx qua
@@ -1702,6 +1807,9 @@ def sync_integration(
         project_slug: slug của project để lưu snapshot
         long_duration_threshold: forward cho DashboardEngine
         timeout: giây timeout mỗi request HTTP
+        selected_map: override map mã→slug từ modal (chỉ sync mã đã chọn)
+        project_code_filter: override filter (str | list mã)
+        persist_map: sau sync ok, merge selected_map vào endpoint config
 
     Trả về:
         {
@@ -1723,6 +1831,34 @@ def sync_integration(
     )
     if not endpoint:
         return _err("Không tìm thấy endpoint trong integration")
+
+    endpoint = _apply_sync_routing_overrides(
+        endpoint,
+        selected_map=selected_map,
+        project_code_filter=project_code_filter,
+    )
+
+    # Modal gửi selected_map rỗng → từ chối (tránh sync nhầm toàn bộ).
+    if selected_map is not None and not (endpoint.get("project_code_map") or {}):
+        return _err("selected_map rỗng — chưa chọn mã dự án nào để đồng bộ")
+
+    def _finish(result: dict) -> dict:
+        if (
+            persist_map
+            and selected_map is not None
+            and isinstance(result, dict)
+            and result.get("status") == "ok"
+        ):
+            try:
+                merge_endpoint_project_code_map(
+                    project_dir, integration_id, endpoint_id, selected_map,
+                )
+            except Exception as e:
+                print(
+                    f"[integrations] Không lưu project_code_map: {e}",
+                    file=sys.stderr,
+                )
+        return result
 
     method = (integ.get("auth") or {}).get("method") or DEFAULT_AUTH_METHOD
     if method not in SUPPORTED_AUTH_METHODS:
@@ -1748,14 +1884,14 @@ def sync_integration(
             return _err(
                 "auth.method='database' chỉ dùng khi response_type='database'"
             )
-        return _run_database_sync(
+        return _finish(_run_database_sync(
             integ, endpoint,
             project_dir=project_dir,
             project_manager=project_manager,
             project_slug=project_slug,
             long_duration_threshold=long_duration_threshold,
             timeout=timeout,
-        )
+        ))
 
     # 1) Prepare session (auth)
     try:
@@ -1811,7 +1947,7 @@ def sync_integration(
                     _update_last_status(project_dir, integration_id, "error", msg)
                     return _err(msg)
                 # field_mapping rỗng → build_xlsx giữ nguyên tên cột Excel.
-                return _sync_records_to_projects(
+                return _finish(_sync_records_to_projects(
                     records,
                     endpoint,
                     source_project_dir=project_dir,
@@ -1821,7 +1957,7 @@ def sync_integration(
                     long_duration_threshold=long_duration_threshold,
                     response_type="excel",
                     filename_prefix="synced",
-                )
+                ))
         elif response_type == "json":
             try:
                 payload = r_data.json()
@@ -1845,7 +1981,7 @@ def sync_integration(
                 _update_last_status(project_dir, integration_id, "error", msg)
                 return _err(msg)
 
-            return _sync_records_to_projects(
+            return _finish(_sync_records_to_projects(
                 records,
                 endpoint,
                 source_project_dir=project_dir,
@@ -1855,7 +1991,7 @@ def sync_integration(
                 long_duration_threshold=long_duration_threshold,
                 response_type="json",
                 filename_prefix="synced",
-            )
+            ))
         else:  # pragma: no cover
             return _err(f"Response type '{response_type}' chưa implement.")
 
@@ -1924,7 +2060,7 @@ def sync_integration(
                   f"endpoint '{endpoint.get('name')}' [{response_type}]")
         _update_last_status(project_dir, integration_id, "ok", ok_msg, sync_time=True)
 
-        return {
+        return _finish({
             "status": "ok",
             "message": ok_msg,
             "snapshot_id": snapshot_entry.get("date") if snapshot_entry else None,
@@ -1942,7 +2078,7 @@ def sync_integration(
                 "status": "ok",
             }],
             "skipped": [],
-        }
+        })
     finally:
         session.close()
 
@@ -2058,6 +2194,130 @@ def preview_json_endpoint(
         }
     finally:
         session.close()
+
+
+def list_endpoint_project_codes(
+    project_dir: str,
+    integration_id: str,
+    endpoint_id: str,
+    *,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> dict:
+    """
+    Fetch endpoint (auth + data) → extract unique mã dự án theo project_code_field.
+    Không tạo snapshot. Dùng cho modal chọn mã trước khi sync.
+
+    Trả:
+        {
+          status, message, routing_available,
+          project_code_field, project_code_map,
+          project_codes: [{code, count}, ...],
+          record_count,
+        }
+    """
+    integ = get_integration(project_dir, integration_id)
+    if not integ:
+        return {"status": "error", "message": "Không tìm thấy integration"}
+    endpoint = next(
+        (ep for ep in (integ.get("endpoints") or []) if ep.get("id") == endpoint_id),
+        None,
+    )
+    if not endpoint:
+        return {"status": "error", "message": "Không tìm thấy endpoint"}
+
+    field = str(endpoint.get("project_code_field") or "").strip()
+    saved_map = _sanitize_project_code_map(endpoint.get("project_code_map"))
+    if not field:
+        return {
+            "status": "ok",
+            "message": "Endpoint chưa cấu hình project_code_field — sync thẳng vào project đang mở.",
+            "routing_available": False,
+            "project_code_field": "",
+            "project_code_map": saved_map,
+            "project_codes": [],
+            "record_count": 0,
+        }
+
+    method = (integ.get("auth") or {}).get("method") or DEFAULT_AUTH_METHOD
+    response_type = (endpoint.get("response_type") or "excel").lower()
+
+    records: list[dict] = []
+    try:
+        if method == "database" or response_type == "database":
+            if method != "database":
+                return {"status": "error",
+                        "message": "response_type='database' chỉ dùng khi auth.method='database'"}
+            auth = integ.get("auth") or {}
+            try:
+                username, password = resolve_credentials(auth.get("credential_env", ""))
+            except ValueError as e:
+                return {"status": "error", "message": str(e)}
+            try:
+                records = _run_database_query(
+                    auth, username, password, endpoint, timeout=timeout,
+                )
+            except Exception as e:
+                return {"status": "error",
+                        "message": f"Query fail: {type(e).__name__}: {str(e)[:200]}"}
+        else:
+            try:
+                session, extra_query, _info = _prepare_authenticated_session(
+                    base_url=integ["base_url"],
+                    auth=integ["auth"],
+                    timeout=timeout,
+                )
+            except (AuthError, ValueError) as e:
+                return {"status": "error", "message": str(e)}
+            except requests.RequestException as e:
+                return {"status": "error",
+                        "message": f"Auth network fail: {type(e).__name__}: {str(e)[:200]}"}
+            try:
+                try:
+                    r_data = _fetch_endpoint(session, integ, endpoint, extra_query, timeout)
+                except requests.RequestException as e:
+                    return {"status": "error",
+                            "message": f"Fetch fail: {type(e).__name__}: {str(e)[:200]}"}
+                if r_data.status_code >= 400:
+                    return {"status": "error",
+                            "message": f"Endpoint trả HTTP {r_data.status_code}"}
+
+                if response_type == "excel":
+                    if not _looks_like_excel(r_data):
+                        ctype = r_data.headers.get("Content-Type", "unknown")
+                        return {"status": "error",
+                                "message": f"Response không phải Excel (Content-Type: {ctype})"}
+                    try:
+                        records = _xlsx_bytes_to_records(r_data.content)
+                    except Exception as e:
+                        return {"status": "error",
+                                "message": f"Đọc Excel lỗi: {type(e).__name__}: {str(e)[:160]}"}
+                elif response_type == "json":
+                    try:
+                        payload = r_data.json()
+                    except ValueError as e:
+                        return {"status": "error",
+                                "message": f"Response không phải JSON: {str(e)[:160]}"}
+                    data_path = (endpoint.get("data_path") or "").strip()
+                    records = extract_records(payload, data_path)
+                else:
+                    return {"status": "error",
+                            "message": f"Response type '{response_type}' chưa hỗ trợ preview mã dự án"}
+            finally:
+                session.close()
+    except Exception as e:
+        return {"status": "error",
+                "message": f"Preview mã dự án lỗi: {type(e).__name__}: {str(e)[:200]}"}
+
+    codes = extract_unique_project_codes(records, field)
+    return {
+        "status": "ok",
+        "message": f"Tìm thấy {len(codes)} mã dự án trong {len(records)} dòng",
+        "routing_available": True,
+        "project_code_field": field,
+        "project_code_map": saved_map,
+        "project_codes": codes,
+        "record_count": len(records),
+    }
 
 
 # ============================================================================

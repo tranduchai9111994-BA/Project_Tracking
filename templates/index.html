@@ -461,6 +461,51 @@
     </div>
 </div>
 
+<!-- Modal: chọn Mã dự án → Project local trước khi Đồng bộ -->
+<div id="syncProjectPickModal"
+     class="fixed inset-0 bg-black/60 z-[65] hidden items-center justify-center p-4 no-print"
+     onclick="if(event.target===this)closeSyncProjectPickModal()">
+    <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+        <div class="px-5 py-4 border-b dark:border-slate-700 bg-gradient-to-r from-amber-500 to-orange-600 text-white shrink-0">
+            <div class="flex items-center justify-between gap-3">
+                <div>
+                    <div class="text-base font-bold">Chọn Mã dự án cần đồng bộ</div>
+                    <div id="syncPickSubtitle" class="text-xs opacity-90 mt-0.5">—</div>
+                </div>
+                <button type="button" onclick="closeSyncProjectPickModal()"
+                        class="text-white/90 hover:text-white text-2xl leading-none px-1">×</button>
+            </div>
+        </div>
+        <div class="px-5 py-3 border-b dark:border-slate-700 bg-amber-50 dark:bg-slate-900/40 text-[11px] text-amber-900 dark:text-amber-200 shrink-0">
+            Tick mã cần kéo về, chọn Project local tương ứng. Mã bỏ chọn sẽ bị bỏ qua.
+        </div>
+        <div id="syncPickLoading" class="p-6 text-sm text-gray-500 hidden">
+            Đang tải danh sách mã dự án từ API…
+        </div>
+        <div id="syncPickError" class="hidden p-4 m-4 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 text-sm border border-red-200"></div>
+        <div id="syncPickList" class="flex-1 overflow-y-auto p-4 space-y-2 min-h-[120px]"></div>
+        <div class="px-5 py-3 border-t dark:border-slate-700 flex items-center justify-between gap-2 shrink-0 bg-gray-50 dark:bg-slate-900/50">
+            <div class="flex gap-2 text-[11px]">
+                <button type="button" onclick="_syncPickSelectAll(true)"
+                        class="text-cyan-700 hover:underline dark:text-cyan-300">Chọn tất cả</button>
+                <span class="text-gray-300">|</span>
+                <button type="button" onclick="_syncPickSelectAll(false)"
+                        class="text-cyan-700 hover:underline dark:text-cyan-300">Bỏ chọn</button>
+            </div>
+            <div class="flex gap-2">
+                <button type="button" onclick="closeSyncProjectPickModal()"
+                        class="px-4 py-1.5 border rounded text-sm hover:bg-gray-100 dark:hover:bg-slate-700 dark:border-slate-600">
+                    Huỷ
+                </button>
+                <button type="button" id="syncPickConfirmBtn" onclick="_syncPickConfirm()"
+                        class="bg-amber-600 hover:bg-amber-700 text-white px-4 py-1.5 rounded text-sm font-semibold">
+                    Đồng bộ các mục đã chọn
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- ============ DRILL-DOWN MODAL (mở rộng tối đa + filter bar) ============ -->
 <div id="drillDownModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-2 no-print" onclick="if(event.target===this)closeDrillDown()">
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-[98vw] h-[96vh] flex flex-col">
@@ -1969,7 +2014,7 @@
             <h3 class="text-base font-semibold text-gray-700 dark:text-gray-200" data-help="section-summary">📋 Tổng quan dự án</h3>
         </div>
 
-        <section id="section-summary" class="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
+        <section id="section-summary" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-blue-500" title="Tổng số chức năng trong file Function List">
                 <div class="text-2xl">📋</div>
                 <div id="cardTotal" class="text-2xl font-bold text-gray-800">0</div>
@@ -2002,6 +2047,14 @@
                 <div id="cardUnassigned" class="text-2xl font-bold text-orange-600">0</div>
                 <div class="text-gray-500 text-xs">Function chưa PIC <span id="cardUnassignedRecords" class="text-orange-400"></span></div>
                 <div id="cardUnassignedSub" class="summary-sub"></div>
+            </div>
+            <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-amber-500 summary-card-clickable"
+                 title="Phase đang làm (Open/Assigned/In-progress/…) nhưng thiếu End/Deadline — click để lọc Data Quality"
+                 onclick="openMissingDeadlineDrill()">
+                <div class="text-2xl">📅</div>
+                <div id="cardMissingDeadline" class="text-2xl font-bold text-amber-700">0</div>
+                <div class="text-gray-500 text-xs">Chưa cập nhật deadline <span id="cardMissingDeadlineRecords" class="text-amber-500"></span></div>
+                <div id="cardMissingDeadlineSub" class="summary-sub"></div>
             </div>
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-rose-500 summary-card-clickable"
                  title="Function có Risk Score ≥ 50 điểm — click để xem top 20"
@@ -2317,7 +2370,7 @@
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800" data-help-id="dataquality">🩺 Data Quality</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Phát hiện dữ liệu lỗi/thiếu để clean trước khi báo cáo</p>
+                    <p class="text-xs text-gray-500 mt-0.5">Phát hiện dữ liệu lỗi/thiếu (gồm WIP thiếu End/deadline) để clean trước khi báo cáo</p>
                 </div>
                 <div class="flex items-center gap-2 flex-wrap">
                     <!-- T35 Task 3 — Local Module filter (bổ sung global filter) -->
@@ -2339,7 +2392,7 @@
             </div>
 
             <!-- Summary cards -->
-            <div id="dqSummaryCards" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
+            <div id="dqSummaryCards" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4"></div>
 
             <!-- Chi tiết bảng issue -->
             <div class="overflow-x-auto">

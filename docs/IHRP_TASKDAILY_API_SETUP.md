@@ -85,10 +85,10 @@ Khi API trả nhiều mã dự án trong 1 response, cấu hình trên endpoint:
 2. Field Mapping: thêm `"Mã dự án": "project"` (đã có sẵn nếu dùng config mẫu).
 3. Panel **📁 Phân phối theo Mã dự án**:
    - Cột/JSON path = `project`
-   - Thêm dòng map: `MPHG_IHRP_2025_PM` → project **mphg**
-   - (Tuỳ chọn) Filter = `MPHG_IHRP_2025_PM` nếu muốn chỉ lấy MPHG khi API trả nhiều mã.
-4. Lưu → **Đồng bộ**. Toast dạng: `MPHG_IHRP_2025_PM: 387 dòng · Bỏ qua mã lạ: N`.
-5. Không cấu hình `project_code_field` → behavior cũ (toàn bộ vào project đang mở).
+   - (Tuỳ chọn) Thêm dòng map sẵn; hoặc để trống — modal Đồng bộ sẽ hỏi.
+4. Lưu → **Đồng bộ** → modal liệt kê mã từ API → tick mã + chọn project local → **Đồng bộ các mục đã chọn**.
+5. Map đã chọn được lưu lại (`project_code_map`) để lần sau prefill.
+6. Không cấu hình `project_code_field` → behavior cũ (toàn bộ vào project đang mở, không hỏi modal).
 
 **Lưu ý:** mã nguồn thực tế hiện tại là `MPHG_IHRP_2025_PM` (không phải `MPHG` ngắn). Kiểm tra bằng Auto-suggest hoặc sample record.
 

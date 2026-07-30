@@ -211,12 +211,29 @@ Khi 1 API trả dữ liệu nhiều dự án, cấu hình thêm trên endpoint (
 |-------|-----------|---------|
 | `project_code_field` | Để bật routing | JSON path / tên cột Excel chứa mã (Task Daily: `project`) |
 | `project_code_map` | Khuyến nghị | `{ "mã nguồn": "slug-local" }` — mã không có trong map → **skip** (không đổ vào project đang mở) |
-| `project_code_filter` | Tuỳ chọn | Chỉ giữ records khớp 1 mã. Nếu map rỗng → ghi vào project đang sync |
+| `project_code_filter` | Tuỳ chọn | Chỉ giữ records khớp 1 mã (hoặc list/CSV). Nếu map rỗng → ghi vào project đang sync |
+
+**UX Đồng bộ (modal chọn mã):** Khi endpoint có `project_code_field`, bấm **Đồng bộ**
+(quick menu hoặc Registry) → gọi `POST .../project-codes` → modal `#syncProjectPickModal`
+liệt kê mã unique + checkbox + dropdown project local (prefill từ `project_code_map`).
+Chỉ sync mã đã chọn; body sync gửi `selected_map` (+ `persist_map: true` để lưu map).
+
+```http
+POST /api/projects/<slug>/integrations/<id>/project-codes
+{"endpoint_id": "..."}
+
+POST /api/projects/<slug>/integrations/<id>/sync
+{
+  "endpoint_id": "...",
+  "selected_map": {"MPHG_IHRP_2025_PM": "mphg", "OTHER": "other"},
+  "persist_map": true
+}
+```
 
 **Backward compat:** không set `project_code_field` (hoặc set field nhưng không có map/filter)
-→ toàn bộ records vào project đang bấm Sync (behavior cũ).
+→ toàn bộ records vào project đang bấm Sync (behavior cũ). Không hiện modal chọn mã.
 
-Toast sau sync: `MPHG_IHRP_2025_PM: 387 dòng · OTHER: 120 · Bỏ qua mã lạ: 3`.
+Toast sau sync: `MPHG_IHRP_2025_PM → mphg: 387 dòng · OTHER → other: 120`.
 
 Chi tiết Task Daily → [`IHRP_TASKDAILY_API_SETUP.md`](IHRP_TASKDAILY_API_SETUP.md).
 

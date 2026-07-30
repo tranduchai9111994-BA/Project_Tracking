@@ -3010,7 +3010,14 @@ def project_integration_test_db(slug: str, integration_id: str):
 @app.route("/api/projects/<slug>/integrations/<integration_id>/sync",
            methods=["POST"])
 def project_integration_sync(slug: str, integration_id: str):
-    """Đồng bộ 1 endpoint. Body: {"endpoint_id": "..."}."""
+    """Đồng bộ 1 endpoint.
+
+    Body:
+      - endpoint_id (required)
+      - selected_map (optional): {mã nguồn: slug local} — chỉ sync mã đã chọn
+      - project_code_filter (optional): str | list mã
+      - persist_map (optional, default true): lưu selected_map vào config
+    """
     from analyzer import integrations as integ_mod
     if not _project_mgr.project_exists(slug):
         return jsonify({"error": "Project không tồn tại"}), 404
@@ -3019,6 +3026,21 @@ def project_integration_sync(slug: str, integration_id: str):
     if not endpoint_id:
         return jsonify({"status": "error", "message": "Thiếu 'endpoint_id'"}), 400
 
+    selected_map = body.get("selected_map")
+    if selected_map is None and "project_code_map" in body:
+        # Alias: FE có thể gửi project_code_map thay selected_map
+        selected_map = body.get("project_code_map")
+    if selected_map is not None and not isinstance(selected_map, dict):
+        return jsonify({
+            "status": "error",
+            "message": "'selected_map' phải là object {mã: slug}",
+        }), 400
+
+    project_code_filter = body.get("project_code_filter")
+    persist_map = body.get("persist_map")
+    if persist_map is None:
+        persist_map = True
+
     folder = _project_dir_for(slug)
     result = integ_mod.sync_integration(
         project_dir=folder,
@@ -3026,6 +3048,9 @@ def project_integration_sync(slug: str, integration_id: str):
         endpoint_id=endpoint_id,
         project_manager=_project_mgr,
         project_slug=slug,
+        selected_map=selected_map,
+        project_code_filter=project_code_filter,
+        persist_map=bool(persist_map),
     )
 
     # Nếu sync ok → invalidate cache state để user thấy dữ liệu mới ở lần
@@ -3035,6 +3060,30 @@ def project_integration_sync(slug: str, integration_id: str):
         for s in (result.get("synced_slugs") or [slug]):
             _state.pop(s, None)
 
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/integrations/<integration_id>/project-codes",
+           methods=["POST"])
+def project_integration_project_codes(slug: str, integration_id: str):
+    """
+    Preview unique mã dự án từ endpoint (không tạo snapshot).
+    Body: {"endpoint_id": "..."}.
+    Trả: {status, project_codes:[{code,count}], project_code_map, routing_available}.
+    """
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    body = request.get_json(silent=True) or {}
+    endpoint_id = (body.get("endpoint_id") or "").strip()
+    if not endpoint_id:
+        return jsonify({"status": "error", "message": "Thiếu 'endpoint_id'"}), 400
+    folder = _project_dir_for(slug)
+    result = integ_mod.list_endpoint_project_codes(
+        project_dir=folder,
+        integration_id=integration_id,
+        endpoint_id=endpoint_id,
+    )
     return jsonify(result)
 
 
