@@ -2580,9 +2580,14 @@ async function exportOverdue() {
     const fphArr = _msInstances.overduePhase?.getSelected?.() || [];
     const fp = document.getElementById("filterPIC")?.value || "";
     const params = new URLSearchParams();
+    // Local widget filter (trong section Overdue)
     if (fmArr.length) params.set("module", fmArr.join(","));
     if (fp) params.set("pic", fp);
     if (fphArr.length) params.set("phase", fphArr.join(","));
+    // Global filter (header dashboard) — dùng key `g_*` để không đè local
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
     await downloadFile(`/api/projects/${currentProjectSlug}/export-overdue?` + params.toString(), "Overdue_Report.xlsx");
 }
 

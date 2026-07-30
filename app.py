@@ -1306,6 +1306,21 @@ def upload_compare(slug=None):
 @app.route("/api/projects/<slug>/export-overdue", methods=["GET", "POST"])
 @app.route("/api/export-overdue", methods=["GET", "POST"])
 def export_overdue(slug=None):
+    """
+    Xuất Excel danh sách task trễ.
+
+    Chấp nhận 2 loại filter (áp tuần tự):
+      1. Global filter (header dashboard) — g_module / g_process / g_pic:
+         → filter parsed data → recompute overdue_list. Đảm bảo file xuất
+         ra khớp với danh sách user đang thấy trên grid sau khi apply filter
+         header (không lộn với `module`/`pic` cấp local widget).
+      2. Local widget filter (widget riêng của section Overdue) —
+         module / pic / phase: áp lên overdue_list đã filter global để
+         thu hẹp thêm.
+
+    Backward compat: nếu client cũ chỉ gửi `module`/`pic`/`phase` (không có
+    g_*), giữ semantics cũ = local filter, không apply global.
+    """
     try:
         slug = slug or _resolve_slug()
     except ValueError as e:
@@ -1314,19 +1329,57 @@ def export_overdue(slug=None):
     if err:
         return err
 
+    def _as_list(val) -> list[str]:
+        if not val:
+            return []
+        if isinstance(val, list):
+            out: list[str] = []
+            for it in val:
+                out.extend(_as_list(it))
+            return out
+        return [x.strip() for x in str(val).split(",") if x.strip()]
+
     if request.method == "POST":
-        filters = request.get_json(silent=True) or {}
+        body = request.get_json(silent=True) or {}
+        # Local widget filter (giữ shape cũ để backward compat)
+        filters = {
+            "module": body.get("module"),
+            "pic": body.get("pic"),
+            "phase": body.get("phase"),
+        }
+        # Global filter — key mới g_* để không đè local
+        g_modules = _as_list(body.get("g_module") or body.get("g_modules"))
+        g_processes = _as_list(body.get("g_process") or body.get("g_processes"))
+        g_pics = _as_list(body.get("g_pic") or body.get("g_pics"))
     else:
         filters = {
             "module": request.args.get("module"),
             "pic": request.args.get("pic"),
             "phase": request.args.get("phase"),
         }
-        filters = {k: v for k, v in filters.items() if v}
+        g_modules = _parse_multi_arg("g_module")
+        g_processes = _parse_multi_arg("g_process")
+        g_pics = _parse_multi_arg("g_pic")
+
+    filters = {k: v for k, v in filters.items() if v}
 
     try:
+        # Bước 1: apply global filter → recompute overdue_list nếu có
+        if g_modules or g_processes or g_pics:
+            filtered_data = _filter_parsed_data(
+                st["data"],
+                modules=g_modules,
+                processes=g_processes,
+                pics=g_pics,
+            )
+            overdue_list = DashboardEngine().compute_all(filtered_data).get(
+                "overdue_list", []
+            )
+        else:
+            overdue_list = st["metrics"].get("overdue_list", [])
+
         filepath = export_overdue_report(
-            overdue_list=st["metrics"].get("overdue_list", []),
+            overdue_list=overdue_list,
             output_dir=_project_mgr.get_export_dir(slug),
             filters=filters if filters else None,
         )

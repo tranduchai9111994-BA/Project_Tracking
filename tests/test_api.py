@@ -138,6 +138,93 @@ def test_export_overdue_download(flask_client, sample_xlsx_path):
     assert "spreadsheet" in ctype or "excel" in ctype
 
 
+def _count_overdue_rows_in_xlsx(resp_data: bytes) -> int:
+    """Đếm số row data trong file overdue export (header ở row 4)."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(resp_data))
+    ws = wb.active
+    n = 0
+    for row in ws.iter_rows(min_row=5, values_only=True):
+        # Cell đầu tiên là STT — check số nguyên
+        first = row[0]
+        if first is None:
+            continue
+        try:
+            int(str(first))
+            n += 1
+        except (TypeError, ValueError):
+            pass
+    wb.close()
+    return n
+
+
+def test_export_overdue_respects_global_filter(flask_client, sample_xlsx_path):
+    """
+    Bug-fix regression: export-overdue phải áp global filter (g_module/g_process/g_pic)
+    khi user apply header dashboard filter. Trước fix, endpoint dùng st["metrics"]
+    (full unfiltered) → export ra tất cả record.
+    """
+    _upload(flask_client, sample_xlsx_path)
+
+    # Baseline: no filter → toàn bộ overdue
+    r_all = flask_client.get("/api/projects/default/export-overdue")
+    assert r_all.status_code == 200
+    n_all = _count_overdue_rows_in_xlsx(r_all.data)
+    assert n_all >= 2  # sample_xlsx có ≥ 2 function overdue
+
+    # Global filter g_module=TMS → chỉ TMS
+    r_tms = flask_client.get("/api/projects/default/export-overdue?g_module=TMS")
+    assert r_tms.status_code == 200
+    n_tms = _count_overdue_rows_in_xlsx(r_tms.data)
+    assert n_tms >= 1
+    assert n_tms < n_all, f"Global filter phải thu hẹp: {n_tms} vs {n_all}"
+
+    # Global filter g_module=NONEXISTENT → 0 row
+    r_none = flask_client.get("/api/projects/default/export-overdue?g_module=NONEXISTENT_XYZ")
+    assert r_none.status_code == 200
+    assert _count_overdue_rows_in_xlsx(r_none.data) == 0
+
+
+def test_export_overdue_local_widget_backward_compat(flask_client, sample_xlsx_path):
+    """
+    Backward compat: query cũ chỉ có `module`/`pic`/`phase` (local widget)
+    vẫn giữ semantics filter local trên overdue_list gốc.
+    """
+    _upload(flask_client, sample_xlsx_path)
+    r_all = flask_client.get("/api/projects/default/export-overdue")
+    n_all = _count_overdue_rows_in_xlsx(r_all.data)
+    r_tms = flask_client.get("/api/projects/default/export-overdue?module=TMS")
+    n_tms = _count_overdue_rows_in_xlsx(r_tms.data)
+    assert n_tms <= n_all
+
+
+def test_export_overdue_global_and_local_intersect(flask_client, sample_xlsx_path):
+    """
+    Kết hợp global + local: global g_module=TMS,ESS và local module=TMS
+    → chỉ TMS (local là subset của global — hành vi giống dashboard hiện tại).
+    """
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get(
+        "/api/projects/default/export-overdue?g_module=TMS,ESS&module=TMS"
+    )
+    assert r.status_code == 200
+    r_tms_only = flask_client.get("/api/projects/default/export-overdue?g_module=TMS")
+    assert _count_overdue_rows_in_xlsx(r.data) == _count_overdue_rows_in_xlsx(r_tms_only.data)
+
+
+def test_export_overdue_post_body_global_filter(flask_client, sample_xlsx_path):
+    """POST body {g_module: [...]} — cùng semantics như query g_module."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.post(
+        "/api/projects/default/export-overdue",
+        json={"g_module": ["TMS"]},
+    )
+    assert r.status_code == 200
+    n_post = _count_overdue_rows_in_xlsx(r.data)
+    r_get = flask_client.get("/api/projects/default/export-overdue?g_module=TMS")
+    assert n_post == _count_overdue_rows_in_xlsx(r_get.data)
+
+
 def test_export_full_report(flask_client, sample_xlsx_path):
     _upload(flask_client, sample_xlsx_path)
     r = flask_client.get("/api/export-full-report")
