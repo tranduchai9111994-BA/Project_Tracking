@@ -136,8 +136,38 @@ def test_apply_sync_routing_overrides_selected_map():
     )
     assert out["project_code_map"] == {"A": "alpha", "B": "beta"}
     assert set(out["project_code_filter"]) == {"A", "B"}
+    # Nhiều mã → chưa gắn params.project (sync sẽ multi-fetch)
+    assert "project" not in (out.get("params") or {})
     # Không mutate endpoint gốc
     assert ep["project_code_map"] == {"OLD": "old"}
+
+
+def test_apply_sync_routing_overrides_injects_project_param():
+    """1 mã filter → params.project để API server-side (?project=)."""
+    ep = {
+        "id": "ep1",
+        "params": {"foo": "1"},
+        "project_code_field": "project",
+        "project_code_map": {},
+        "project_code_filter": "",
+    }
+    out = integ_mod._apply_sync_routing_overrides(
+        ep,
+        selected_map={"MPHG_IHRP_2025_PM": "mphg"},
+    )
+    assert out["params"]["project"] == "MPHG_IHRP_2025_PM"
+    assert out["params"]["foo"] == "1"
+    assert ep.get("params") == {"foo": "1"}  # không mutate gốc
+
+
+def test_project_query_codes_prefers_filter_over_params():
+    ep = {
+        "params": {"project": "FROM_PARAMS"},
+        "project_code_filter": ["FROM_FILTER"],
+    }
+    assert integ_mod._project_query_codes(ep) == ["FROM_FILTER"]
+    assert integ_mod._project_query_codes({"params": {"project": "P1"}}) == ["P1"]
+    assert integ_mod._project_query_codes({"params": {}}) == []
 
 
 def test_selected_map_list_filter_must_not_str_coerce():

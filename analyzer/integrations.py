@@ -2440,14 +2440,20 @@ def preview_json_endpoint(
                 "message": f"Auth network fail: {type(e).__name__}: {str(e)[:200]}"}
 
     try:
+        codes_q = _project_query_codes(endpoint)
+        fetch_ep = (
+            _endpoint_with_project_param(endpoint, codes_q[0])
+            if len(codes_q) == 1
+            else endpoint
+        )
         try:
-            r_data = _fetch_endpoint(session, integ, endpoint, extra_query, timeout)
+            r_data = _fetch_endpoint(session, integ, fetch_ep, extra_query, timeout)
         except requests.RequestException as e:
             return {"status": "error",
                     "message": f"Fetch fail: {type(e).__name__}: {str(e)[:200]}"}
 
         if r_data.status_code >= 400:
-            return {"status": "error", "message": f"Endpoint trả HTTP {r_data.status_code}"}
+            return {"status": "error", "message": _http_error_message(r_data)}
 
         try:
             payload = r_data.json()
