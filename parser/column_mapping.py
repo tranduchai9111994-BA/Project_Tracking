@@ -19,6 +19,7 @@ Wizard flow:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from difflib import SequenceMatcher
 from typing import Any, Optional
@@ -306,3 +307,34 @@ def sanitize_column_mapping(mapping: Any) -> dict[str, str]:
         if key and val:
             out[key] = val
     return out
+
+
+# ---------------------------------------------------------------------------
+# U06 — Header fingerprint cho auto-apply preset
+# ---------------------------------------------------------------------------
+
+def header_fingerprint(headers: list[str]) -> str:
+    """
+    Fingerprint ổn định từ danh sách header Excel.
+
+    Chuẩn hoá: strip + lower + sort → SHA-1 hex 16 ký tự đầu (đủ phân biệt,
+    ngắn để lưu trong preset JSON).
+    """
+    norm = sorted({str(h or "").strip().lower() for h in (headers or []) if str(h or "").strip()})
+    raw = "|".join(norm)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def match_preset_by_fingerprint(
+    presets: list[dict],
+    fingerprint: str,
+) -> Optional[dict]:
+    """Trả preset khớp fingerprint (updated_at mới nhất nếu nhiều). None nếu không."""
+    fp = str(fingerprint or "").strip().lower()
+    if not fp:
+        return None
+    hits = [p for p in (presets or []) if str(p.get("fingerprint") or "").lower() == fp]
+    if not hits:
+        return None
+    hits.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return hits[0]

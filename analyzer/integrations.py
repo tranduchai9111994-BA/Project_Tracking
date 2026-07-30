@@ -25,7 +25,7 @@ Response type:
               list-of-records, rồi ``field_mapping`` (dict {col_iHRP: json_path})
               để chuyển thành xlsx trong bộ nhớ. Snapshot vẫn lưu .xlsx để nhất
               quán với compare/pickle flow cũ.
-  - "csv"   — reserve (chưa implement).
+  - "csv"   — response text/csv → parse thành list[dict] → field_mapping giống JSON.
 
 Storage: `<project_dir>/integrations.json`
 """
@@ -64,8 +64,8 @@ DEFAULT_AUTH_METHOD = "form_login"
 # sang list[dict] → apply field_mapping giống JSON API → build_xlsx → parse.
 SUPPORTED_AUTH_METHODS = {"form_login", "basic_auth", "bearer_token", "api_key", "database"}
 _PLANNED_AUTH_METHODS: set[str] = set()  # tất cả method đều đã ready
-SUPPORTED_RESPONSE_TYPES = {"excel", "json", "database"}
-_PLANNED_RESPONSE_TYPES = {"csv"}
+SUPPORTED_RESPONSE_TYPES = {"excel", "json", "database", "csv"}
+_PLANNED_RESPONSE_TYPES: set[str] = set()
 SUPPORTED_TARGET_ACTIONS = {"snapshot", "append", "replace"}
 SUPPORTED_APIKEY_LOCATIONS = {"header", "query"}
 SUPPORTED_DB_DRIVERS = {"sqlserver", "postgres", "mysql"}
@@ -189,6 +189,20 @@ def _sanitize_endpoint(ep: dict) -> Optional[dict]:
     project_code_filter = str(ep.get("project_code_filter") or "").strip()[:120]
     project_code_map = _sanitize_project_code_map(ep.get("project_code_map"))
 
+    # U07 — JSON body cho POST (optional). Dict → gửi json=; string → parse JSON.
+    body_json = ep.get("body_json")
+    if isinstance(body_json, str):
+        body_json = body_json.strip()
+        if body_json:
+            try:
+                body_json = json.loads(body_json)
+            except json.JSONDecodeError:
+                body_json = None
+        else:
+            body_json = None
+    if body_json is not None and not isinstance(body_json, (dict, list)):
+        body_json = None
+
     return {
         "id": str(ep.get("id") or f"ep_{uuid.uuid4().hex[:10]}"),
         "name": name[:120],
@@ -208,6 +222,8 @@ def _sanitize_endpoint(ep: dict) -> Optional[dict]:
         "project_code_field": project_code_field,
         "project_code_map": project_code_map,
         "project_code_filter": project_code_filter,
+        # U07 — POST JSON body
+        "body_json": body_json if body_json is not None else {},
     }
 
 
@@ -455,6 +471,23 @@ def _sanitize_integration(data: dict, existing: Optional[dict] = None) -> dict:
             endpoints.append(s)
 
     now_iso = datetime.now().isoformat(timespec="seconds")
+    # U04 MVP — catalog metadata
+    source_app = str(data.get("source_app") or (existing or {}).get("source_app") or "").strip()[:80]
+    visibility = str(data.get("visibility") or (existing or {}).get("visibility") or "internal").strip().lower()
+    if visibility not in ("internal", "external", "private"):
+        visibility = "internal"
+    owner_contact = str(data.get("owner_contact") or (existing or {}).get("owner_contact") or "").strip()[:120]
+    env = str(data.get("env") or (existing or {}).get("env") or "prod").strip().lower()[:32]
+    docs_url = str(data.get("docs_url") or (existing or {}).get("docs_url") or "").strip()[:500]
+    # Auto-tag visibility nếu user chưa set và URL rõ ràng nội bộ
+    if not data.get("visibility") and not (existing or {}).get("visibility"):
+        host = base_url.lower()
+        if any(x in host for x in (".local", "localhost", "127.0.0.1", "192.168.", "10.", ".intranet")):
+            visibility = "internal"
+        elif host.startswith("https://") and not any(x in host for x in (".local", "intranet")):
+            # Public HTTPS → gợi ý external (user có thể đổi)
+            visibility = "external"
+
     return {
         "id": str((existing or {}).get("id") or data.get("id") or f"int_{uuid.uuid4().hex[:12]}"),
         "name": name[:120],
@@ -465,11 +498,52 @@ def _sanitize_integration(data: dict, existing: Optional[dict] = None) -> dict:
         "last_synced_at": (existing or {}).get("last_synced_at") if existing else None,
         "last_sync_status": (existing or {}).get("last_sync_status") if existing else None,
         "last_sync_message": (existing or {}).get("last_sync_message") if existing else None,
+        # U04 catalog fields
+        "source_app": source_app,
+        "visibility": visibility,
+        "owner_contact": owner_contact,
+        "env": env,
+        "docs_url": docs_url,
+        "last_success_at": (existing or {}).get("last_success_at"),
+        "last_error_at": (existing or {}).get("last_error_at"),
     }
 
 
-def list_integrations(project_dir: str) -> list[dict]:
-    return list(_read(project_dir).get("integrations") or [])
+def list_integrations(
+    project_dir: str,
+    *,
+    source_app: str = "",
+    env: str = "",
+    visibility: str = "",
+    q: str = "",
+) -> list[dict]:
+    """List integrations — U04 filter theo source_app / env / visibility / search."""
+    items = list(_read(project_dir).get("integrations") or [])
+    sa = (source_app or "").strip().lower()
+    ev = (env or "").strip().lower()
+    vis = (visibility or "").strip().lower()
+    query = (q or "").strip().lower()
+    out = []
+    for it in items:
+        if sa and str(it.get("source_app") or "").lower() != sa:
+            continue
+        if ev and str(it.get("env") or "").lower() != ev:
+            continue
+        if vis and str(it.get("visibility") or "").lower() != vis:
+            continue
+        if query:
+            blob = " ".join([
+                str(it.get("name") or ""),
+                str(it.get("base_url") or ""),
+                str(it.get("source_app") or ""),
+                str(it.get("owner_contact") or ""),
+            ]).lower()
+            if query not in blob:
+                continue
+        out.append(it)
+    # Group hint: sort by source_app rồi name
+    out.sort(key=lambda x: (str(x.get("source_app") or "").lower(), str(x.get("name") or "").lower()))
+    return out
 
 
 def get_integration(project_dir: str, integration_id: str) -> Optional[dict]:
@@ -493,7 +567,8 @@ def update_integration(project_dir: str, integration_id: str, data: dict) -> Opt
         if existing.get("id") == integration_id:
             merged_input = dict(existing)
             # Cho phép PUT với chỉ 1 số field — merge shallow rồi sanitize lại
-            for k in ("name", "base_url"):
+            for k in ("name", "base_url", "source_app", "visibility",
+                      "owner_contact", "env", "docs_url"):
                 if k in data:
                     merged_input[k] = data[k]
             if "auth" in data and isinstance(data["auth"], dict):
@@ -792,6 +867,31 @@ def _looks_like_json(response: requests.Response) -> bool:
     if ctype in _JSON_MIME_HINTS:
         return True
     return ctype.startswith("application/") and ctype.endswith("+json")
+
+
+def _parse_csv_records(text: str) -> list[dict]:
+    """Parse CSV text → list[dict] (header row = keys). Stdlib csv, không dep mới."""
+    import csv
+    import io
+    text = (text or "").lstrip("\ufeff")  # strip BOM
+    if not text.strip():
+        return []
+    # Sniff delimiter nhẹ — fallback comma
+    sample = text[:2048]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    out: list[dict] = []
+    for row in reader:
+        if not isinstance(row, dict):
+            continue
+        # Bỏ row hoàn toàn trống
+        if not any(str(v or "").strip() for v in row.values()):
+            continue
+        out.append({str(k): v for k, v in row.items() if k is not None})
+    return out
 
 
 # ============================================================================
@@ -1385,10 +1485,13 @@ def _fetch_endpoint(
         params.setdefault(k, v)
 
     if http_method == "POST":
-        # Với POST + JSON API thường body là JSON — nhưng để không mở rộng UI
-        # quá phức tạp, MVP dùng params làm form-data cho POST giống spec cũ.
-        # Nếu user cần JSON body → header Content-Type sẽ được set trong integration
-        # extra_fields (bổ sung sau nếu cần).
+        # U07 — ưu tiên body_json nếu có; ngược lại form-data từ params (compat).
+        body_json = endpoint.get("body_json")
+        if isinstance(body_json, (dict, list)) and body_json:
+            return session.post(
+                endpoint_url, params=params or None, json=body_json,
+                timeout=timeout, allow_redirects=True,
+            )
         return session.post(endpoint_url, data=params, timeout=timeout, allow_redirects=True)
     return session.get(endpoint_url, params=params, timeout=timeout, allow_redirects=True)
 
@@ -1784,6 +1887,50 @@ def _run_database_sync(
     )
 
 
+def _project_query_codes(endpoint: dict) -> list[str]:
+    """
+    Mã dự án để gắn query ``?project=`` khi gọi API (server-side filter).
+
+    Ưu tiên ``project_code_filter`` (modal sync / override); nếu trống thì
+    lấy ``params.project`` đã cấu hình sẵn trên endpoint.
+    """
+    codes = sorted(_normalize_code_filter(endpoint.get("project_code_filter")))
+    if codes:
+        return codes
+    params = endpoint.get("params") if isinstance(endpoint.get("params"), dict) else {}
+    p = str(params.get("project") or "").strip()
+    return [p] if p else []
+
+
+def _endpoint_with_project_param(endpoint: dict, project_code: str) -> dict:
+    """Clone endpoint và set ``params.project`` (giữ param khác)."""
+    ep = dict(endpoint)
+    params = dict(ep.get("params") or {})
+    params["project"] = str(project_code).strip()
+    ep["params"] = params
+    return ep
+
+
+def _http_error_message(response: requests.Response) -> str:
+    """HTTP status + message body (nếu JSON) — không lộ credential."""
+    msg = f"Endpoint trả HTTP {response.status_code}"
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        return msg
+    if isinstance(body, dict):
+        detail = (
+            body.get("message")
+            or body.get("error")
+            or body.get("detail")
+            or ""
+        )
+        detail = str(detail).strip()
+        if detail:
+            return f"{msg}: {detail[:300]}"
+    return msg
+
+
 def _apply_sync_routing_overrides(
     endpoint: dict,
     *,
@@ -1793,6 +1940,9 @@ def _apply_sync_routing_overrides(
     """
     Clone endpoint và áp override từ sync body (modal chọn mã).
     selected_map → project_code_map; filter list/str → project_code_filter.
+
+    Khi filter còn đúng 1 mã → gắn ``params.project`` để API filter server-side
+    (VD Task Daily bắt buộc ``?project=``). Nhiều mã → sync path fetch từng mã.
     """
     ep = dict(endpoint)
     if selected_map is not None:
@@ -1805,6 +1955,10 @@ def _apply_sync_routing_overrides(
             ep["project_code_filter"] = project_code_filter
     elif project_code_filter is not None:
         ep["project_code_filter"] = project_code_filter
+
+    codes = sorted(_normalize_code_filter(ep.get("project_code_filter")))
+    if len(codes) == 1:
+        ep = _endpoint_with_project_param(ep, codes[0])
     return ep
 
 
@@ -1938,7 +2092,83 @@ def sync_integration(
         return _err(msg)
 
     try:
-        # 2) Fetch endpoint
+        # Gắn ?project= khi có mã (filter / params). Nhiều mã → fetch từng lần.
+        codes_for_fetch = _project_query_codes(endpoint)
+        if len(codes_for_fetch) == 1:
+            endpoint = _endpoint_with_project_param(endpoint, codes_for_fetch[0])
+        elif len(codes_for_fetch) > 1:
+            multi_records: list[dict] = []
+            for code in codes_for_fetch:
+                ep_i = _endpoint_with_project_param(endpoint, code)
+                try:
+                    r_i = _fetch_endpoint(session, integ, ep_i, extra_query, timeout)
+                except requests.RequestException as e:
+                    msg = f"Không tải được ({code}): {type(e).__name__}: {str(e)[:200]}"
+                    _update_last_status(project_dir, integration_id, "error", msg)
+                    return _err(msg)
+                if r_i.status_code >= 400:
+                    msg = f"[{code}] {_http_error_message(r_i)}"
+                    _update_last_status(project_dir, integration_id, "error", msg)
+                    return _err(msg)
+                if response_type == "json":
+                    try:
+                        payload_i = r_i.json()
+                    except ValueError as e:
+                        msg = f"[{code}] Response không phải JSON hợp lệ: {str(e)[:200]}"
+                        _update_last_status(project_dir, integration_id, "error", msg)
+                        return _err(msg)
+                    multi_records.extend(
+                        extract_records(payload_i, (endpoint.get("data_path") or "").strip())
+                    )
+                elif response_type == "csv":
+                    try:
+                        text_i = r_i.content.decode(
+                            r_i.encoding or "utf-8", errors="replace",
+                        )
+                    except Exception as e:
+                        msg = f"[{code}] Không decode CSV: {type(e).__name__}: {str(e)[:200]}"
+                        _update_last_status(project_dir, integration_id, "error", msg)
+                        return _err(msg)
+                    multi_records.extend(_parse_csv_records(text_i))
+                elif response_type == "excel":
+                    if not _looks_like_excel(r_i):
+                        ctype = r_i.headers.get("Content-Type", "unknown")
+                        msg = f"[{code}] Response không phải Excel (Content-Type: {ctype})."
+                        _update_last_status(project_dir, integration_id, "error", msg)
+                        return _err(msg)
+                    try:
+                        multi_records.extend(_xlsx_bytes_to_records(r_i.content))
+                    except Exception as e:
+                        msg = f"[{code}] Đọc Excel lỗi: {type(e).__name__}: {str(e)[:200]}"
+                        _update_last_status(project_dir, integration_id, "error", msg)
+                        return _err(msg)
+                else:
+                    return _err(f"Response type '{response_type}' chưa hỗ trợ multi-project fetch.")
+            if response_type == "json":
+                fm = endpoint.get("field_mapping") or {}
+                if not isinstance(fm, dict) or not fm:
+                    msg = ("Response JSON nhưng chưa cấu hình 'field_mapping'. "
+                           "Vào Editor endpoint → panel Field Mapping để thêm map JSON key → cột.")
+                    _update_last_status(project_dir, integration_id, "error", msg)
+                    return _err(msg)
+            if not multi_records:
+                msg = "Không có dòng dữ liệu để sync."
+                _update_last_status(project_dir, integration_id, "error", msg)
+                return _err(msg)
+            prefix = "synced_csv" if response_type == "csv" else "synced"
+            return _finish(_sync_records_to_projects(
+                multi_records,
+                endpoint,
+                source_project_dir=project_dir,
+                project_manager=project_manager,
+                default_slug=project_slug,
+                integration_id=integration_id,
+                long_duration_threshold=long_duration_threshold,
+                response_type=response_type,
+                filename_prefix=prefix,
+            ))
+
+        # 2) Fetch endpoint (0 hoặc 1 mã — params.project đã gắn nếu có)
         try:
             r_data = _fetch_endpoint(session, integ, endpoint, extra_query, timeout)
         except requests.RequestException as e:
@@ -1947,7 +2177,7 @@ def sync_integration(
             return _err(msg)
 
         if r_data.status_code >= 400:
-            msg = f"Endpoint trả HTTP {r_data.status_code}"
+            msg = _http_error_message(r_data)
             _update_last_status(project_dir, integration_id, "error", msg)
             return _err(msg)
 
@@ -2017,6 +2247,34 @@ def sync_integration(
                 long_duration_threshold=long_duration_threshold,
                 response_type="json",
                 filename_prefix="synced",
+            ))
+        elif response_type == "csv":
+            # U07 — CSV → list[dict] → cùng pipeline JSON (field_mapping optional)
+            try:
+                text = r_data.content.decode(r_data.encoding or "utf-8", errors="replace")
+            except Exception as e:
+                msg = f"Không decode CSV: {type(e).__name__}: {str(e)[:200]}"
+                _update_last_status(project_dir, integration_id, "error", msg)
+                return _err(msg)
+            records = _parse_csv_records(text)
+            if not records:
+                msg = "CSV không có dòng dữ liệu (hoặc thiếu header)."
+                _update_last_status(project_dir, integration_id, "error", msg)
+                return _err(msg)
+            field_mapping = endpoint.get("field_mapping") or {}
+            if not isinstance(field_mapping, dict):
+                field_mapping = {}
+            # field_mapping rỗng → giữ nguyên header CSV làm cột
+            return _finish(_sync_records_to_projects(
+                records,
+                endpoint,
+                source_project_dir=project_dir,
+                project_manager=project_manager,
+                default_slug=project_slug,
+                integration_id=integration_id,
+                long_duration_threshold=long_duration_threshold,
+                response_type="csv",
+                filename_prefix="synced_csv",
             ))
         else:  # pragma: no cover
             return _err(f"Response type '{response_type}' chưa implement.")
@@ -2298,14 +2556,22 @@ def list_endpoint_project_codes(
                 return {"status": "error",
                         "message": f"Auth network fail: {type(e).__name__}: {str(e)[:200]}"}
             try:
+                # API có thể bắt buộc ?project= — dùng params.project đã cấu hình.
+                # (Modal không biết mã trước khi fetch; config endpoint phải có sẵn.)
+                codes_q = _project_query_codes(endpoint)
+                fetch_ep = (
+                    _endpoint_with_project_param(endpoint, codes_q[0])
+                    if len(codes_q) == 1
+                    else endpoint
+                )
                 try:
-                    r_data = _fetch_endpoint(session, integ, endpoint, extra_query, timeout)
+                    r_data = _fetch_endpoint(session, integ, fetch_ep, extra_query, timeout)
                 except requests.RequestException as e:
                     return {"status": "error",
                             "message": f"Fetch fail: {type(e).__name__}: {str(e)[:200]}"}
                 if r_data.status_code >= 400:
                     return {"status": "error",
-                            "message": f"Endpoint trả HTTP {r_data.status_code}"}
+                            "message": _http_error_message(r_data)}
 
                 if response_type == "excel":
                     if not _looks_like_excel(r_data):
@@ -2378,6 +2644,12 @@ def _update_last_status(
                 it["last_sync_message"] = message[:500]
                 if sync_time:
                     it["last_synced_at"] = datetime.now().isoformat(timespec="seconds")
+                # U04 — health timestamps
+                now = datetime.now().isoformat(timespec="seconds")
+                if status == "ok":
+                    it["last_success_at"] = now
+                else:
+                    it["last_error_at"] = now
                 break
         _write(project_dir, all_data)
     except Exception as e:
@@ -2388,11 +2660,7 @@ def _update_last_status(
 def integration_capabilities() -> dict:
     """
     Metadata FE dùng để populate dropdown auth method / response type / target
-    action. Tất cả 4 auth method + 2 response type (excel/json) đều đã ready
-    (first-class). Chỉ `csv` reserve chưa implement.
-
-    Thêm `auth_method_fields` để FE biết mỗi method cần hiện field nào (dynamic
-    show/hide trong Editor).
+    action. Auth methods + excel/json/database/csv đều supported.
     """
     return {
         "auth_methods": [

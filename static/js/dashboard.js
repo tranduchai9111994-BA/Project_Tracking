@@ -29,6 +29,17 @@ let structureCache = null;  // cache all_modules, all_processes, all_pics từ l
 // Registry của multi-select instance để có thể set/refresh options từ bên ngoài
 const _msInstances = {};
 
+// Local filter «Phân tích theo Quy trình» (AND thêm trên global filter)
+const _PROCESS_STATUS_LABELS = {
+    all: "",
+    good: "Tốt",
+    mid: "Trung bình",
+    low: "Thấp",
+    overdue: "Có overdue",
+};
+let _processLocalFilter = { modules: [], status: "all" };
+let _processModuleMs = null;
+
 // ========================================================================
 // CONSTANTS
 // ========================================================================
@@ -382,6 +393,13 @@ async function tryLoadDashboardForCurrent(preserveFilters = false) {
         // Reset filters khi switch project (trừ trường hợp refresh cùng project)
         if (!preserveFilters) {
             globalFilters = { modules: [], processes: [], pics: [], projectCodes: [] };
+            // Local filter section Quy trình cũng reset theo project mới
+            _processLocalFilter = { modules: [], status: "all" };
+            const ps = document.getElementById("processStatusFilter");
+            if (ps) ps.value = "all";
+            if (_processModuleMs && typeof _processModuleMs.setSelected === "function") {
+                _processModuleMs.setSelected([], /*silent=*/true);
+            }
         }
         const url = _buildDashboardUrl();
         let data;
@@ -1136,16 +1154,21 @@ function _buildScopeTitleFull(appliedFilter) {
 /**
  * Cập nhật mọi element .chart-scope trên trang.
  * Hiển thị label rút gọn; title = text đầy đủ (hover để xem hết).
+ * Bỏ qua `.process-scope` — section Quy trình tự ghép global + local filter.
  */
 function updateChartScopeSubtitles(appliedFilter) {
     const html = _buildScopeLabel(appliedFilter);
     const fullTitle = _buildScopeTitleFull(appliedFilter);
     const cls = appliedFilter ? "chart-scope active" : "chart-scope";
-    document.querySelectorAll(".chart-scope").forEach(el => {
+    document.querySelectorAll(".chart-scope:not(.process-scope)").forEach(el => {
         el.innerHTML = html;
         el.className = cls;
         el.setAttribute("title", fullTitle);
     });
+    // Section process có local filter riêng — cập nhật banner kết hợp.
+    if (typeof _updateProcessScopeBanner === "function") {
+        try { _updateProcessScopeBanner(appliedFilter); } catch (e) { /* ignore */ }
+    }
 }
 
 // ========================================================================
@@ -1447,6 +1470,14 @@ async function _uploadWithWizard(file) {
         // T34 Task 3B — column type info cho badge + filter
         _ucmState.columnTypes = data.column_types || {};
         _ucmState.dryRunResult = null;
+        _ucmState.headerFingerprint = data.header_fingerprint || "";
+        // U06 — nếu có preset khớp fingerprint → auto-apply (ưu tiên hơn fuzzy)
+        if (data.matched_preset && data.matched_preset.mapping) {
+            _ucmState.currentMapping = { ...(data.matched_preset.mapping || {}) };
+            _ucmOpenModal(data);
+            showToast(`Đã auto-apply preset "${data.matched_preset.name}" (khớp header)`, "");
+            return;
+        }
         // Pre-fill mapping bằng top suggestion (score cao) — user có thể sửa
         _ucmState.currentMapping = {};
         for (const ihrp of _ucmState.ihrpColumns) {
@@ -1686,7 +1717,11 @@ async function _ucmSavePreset() {
         const r = await fetch(`/api/projects/${currentProjectSlug}/mapping-presets`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: name.trim(), mapping: _ucmState.currentMapping }),
+            body: JSON.stringify({
+                name: name.trim(),
+                mapping: _ucmState.currentMapping,
+                fingerprint: _ucmState.headerFingerprint || "",
+            }),
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -2013,6 +2048,16 @@ function renderSummaryCards() {
     }
     document.getElementById("cardHighRisk").textContent = s.high_risk_count || 0;
     document.getElementById("cardModules").textContent = s.modules_count;
+    const anEl = document.getElementById("cardAnomaly");
+    if (anEl) anEl.textContent = s.anomaly_count || 0;
+    const anRec = document.getElementById("cardAnomalyRecords");
+    if (anRec) {
+        if (s.anomaly_records && s.anomaly_records !== s.anomaly_count) {
+            anRec.textContent = ` (${s.anomaly_records} issue)`;
+        } else {
+            anRec.textContent = "";
+        }
+    }
 
     // Wave 1 - Task 5: sub-info dòng 2 cho các card
     const pct = (n) => (total > 0 ? Math.round((n / total) * 100) : 0);
@@ -2031,6 +2076,9 @@ function renderSummaryCards() {
     $sub("cardModulesSub", (metricsData.structure?.all_processes || []).length
         ? `${(metricsData.structure.all_processes || []).length} quy trình`
         : "");
+    $sub("cardAnomalySub", total
+        ? `${pct(s.anomaly_count || 0)}% tổng · overlap / estimate…`
+        : "click → Data Quality");
 
     // Wire click drill-down cho Unassigned / High-risk cards
     const uaEl = document.getElementById("cardUnassigned")?.closest("div[onclick]");
@@ -2068,6 +2116,25 @@ window.openMissingDeadlineDrill = async function () {
         codeSel.appendChild(opt);
     }
     if (codeSel) codeSel.value = "missing_deadline";
+    _dqRenderTable();
+    if (typeof scrollToSection === "function") {
+        scrollToSection("section-dataquality");
+    } else {
+        document.getElementById("section-dataquality")?.scrollIntoView({ behavior: "smooth" });
+    }
+};
+
+/** Card «Bất thường» → Data Quality filter nhóm anomaly. */
+window.openAnomalyDrill = async function () {
+    await loadDataQuality();
+    _dqState.filterCode = "__anomaly__";
+    _dqState.filterSeverity = "all";
+    _dqState.page = 1;
+    const sevSel = document.getElementById("dqSeverityFilter");
+    if (sevSel) sevSel.value = "all";
+    _dqPopulateCodeFilter();
+    const codeSel = document.getElementById("dqCodeFilter");
+    if (codeSel) codeSel.value = "__anomaly__";
     _dqRenderTable();
     if (typeof scrollToSection === "function") {
         scrollToSection("section-dataquality");
@@ -3371,7 +3438,8 @@ function populateStalledFilters() {
 
     const onFilterChange = () => {
         pageState.stalled.page = 1;
-        renderStalledTable();
+        // Funnel + transitions + table đều phải theo Module đã chọn
+        renderStalledChartsAndTable();
     };
     if (!_msInstances.stalledModule) {
         createMultiSelect({
@@ -3388,45 +3456,105 @@ function populateStalledFilters() {
     }
 }
 
+/** Local Module multi-select đã chọn (trim, bỏ rỗng). */
+function _stalledSelectedModules() {
+    const fmArr = _msInstances.stalledModule?.getSelected?.() || [];
+    return fmArr.map(m => String(m || "").trim()).filter(Boolean);
+}
+
 /** Lọc stalled items theo local Module multi-select (client-side, giống Overdue). */
 function _stalledFilteredItems() {
     let items = metricsData?.stalled_tasks?.items || [];
-    const fmArr = _msInstances.stalledModule?.getSelected?.() || [];
-    if (fmArr.length) items = items.filter(i => fmArr.includes(i.module));
+    const fmArr = _stalledSelectedModules();
+    if (fmArr.length) {
+        const set = new Set(fmArr);
+        items = items.filter(i => set.has(String(i.module || "").trim()));
+    }
     return items;
 }
 
+/**
+ * Funnel Closed/phase — khi có local Module filter thì lấy Closed
+ * từ phase_status_matrix (đúng nghĩa «Closed»), không dùng raw funnel all-modules.
+ */
+function _stalledDerivedFunnel(selectedModules) {
+    const data = metricsData?.stalled_tasks || {};
+    const phases = data.phases
+        || (data.funnel || []).map(f => f.phase)
+        || metricsData?.phase_status_matrix?.phases
+        || [];
+    if (!selectedModules.length) return data.funnel || [];
+
+    const matrix = metricsData?.phase_status_matrix?.data || {};
+    return phases.map(phase => {
+        let closed = 0;
+        for (const mod of selectedModules) {
+            const cell = matrix[mod] && matrix[mod][phase];
+            closed += (cell && cell.Closed) || 0;
+        }
+        return { phase, closed };
+    });
+}
+
+/** Transitions từ → sang — rebuild từ items đã filter. */
+function _stalledDerivedTransitions(items) {
+    const counts = new Map();
+    for (const i of items) {
+        const from = i.completed_phase || "";
+        const to = i.waiting_phase || "";
+        const key = from + "\0" + to;
+        counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return [...counts.entries()].map(([key, count]) => {
+        const [from, to] = key.split("\0");
+        return { from, to, count };
+    });
+}
+
 function renderStalledSection() {
-    const data = metricsData.stalled_tasks || {};
-    const funnel = data.funnel || [];
-    const transitions = data.transitions || [];
+    populateStalledFilters();
+    renderStalledChartsAndTable();
+}
+
+/** Render funnel + transitions + table theo local Module filter hiện tại. */
+function renderStalledChartsAndTable() {
+    const selected = _stalledSelectedModules();
+    const items = _stalledFilteredItems();
+    const funnel = _stalledDerivedFunnel(selected);
+    const transitions = selected.length
+        ? _stalledDerivedTransitions(items)
+        : (metricsData?.stalled_tasks?.transitions || []);
 
     // Funnel — count NGOÀI bar để không overlap với label
     const totalTop = funnel.length ? Math.max(...funnel.map(f => f.closed), 1) : 1;
     const funnelEl = document.getElementById("funnelChart");
-    funnelEl.innerHTML = funnel.map(f => {
-        const width = (f.closed / totalTop) * 100;
-        return `<div class="funnel-row">
-            <div class="funnel-label">${escapeHtml(f.phase)}</div>
-            <div class="funnel-track"><div class="funnel-bar" style="width:${Math.max(width, 4)}%"></div></div>
-            <div class="funnel-count">${f.closed} Closed</div>
-        </div>`;
-    }).join("");
+    if (funnelEl) {
+        funnelEl.innerHTML = funnel.map(f => {
+            const width = (f.closed / totalTop) * 100;
+            return `<div class="funnel-row">
+                <div class="funnel-label">${escapeHtml(f.phase)}</div>
+                <div class="funnel-track"><div class="funnel-bar" style="width:${Math.max(width, 4)}%"></div></div>
+                <div class="funnel-count">${f.closed} Closed</div>
+            </div>`;
+        }).join("");
+    }
 
     // Transitions
     const trWrap = document.getElementById("transitionList");
-    if (transitions.length === 0) {
-        trWrap.innerHTML = `<div class="text-gray-500 text-xs italic">Không có task bị đình trệ</div>`;
-    } else {
-        trWrap.innerHTML = transitions
-            .sort((a, b) => b.count - a.count)
-            .map(t => `<div class="flex items-center justify-between py-1 border-b border-gray-100">
-                <span class="text-xs">${escapeHtml(t.from)} → <span class="text-red-500">${escapeHtml(t.to)}</span></span>
-                <span class="font-bold text-orange-600">${t.count}</span>
-            </div>`).join("");
+    if (trWrap) {
+        if (transitions.length === 0) {
+            trWrap.innerHTML = `<div class="text-gray-500 text-xs italic">Không có task bị đình trệ</div>`;
+        } else {
+            trWrap.innerHTML = transitions
+                .slice()
+                .sort((a, b) => b.count - a.count)
+                .map(t => `<div class="flex items-center justify-between py-1 border-b border-gray-100">
+                    <span class="text-xs">${escapeHtml(t.from)} → <span class="text-red-500">${escapeHtml(t.to)}</span></span>
+                    <span class="font-bold text-orange-600">${t.count}</span>
+                </div>`).join("");
+        }
     }
 
-    populateStalledFilters();
     renderStalledTable();
 }
 
@@ -3470,7 +3598,7 @@ async function exportStalled() {
         showToast("⚠️ Chưa chọn project");
         return;
     }
-    const fmArr = _msInstances.stalledModule?.getSelected?.() || [];
+    const fmArr = _stalledSelectedModules();
     const params = new URLSearchParams();
     // Local widget filter
     if (fmArr.length) params.set("module", fmArr.join(","));
@@ -3711,11 +3839,197 @@ function renderEffortSection() {
 
 // ========================================================================
 // V2: PROCESS TREEMAP (custom flexbox layout - không cần chart plugin)
+// Local filter Module + Tình trạng AND thêm trên global filter (data API đã scope).
 // ========================================================================
+/** Bucket tình trạng theo % Closed / overdue trên tile. */
+function _processStatusMatch(item, status) {
+    if (!status || status === "all") return true;
+    const pct = Number(item.pct_closed) || 0;
+    if (status === "good") return pct >= 80;
+    if (status === "mid") return pct >= 50 && pct < 80;
+    if (status === "low") return pct < 50;
+    if (status === "overdue") return (Number(item.overdue) || 0) > 0;
+    return true;
+}
+
+/** Áp local Module + Tình trạng lên list process_analysis (đã global-filter từ BE). */
+function _filterProcessItems(items) {
+    let out = Array.isArray(items) ? items.slice() : [];
+    const mods = _processLocalFilter.modules || [];
+    if (mods.length) {
+        const set = new Set(mods);
+        out = out.filter(i => (i.modules || []).some(m => set.has(m)));
+    }
+    return out.filter(i => _processStatusMatch(i, _processLocalFilter.status));
+}
+
+/** # thứ tự module đại diện theo module_order (1-based). */
+function _processModuleOrderNum(modules) {
+    const order = (metricsData && metricsData.structure && metricsData.structure.all_modules) || [];
+    if (!modules || !modules.length || !order.length) return null;
+    const primary = modules[0];
+    const idx = order.indexOf(primary);
+    return idx >= 0 ? idx + 1 : null;
+}
+
+/**
+ * Populate MultiSelect Module từ các module xuất hiện trong process_analysis
+ * (scope sau global filter). Giữ selection còn hợp lệ.
+ */
+function _populateProcessModuleFilter(allItems) {
+    const el = document.getElementById("processModuleFilter");
+    if (!el || typeof createMultiSelect !== "function") return;
+
+    const order = (metricsData && metricsData.structure && metricsData.structure.all_modules) || [];
+    const seen = new Set();
+    for (const it of allItems || []) {
+        for (const m of (it.modules || [])) {
+            if (m) seen.add(m);
+        }
+    }
+    let mods = [...seen];
+    if (order.length) {
+        mods.sort((a, b) => {
+            const ia = order.indexOf(a);
+            const ib = order.indexOf(b);
+            const ka = ia >= 0 ? ia : 9999;
+            const kb = ib >= 0 ? ib : 9999;
+            return ka !== kb ? ka - kb : String(a).localeCompare(String(b));
+        });
+    } else {
+        mods.sort();
+    }
+
+    const keep = (_processLocalFilter.modules || []).filter(m => mods.includes(m));
+    _processLocalFilter.modules = keep;
+
+    if (!_processModuleMs) {
+        _processModuleMs = createMultiSelect({
+            el,
+            key: "processLocalModules",
+            label: "Module",
+            options: mods,
+            selected: keep,
+            allText: "Tất cả module",
+            onChange: (arr) => {
+                _processLocalFilter.modules = arr || [];
+                renderProcessTreemap();
+            },
+        });
+    } else {
+        if (typeof _processModuleMs.setOptions === "function") {
+            _processModuleMs.setOptions(mods);
+        }
+        // silent=true — tránh onChange → re-render recursive
+        if (typeof _processModuleMs.setSelected === "function") {
+            _processModuleMs.setSelected(keep, /*silent=*/true);
+        }
+    }
+}
+
+function _bindProcessStatusFilter() {
+    const sel = document.getElementById("processStatusFilter");
+    if (!sel || sel._processBound) return;
+    sel._processBound = true;
+    sel.addEventListener("change", () => {
+        _processLocalFilter.status = sel.value || "all";
+        renderProcessTreemap();
+    });
+}
+
+/**
+ * Banner scope section Quy trình: global filter + local Module/Tình trạng.
+ * VD local: «Đang lọc: Module=TMS · Tình trạng=Thấp»
+ * @param {object|null|undefined} appliedFilter — từ API nếu có; fallback globalFilters.
+ */
+function _updateProcessScopeBanner(appliedFilter) {
+    const el = document.getElementById("processScopeBanner");
+    if (!el) return;
+
+    const fmt = (arr, maxShow) => {
+        const n = maxShow == null ? 3 : maxShow;
+        return arr.length <= n
+            ? arr.join(", ")
+            : `${arr.slice(0, n).join(", ")} +${arr.length - n}`;
+    };
+
+    const globalParts = [];
+    const src = appliedFilter
+        || (metricsData && metricsData.applied_filter)
+        || null;
+    if (src) {
+        if (src.modules && src.modules.length) globalParts.push(`Module=[${fmt(src.modules)}]`);
+        if (src.processes && src.processes.length) {
+            globalParts.push(`Quy trình=[${fmt(src.processes.map(_shortProcessCode), 2)}]`);
+        }
+        if (src.pics && src.pics.length) globalParts.push(`PIC=[${fmt(src.pics)}]`);
+        if (src.project_codes && src.project_codes.length) {
+            globalParts.push(`Mã dự án=[${fmt(src.project_codes)}]`);
+        }
+    } else if (typeof globalFilters !== "undefined") {
+        if (globalFilters.modules && globalFilters.modules.length) {
+            globalParts.push(`Module=[${fmt(globalFilters.modules)}]`);
+        }
+        if (globalFilters.processes && globalFilters.processes.length) {
+            globalParts.push(`Quy trình=[${fmt(globalFilters.processes.map(_shortProcessCode), 2)}]`);
+        }
+        if (globalFilters.pics && globalFilters.pics.length) {
+            globalParts.push(`PIC=[${fmt(globalFilters.pics)}]`);
+        }
+        if (globalFilters.projectCodes && globalFilters.projectCodes.length) {
+            globalParts.push(`Mã dự án=[${fmt(globalFilters.projectCodes)}]`);
+        }
+    }
+
+    const localParts = [];
+    const localMods = _processLocalFilter.modules || [];
+    if (localMods.length) localParts.push(`Module=${fmt(localMods)}`);
+    const st = _processLocalFilter.status || "all";
+    if (st !== "all" && _PROCESS_STATUS_LABELS[st]) {
+        localParts.push(`Tình trạng=${_PROCESS_STATUS_LABELS[st]}`);
+    }
+
+    let html;
+    let fullTitle;
+    let active = false;
+    if (!globalParts.length && !localParts.length) {
+        html = "📂 Toàn bộ dữ liệu (chưa lọc)";
+        fullTitle = "Toàn bộ dữ liệu (chưa lọc)";
+    } else if (localParts.length && !globalParts.length) {
+        // Local-only — format gợi ý user: Module=TMS · Tình trạng=Thấp
+        html = `🔍 Đang lọc: ${localParts.join(" · ")}`;
+        fullTitle = `Đang lọc: ${localParts.join(" · ")}`;
+        active = true;
+    } else if (!localParts.length) {
+        html = `🔍 Đang lọc: ${globalParts.join(" · ")}`;
+        fullTitle = `Đang lọc: ${globalParts.join(" · ")}`;
+        active = true;
+    } else {
+        html = `🔍 Đang lọc: ${globalParts.join(" · ")} · ${localParts.join(" · ")}`;
+        fullTitle = `Đang lọc: ${globalParts.join(" · ")} · ${localParts.join(" · ")}`;
+        active = true;
+    }
+
+    el.innerHTML = html;
+    el.className = active ? "chart-scope process-scope active" : "chart-scope process-scope";
+    el.setAttribute("title", fullTitle);
+}
+
 function renderProcessTreemap() {
-    const items = metricsData.process_analysis || [];
+    const allItems = metricsData.process_analysis || [];
     const el = document.getElementById("processTreemap");
-    // b11 (a): badge số quy trình + số function; cập nhật kể cả khi list rỗng.
+    if (!el) return;
+
+    _populateProcessModuleFilter(allItems);
+    _bindProcessStatusFilter();
+
+    // Sync select value nếu bị lệch (re-render).
+    const statusSel = document.getElementById("processStatusFilter");
+    if (statusSel && statusSel.value !== (_processLocalFilter.status || "all")) {
+        statusSel.value = _processLocalFilter.status || "all";
+    }
+
+    const items = _filterProcessItems(allItems);
     const totalFuncs = items.reduce((s, i) => s + (i.total || 0), 0);
     const badge = document.getElementById("processTotalBadge");
     if (badge) {
@@ -3723,19 +4037,30 @@ function renderProcessTreemap() {
             ? `${items.length} quy trình · ${totalFuncs} function`
             : "0 quy trình";
     }
-    if (items.length === 0) {
+
+    _updateProcessScopeBanner();
+
+    // Không có dữ liệu gốc (sau global filter) → ẩn section.
+    if (allItems.length === 0) {
         el.innerHTML = `<div class="text-gray-500 text-sm italic p-4">Không có dữ liệu Quy trình</div>`;
         document.getElementById("section-process").classList.add("hidden");
         return;
     }
     document.getElementById("section-process").classList.remove("hidden");
 
-    // Single-group card CHỈ cho comparison charts (Process treemap, FIT/GAP)
+    // Local filter ra rỗng → giữ section + báo không khớp.
+    if (items.length === 0) {
+        el.innerHTML = `<div class="text-gray-500 text-sm italic p-4">Không có quy trình khớp bộ lọc local</div>`;
+        return;
+    }
+
+    // Single-group card khi chỉ còn 1 quy trình (global hoặc local).
     if (items.length === 1) {
         const only = items[0];
+        const ord = _processModuleOrderNum(only.modules);
         _renderSingleGroupCard(el, {
             groupType: "quy trình",
-            groupName: only.process,
+            groupName: (ord ? `#${ord} ` : "") + only.process,
             total: only.total,
             pctClosed: only.pct_closed,
             extra: (only.modules || []).join(", ")
@@ -3744,7 +4069,6 @@ function renderProcessTreemap() {
         return;
     }
 
-    // totalFuncs đã tính ở đầu function (dùng cho badge). Dùng lại cho width.
     el.innerHTML = `
         <div class="flex flex-wrap gap-1" style="min-height:300px;">
             ${items.map(i => {
@@ -3752,10 +4076,14 @@ function renderProcessTreemap() {
                 const color = i.pct_closed >= 80 ? "#16a34a"
                             : i.pct_closed >= 50 ? "#eab308"
                             : i.pct_closed >= 20 ? "#f97316" : "#ef4444";
+                const ord = _processModuleOrderNum(i.modules);
+                const ordBadge = ord
+                    ? `<span class="tm-order" title="Thứ tự module (module_order)">#${ord}</span> `
+                    : "";
                 return `<div class="treemap-cell cursor-pointer" style="flex-basis:calc(${width}% - 4px);min-width:150px;min-height:80px;background:${color};"
                     onclick="openDrillDown('process', {process: '${escapeAttr(i.process)}'})"
                     title="Click để xem ${escapeAttr(i.process)}">
-                    <div class="tm-title" title="${escapeHtml(i.process)}">${escapeHtml(shortenProcess(i.process))}</div>
+                    <div class="tm-title" title="${escapeHtml(i.process)}">${ordBadge}${escapeHtml(shortenProcess(i.process))}</div>
                     <div class="tm-info">${i.total} func · ${i.pct_closed}% ✓${i.overdue ? " · ⚠️" + i.overdue : ""}</div>
                     <div class="tm-info text-xs">${(i.modules || []).join(", ")}</div>
                 </div>`;
@@ -6910,9 +7238,9 @@ const CHART_HELP = {
     "section-process": {
         title: "🏷️ Phân tích theo Quy trình",
         meaning: "Xem tiến độ theo nghiệp vụ (quy trình) thay vì theo module kỹ thuật.",
-        logic: "Nhóm function theo cột “Quy trình”, tính số function, % Closed, số overdue và top PIC chính. Chiều rộng ô tỉ lệ với số function; màu theo % Closed.",
+        logic: "Nhóm function theo cột “Quy trình”, tính số function, % Closed, số overdue và top PIC chính. Chiều rộng ô tỉ lệ với số function; màu theo % Closed. Toolbar local: lọc thêm Module + Tình trạng (% Closed / overdue) trên dữ liệu đã qua global filter.",
         example: "Quy trình “Tính lương”: 45 function, 62% Closed, 5 overdue.",
-        note: "Section tự ẩn nếu file không có cột “Quy trình”."
+        note: "Section tự ẩn nếu file không có cột “Quy trình”. Local filter AND với global filter."
     },
     "section-gantt": {
         title: "📅 Timeline (Gantt-style)",
@@ -9796,6 +10124,18 @@ function applyChartConfigsToDom(viewOverride = null) {
         _applyOneChartConfig(sec, merged[sid] || null);
     });
     _renderHiddenSectionPills();
+    // Title restore qua innerHTML có thể tạo lại nút "?" rỗng (mất listener) —
+    // luôn gắn lại unified help sau khi apply config.
+    if (typeof attachUnifiedSectionHelp === "function") {
+        attachUnifiedSectionHelp();
+    }
+}
+
+/** Snapshot title HTML không gồm nút help (tránh restore ra nút chết listener). */
+function _titleHtmlWithoutHelp(titleEl) {
+    const clone = titleEl.cloneNode(true);
+    clone.querySelectorAll(".unified-help-btn, .chart-help-btn").forEach(b => b.remove());
+    return clone.innerHTML;
 }
 
 function _applyOneChartConfig(sec, cfg) {
@@ -9804,15 +10144,17 @@ function _applyOneChartConfig(sec, cfg) {
     // --- Title override ---
     const titleEl = sec.querySelector("h2, h3, .section-title");
     if (titleEl) {
-        // Lưu title gốc lần đầu để reset (dataset không mất qua render)
+        // Lưu title gốc lần đầu — KHÔNG gồm nút ? (help inject sau / trước đều OK)
         if (!titleEl.dataset.origTitle) {
-            titleEl.dataset.origTitle = titleEl.innerHTML;
+            titleEl.dataset.origTitle = _titleHtmlWithoutHelp(titleEl);
         }
         if (cfg && cfg.title) {
             titleEl.textContent = cfg.title;
         } else {
             titleEl.innerHTML = titleEl.dataset.origTitle;
         }
+        // Gỡ mọi nút help còn sót từ snapshot cũ (trước khi fix) — attach lại sau
+        titleEl.querySelectorAll(".unified-help-btn, .chart-help-btn").forEach(b => b.remove());
     }
 
     // --- Caption override (thêm div dưới section body) ---
@@ -10975,6 +11317,7 @@ function _dqPopulateCodeFilter() {
     const labelMap = {};
     for (const it of _dqState.issues) labelMap[it.code] = it.label;
     sel.innerHTML = '<option value="all">Tất cả loại</option>' +
+        `<option value="__anomaly__">🚨 Bất thường (${_dqState.summary?.anomaly_records || 0})</option>` +
         codes.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(labelMap[c] || c)} (${_dqState.summary.by_code[c]})</option>`).join("");
     sel.value = _dqState.filterCode;
 }
@@ -11077,9 +11420,17 @@ function _dqFilteredIssues() {
     const s = _dqState.filterSeverity;
     const c = _dqState.filterCode;
     const mods = _dqState.filterModules || [];
+    const anomalySet = new Set(
+        (_dqState.summary?.anomaly_codes) ||
+        ["phase_overlap", "estimate_vs_duration", "end_before_start", "duplicate_ma_cn"]
+    );
     return _dqState.issues.filter(it => {
         if (s !== "all" && it.severity !== s) return false;
-        if (c !== "all" && it.code !== c) return false;
+        if (c === "__anomaly__") {
+            if (!anomalySet.has(it.code)) return false;
+        } else if (c !== "all" && it.code !== c) {
+            return false;
+        }
         // T35 Task 3 — local Module filter
         if (mods.length && !mods.includes(it.module || "")) return false;
         return true;
@@ -12219,10 +12570,15 @@ function _pubTokRenderList() {
             ? `${t.scope.slice(0, 3).join(", ")} + ${t.scope.length - 3}…`
             : (t.scope || []).join(", ");
         const revokedBadge = t.revoked
-            ? `<span class="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded">Revoked</span>`
+            ? (t.expired
+                ? `<span class="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded">Expired</span>`
+                : `<span class="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded">Revoked</span>`)
             : `<span class="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded">Active</span>`;
         const created = t.created_at ? t.created_at.slice(0, 10) : "-";
         const lastUsed = t.last_used_at ? t.last_used_at.slice(0, 10) : "chưa dùng";
+        const expHint = t.expires_at
+            ? ` · hết hạn ${String(t.expires_at).slice(0, 10)}`
+            : "";
         const actions = t.revoked
             ? `<button type="button" onclick="_pubTokViewSnippets('${escapeAttr(t.token_prefix)}','${escapeAttr(t.name)}')" class="text-[11px] px-2 py-0.5 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500" title="Xem lại snippet">🔗</button>`
             : `
@@ -12233,7 +12589,7 @@ function _pubTokRenderList() {
             <td class="px-2 py-1">${escapeHtml(t.name)} ${revokedBadge}</td>
             <td class="px-2 py-1 font-mono text-[10px]">${escapeHtml(t.token_prefix || '')}…</td>
             <td class="px-2 py-1 text-[10px] text-gray-600 dark:text-gray-400" title="${escapeAttr((t.scope || []).join(', '))}">${escapeHtml(scopeTxt)}</td>
-            <td class="px-2 py-1 text-[11px]">${created}</td>
+            <td class="px-2 py-1 text-[11px]">${created}${expHint}</td>
             <td class="px-2 py-1 text-[11px]">${lastUsed}</td>
             <td class="px-2 py-1 text-right whitespace-nowrap">${actions}</td>
         </tr>`;
@@ -12305,6 +12661,8 @@ window._pubTokToggleCreate = function (show) {
         openBtn.classList.add("hidden");
         // Reset form
         document.getElementById("pubTokName").value = "";
+        const expEl = document.getElementById("pubTokExpiresDays");
+        if (expEl) expEl.value = "0";
         _pubTokState.selected.clear();
         _pubTokRenderScopes();
     } else {
@@ -12324,11 +12682,13 @@ window._pubTokSubmitCreate = async function () {
         showToast("Chọn ít nhất 1 scope (hoặc '🌟 Wildcard *')", "red");
         return;
     }
+    const expRaw = parseInt(document.getElementById("pubTokExpiresDays")?.value || "0", 10);
+    const expires_in_days = Number.isFinite(expRaw) && expRaw > 0 ? expRaw : null;
     try {
         const r = await fetch(`/api/projects/${currentProjectSlug}/public-tokens`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, scope }),
+            body: JSON.stringify({ name, scope, expires_in_days }),
         });
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
@@ -14701,7 +15061,8 @@ window.exportGanttCalendar = function () {
 
 /**
  * Attach nút "?" section-help vào mọi tiêu đề có data-help hoặc data-help-id.
- * Idempotent (chạy nhiều lần vẫn OK — bỏ qua nếu đã inject).
+ * Idempotent: luôn gỡ nút cũ (kể cả nút hollow từ innerHTML restore) rồi gắn mới
+ * kèm listener sống.
  * Map key: `section-X` (data-help) → `X` (HELP_CONTENT key), hoặc `X` trực tiếp
  * qua data-help-id.
  * Ưu tiên unified: gỡ chart-help-btn cũ cùng title để mỗi section chỉ còn 1 nút "?".
@@ -14718,11 +15079,8 @@ function attachUnifiedSectionHelp() {
         }
         if (!key || !window.HELP_CONTENT[key]) return;
 
-        // Unified thay thế chart-help cũ trên cùng tiêu đề
-        el.querySelectorAll(".chart-help-btn").forEach(b => b.remove());
-
-        // Đã có unified-help-btn rồi thì skip
-        if (el.querySelector(".unified-help-btn")) return;
+        // Luôn gỡ nút cũ (chart-help + unified hollow từ title restore) rồi tạo mới
+        el.querySelectorAll(".chart-help-btn, .unified-help-btn").forEach(b => b.remove());
 
         const btn = document.createElement("button");
         btn.type = "button";

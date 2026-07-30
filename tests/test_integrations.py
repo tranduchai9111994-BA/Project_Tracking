@@ -557,7 +557,7 @@ def env_apikey(monkeypatch):
 
 
 def test_capabilities_all_first_class(project_dir):
-    """5 auth methods + 3 response types (excel/json/database) đều supported=True."""
+    """5 auth methods + response types (excel/json/database/csv) đều supported=True."""
     caps = integ_mod.integration_capabilities()
     supported_auth = {m["value"] for m in caps["auth_methods"] if m["supported"]}
     # T31: thêm "database" method vào danh sách supported.
@@ -566,9 +566,7 @@ def test_capabilities_all_first_class(project_dir):
     assert "excel" in supported_resp
     assert "json" in supported_resp
     assert "database" in supported_resp
-    # csv vẫn planned
-    unsupported_resp = {r["value"] for r in caps["response_types"] if not r["supported"]}
-    assert "csv" in unsupported_resp
+    assert "csv" in supported_resp  # U07
     # auth_method_fields metadata cho FE dynamic render — bao gồm cả 'database'.
     assert set(caps["auth_method_fields"].keys()) == supported_auth
     assert caps["auth_method_fields"]["bearer_token"]["env_vars"] == ["<PREFIX>_TOKEN"]

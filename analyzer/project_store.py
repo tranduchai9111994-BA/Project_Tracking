@@ -861,6 +861,7 @@ def list_mapping_presets(project_dir: str) -> list[dict]:
         out.append({
             "name": name[:_MAX_PRESET_NAME],
             "mapping": clean_mapping,
+            "fingerprint": str(p.get("fingerprint") or ""),
             "updated_at": str(p.get("updated_at") or ""),
         })
     # Sort desc updated_at (chuỗi ISO đủ để so sánh lexicographic)
@@ -872,6 +873,7 @@ def save_mapping_preset(
     project_dir: str,
     name: str,
     mapping: dict[str, str],
+    fingerprint: str = "",
 ) -> list[dict]:
     """
     Upsert 1 preset theo `name` (case-sensitive). Trả list preset mới nhất.
@@ -879,9 +881,10 @@ def save_mapping_preset(
     Args:
         name: tên preset (bắt buộc, sẽ trim + truncate 80 ký tự).
         mapping: dict {ihrp_col: actual_header}. Entry rỗng bị drop.
+        fingerprint: U06 — hash header file (optional).
 
     Behavior:
-        - Nếu tên đã tồn tại → OVERWRITE mapping + updated_at.
+        - Nếu tên đã tồn tại → OVERWRITE mapping + updated_at (+ fingerprint).
         - Nếu chưa → append.
         - Enforce cap _MAX_PRESETS: nếu vượt → xoá preset cũ nhất
           (updated_at nhỏ nhất) để nhường chỗ.
@@ -896,13 +899,29 @@ def save_mapping_preset(
     clean_mapping = {str(k).strip(): str(v).strip()
                      for k, v in (mapping or {}).items()
                      if str(k).strip() and str(v).strip()}
+    # Nếu không truyền fingerprint → giữ fingerprint cũ (khi overwrite) hoặc
+    # suy ra từ các header đích trong mapping.
+    fp = str(fingerprint or "").strip().lower()
+    if not fp and clean_mapping:
+        try:
+            from parser.column_mapping import header_fingerprint
+            fp = header_fingerprint(list(clean_mapping.values()))
+        except Exception:
+            fp = ""
 
     presets = list_mapping_presets(project_dir)
+    # Preserve fingerprint cũ nếu caller không gửi
+    if not fp:
+        for old in presets:
+            if old.get("name") == clean_name and old.get("fingerprint"):
+                fp = str(old["fingerprint"])
+                break
     # Remove existing với cùng name
     presets = [p for p in presets if p.get("name") != clean_name]
     presets.insert(0, {
         "name": clean_name,
         "mapping": clean_mapping,
+        "fingerprint": fp,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     })
     # Cap
