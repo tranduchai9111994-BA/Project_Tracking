@@ -844,6 +844,9 @@ function createMultiSelect(opts) {
         getSelected() { return [...state.selected]; },
         close: closePanel,
         refresh() { renderTrigger(); renderList(); },
+        setOnChange(fn) {
+            state.onChange = typeof fn === "function" ? fn : () => {};
+        },
         applyLang() {
             _applyI18nChrome();
             renderTrigger();
@@ -1193,7 +1196,8 @@ function updateChartScopeSubtitles(appliedFilter) {
     const html = _buildScopeLabel(appliedFilter);
     const fullTitle = _buildScopeTitleFull(appliedFilter);
     const cls = appliedFilter ? "chart-scope active" : "chart-scope";
-    document.querySelectorAll(".chart-scope:not(.process-scope)").forEach(el => {
+    // Bỏ qua process-scope + stalled-scope — section tự quản lý local filter.
+    document.querySelectorAll(".chart-scope:not(.process-scope):not(.stalled-scope)").forEach(el => {
         el.innerHTML = html;
         el.className = cls;
         el.setAttribute("title", fullTitle);
@@ -1201,6 +1205,9 @@ function updateChartScopeSubtitles(appliedFilter) {
     // Section process có local filter riêng — cập nhật banner kết hợp.
     if (typeof _updateProcessScopeBanner === "function") {
         try { _updateProcessScopeBanner(appliedFilter); } catch (e) { /* ignore */ }
+    }
+    if (typeof _updateStalledScopeBanner === "function") {
+        try { _updateStalledScopeBanner(); } catch (e) { /* ignore */ }
     }
 }
 
@@ -3464,15 +3471,16 @@ function populateStalledFilters() {
     // Module options từ stalled items hiện tại (sau global filter);
     // fallback all_modules nếu chưa có item.
     const items = metricsData?.stalled_tasks?.items || [];
-    const fromItems = [...new Set(items.map(i => i.module).filter(Boolean))].sort();
+    const fromItems = [...new Set(items.map(i => String(i.module || "").trim()).filter(Boolean))].sort();
     const options = fromItems.length
         ? fromItems
         : (metricsData?.structure?.all_modules || structureCache?.all_modules || []);
 
-    const onFilterChange = () => {
+    const onFilterChange = (arr) => {
         pageState.stalled.page = 1;
-        // Funnel + transitions + table đều phải theo Module đã chọn
-        renderStalledChartsAndTable();
+        // Funnel + transitions + table + badge đều phải theo Module đã chọn
+        // (truyền arr trực tiếp — tránh race getSelected).
+        renderStalledChartsAndTable(arr);
     };
     if (!_msInstances.stalledModule) {
         createMultiSelect({
@@ -3486,24 +3494,49 @@ function populateStalledFilters() {
         });
     } else {
         _msInstances.stalledModule.setOptions(options, /*dropInvalid=*/false);
+        // Đảm bảo onChange luôn trỏ bản mới (hot-reload / re-init an toàn)
+        if (typeof _msInstances.stalledModule.setOnChange === "function") {
+            _msInstances.stalledModule.setOnChange(onFilterChange);
+        }
     }
 }
 
 /** Local Module multi-select đã chọn (trim, bỏ rỗng). */
-function _stalledSelectedModules() {
-    const fmArr = _msInstances.stalledModule?.getSelected?.() || [];
-    return fmArr.map(m => String(m || "").trim()).filter(Boolean);
+function _stalledSelectedModules(override) {
+    const raw = override != null
+        ? (Array.isArray(override) ? override : [])
+        : (_msInstances.stalledModule?.getSelected?.() || []);
+    return raw.map(m => String(m || "").trim()).filter(Boolean);
 }
 
 /** Lọc stalled items theo local Module multi-select (client-side, giống Overdue). */
-function _stalledFilteredItems() {
+function _stalledFilteredItems(selectedOverride) {
     let items = metricsData?.stalled_tasks?.items || [];
-    const fmArr = _stalledSelectedModules();
+    const fmArr = _stalledSelectedModules(selectedOverride);
     if (fmArr.length) {
         const set = new Set(fmArr);
         items = items.filter(i => set.has(String(i.module || "").trim()));
     }
     return items;
+}
+
+/**
+ * Lookup Closed count trong phase_status_matrix — normalize trim key
+ * (tránh lệch tên Module giữa items vs matrix).
+ */
+function _stalledMatrixClosed(matrix, mod, phase) {
+    if (!matrix || !mod) return 0;
+    let cell = matrix[mod] && matrix[mod][phase];
+    if (cell) return cell.Closed || 0;
+    // Fallback: so khớp trim
+    const want = String(mod).trim();
+    for (const key of Object.keys(matrix)) {
+        if (String(key).trim() === want) {
+            cell = matrix[key] && matrix[key][phase];
+            return (cell && cell.Closed) || 0;
+        }
+    }
+    return 0;
 }
 
 /**
@@ -3522,8 +3555,7 @@ function _stalledDerivedFunnel(selectedModules) {
     return phases.map(phase => {
         let closed = 0;
         for (const mod of selectedModules) {
-            const cell = matrix[mod] && matrix[mod][phase];
-            closed += (cell && cell.Closed) || 0;
+            closed += _stalledMatrixClosed(matrix, mod, phase);
         }
         return { phase, closed };
     });
@@ -3544,19 +3576,43 @@ function _stalledDerivedTransitions(items) {
     });
 }
 
+/** Badge «Đang lọc Module=APP» — làm rõ lọc cục bộ vs global «Tất cả module». */
+function _updateStalledScopeBanner(selectedOverride) {
+    const el = document.getElementById("stalledScopeBanner");
+    if (!el) return;
+    const mods = _stalledSelectedModules(selectedOverride);
+    if (!mods.length) {
+        el.innerHTML = "📂 Section: toàn bộ (chưa lọc Module cục bộ)";
+        el.className = "chart-scope stalled-scope";
+        el.setAttribute("title", "Lọc cục bộ section Đình trệ — không đổi global filter phía trên");
+        return;
+    }
+    const fmt = mods.length <= 3
+        ? mods.join(", ")
+        : `${mods.slice(0, 3).join(", ")} +${mods.length - 3}`;
+    el.innerHTML = `🔍 Đang lọc Module=<b>${escapeHtml(fmt)}</b> <span class="text-gray-400">(lọc cục bộ section)</span>`;
+    el.className = "chart-scope stalled-scope active";
+    el.setAttribute("title", `Lọc cục bộ section Đình trệ: Module=${mods.join(", ")} — global filter không đổi`);
+}
+
 function renderStalledSection() {
     populateStalledFilters();
     renderStalledChartsAndTable();
 }
 
-/** Render funnel + transitions + table theo local Module filter hiện tại. */
-function renderStalledChartsAndTable() {
-    const selected = _stalledSelectedModules();
-    const items = _stalledFilteredItems();
+/**
+ * Render funnel + transitions + table theo local Module filter hiện tại.
+ * @param {string[]|undefined} selectedOverride — từ onChange MultiSelect (tránh race).
+ */
+function renderStalledChartsAndTable(selectedOverride) {
+    const selected = _stalledSelectedModules(selectedOverride);
+    const items = _stalledFilteredItems(selected);
     const funnel = _stalledDerivedFunnel(selected);
     const transitions = selected.length
         ? _stalledDerivedTransitions(items)
         : (metricsData?.stalled_tasks?.transitions || []);
+
+    _updateStalledScopeBanner(selected);
 
     // Funnel — count NGOÀI bar để không overlap với label
     const totalTop = funnel.length ? Math.max(...funnel.map(f => f.closed), 1) : 1;
@@ -3588,11 +3644,12 @@ function renderStalledChartsAndTable() {
         }
     }
 
-    renderStalledTable();
+    renderStalledTable(selected);
 }
 
-function renderStalledTable() {
-    const items = _stalledFilteredItems();
+function renderStalledTable(selectedOverride) {
+    const selected = _stalledSelectedModules(selectedOverride);
+    const items = _stalledFilteredItems(selected);
     const tbody = document.getElementById("stalledTable");
     if (!tbody) return;
     const { start, end, pageItems } = _pageSlice("stalled", items);
@@ -3613,14 +3670,32 @@ function renderStalledTable() {
         </tr>`;
     }).join("");
 
-    renderPager("stalledShowMoreWrap", "stalled", items.length, () => renderStalledTable());
+    renderPager("stalledShowMoreWrap", "stalled", items.length, () => renderStalledTable(selected));
     const cnt = document.getElementById("stalledCount");
     if (cnt) {
+        const totalAll = metricsData?.stalled_tasks?.items_total
+            || (metricsData?.stalled_tasks?.items || []).length;
+        const localNote = selected.length
+            ? ` · Đang lọc Module=${selected.join(", ")}`
+            : "";
+        const trimNote = (!selected.length && totalAll > items.length)
+            ? ` (hiển thị top ${items.length}/${totalAll})`
+            : "";
         cnt.textContent = items.length === 0
-            ? "Không có task bị đình trệ"
-            : `Đang xem ${start + 1}–${end}/${items.length} task bị đình trệ`;
+            ? (selected.length
+                ? `Không có task đình trệ khớp Module=${selected.join(", ")}`
+                : "Không có task bị đình trệ")
+            : `Đang xem ${start + 1}–${end}/${items.length} task bị đình trệ${localNote}${trimNote}`;
     }
 }
+
+/** Chi tiết drill — truyền local Module nếu đang lọc cục bộ. */
+function openStalledDrillDown() {
+    const mods = _stalledSelectedModules();
+    const filters = mods.length ? { module: mods.join(",") } : {};
+    openDrillDown("stalled", filters);
+}
+window.openStalledDrillDown = openStalledDrillDown;
 
 /**
  * Xuất Excel Đình trệ — respect local Module filter + global filter (g_*).

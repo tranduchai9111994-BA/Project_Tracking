@@ -241,12 +241,13 @@ class TestDashboardJsFunctions:
         assert "function renderStalledChartsAndTable(" in dashboard_js
         assert "function _stalledDerivedFunnel(" in dashboard_js
         assert "function _stalledDerivedTransitions(" in dashboard_js
-        assert "renderStalledChartsAndTable()" in dashboard_js
-        # onChange không còn chỉ gọi renderStalledTable
+        assert "function _updateStalledScopeBanner(" in dashboard_js
+        assert "stalledScopeBanner" in dashboard_js
+        # onChange truyền arr → re-render charts (không chỉ table)
         idx = dashboard_js.find("function populateStalledFilters")
-        chunk = dashboard_js[idx: idx + 1200]
-        assert "renderStalledChartsAndTable()" in chunk
-
+        chunk = dashboard_js[idx: idx + 1600]
+        assert "renderStalledChartsAndTable(arr)" in chunk
+        assert "renderStalledTable()" not in chunk.split("function _stalledSelectedModules")[0]
 
 class TestUnifiedHelpCss:
     """Verify CSS đã có style cho .unified-help-btn."""

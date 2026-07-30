@@ -211,7 +211,9 @@ def _run_startup_auto_archive() -> None:
 PAYLOAD_LIMITS = {
     "risk_scores": 50,           # frontend hiển thị top 20
     "duration_items": 200,       # bảng chi tiết
-    "stalled_items": 200,
+    # Stalled: local Module filter rebuild transitions từ items trên FE —
+    # trim thấp (200) làm lệch số APP (vd 15/21) so với funnel/matrix.
+    "stalled_items": 5000,
     "unassigned_tasks": 300,     # bảng dài nhất, cần pagination FE
 }
 
