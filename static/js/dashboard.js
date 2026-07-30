@@ -365,6 +365,15 @@ function applyDashboardResponse(data) {
             }, 500);
         }
     } catch (e) {}
+    // T34 Task 4: attach unified help buttons + gợi onboarding tour lần đầu
+    try {
+        if (typeof window.attachUnifiedSectionHelp === "function") {
+            setTimeout(() => window.attachUnifiedSectionHelp(), 600);
+        }
+        if (typeof window.maybeStartOnboardingTour === "function") {
+            setTimeout(() => window.maybeStartOnboardingTour(), 1500);
+        }
+    } catch (e) {}
 }
 
 // ========================================================================
@@ -12933,28 +12942,206 @@ async function _integSyncFromList(integrationId) {
     await _integSyncEndpoint(integrationId, endpointId);
 }
 
+// ---------------------------------------------------------------------------
+// SYNC PROGRESS MODAL — visual feedback khi user bấm Đồng bộ
+// ---------------------------------------------------------------------------
+
+let _syncModalCanClose = false;
+let _syncStepTimer = null;
+window._syncModalCanClose = false; // expose để inline onclick check
+
+/** Reset modal về state chưa chạy. */
+function _syncResetProgress() {
+    const bar = document.getElementById("syncProgressBar");
+    if (bar) bar.style.width = "0%";
+    const steps = document.querySelectorAll("#syncProgressSteps li");
+    steps.forEach(li => {
+        li.classList.remove("text-emerald-600", "font-semibold", "text-gray-800", "dark:text-gray-100");
+        li.classList.add("text-gray-400");
+        const dot = li.querySelector("span:first-child");
+        if (dot) dot.textContent = "○";
+    });
+    const result = document.getElementById("syncProgressResult");
+    if (result) { result.classList.add("hidden"); result.innerHTML = ""; }
+    const footer = document.getElementById("syncProgressFooter");
+    if (footer) footer.classList.add("hidden");
+    const icon = document.getElementById("syncProgressIcon");
+    if (icon) { icon.textContent = "🔄"; icon.classList.add("animate-pulse"); }
+    const title = document.getElementById("syncProgressTitle");
+    if (title) title.textContent = "Đang đồng bộ dữ liệu…";
+    const sub = document.getElementById("syncProgressSubtitle");
+    if (sub) sub.textContent = "Vui lòng đợi trong giây lát";
+    const header = document.getElementById("syncProgressHeader");
+    if (header) {
+        header.classList.remove("from-emerald-500", "to-green-600", "from-red-500", "to-rose-600");
+        header.classList.add("from-cyan-500", "to-blue-600");
+    }
+}
+
+/** Mark 1 step done (green check) và cập nhật % progress bar. */
+function _syncMarkStep(stepName, percent) {
+    const li = document.querySelector(`#syncProgressSteps li[data-step="${stepName}"]`);
+    if (li) {
+        li.classList.remove("text-gray-400");
+        li.classList.add("text-emerald-600", "font-semibold");
+        const dot = li.querySelector("span:first-child");
+        if (dot) dot.textContent = "✓";
+    }
+    const bar = document.getElementById("syncProgressBar");
+    if (bar) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+}
+
+/** Highlight step đang chạy (spinner). */
+function _syncActiveStep(stepName) {
+    const steps = document.querySelectorAll("#syncProgressSteps li");
+    steps.forEach(li => {
+        if (li.dataset.step === stepName && !li.classList.contains("text-emerald-600")) {
+            li.classList.remove("text-gray-400");
+            li.classList.add("text-gray-800", "dark:text-gray-100", "font-semibold");
+            const dot = li.querySelector("span:first-child");
+            if (dot) dot.textContent = "●";
+        }
+    });
+}
+
+/** Đóng modal (chỉ được phép sau khi sync xong). */
+function closeSyncProgressModal() {
+    if (!_syncModalCanClose) return;
+    const modal = document.getElementById("syncProgressModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+    _syncModalCanClose = false;
+    window._syncModalCanClose = false;
+    if (_syncStepTimer) { clearTimeout(_syncStepTimer); _syncStepTimer = null; }
+}
+window.closeSyncProgressModal = closeSyncProgressModal;
+
+/** Hiển thị modal + animation stepping từ connect → auth → fetch. */
+function _syncOpenModal(endpointName) {
+    _syncResetProgress();
+    const modal = document.getElementById("syncProgressModal");
+    if (!modal) return;
+    const sub = document.getElementById("syncProgressSubtitle");
+    if (sub && endpointName) sub.textContent = `Endpoint: ${endpointName}`;
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    _syncModalCanClose = false;
+    window._syncModalCanClose = false;
+    // Animate 3 step đầu (giả lập vì network fetch nằm trong 1 request đồng bộ).
+    // Timing lấy được từ đo thực tế: connect~400ms, auth~200ms, fetch~1-3s.
+    _syncActiveStep("connect");
+    _syncStepTimer = setTimeout(() => {
+        _syncMarkStep("connect", 20);
+        _syncActiveStep("auth");
+        _syncStepTimer = setTimeout(() => {
+            _syncMarkStep("auth", 35);
+            _syncActiveStep("fetch");
+        }, 400);
+    }, 400);
+}
+
+/** Hiển thị kết quả cuối (success/error) và cho phép đóng modal. */
+function _syncShowResult(success, data, endpointName) {
+    if (_syncStepTimer) { clearTimeout(_syncStepTimer); _syncStepTimer = null; }
+    const bar = document.getElementById("syncProgressBar");
+    const icon = document.getElementById("syncProgressIcon");
+    const title = document.getElementById("syncProgressTitle");
+    const sub = document.getElementById("syncProgressSubtitle");
+    const result = document.getElementById("syncProgressResult");
+    const footer = document.getElementById("syncProgressFooter");
+    const header = document.getElementById("syncProgressHeader");
+
+    if (success) {
+        _syncMarkStep("connect", 100);
+        _syncMarkStep("auth", 100);
+        _syncMarkStep("fetch", 100);
+        _syncMarkStep("parse", 100);
+        _syncMarkStep("snapshot", 100);
+        if (bar) bar.style.width = "100%";
+        if (icon) { icon.textContent = "✅"; icon.classList.remove("animate-pulse"); }
+        if (title) title.textContent = "Đồng bộ thành công!";
+        if (sub) sub.textContent = endpointName || "";
+        if (header) {
+            header.classList.remove("from-cyan-500", "to-blue-600");
+            header.classList.add("from-emerald-500", "to-green-600");
+        }
+        const rowsImported = data.rows_imported || data.rows_count || 0;
+        const snapId = data.snapshot_id || data.snapshot_entry?.date || "?";
+        const stats = data.snapshot_entry || {};
+        if (result) {
+            result.classList.remove("hidden", "bg-red-50", "text-red-700", "border-red-200");
+            result.classList.add("bg-emerald-50", "dark:bg-emerald-900/20", "text-emerald-800", "dark:text-emerald-200", "border", "border-emerald-200");
+            result.innerHTML = `
+                <div class="font-bold text-base mb-1">📥 ${rowsImported} chức năng đã kéo về</div>
+                <div class="text-xs space-y-0.5">
+                    <div>• Snapshot: <code class="font-mono">${escapeHtml(String(snapId))}</code></div>
+                    ${stats.overall_pct != null ? `<div>• Tiến độ tổng: <strong>${stats.overall_pct}%</strong></div>` : ""}
+                    ${stats.overdue_count != null ? `<div>• Task trễ deadline: <strong>${stats.overdue_count}</strong></div>` : ""}
+                    ${stats.unassigned_count != null ? `<div>• Task chưa có PIC: <strong>${stats.unassigned_count}</strong></div>` : ""}
+                    ${stats.high_risk_count != null ? `<div>• Task rủi ro cao: <strong>${stats.high_risk_count}</strong></div>` : ""}
+                    <div class="pt-1 text-emerald-600">Dashboard sẽ tự động refresh với dữ liệu mới.</div>
+                </div>
+            `;
+        }
+    } else {
+        if (icon) { icon.textContent = "❌"; icon.classList.remove("animate-pulse"); }
+        if (title) title.textContent = "Đồng bộ thất bại";
+        if (sub) sub.textContent = endpointName || "";
+        if (header) {
+            header.classList.remove("from-cyan-500", "to-blue-600");
+            header.classList.add("from-red-500", "to-rose-600");
+        }
+        if (result) {
+            result.classList.remove("hidden", "bg-emerald-50", "text-emerald-800", "border-emerald-200");
+            result.classList.add("bg-red-50", "dark:bg-red-900/20", "text-red-800", "dark:text-red-200", "border", "border-red-200");
+            const msg = (data && (data.message || data.error)) || "Lỗi không xác định";
+            result.innerHTML = `
+                <div class="font-bold mb-1">Lỗi</div>
+                <div class="text-xs whitespace-pre-wrap break-words">${escapeHtml(String(msg))}</div>
+                <div class="mt-2 text-[10px] text-red-500">Gợi ý: (1) Kiểm tra kết nối mạng · (2) API key trong .env còn hạn không · (3) Endpoint URL đúng chưa</div>
+            `;
+        }
+    }
+    if (footer) footer.classList.remove("hidden");
+    _syncModalCanClose = true;
+    window._syncModalCanClose = true;
+    // Auto-close sau 8s nếu thành công
+    if (success) {
+        setTimeout(() => { if (_syncModalCanClose) closeSyncProgressModal(); }, 8000);
+    }
+}
+
 /** Sync 1 endpoint — dùng chung cho list & quick menu. */
 async function _integSyncEndpoint(integrationId, endpointId) {
     const it = _integState.integrations.find(i => i.id === integrationId);
     const ep = it?.endpoints?.find(e => e.id === endpointId);
-    showToast(`Đang sync "${ep?.name || "endpoint"}"… có thể mất vài giây`);
+    const epName = ep?.name || "endpoint";
+    _syncOpenModal(epName);
     try {
         const r = await fetch(`/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}/sync`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ endpoint_id: endpointId }),
         });
+        // Đánh dấu fetch done → step parse
+        _syncMarkStep("connect", 50);
+        _syncMarkStep("auth", 65);
+        _syncMarkStep("fetch", 80);
+        _syncActiveStep("parse");
         const data = await r.json();
+        _syncMarkStep("parse", 90);
+        _syncActiveStep("snapshot");
         if (data.status === "ok") {
-            showToast(`✅ Sync OK · ${data.rows_imported} dòng · snapshot ${data.snapshot_id || "?"}`);
+            _syncShowResult(true, data, epName);
             // Refresh dashboard để user thấy dữ liệu mới ngay
             await tryLoadDashboardForCurrent(true);
         } else {
-            showToast("Sync lỗi: " + (data.message || "unknown"), "red");
+            _syncShowResult(false, data, epName);
         }
         await _integReloadList();
     } catch (err) {
-        showToast("Sync lỗi mạng: " + err.message, "red");
+        _syncShowResult(false, { message: `Lỗi kết nối: ${err.message}` }, epName);
     }
 }
 
@@ -13282,4 +13469,550 @@ window.exportGanttCalendar = function () {
     const url = `/api/projects/${currentProjectSlug}/export-gantt-calendar?${qs.toString()}${qsFilter ? "&" + qsFilter : ""}`;
     window.location.href = url;
 };
+
+// ========================================================================
+// T34 Task 4 — UNIFIED HELP SYSTEM
+//   1. Section-level help button (?) → modal có structure {purpose, steps,
+//      example, tips, learn_more}. Coexist với chart-help popover cũ.
+//   2. Global Help menu (Ctrl+/) — search + list toàn bộ topic.
+//   3. Onboarding tour cho project mới.
+//   4. Command Palette entries "❓ Trợ giúp: <topic>".
+// Content định nghĩa ở static/js/help_content.js (window.HELP_CONTENT).
+// ========================================================================
+
+/**
+ * Attach nút "?" section-help vào mọi tiêu đề có data-help hoặc data-help-id.
+ * Idempotent (chạy nhiều lần vẫn OK — bỏ qua nếu đã inject).
+ * Map key: `section-X` (data-help) → `X` (HELP_CONTENT key), hoặc `X` trực tiếp
+ * qua data-help-id.
+ */
+function attachUnifiedSectionHelp() {
+    if (!window.HELP_CONTENT) return;
+    const selector = "[data-help-id], [data-help]";
+    document.querySelectorAll(selector).forEach(el => {
+        // Ưu tiên data-help-id, fallback data-help (strip "section-" prefix)
+        let key = el.getAttribute("data-help-id");
+        if (!key) {
+            const rawHelp = el.getAttribute("data-help") || "";
+            key = rawHelp.startsWith("section-") ? rawHelp.slice("section-".length) : rawHelp;
+        }
+        if (!key || !window.HELP_CONTENT[key]) return;
+        // Đã có unified-help-btn rồi thì skip
+        if (el.querySelector(".unified-help-btn")) return;
+
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "unified-help-btn";
+        btn.textContent = "?";
+        btn.title = "Xem hướng dẫn chi tiết";
+        btn.setAttribute("aria-label", "Xem hướng dẫn");
+        btn.setAttribute("data-help-key", key);
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            openSectionHelpModal(key);
+        });
+        el.appendChild(btn);
+    });
+}
+
+/** Mở modal help cho 1 topic — populate từ HELP_CONTENT. */
+function openSectionHelpModal(key) {
+    const content = window.HELP_CONTENT && window.HELP_CONTENT[key];
+    if (!content) {
+        console.warn("[section-help] key không có nội dung:", key);
+        return;
+    }
+    const modal = document.getElementById("sectionHelpModal");
+    if (!modal) return;
+
+    document.getElementById("secHelpCategory").textContent = content.category || "";
+    document.getElementById("secHelpTitle").textContent = content.title || key;
+
+    const body = document.getElementById("secHelpBody");
+    const blocks = [];
+
+    if (content.purpose) {
+        blocks.push(`
+            <div class="help-block-modal">
+                <div class="help-block-label">📖 Mục đích</div>
+                <div class="help-block-content">${escapeHtml(content.purpose)}</div>
+            </div>`);
+    }
+
+    if (content.steps && content.steps.length) {
+        const items = content.steps.map(s => `<li>${escapeHtml(s)}</li>`).join("");
+        blocks.push(`
+            <div class="help-block-modal">
+                <div class="help-block-label">🎯 Cách dùng</div>
+                <ol class="help-block-content list-decimal ml-5 space-y-1">${items}</ol>
+            </div>`);
+    }
+
+    if (content.example) {
+        blocks.push(`
+            <div class="help-block-modal help-example">
+                <div class="help-block-label">💡 Ví dụ</div>
+                <div class="help-block-content italic">${escapeHtml(content.example)}</div>
+            </div>`);
+    }
+
+    if (content.tips && content.tips.length) {
+        const items = content.tips.map(t => `<li>${escapeHtml(t)}</li>`).join("");
+        blocks.push(`
+            <div class="help-block-modal">
+                <div class="help-block-label">⚡ Tips &amp; lưu ý</div>
+                <ul class="help-block-content list-disc ml-5 space-y-1">${items}</ul>
+            </div>`);
+    }
+
+    body.innerHTML = blocks.join("");
+
+    const learnMore = document.getElementById("secHelpLearnMore");
+    if (content.learn_more) {
+        learnMore.href = content.learn_more.startsWith("http") ? content.learn_more : "/" + content.learn_more.replace(/^\/+/, "");
+        learnMore.classList.remove("hidden");
+    } else {
+        learnMore.classList.add("hidden");
+    }
+
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+}
+window.openSectionHelpModal = openSectionHelpModal;
+
+function closeSectionHelpModal() {
+    const modal = document.getElementById("sectionHelpModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+}
+window.closeSectionHelpModal = closeSectionHelpModal;
+
+// -------------------- Global Help menu (Ctrl+/) --------------------
+
+let _helpGlobalQuery = "";
+
+function openGlobalHelpModal() {
+    const modal = document.getElementById("globalHelpModal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    // Focus vào input
+    const input = document.getElementById("globalHelpSearch");
+    if (input) {
+        input.value = "";
+        _helpGlobalQuery = "";
+        setTimeout(() => input.focus(), 50);
+    }
+    _helpGlobalRender();
+}
+window.openGlobalHelpModal = openGlobalHelpModal;
+
+function closeGlobalHelpModal() {
+    const modal = document.getElementById("globalHelpModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+}
+window.closeGlobalHelpModal = closeGlobalHelpModal;
+
+function _helpGlobalOnSearch(v) {
+    _helpGlobalQuery = (v || "").trim().toLowerCase();
+    _helpGlobalRender();
+}
+window._helpGlobalOnSearch = _helpGlobalOnSearch;
+
+/** Fuzzy: mọi ký tự query xuất hiện theo thứ tự trong text (case-insensitive). */
+function _helpFuzzyMatch(text, q) {
+    if (!q) return true;
+    text = (text || "").toLowerCase();
+    if (text.includes(q)) return true;   // Exact substring — ưu tiên
+    let ti = 0, qi = 0;
+    while (ti < text.length && qi < q.length) {
+        if (text[ti] === q[qi]) qi++;
+        ti++;
+    }
+    return qi === q.length;
+}
+
+function _helpGlobalRender() {
+    const list = document.getElementById("globalHelpList");
+    if (!list || !window.HELP_CONTENT) return;
+
+    const q = _helpGlobalQuery;
+    // Group entries theo category
+    const byCategory = {};
+    Object.entries(window.HELP_CONTENT).forEach(([key, c]) => {
+        const searchable = `${c.title || ""} ${c.purpose || ""} ${c.category || ""}`;
+        if (q && !_helpFuzzyMatch(searchable, q)) return;
+        const cat = c.category || "Khác";
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push({ key, c });
+    });
+
+    const cats = window.HELP_CATEGORIES || Object.keys(byCategory);
+    // Sort category theo thứ tự HELP_CATEGORIES định nghĩa; category không trong list → cuối
+    const sortedCats = [
+        ...cats.filter(c => byCategory[c]),
+        ...Object.keys(byCategory).filter(c => !cats.includes(c)),
+    ];
+
+    if (!sortedCats.length) {
+        list.innerHTML = `<div class="text-center py-8 text-gray-400">Không tìm thấy topic khớp "${escapeHtml(q)}"</div>`;
+        return;
+    }
+
+    list.innerHTML = sortedCats.map(cat => {
+        const entries = byCategory[cat] || [];
+        const items = entries.map(({ key, c }) => `
+            <button type="button"
+                    onclick="_helpGlobalOpenTopic('${escapeAttr(key)}')"
+                    class="w-full text-left p-3 rounded hover:bg-blue-50 dark:hover:bg-slate-700 border border-transparent hover:border-blue-200 transition-colors">
+                <div class="text-sm font-semibold text-gray-800 dark:text-gray-100">${escapeHtml(c.title || key)}</div>
+                <div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">${escapeHtml(c.purpose || "")}</div>
+            </button>
+        `).join("");
+        return `
+            <div>
+                <div class="text-xs uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold mb-2 mt-3">${escapeHtml(cat)}</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">${items}</div>
+            </div>
+        `;
+    }).join("");
+}
+
+function _helpGlobalOpenTopic(key) {
+    closeGlobalHelpModal();
+    openSectionHelpModal(key);
+}
+window._helpGlobalOpenTopic = _helpGlobalOpenTopic;
+
+// Phím tắt Ctrl+/ mở global help + Esc đóng
+document.addEventListener("keydown", (e) => {
+    // Ctrl+/ (hoặc Cmd+/) mở global help
+    if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+        e.preventDefault();
+        // Toggle nếu đang mở
+        const modal = document.getElementById("globalHelpModal");
+        if (modal && !modal.classList.contains("hidden")) {
+            closeGlobalHelpModal();
+        } else {
+            openGlobalHelpModal();
+        }
+    }
+    // Esc đóng
+    if (e.key === "Escape") {
+        const secModal = document.getElementById("sectionHelpModal");
+        const glbModal = document.getElementById("globalHelpModal");
+        if (secModal && !secModal.classList.contains("hidden")) {
+            closeSectionHelpModal();
+        }
+        if (glbModal && !glbModal.classList.contains("hidden")) {
+            closeGlobalHelpModal();
+        }
+    }
+});
+
+// -------------------- Onboarding Tour --------------------
+
+const _TOUR_STEPS = [
+    {
+        selector: "#uploadZone, #stickyUploadBtn",
+        title: "Bước 1: Upload file Excel",
+        desc: "Đây là nơi bắt đầu — kéo thả file Function List (.xlsx) vào đây. Nếu file có header không chuẩn iHRP, Column Mapping Wizard sẽ mở cho bạn map thủ công.",
+    },
+    {
+        selector: "#section-summary, #section-summary-header",
+        title: "Bước 2: 6 chỉ số cốt lõi",
+        desc: "Sau khi upload, đây là 6 con số quan trọng nhất: Tổng chức năng, % tiến độ, function trễ, chưa PIC, high-risk, số module. Xem trong 3 giây để biết sức khoẻ dự án.",
+    },
+    {
+        selector: "#section-globalfilter",
+        title: "Bước 3: Filter global",
+        desc: "Lọc theo Module × Quy trình × PIC — mọi biểu đồ + số ở mọi section sẽ tự cập nhật. Có thể lưu filter thành 'Saved View' để dùng lại.",
+    },
+    {
+        selector: "#section-module",
+        title: "Bước 4: Tổng quan theo Module",
+        desc: "Bảng % progress từng module. Nếu module nào <30% (đỏ) → cảnh báo. Click cell 'Trễ' → drill xem function cụ thể.",
+    },
+    {
+        selector: "#section-gantt-calendar",
+        title: "Bước 5: Gantt Calendar",
+        desc: "Timeline Excel-style — mỗi row 1 module, cell bar % completion. Marker đỏ chỉ 'Today'. Xuất Excel để share leadership.",
+    },
+    {
+        selector: "#section-overdue",
+        title: "Bước 6: Danh sách trễ",
+        desc: "Function cần xử lý ngay. Filter theo module/PIC, xuất Excel để gửi team.",
+    },
+    {
+        selector: "#btnExportPdf, #btnExportAllIssues",
+        title: "Bước 7: Xuất báo cáo",
+        desc: "📄 Xuất PDF cho leadership; 📊 Xuất vấn đề = 1 file Excel multi-sheet có mọi loại issue.",
+    },
+    {
+        selector: "#btnGlobalHelp, #btnSettings",
+        title: "Bước 8: Trợ giúp + Cài đặt",
+        desc: "❓ Trợ giúp — mở menu này bằng Ctrl+/. Xem help từng section bằng nút ? cạnh title. ⚙️ Cài đặt để chỉnh threshold, ẩn/hiện section, Public API, LAN.",
+    },
+];
+
+let _tourStep = 0;
+
+/** Onboarding tour flag key theo project slug. */
+function _tourStorageKey() {
+    return "ihrp_onboarded_" + (currentProjectSlug || "default");
+}
+
+/** Kiểm tra + tự start tour nếu chưa onboarded (gọi sau khi upload data thành công). */
+function maybeStartOnboardingTour() {
+    try {
+        const key = _tourStorageKey();
+        if (localStorage.getItem(key)) return; // đã onboarded
+        if (!currentProjectSlug) return; // chưa có project — chưa gợi tour
+        setTimeout(() => startOnboardingTour(), 800);
+    } catch (err) {
+        console.warn("[tour maybeStart]", err);
+    }
+}
+window.maybeStartOnboardingTour = maybeStartOnboardingTour;
+
+function startOnboardingTour() {
+    _tourStep = 0;
+    const overlay = document.getElementById("onboardingTourOverlay");
+    if (!overlay) return;
+    overlay.classList.remove("hidden");
+    _tourRender();
+    window.addEventListener("resize", _tourRender);
+    window.addEventListener("scroll", _tourRender, true);
+}
+window.startOnboardingTour = startOnboardingTour;
+
+function _tourNext() {
+    if (_tourStep < _TOUR_STEPS.length - 1) {
+        _tourStep++;
+        _tourRender();
+    } else {
+        _tourFinish(true);
+    }
+}
+window._tourNext = _tourNext;
+
+function _tourBack() {
+    if (_tourStep > 0) {
+        _tourStep--;
+        _tourRender();
+    }
+}
+window._tourBack = _tourBack;
+
+function _tourSkip() {
+    _tourFinish(false);
+}
+window._tourSkip = _tourSkip;
+
+/** Đóng tour + đánh dấu onboarded (dù skip hay finish). */
+function _tourFinish(completed) {
+    const overlay = document.getElementById("onboardingTourOverlay");
+    if (overlay) overlay.classList.add("hidden");
+    try {
+        localStorage.setItem(_tourStorageKey(), completed ? "1" : "skipped");
+    } catch (err) {}
+    window.removeEventListener("resize", _tourRender);
+    window.removeEventListener("scroll", _tourRender, true);
+    if (completed && typeof showToast === "function") {
+        showToast("🎉 Hoàn tất tour! Bấm ? cạnh mỗi section để xem hướng dẫn cụ thể.");
+    }
+}
+
+/** Render step hiện tại: đặt spotlight quanh selector + đặt tooltip cạnh. */
+function _tourRender() {
+    const step = _TOUR_STEPS[_tourStep];
+    if (!step) return;
+
+    // Update text
+    document.getElementById("tourStepBadge").textContent = `Bước ${_tourStep + 1}/${_TOUR_STEPS.length}`;
+    document.getElementById("tourStepTitle").textContent = step.title;
+    document.getElementById("tourStepDesc").textContent = step.desc;
+
+    // Dot indicator
+    const dots = _TOUR_STEPS.map((_, i) =>
+        `<span class="w-2 h-2 rounded-full ${i === _tourStep ? "bg-blue-600" : "bg-gray-300"}"></span>`
+    ).join("");
+    document.getElementById("tourDotIndicator").innerHTML = dots;
+
+    // Back / Next button state
+    document.getElementById("tourBackBtn").disabled = (_tourStep === 0);
+    document.getElementById("tourBackBtn").style.opacity = (_tourStep === 0) ? "0.4" : "1";
+    document.getElementById("tourNextBtn").textContent =
+        (_tourStep === _TOUR_STEPS.length - 1) ? "🎉 Hoàn tất" : "Tiếp →";
+
+    // Tìm target element (thử từng selector — lấy element đầu tiên visible)
+    const selectors = step.selector.split(",").map(s => s.trim());
+    let target = null;
+    for (const sel of selectors) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) { target = el; break; }
+        }
+        if (target) break;
+    }
+
+    if (!target) {
+        // Không tìm thấy target → hiện tooltip giữa màn hình, ẩn spotlight
+        _tourPositionTooltip(null);
+        _tourPositionSpotlight(null);
+        return;
+    }
+
+    // Scroll target vào view (smooth)
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Chờ scroll xong (loose — 300ms) rồi position
+    setTimeout(() => {
+        const r = target.getBoundingClientRect();
+        _tourPositionSpotlight(r);
+        _tourPositionTooltip(r);
+    }, 350);
+}
+
+function _tourPositionSpotlight(rect) {
+    const spot = document.getElementById("tourSpotlight");
+    const top = document.querySelector(".tour-backdrop-top");
+    const bot = document.querySelector(".tour-backdrop-bottom");
+    const lft = document.querySelector(".tour-backdrop-left");
+    const rgt = document.querySelector(".tour-backdrop-right");
+    if (!spot) return;
+
+    if (!rect) {
+        // Không có target — spotlight ẩn, backdrop full
+        spot.style.display = "none";
+        [top, bot, lft, rgt].forEach(el => { if (el) el.style.display = "none"; });
+        // 1 backdrop full
+        if (top) {
+            top.style.display = "block";
+            top.style.top = "0"; top.style.left = "0";
+            top.style.width = "100vw"; top.style.height = "100vh";
+        }
+        return;
+    }
+
+    spot.style.display = "block";
+    const pad = 6;
+    const x = Math.max(0, rect.left - pad);
+    const y = Math.max(0, rect.top - pad);
+    const w = rect.width + pad * 2;
+    const h = rect.height + pad * 2;
+    spot.style.left = `${x}px`;
+    spot.style.top = `${y}px`;
+    spot.style.width = `${w}px`;
+    spot.style.height = `${h}px`;
+
+    // Chia 4 backdrop mảnh vá quanh spotlight
+    if (top) {
+        top.style.display = "block";
+        top.style.top = "0"; top.style.left = "0";
+        top.style.width = "100vw"; top.style.height = `${y}px`;
+    }
+    if (bot) {
+        bot.style.display = "block";
+        bot.style.top = `${y + h}px`; bot.style.left = "0";
+        bot.style.width = "100vw"; bot.style.height = `calc(100vh - ${y + h}px)`;
+    }
+    if (lft) {
+        lft.style.display = "block";
+        lft.style.top = `${y}px`; lft.style.left = "0";
+        lft.style.width = `${x}px`; lft.style.height = `${h}px`;
+    }
+    if (rgt) {
+        rgt.style.display = "block";
+        rgt.style.top = `${y}px`; rgt.style.left = `${x + w}px`;
+        rgt.style.width = `calc(100vw - ${x + w}px)`; rgt.style.height = `${h}px`;
+    }
+}
+
+function _tourPositionTooltip(rect) {
+    const tip = document.getElementById("tourTooltip");
+    if (!tip) return;
+    const tipW = 400;
+    const tipH = tip.offsetHeight || 200;
+
+    if (!rect) {
+        // Center giữa màn hình
+        tip.style.left = `calc(50vw - ${tipW / 2}px)`;
+        tip.style.top = `calc(50vh - ${tipH / 2}px)`;
+        return;
+    }
+
+    // Ưu tiên đặt dưới target; nếu không đủ chỗ → đặt trên
+    let top = rect.bottom + 12;
+    if (top + tipH > window.innerHeight - 20) {
+        top = Math.max(20, rect.top - tipH - 12);
+    }
+    let left = rect.left + rect.width / 2 - tipW / 2;
+    left = Math.max(12, Math.min(left, window.innerWidth - tipW - 12));
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+}
+
+// -------------------- Command Palette entries --------------------
+
+/** Trả list Command Palette entry cho các help topic — được _cmdCollectSections/_CMD_ACTIONS merge vào. */
+function _helpCollectCmdEntries() {
+    if (!window.HELP_CONTENT) return [];
+    return Object.entries(window.HELP_CONTENT).map(([key, c]) => ({
+        id: "help." + key,
+        label: `❓ Trợ giúp: ${c.title || key}`,
+        kind: "help",
+        sub: c.category || "",
+        run: () => openSectionHelpModal(key),
+    }));
+}
+window._helpCollectCmdEntries = _helpCollectCmdEntries;
+
+// Inject cmd entry vào _CMD_ACTIONS sau khi help_content.js đã load
+if (typeof _CMD_ACTIONS !== "undefined" && Array.isArray(_CMD_ACTIONS)) {
+    // Chỉ inject 1 lần
+    if (!_CMD_ACTIONS.__helpInjected) {
+        _CMD_ACTIONS.__helpInjected = true;
+        // Lazy inject — dùng getter proxy: khi _cmdBuildItems() gọi
+        // [..._CMD_ACTIONS] thì spread ra tận tay. Nên inject trực tiếp:
+        try {
+            _helpCollectCmdEntries().forEach(e => _CMD_ACTIONS.push(e));
+        } catch (err) {
+            console.warn("[help cmd inject]", err);
+        }
+    }
+}
+
+// escapeAttr fallback (nếu chưa định nghĩa ở nơi khác)
+if (typeof escapeAttr !== "function") {
+    window.escapeAttr = function (s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    };
+}
+
+// -------------------- Wire up --------------------
+
+/** Init unified help — gọi sau DOM ready + mỗi khi có section mới hiện lên. */
+function initUnifiedHelp() {
+    attachUnifiedSectionHelp();
+}
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initUnifiedHelp);
+} else {
+    initUnifiedHelp();
+}
+
+// Re-attach nếu applyDashboardResponse render lại section (hook vào window để
+// dashboard code chính có thể gọi window.attachUnifiedSectionHelp() sau).
+window.attachUnifiedSectionHelp = attachUnifiedSectionHelp;
 

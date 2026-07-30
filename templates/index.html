@@ -188,6 +188,12 @@
                         title="Chế độ trình chiếu (1 section/lần, ← → điều hướng, Esc thoát)">
                     🎬 Trình chiếu
                 </button>
+                <!-- T34 Task 4: Unified Help menu -->
+                <button id="btnGlobalHelp" onclick="openGlobalHelpModal()"
+                        class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm font-semibold"
+                        title="Trợ giúp toàn hệ thống (Ctrl+/)">
+                    ❓ Trợ giúp
+                </button>
                 <!-- T30: Registry API + Đồng bộ dữ liệu -->
                 <button id="btnIntegrations" onclick="openIntegrationsModal()"
                         class="bg-cyan-500/80 hover:bg-cyan-500 px-3 py-1.5 rounded text-sm font-semibold"
@@ -415,7 +421,7 @@
 <!-- ============ SYNC PROGRESS MODAL (feedback khi bấm Đồng bộ) ============ -->
 <div id="syncProgressModal"
      class="fixed inset-0 bg-black/50 z-[60] hidden items-center justify-center p-4 no-print"
-     onclick="if(event.target===this && _syncModalCanClose) closeSyncProgressModal()">
+     onclick="if(event.target===this && window._syncModalCanClose) closeSyncProgressModal()">
     <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
         <div id="syncProgressHeader" class="px-6 py-4 border-b dark:border-slate-700 bg-gradient-to-r from-cyan-500 to-blue-600 text-white">
             <div class="flex items-center gap-3">
@@ -2297,7 +2303,7 @@
         <section id="section-capacity" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap">
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="capacity">
                         👥 Capacity PIC — remaining MH vs công suất
                         <button onclick="exportSection('capacity')"
                                 class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
@@ -2492,7 +2498,7 @@
         <section id="section-burndown" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="burndown">
                         📉 Burndown &amp; Velocity
                         <span class="help-tip"
                               title="Cách đọc biểu đồ này:&#10;&#10;• TRỤC X: Tuần (mỗi cột = 1 tuần dương lịch, T2 → CN).&#10;• TRỤC Y (thanh xanh): Số function-phase Closed trong tuần đó (đếm theo cột End khi status = Closed).&#10;• TRỤC Y (đường vàng): Cumulative — tổng dồn số Closed từ đầu dự án.&#10;&#10;Ý nghĩa các số:&#10;• Velocity = trung bình số Closed / tuần trong 4 tuần gần nhất → dự báo tốc độ team.&#10;• Tổng Closed = tổng phase-record đã đóng trong scope filter hiện tại.&#10;&#10;⚠️ Nếu số tuần quá lớn (VD > 200) là do có date lỗi rất xưa/rất xa trong file — hãy filter Module/Process để thu hẹp phạm vi.">?</span>
@@ -2520,7 +2526,7 @@
         <section id="section-slow" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap">
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="slow">
                         🐌 Ai đang chậm — Heatmap PIC × Phase
                         <button onclick="exportSection('slow')"
                                 class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
@@ -2693,7 +2699,7 @@
         <section id="section-kanban" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">📋 Kanban theo tuần</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="kanban">📋 Kanban theo tuần</h3>
                     <p class="chart-subtitle" id="kanbanSubtitle">Cần upload file để hiển thị kanban.</p>
                 </div>
                 <div class="flex items-center gap-2 flex-wrap">
@@ -2726,7 +2732,7 @@
         <section id="section-custom-dashboards" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">🎨 Dashboard tuỳ chỉnh</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="custom-dashboards">🎨 Dashboard tuỳ chỉnh</h3>
                     <p class="chart-subtitle">Các chart do bạn tự tạo qua Wizard/Chat. Bấm ➕ Dashboard ở header để tạo thêm.</p>
                 </div>
                 <button onclick="openCustomDashModal()" class="text-xs bg-purple-100 hover:bg-purple-200 text-purple-800 px-3 py-1.5 rounded font-medium">
@@ -2743,7 +2749,7 @@
         <section id="section-sla" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap">
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="sla">
                         🚨 SLA — vi phạm deadline theo Priority
                         <span class="help-tip"
                               title="ĐỊNH NGHĨA vi phạm SLA:&#10;&#10;Một phase-record được coi là vi phạm SLA khi thỏa MỌI điều kiện:&#10;  1. Có End (hoặc To) date&#10;  2. End &lt; ngày hôm nay (đã trễ)&#10;  3. Status ≠ Closed VÀ ≠ Cancelled (chưa đóng)&#10;&#10;→ Nghĩa là: 'đã qua hạn nhưng vẫn chưa xong / chưa hủy'.&#10;&#10;PHÂN LOẠI severity theo Priority:&#10;  • Must-have + trễ ≥ N ngày (default 3) → CRITICAL&#10;  • Should-have + trễ ≥ M ngày (default 7) → CRITICAL&#10;  • Còn lại → WARNING&#10;&#10;⚙️ Có thể chỉnh N, M ở Cài đặt project (banner cấu hình).">?</span>
@@ -2768,7 +2774,7 @@
         <section id="section-deps" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">🔗 Dependency — Must-have đang bị block</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="deps">🔗 Dependency — Must-have đang bị block</h3>
                     <p class="text-xs text-gray-500 mt-0.5">Parse cột <code>function_lq</code>; function Must-have bị block khi related chưa Closed phase cuối</p>
                 </div>
                 <div class="flex items-center gap-3 text-xs">
@@ -2783,7 +2789,7 @@
         <section id="section-baseline" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap">
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="baseline">
                         📐 Baseline vs Actual — variance ngày
                         <button onclick="exportSection('baseline')"
                                 class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
@@ -2812,7 +2818,7 @@
         <section id="section-dataquality" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">🩺 Data Quality</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="dataquality">🩺 Data Quality</h3>
                     <p class="text-xs text-gray-500 mt-0.5">Phát hiện dữ liệu lỗi/thiếu để clean trước khi báo cáo</p>
                 </div>
                 <div class="flex items-center gap-2">
@@ -2864,7 +2870,7 @@
         <section id="section-my-bookmarks" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">⭐ Bookmark của tôi</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="my-bookmarks">⭐ Bookmark của tôi</h3>
                     <p class="text-xs text-gray-500 mt-0.5">Chức năng đã đánh dấu để theo dõi riêng — kèm ghi chú</p>
                 </div>
                 <span class="text-xs bg-yellow-100 text-yellow-800 px-3 py-1.5 rounded border border-yellow-300">
@@ -2883,7 +2889,7 @@
         <section id="section-my-digests" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">📥 Digest lưu trữ</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="my-digests">📥 Digest lưu trữ</h3>
                     <p class="text-xs text-gray-500 mt-0.5">File Excel báo cáo tổng hợp — tự sinh theo lịch trong Cài đặt (T29) hoặc bấm nút bên phải.</p>
                 </div>
                 <div class="flex items-center gap-2">
@@ -2907,7 +2913,7 @@
         <section id="section-aging-wip" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">⏳ Aging WIP</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="aging-wip">⏳ Aging WIP</h3>
                     <p class="text-xs text-gray-500 mt-0.5">Task In-progress quá lâu (kể từ Start date) → cần push</p>
                 </div>
                 <div class="flex items-center gap-3">
@@ -2954,7 +2960,7 @@
         <section id="section-history" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800">📜 Lịch sử upload</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="history">📜 Lịch sử upload</h3>
                     <p class="text-xs text-gray-500 mt-0.5">Meta-only — chỉ lưu filename, row count, checksum (không copy file)</p>
                 </div>
                 <span class="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded border">
@@ -3016,8 +3022,109 @@
 <!-- Toast -->
 <div id="toast" class="fixed bottom-5 right-5 bg-green-600 text-white px-5 py-3 rounded-lg shadow-lg hidden z-50"></div>
 
+<!-- ============================================================ -->
+<!-- T34 Task 4: Unified Help System modals + tour overlay          -->
+<!-- ============================================================ -->
+
+<!-- Section-level help modal (mở khi bấm nút ? bên cạnh title section) -->
+<div id="sectionHelpModal"
+     class="fixed inset-0 bg-black/50 hidden z-[70] items-center justify-center"
+     onclick="if(event.target===this) closeSectionHelpModal()">
+    <div class="bg-white dark:bg-slate-800 dark:text-gray-100 rounded-xl shadow-2xl max-w-2xl w-full mx-4 max-h-[85vh] flex flex-col">
+        <div class="flex items-center justify-between px-5 py-4 border-b dark:border-slate-700">
+            <div>
+                <div id="secHelpCategory" class="text-xs uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold mb-1"></div>
+                <h3 id="secHelpTitle" class="text-lg font-bold text-gray-800 dark:text-gray-100"></h3>
+            </div>
+            <button onclick="closeSectionHelpModal()"
+                    class="w-8 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-slate-700 flex items-center justify-center text-gray-500">
+                ✕
+            </button>
+        </div>
+        <div id="secHelpBody" class="px-5 py-4 overflow-y-auto text-sm text-gray-700 dark:text-gray-200 space-y-4">
+            <!-- Populated bởi renderSectionHelpBody() -->
+        </div>
+        <div class="px-5 py-3 border-t dark:border-slate-700 flex justify-between items-center bg-gray-50 dark:bg-slate-900/50 rounded-b-xl">
+            <a href="#" id="secHelpLearnMore" class="text-sm text-blue-600 hover:underline hidden" target="_blank">📚 Xem thêm ở docs</a>
+            <button onclick="closeSectionHelpModal()"
+                    class="ml-auto px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold">
+                Đã hiểu
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Global Help menu (Ctrl+/ hoặc nút ❓ ở header) -->
+<div id="globalHelpModal"
+     class="fixed inset-0 bg-black/60 hidden z-[75] items-start justify-center pt-16"
+     onclick="if(event.target===this) closeGlobalHelpModal()">
+    <div class="bg-white dark:bg-slate-800 dark:text-gray-100 rounded-xl shadow-2xl w-full max-w-4xl mx-4 max-h-[80vh] flex flex-col">
+        <div class="px-5 py-4 border-b dark:border-slate-700">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100">
+                    ❓ Trợ giúp iHRP Tracker
+                </h3>
+                <button onclick="closeGlobalHelpModal()"
+                        class="w-8 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-slate-700 flex items-center justify-center text-gray-500">
+                    ✕
+                </button>
+            </div>
+            <input type="text" id="globalHelpSearch"
+                   placeholder="🔎 Tìm tên section, tính năng, hoặc từ khóa (VD: 'trễ', 'PIC', 'export')..."
+                   class="w-full px-3 py-2 border dark:border-slate-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-900"
+                   oninput="_helpGlobalOnSearch(this.value)"/>
+            <div class="text-xs text-gray-500 mt-2">
+                Phím tắt: <kbd class="px-1.5 py-0.5 bg-gray-100 dark:bg-slate-700 rounded border">Ctrl</kbd>
+                + <kbd class="px-1.5 py-0.5 bg-gray-100 dark:bg-slate-700 rounded border">/</kbd>
+                để mở/đóng · <kbd class="px-1.5 py-0.5 bg-gray-100 dark:bg-slate-700 rounded border">Esc</kbd> thoát
+            </div>
+        </div>
+        <div id="globalHelpList" class="px-5 py-4 overflow-y-auto text-sm space-y-3">
+            <!-- Populated bởi _helpGlobalRender() -->
+        </div>
+    </div>
+</div>
+
+<!-- Onboarding tour overlay -->
+<div id="onboardingTourOverlay" class="fixed inset-0 hidden z-[80] pointer-events-none">
+    <!-- Backdrop chia 4 mảnh để tạo lỗ hổng spotlight -->
+    <div class="tour-backdrop-top absolute bg-black/70 pointer-events-auto"
+         onclick="_tourSkip()"></div>
+    <div class="tour-backdrop-bottom absolute bg-black/70 pointer-events-auto"
+         onclick="_tourSkip()"></div>
+    <div class="tour-backdrop-left absolute bg-black/70 pointer-events-auto"
+         onclick="_tourSkip()"></div>
+    <div class="tour-backdrop-right absolute bg-black/70 pointer-events-auto"
+         onclick="_tourSkip()"></div>
+    <div id="tourSpotlight" class="absolute border-4 border-yellow-400 rounded-lg shadow-2xl pointer-events-none"
+         style="box-shadow: 0 0 0 4px rgba(250, 204, 21, 0.5), 0 0 40px rgba(0,0,0,0.5);"></div>
+    <div id="tourTooltip"
+         class="absolute bg-white dark:bg-slate-800 dark:text-gray-100 rounded-lg shadow-2xl p-5 max-w-md pointer-events-auto"
+         style="width: 400px;">
+        <div class="flex items-center justify-between mb-2">
+            <div class="text-xs text-blue-600 font-semibold" id="tourStepBadge">Bước 1/8</div>
+            <button onclick="_tourSkip()" class="text-xs text-gray-500 hover:text-gray-700">Bỏ qua</button>
+        </div>
+        <h3 id="tourStepTitle" class="text-lg font-bold text-gray-800 dark:text-gray-100 mb-2"></h3>
+        <p id="tourStepDesc" class="text-sm text-gray-600 dark:text-gray-300 mb-4"></p>
+        <div class="flex gap-2 justify-between items-center">
+            <button id="tourBackBtn" onclick="_tourBack()"
+                    class="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 dark:bg-slate-700 dark:hover:bg-slate-600 rounded text-sm">
+                ← Trước
+            </button>
+            <div id="tourDotIndicator" class="flex gap-1"></div>
+            <button id="tourNextBtn" onclick="_tourNext()"
+                    class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold">
+                Tiếp →
+            </button>
+        </div>
+    </div>
+</div>
+
 <!-- Task 19: Palette centralized (LOAD TRƯỚC dashboard.js) -->
 <script src="/static/js/palette.js"></script>
+<!-- T34 Task 4: Help content (LOAD TRƯỚC dashboard.js) -->
+<script src="/static/js/help_content.js?v={{ static_ver('js/help_content.js') }}"></script>
 <script src="/static/js/dashboard.js?v={{ static_ver('js/dashboard.js') }}"></script>
 </body>
 </html>
