@@ -475,3 +475,45 @@ Modal có:
 - Áp dụng cho: Overdue, Unassigned, Duration, Stalled, Risk, Effort open
   tasks, Aging WIP, Bookmark card, Custom drill result.
 - Kanban card không đổi (giữ click card mở detail).
+
+### T30 — Registry API modal + Sync dropdown
+
+**Nút trong header:**
+- `🔌 API Registry` mở modal `#integrationsModal`.
+- `🔄 Đồng bộ ▾` mở dropdown `#syncQuickMenu` — list integrations với các
+  endpoint clickable. Click 1 endpoint → gọi sync ngay, không cần vào modal.
+
+**Modal 2 tab:**
+
+*Tab "Danh sách":*
+- Bảng cột `Tên · Base URL · #Endpoint · Sync gần nhất · Trạng thái · Hành động`.
+- Cột hành động: `🔍 Test` · `<select endpoint>` + `🔄 Sync` · `✏️ Edit` · `🗑 Delete`.
+- Status badge: xanh `✔ ok` / đỏ `✕ lỗi` với tooltip = `last_sync_message` để
+  user hover thấy lý do fail (thiếu env, sai URL, response không phải Excel…).
+
+*Tab "Thêm mới / Chỉnh sửa":*
+- Form: `Tên` · `Base URL`.
+- Fieldset **Cấu hình đăng nhập**: `Auth method` (dropdown từ capabilities API,
+  option `basic_auth/bearer_token/api_key` disable với hint "Đang phát triển")
+  · `Login path` · `Username field` · `Password field` · `Prefix biến môi
+  trường (credential_env)` — hint hiển thị công thức `<PREFIX>_USERNAME + _PASSWORD`.
+- Fieldset **Danh sách Endpoint**: mỗi row = `Tên · Path · HTTP method ·
+  Response type · Target action · Params (JSON)`. Có nút `➕ Thêm endpoint`
+  / `🗑 Xoá` từng row. Template dùng `<template id="integEndpointTemplate">`
+  để clone.
+- Nút `🔍 Test login` — bấm → POST `/integrations/<id>/test` → hiển thị
+  message inline (xanh nếu ok, đỏ nếu fail + lý do).
+- Nút `💾 Lưu` — POST hoặc PUT tuỳ đang tạo mới hay edit.
+
+**Sync flow FE (khi user bấm 🔄):**
+1. Toast "Đang sync… có thể mất vài giây".
+2. POST `/api/projects/<slug>/integrations/<id>/sync` với body `{endpoint_id}`.
+3. Response `{status, message, rows_imported, snapshot_id}`.
+4. Nếu ok → toast success + gọi `tryLoadDashboardForCurrent(true)` để dashboard
+   tự refresh dữ liệu mới (giữ nguyên filter hiện tại).
+5. Refresh list integrations để badge `last_synced_at` cập nhật.
+
+**Security note:**
+Password chỉ được đọc từ `.env` phía backend khi cần. FE KHÔNG bao giờ nhìn
+thấy hoặc gửi password. Field nhập password KHÔNG tồn tại trong UI — user
+chỉnh trực tiếp file `.env` ở gốc project.

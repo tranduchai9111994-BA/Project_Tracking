@@ -127,13 +127,40 @@ Data cũ từ V2 (không có project) tự động migrate vào project "Default
   digest schedule / SLA / reminder trong 1 chỗ.
 - 👁 **UX7 View icon** — bảng lưới bỏ click-any-row, thay bằng icon 👁 cột cuối
   cho rõ affordance.
+- 🔌 **Registry API + Đồng bộ dữ liệu (T30)** — cấu hình danh sách API endpoint
+  từ nhiều ứng dụng nguồn (iHRP prod/UAT, workload report, GAP list…), bấm 1
+  nút để tự login → tải Excel → parse → append snapshot. Credential nạp qua
+  file `.env` (KHÔNG lưu JSON) theo prefix `credential_env` (VD `IHRP_PROD`
+  → `IHRP_PROD_USERNAME` + `IHRP_PROD_PASSWORD`). Chi tiết:
+  [`docs/INTEGRATIONS_GUIDE.md`](INTEGRATIONS_GUIDE.md).
 
 ## Tech Stack
 - Backend: Python 3.10+ / Flask 3
 - Frontend: HTML + Tailwind CSS + Chart.js (CDN, không cần build)
-- Excel: openpyxl + pandas
+- Excel: openpyxl (KHÔNG dùng pandas — tự viết aggregation)
+- HTTP client (T30): `requests` + `beautifulsoup4` (parse CSRF khi login form)
 - **Không cần database, không cần Node.js, không cần Docker**
-- Test: pytest
+- Test: pytest (dev: `requests-mock` cho mock HTTP)
+
+## Cấu hình `.env` (T30 Registry API)
+
+Nếu dùng tính năng Đồng bộ dữ liệu, tạo file `.env` ở gốc project (đã sẵn
+trong `.gitignore`, không commit lên repo). Copy từ template:
+
+```bash
+cp .env.example .env
+```
+
+Sau đó điền username/password theo prefix của integration đã tạo trong UI.
+VD nếu integration `credential_env = IHRP_PROD`:
+
+```
+IHRP_PROD_USERNAME=your_username
+IHRP_PROD_PASSWORD=your_password
+```
+
+Xem `docs/INTEGRATIONS_GUIDE.md` để biết cách F12 Network reverse-engineer
+`login_path` + tên field trên web app nguồn.
 
 ## Cấu trúc
 Xem `docs/ARCHITECTURE.md` để biết chi tiết.

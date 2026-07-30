@@ -398,3 +398,110 @@ uploads/projects/<slug>/digests/
   Unassigned / Long_Duration / Stalled / High_Risk.
 - Không auto-cleanup — user tự xoá qua UI (nút 🗑).
 
+### `integrations.json` (T30 — Registry API)
+
+Cấu hình danh sách endpoint từ ứng dụng nguồn (iHRP prod/UAT, workload report,
+GAP list…). Mỗi integration = 1 base URL + auth config + n endpoint.
+
+**⚠️ QUAN TRỌNG: File này KHÔNG chứa username/password.** Credential được nạp
+qua file `.env` ở gốc project theo prefix `credential_env`:
+
+```
+<PREFIX>_USERNAME=abc
+<PREFIX>_PASSWORD=xyz
+```
+
+Module `analyzer/integrations.py` đọc `os.environ` khi cần → nếu chưa set →
+raise `ValueError` với tên biến thiếu (thông báo rõ ràng cho user).
+
+Cấu trúc file:
+
+```json
+{
+  "integrations": [
+    {
+      "id": "int_ab12cd34ef56",
+      "name": "iHRP Production",
+      "base_url": "https://ihrp.company.com",
+      "auth": {
+        "method": "form_login",
+        "login_path": "/login",
+        "username_field": "username",
+        "password_field": "password",
+        "extra_fields": {},
+        "credential_env": "IHRP_PROD"
+      },
+      "endpoints": [
+        {
+          "id": "ep_1234567890",
+          "name": "Function List Export",
+          "path": "/api/functions/export",
+          "http_method": "GET",
+          "params": {"module": "all"},
+          "response_type": "excel",
+          "target_action": "snapshot"
+        }
+      ],
+      "created_at": "2026-07-30T08:30:00",
+      "last_synced_at": "2026-07-30T14:12:33",
+      "last_sync_status": "ok",
+      "last_sync_message": "Đã tải 375 dòng · snapshot 2026-07-30"
+    }
+  ]
+}
+```
+
+**Fields:**
+
+| Field | Bắt buộc | Mô tả |
+|-------|----------|-------|
+| `id` | auto | Backend gán khi create; format `int_<uuid[:12]>`. |
+| `name` | ✔ | Tên hiển thị (dài ≤120 ký tự). |
+| `base_url` | ✔ | Phải có scheme http/https, không trailing slash. |
+| `auth.method` | ✔ | MVP: `form_login`. Reserve: `basic_auth`, `bearer_token`, `api_key` (chưa support). |
+| `auth.login_path` | | Path GET/POST login (VD `/login`). |
+| `auth.username_field` | | Tên input trong form, mặc định `username`. |
+| `auth.password_field` | | Tên input trong form, mặc định `password`. |
+| `auth.extra_fields` | | Dict {name: value} — bổ sung field hidden (VD `submit=1`). |
+| `auth.credential_env` | ✔ (để sync) | Prefix biến `.env` — hệ thống đọc `<PREFIX>_USERNAME` + `_PASSWORD`. |
+| `endpoints[].id` | auto | Format `ep_<uuid[:10]>`. |
+| `endpoints[].name` | ✔ | Tên hiển thị. |
+| `endpoints[].path` | ✔ | Path hoặc absolute URL (nếu bắt đầu bằng `/` sẽ prefix `base_url`). |
+| `endpoints[].http_method` | | `GET` (default) hoặc `POST`. |
+| `endpoints[].params` | | Dict → query string cho GET, form body cho POST. |
+| `endpoints[].response_type` | | MVP: `excel`. Reserve: `json`, `csv`. |
+| `endpoints[].target_action` | | `snapshot` (default) / `append` / `replace`. `replace` cũng update `current.xlsx` để dashboard load ngay dữ liệu mới. |
+| `last_synced_at` | | ISO datetime của lần sync ok gần nhất. |
+| `last_sync_status` | | `ok` / `error` — sau mỗi sync/test tự update. |
+| `last_sync_message` | | Message rút gọn (≤500 ký tự) — user thấy trong list. |
+
+**Sync flow (khi user bấm 🔄):**
+
+1. Read integration → resolve credentials từ `.env`.
+2. `requests.Session()` GET login page → parse CSRF token (bs4 hoặc regex).
+3. POST login form với user/pass + CSRF + extra_fields.
+4. Verify login (heuristic: HTTP 200, final URL không quay lại login path,
+   body không chứa `invalid|incorrect|sai mật khẩu|…`).
+5. GET/POST endpoint URL với params → nhận response.
+6. Detect Excel qua `Content-Type` (`application/vnd.*ms-excel*` /
+   `openxmlformats-officedocument…` / `octet-stream` + extension `.xlsx`).
+7. Lưu tạm `<project_dir>/synced_YYYYMMDD_HHMM.xlsx`.
+8. Parse bằng `FunctionListParser` → tính metrics.
+9. `SnapshotManager.save_snapshot(...)` — append vào project (dùng logic có sẵn).
+10. Nếu `target_action = replace` → thêm bước copy đè `current.xlsx` + `touch_last_upload`.
+11. Update `last_sync_status = ok`, `last_synced_at`, `last_sync_message`.
+12. Trả `{status, message, snapshot_id, rows_imported, filename}` cho FE.
+
+**Error handling:**
+- Timeout: 30s per request (không retry).
+- Network fail / HTTP 4xx-5xx / content-type sai → `status=error` + message rõ
+  ràng để user biết fix `.env` hay URL/params.
+- Log KHÔNG bao giờ chứa password (chỉ log tên biến khi thiếu).
+
+**Security:**
+- Credentials chỉ tồn tại trong biến môi trường process, không cache session
+  giữa request.
+- Response từ `/test` và `/sync` KHÔNG expose password.
+- Session cookie chỉ giữ trong lifetime của 1 request (session.close() ngay
+  sau khi lấy file).
+
