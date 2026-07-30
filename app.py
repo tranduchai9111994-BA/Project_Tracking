@@ -1674,6 +1674,29 @@ def project_section_order_reset(slug: str):
 
 
 # ==========================================================================
+# Chart notes (T28 — comment per-chart + tóm tắt chung cho PDF export)
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/chart-notes", methods=["GET", "PUT"])
+def project_chart_notes(slug: str):
+    """
+    GET → trả về {summary: str, notes: {section_id: text}}.
+    PUT body {summary?: str, notes?: {section_id: text}} → merge và lưu.
+    - summary: tóm tắt chung của báo cáo (max 500 ký tự) — hiển thị ở cover PDF.
+    - notes: comment per-chart (max 200 ký tự / chart) — value rỗng = xoá key.
+    """
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify(ps.load_chart_notes(folder))
+    body = request.get_json(silent=True) or {}
+    saved = ps.save_chart_notes(folder, body)
+    return jsonify(saved)
+
+
+# ==========================================================================
 # Chart configs (Task 6 — Phase A: inline edit title/caption/visibility)
 # ==========================================================================
 

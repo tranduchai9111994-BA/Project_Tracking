@@ -261,6 +261,67 @@ def reset_section_order(project_dir: str) -> None:
 
 
 # ------------------------------------------------------------------
+# Chart notes (T28: comment per-chart trong PDF export)
+# ------------------------------------------------------------------
+# File: chart_notes.json = {
+#   "summary": "Tóm tắt chung của báo cáo (max 500)",
+#   "notes": {"section-id-1": "nhận xét (max 200)", ...}
+# }
+# Dùng chung cho mọi phiên xuất PDF của project → pre-fill textarea lần sau.
+_CHART_NOTES_FILE = "chart_notes.json"
+_MAX_SUMMARY_LEN = 500
+_MAX_NOTE_LEN = 200
+
+
+def load_chart_notes(project_dir: str) -> dict:
+    """Trả về {'summary': str, 'notes': {section_id: text}}."""
+    data = _read_json(_path(project_dir, _CHART_NOTES_FILE), {})
+    if not isinstance(data, dict):
+        data = {}
+    summary = str(data.get("summary") or "")[:_MAX_SUMMARY_LEN]
+    raw_notes = data.get("notes") or {}
+    notes: dict[str, str] = {}
+    if isinstance(raw_notes, dict):
+        for k, v in raw_notes.items():
+            if not v:
+                continue
+            key = str(k).strip()
+            if not key:
+                continue
+            notes[key] = str(v)[:_MAX_NOTE_LEN]
+    return {"summary": summary, "notes": notes}
+
+
+def save_chart_notes(project_dir: str, payload: dict) -> dict:
+    """
+    Merge payload vào chart_notes.json.
+    - payload["summary"] (optional) → replace summary hiện tại. Rỗng → xoá.
+    - payload["notes"] (optional) → merge từng key vào notes hiện tại
+      (value rỗng = xoá key đó).
+    """
+    if not isinstance(payload, dict):
+        payload = {}
+    current = load_chart_notes(project_dir)
+    if "summary" in payload:
+        current["summary"] = str(payload.get("summary") or "")[:_MAX_SUMMARY_LEN]
+    incoming_notes = payload.get("notes")
+    if isinstance(incoming_notes, dict):
+        merged = dict(current.get("notes") or {})
+        for k, v in incoming_notes.items():
+            key = str(k).strip()
+            if not key:
+                continue
+            text = str(v or "").strip()
+            if not text:
+                merged.pop(key, None)  # rỗng → xoá key
+            else:
+                merged[key] = text[:_MAX_NOTE_LEN]
+        current["notes"] = merged
+    _write_json(_path(project_dir, _CHART_NOTES_FILE), current)
+    return current
+
+
+# ------------------------------------------------------------------
 # Chart configs (Task 6 — Phase A: title/caption/hide per chart section)
 # ------------------------------------------------------------------
 # File: chart_configs.json = {target_id: {"title"?, "caption"?, "hidden"?}}

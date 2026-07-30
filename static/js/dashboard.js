@@ -8239,7 +8239,34 @@ const _PDF_PRESET_SECTIONS = {
     ],
 };
 
-window.openPdfExportModal = function () {
+// ========================================================================
+// T28 — Chart notes / Summary state cho PDF modal
+// ========================================================================
+// Cache 2 tầng:
+//  - _pdfNotesCache.summary: string (tóm tắt chung, max 500)
+//  - _pdfNotesCache.notes[section-id] = string (nhận xét per-chart, max 200)
+// FE tự đồng bộ với backend qua GET/PUT /api/projects/<slug>/chart-notes.
+// User có thể:
+//  - Sửa textarea → gõ thẳng → bấm "✓ Lưu nhận xét" để persist (không xuất).
+//  - Sửa + bấm "📥 Xuất PDF" → hệ thống auto-lưu trước khi xuất.
+const _pdfNotesCache = { summary: "", notes: {} };
+
+async function _pdfLoadChartNotes() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/chart-notes`);
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        _pdfNotesCache.summary = String(d.summary || "");
+        _pdfNotesCache.notes = (d.notes && typeof d.notes === "object") ? { ...d.notes } : {};
+    } catch (err) {
+        console.warn("[pdfLoadChartNotes] fetch failed → dùng cache trống:", err);
+        _pdfNotesCache.summary = "";
+        _pdfNotesCache.notes = {};
+    }
+}
+
+window.openPdfExportModal = async function () {
     const modal = document.getElementById("pdfExportModal");
     if (!modal) return;
     if (typeof html2canvas === "undefined" || !window.jspdf?.jsPDF) {
@@ -8251,9 +8278,21 @@ window.openPdfExportModal = function () {
     const dateStr = today.toISOString().slice(0, 10);
     const dateInput = document.getElementById("pdfReportDate");
     if (dateInput && !dateInput.value) dateInput.value = dateStr;
+    // Load persisted notes → pre-fill textarea (Tóm tắt + comment per-chart)
+    await _pdfLoadChartNotes();
+    const summaryEl = document.getElementById("pdfNotes");
+    if (summaryEl) summaryEl.value = _pdfNotesCache.summary || "";
+    _pdfUpdateSummaryCounter();
     _pdfOnPresetChange();
     modal.classList.remove("hidden");
     modal.classList.add("flex");
+};
+
+/** Update counter "X/500" cho textarea tóm tắt chung. */
+window._pdfUpdateSummaryCounter = function () {
+    const el = document.getElementById("pdfNotes");
+    const cnt = document.getElementById("pdfNotesCounter");
+    if (el && cnt) cnt.textContent = String((el.value || "").length);
 };
 
 window.closePdfExportModal = function () {
@@ -8266,9 +8305,10 @@ window.closePdfExportModal = function () {
 window._pdfOnPresetChange = function () {
     const preset = document.querySelector('input[name="pdfPreset"]:checked')?.value || "pm";
     const wrap = document.getElementById("pdfCustomSections");
-    if (!wrap) return;
+    if (!wrap) { _pdfRenderChartNotesList(); return; }
     if (preset !== "custom") {
         wrap.classList.add("hidden");
+        _pdfRenderChartNotesList();
         return;
     }
     wrap.classList.remove("hidden");
@@ -8278,10 +8318,111 @@ window._pdfOnPresetChange = function () {
     wrap.innerHTML = secs.map(s => {
         const label = _sectionShortLabel(s.id);
         return `<label class="flex items-center gap-2 py-0.5">
-            <input type="checkbox" class="pdf-custom-cb" value="${s.id}">
+            <input type="checkbox" class="pdf-custom-cb" value="${s.id}" onchange="_pdfRenderChartNotesList()">
             <span>${escapeHtml(label)} <span class="text-gray-400">(${s.id})</span></span>
         </label>`;
     }).join("");
+    _pdfRenderChartNotesList();
+};
+
+/**
+ * Render textarea "💬 Nhận xét từng chart" cho toàn bộ section đã chọn.
+ * Đọc value hiện tại từ _pdfNotesCache.notes (đã load từ backend hoặc gõ
+ * thẳng trước đó). Textarea input event → cập nhật ngay vào cache
+ * (in-memory) — user cần bấm "✓ Lưu nhận xét" để persist.
+ */
+window._pdfRenderChartNotesList = function () {
+    const wrap = document.getElementById("pdfChartNotesList");
+    const cnt = document.getElementById("pdfChartNotesCount");
+    if (!wrap) return;
+    const ids = _pdfGetSelectedSections();
+    if (cnt) cnt.textContent = String(ids.length);
+    if (!ids.length) {
+        wrap.innerHTML = '<div class="text-xs text-gray-400 italic">Chưa có chart nào được chọn.</div>';
+        return;
+    }
+    wrap.innerHTML = ids.map(sid => {
+        const label = _sectionShortLabel(sid);
+        const val = _pdfNotesCache.notes[sid] || "";
+        const len = val.length;
+        return `
+            <div class="border rounded p-2 bg-white dark:bg-slate-800">
+                <div class="flex items-center justify-between mb-1">
+                    <div class="text-xs font-semibold text-gray-700 dark:text-slate-300">
+                        📊 ${escapeHtml(label)}
+                    </div>
+                    <div class="text-[10px] text-gray-400">
+                        <span data-note-counter="${escapeAttr(sid)}">${len}</span>/200
+                    </div>
+                </div>
+                <textarea
+                    class="w-full border rounded p-1.5 text-xs"
+                    rows="2" maxlength="200"
+                    data-chart-note="${escapeAttr(sid)}"
+                    oninput="_pdfOnChartNoteInput(this)"
+                    placeholder="VD: Tuần này overdue giảm 3 case…">${escapeHtml(val)}</textarea>
+            </div>
+        `;
+    }).join("");
+};
+
+/** input handler cho textarea comment per-chart → sync in-memory + counter. */
+window._pdfOnChartNoteInput = function (el) {
+    const sid = el.getAttribute("data-chart-note");
+    if (!sid) return;
+    const v = el.value || "";
+    if (v.trim()) {
+        _pdfNotesCache.notes[sid] = v;
+    } else {
+        delete _pdfNotesCache.notes[sid];
+    }
+    const cnt = document.querySelector(`[data-note-counter="${CSS.escape(sid)}"]`);
+    if (cnt) cnt.textContent = String(v.length);
+};
+
+/**
+ * Trả về snapshot chart notes cho các section id đang xuất PDF.
+ * `doPdfExport` gọi trước khi generate → luôn dùng dữ liệu mới nhất user vừa gõ.
+ */
+window._pdfReadChartNotes = function (ids) {
+    const out = {};
+    (ids || []).forEach(sid => {
+        const v = _pdfNotesCache.notes[sid];
+        if (v && v.trim()) out[sid] = v;
+    });
+    return out;
+};
+
+/**
+ * Nút "✓ Lưu nhận xét" — PUT lên backend, không xuất PDF.
+ * `doPdfExport` cũng gọi function này (silent) trước khi generate để
+ * đảm bảo notes hiện tại đã được persist.
+ */
+window.savePdfChartNotes = async function (silent) {
+    if (!currentProjectSlug) return;
+    const btn = document.getElementById("pdfSaveNotesBtn");
+    if (btn && !silent) { btn.disabled = true; btn.textContent = "⏳ Đang lưu…"; }
+    try {
+        const summaryEl = document.getElementById("pdfNotes");
+        const summary = (summaryEl?.value || "").slice(0, 500);
+        _pdfNotesCache.summary = summary;
+        const payload = { summary, notes: _pdfNotesCache.notes };
+        const r = await fetch(`/api/projects/${currentProjectSlug}/chart-notes`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        _pdfNotesCache.summary = String(d.summary || "");
+        _pdfNotesCache.notes = (d.notes && typeof d.notes === "object") ? { ...d.notes } : {};
+        if (!silent) showToast("✓ Đã lưu nhận xét");
+    } catch (err) {
+        console.error("[savePdfChartNotes]", err);
+        if (!silent) showToast("Lưu nhận xét thất bại: " + err.message, "red");
+    } finally {
+        if (btn && !silent) { btn.disabled = false; btn.textContent = "✓ Lưu nhận xét"; }
+    }
 };
 
 function _pdfGetSelectedSections() {
@@ -8487,6 +8628,10 @@ window.doPdfExport = async function () {
     const wasDark = htmlEl.classList.contains("dark");
     if (wasDark) htmlEl.classList.remove("dark");
     document.body.classList.add("pdf-capture-mode");
+
+    // Auto-persist notes hiện tại trước khi generate (silent — không toast).
+    // Nếu backend fail thì vẫn tiếp tục xuất với dữ liệu in-memory.
+    try { await window.savePdfChartNotes(true); } catch (_) {}
 
     try {
         const scale = parseFloat(document.getElementById("pdfScale")?.value || "1.5");

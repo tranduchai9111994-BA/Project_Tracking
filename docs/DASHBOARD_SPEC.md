@@ -586,3 +586,84 @@ Credential (password/token/API key) chỉ được đọc từ `.env` phía back
 cần. FE KHÔNG bao giờ nhìn thấy hoặc gửi credential. Field nhập password/token
 KHÔNG tồn tại trong UI — user chỉnh trực tiếp file `.env` ở gốc project.
 Backend cũng KHÔNG log credential ra terminal (chỉ log tên biến khi thiếu).
+
+---
+
+## 🆕 15. PDF Export (T7 → T28: comment per-chart + font fix Vietnamese)
+
+**Nút mở:** `📄 Xuất PDF` trên header dashboard → mở modal `#pdfExportModal`.
+
+### Layout modal (từ trên xuống)
+
+1. **Preset nội dung** — 4 radio: 👔 PM view · 📊 BA view · 🔀 Cả 2 (Full) ·
+   🎯 Custom (checkbox từng section).
+2. **📝 Tóm tắt chung của báo cáo** — textarea 3 dòng, `maxlength=500`, hiển
+   counter live `X/500`. Nội dung này in ở **trang cover** của PDF (block
+   nền xanh nhạt, border-left xanh, prefix 💬).
+3. **💬 Nhận xét từng chart** — khu vực scroll list các section đã chọn.
+   Mỗi section:
+   - Header nhỏ `📊 <tên section>` + counter `X/200` (font 10px).
+   - Textarea 2 dòng, `maxlength=200`.
+   - Input event → cập nhật in-memory cache `_pdfNotesCache.notes[<sid>]`.
+4. **Ngày báo cáo** + **Chất lượng ảnh** (1x/1.5x/2x).
+5. **Progress bar** — hiển khi đang generate.
+
+### Nút footer
+
+- `Huỷ` — đóng modal.
+- `✓ Lưu nhận xét` — **KHÔNG xuất PDF**, chỉ PUT
+  `/api/projects/<slug>/chart-notes` với `{summary, notes}`. Toast success.
+- `📥 Xuất PDF` — silent-save trước (PUT notes), sau đó generate PDF.
+
+### PDF layout
+
+1. **Trang cover** — 1 image HTML render qua html2canvas:
+   - Banner gradient xanh 22px title + date + `Project: X · Preset: Y`.
+   - Card trắng dưới banner: filter subtitle (Module/Quy trình/PIC đang áp).
+   - Nếu có Tóm tắt → box `#f1f5f9` border-left `#3b82f6`, prefix
+     `💬 Tóm tắt báo cáo:` + text (white-space: pre-wrap).
+2. **Mỗi section đã chọn** — image html2canvas của DOM section (giữ h3 title
+   nội tại). Sau ảnh section, nếu có comment → block "💬 Nhận xét: <text>"
+   italic, border-top nhạt, background xám nhạt. Comment rỗng → không thêm.
+3. **Footer mỗi trang** — `pdf.text()` ASCII an toàn: "Trang X/Y" +
+   "Generate: <timestamp>". (Không dùng diacritic vì Helvetica default
+   không support.)
+
+### Font fix (T28 — bug jsPDF mojibake)
+
+**Vấn đề:** `pdf.text("📊 Báo cáo…")` với font Helvetica default → glyph
+sai lệch "Ø=ÜÊ&Bào" vì Helvetica chỉ support Latin-1 basic.
+
+**Fix (approach chọn — render toàn bộ qua html2canvas):**
+- Helper `_pdfCaptureHtml(html, widthPx, scale)` inject 1 wrapper
+  off-screen (`position:fixed; left:-20000px`) với font-family
+  `"Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif` → browser
+  tự chọn glyph có sẵn cho tiếng Việt + emoji → html2canvas snapshot
+  ra ảnh → addImage vào PDF.
+- Cover + section title + comment box đều đi qua path này.
+- Chỉ footer (Trang X/Y) còn dùng `pdf.text()` vì ASCII an toàn.
+- Trade-off: text không search-able trong PDF → user care visual >
+  searchable theo yêu cầu.
+
+### Persist chart notes
+
+- File: `.project_store/<slug>/chart_notes.json`
+- Schema:
+  ```json
+  {
+    "summary": "Tuần 30/2026 — overdue giảm 22%",
+    "notes": {
+      "section-overdue": "Push UAT CBLD",
+      "section-module": "Module PR đã stable"
+    }
+  }
+  ```
+- Giới hạn: summary ≤ 500 ký tự, mỗi note ≤ 200 ký tự (backend auto-truncate).
+- API `GET/PUT /api/projects/<slug>/chart-notes`:
+  - GET → toàn bộ payload (nếu file chưa tồn tại → `{summary:"", notes:{}}`).
+  - PUT body có thể chỉ chứa `summary` HOẶC chỉ `notes` — merge field-level:
+    * `summary` in payload → replace (rỗng = clear).
+    * `notes[k]` = "" → xoá key `k` khỏi map. `notes[k]` = "text" → set/update.
+    * Field không truyền trong payload → giữ nguyên trong file.
+- Modal mở → auto GET, pre-fill textarea (dùng tuần trước làm điểm khởi đầu
+  → user chỉ sửa delta).

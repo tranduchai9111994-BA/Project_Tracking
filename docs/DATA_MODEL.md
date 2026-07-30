@@ -330,6 +330,32 @@ Mọi state ngoài Excel đều nằm trong `uploads/projects/<slug>/` dưới d
 ```
 - Value là dict `{note, updated_at}`. Note rỗng → tự xoá key.
 
+### `chart_notes.json` (T28 — comment per-chart cho PDF export)
+
+```json
+{
+  "summary": "Tuần 30/2026 — overdue giảm 22%. Trọng tâm: đẩy UAT CBLD.",
+  "notes": {
+    "section-overdue": "Push UAT CBLD trước 15/08",
+    "section-module": "Module PR đã stable, HR còn 2 issue P1",
+    "section-gantt-calendar": "Phase Analysis chậm 1 tuần vs kế hoạch"
+  }
+}
+```
+
+- `summary` ≤ 500 ký tự → hiển thị ở **trang cover** PDF (block xanh nhạt,
+  prefix 💬).
+- `notes[<section-id>]` ≤ 200 ký tự → hiển ngay dưới ảnh section trong PDF
+  (italic, border-top, prefix "💬 Nhận xét:"). Empty value → xoá key
+  (không render gì trong PDF).
+- API `GET /api/projects/<slug>/chart-notes` → trả toàn bộ payload
+  (default `{"summary":"", "notes":{}}`).
+- API `PUT /api/projects/<slug>/chart-notes` → merge field-level:
+  * `summary` trong body → replace summary hiện tại (rỗng = clear).
+  * `notes[k]` = "" → xoá key `k`. `notes[k]` = "text" → set/update.
+  * Field không truyền → giữ nguyên trong file.
+- Backend truncate tự động (500/200) → FE không cần validate lại.
+
 ### `custom_dashboards.json` (Task 9 + T27/T28)
 
 ```json

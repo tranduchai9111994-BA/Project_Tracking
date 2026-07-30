@@ -1128,12 +1128,12 @@
     <!-- ============ TASK 7: MODAL XUẤT PDF BÁO CÁO TUẦN ============ -->
     <div id="pdfExportModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"
          onclick="if(event.target===this)closePdfExportModal()">
-        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-lg flex flex-col">
+        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[92vh]">
             <div class="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between">
                 <h3 class="text-lg font-bold">📄 Xuất PDF báo cáo tuần</h3>
                 <button onclick="closePdfExportModal()" class="text-gray-500 hover:text-red-500 text-xl">✕</button>
             </div>
-            <div class="p-5 space-y-4">
+            <div class="p-5 space-y-4 overflow-y-auto">
                 <div>
                     <label class="block text-sm font-semibold mb-2">Preset nội dung</label>
                     <div class="grid grid-cols-2 gap-2 text-sm">
@@ -1159,9 +1159,28 @@
                     <!-- Populated by JS -->
                 </div>
                 <div>
-                    <label class="block text-sm font-semibold mb-1">Sub-title / ghi chú (in đầu PDF)</label>
-                    <textarea id="pdfNotes" rows="2" class="w-full border rounded p-2 text-sm"
-                              placeholder="VD: Báo cáo tuần 30/2026 · Trọng tâm: giảm overdue phân hệ CBLD"></textarea>
+                    <label class="block text-sm font-semibold mb-1">
+                        📝 Tóm tắt chung của báo cáo
+                        <span class="text-xs text-gray-500 font-normal">(hiển thị ở trang cover, tối đa 500 ký tự)</span>
+                    </label>
+                    <textarea id="pdfNotes" rows="3" maxlength="500"
+                              class="w-full border rounded p-2 text-sm"
+                              oninput="_pdfUpdateSummaryCounter()"
+                              placeholder="VD: Báo cáo tuần 30/2026 — Overdue giảm 22% so với tuần trước. Trọng tâm: đẩy nhanh UAT phân hệ CBLD."></textarea>
+                    <div class="text-xs text-gray-400 mt-0.5 text-right">
+                        <span id="pdfNotesCounter">0</span>/500
+                    </div>
+                </div>
+                <div id="pdfChartNotesSection" class="border rounded p-3 bg-slate-50 dark:bg-slate-900/40">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="text-sm font-semibold">💬 Nhận xét từng chart</div>
+                        <div class="text-xs text-gray-500">
+                            <span id="pdfChartNotesCount">0</span> chart · tối đa 200 ký tự/chart
+                        </div>
+                    </div>
+                    <div id="pdfChartNotesList" class="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        <div class="text-xs text-gray-400 italic">Chọn preset để hiện danh sách chart…</div>
+                    </div>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
                     <div>
@@ -1186,6 +1205,11 @@
             </div>
             <div class="px-5 py-3 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
                 <button onclick="closePdfExportModal()" class="px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-slate-700 text-sm">Huỷ</button>
+                <button id="pdfSaveNotesBtn" onclick="savePdfChartNotes()"
+                        class="px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded text-sm font-semibold"
+                        title="Lưu nhận xét vào project (không xuất PDF)">
+                    ✓ Lưu nhận xét
+                </button>
                 <button id="pdfExportGoBtn" onclick="doPdfExport()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-semibold">
                     📥 Xuất PDF
                 </button>
