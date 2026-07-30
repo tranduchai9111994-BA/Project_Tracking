@@ -10811,6 +10811,8 @@ window.openSettingsModal = async function () {
     _renderVisibilityPanel();
     // T33 Task 2C — load public API tokens (best-effort, không block modal)
     _pubTokRefresh().catch(err => console.warn("[pubtok load]", err));
+    // T34 Task 2 — load LAN info + access log (best-effort)
+    _lanRefresh().catch(err => console.warn("[lan load]", err));
     modal.classList.remove("hidden");
     modal.classList.add("flex");
 };
@@ -11121,6 +11123,121 @@ async function _pubTokRefresh() {
     }
 }
 window._pubTokRefresh = _pubTokRefresh;
+
+
+// ==========================================================================
+// T34 Task 2 — LAN info + access log UI trong Settings modal
+// ==========================================================================
+async function _lanRefresh() {
+    // Fetch song song info + access log
+    try {
+        const [rInfo, rLog] = await Promise.all([
+            fetch("/api/lan/info"),
+            fetch("/api/lan/access-log?limit=100"),
+        ]);
+        if (rInfo.ok) _lanRenderInfo(await rInfo.json());
+        // access-log có thể 403 nếu đang xem từ LAN — không phải lỗi
+        if (rLog.ok) {
+            _lanRenderAccessLog(await rLog.json());
+        } else {
+            const body = document.getElementById("lanAccessLogBody");
+            if (body) {
+                body.innerHTML = `<tr><td colspan="6" class="text-center text-orange-500 italic py-2">
+                    🔒 Chỉ máy chủ (localhost) xem được access log.
+                </td></tr>`;
+            }
+        }
+    } catch (err) {
+        console.error("[_lanRefresh]", err);
+    }
+}
+window._lanRefresh = _lanRefresh;
+
+function _lanRenderInfo(d) {
+    // URL list
+    const urlList = document.getElementById("lanUrlList");
+    if (urlList) {
+        urlList.innerHTML = (d.urls || []).map(u => {
+            const isLocal = u.ip === "127.0.0.1";
+            const badgeColor = isLocal ? "bg-slate-100 text-slate-700 dark:bg-slate-600 dark:text-slate-100"
+                                        : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100";
+            return `
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="px-2 py-0.5 rounded text-[10px] ${badgeColor}">${escapeHtml(u.label || "")}</span>
+                    <a href="${escapeAttr(u.url)}" target="_blank" class="font-mono text-blue-600 hover:underline">${escapeHtml(u.url)}</a>
+                    <button type="button" onclick="_lanCopyUrl('${escapeAttr(u.url)}')"
+                            class="text-[10px] px-1.5 py-0.5 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500"
+                            title="Copy URL">📋</button>
+                </div>
+            `;
+        }).join("");
+    }
+    // Badges
+    const guardEl = document.getElementById("lanAdminGuardBadge");
+    if (guardEl) {
+        const on = d.admin_guard;
+        guardEl.innerHTML = `Admin Guard: <span class="font-mono ${on ? 'text-green-600' : 'text-red-600'}">${on ? 'ON 🔒' : 'OFF ⚠'}</span>`;
+    }
+    const logEl = document.getElementById("lanAccessLogBadge");
+    if (logEl) {
+        const on = d.access_log;
+        logEl.innerHTML = `Access Log: <span class="font-mono ${on ? 'text-green-600' : 'text-gray-500'}">${on ? 'ON' : 'OFF'}</span>`;
+    }
+    const clientEl = document.getElementById("lanCurrentClientBadge");
+    if (clientEl) {
+        const isLocal = d.is_localhost_request;
+        clientEl.innerHTML = `Bạn đang: <span class="font-mono ${isLocal ? 'text-green-600' : 'text-orange-500'}">${isLocal ? 'LOCALHOST (admin OK)' : 'LAN (view only)'}</span>`;
+    }
+}
+
+function _lanRenderAccessLog(d) {
+    const body = document.getElementById("lanAccessLogBody");
+    if (!body) return;
+    const entries = d.entries || [];
+    if (!entries.length) {
+        body.innerHTML = `<tr><td colspan="6" class="text-center text-gray-400 italic py-2">Log rỗng</td></tr>`;
+        return;
+    }
+    body.innerHTML = entries.map(e => {
+        const t = (e.ts || "").split("T")[1] || e.ts;
+        const status = Number(e.status || 0);
+        const statusColor = status >= 500 ? "text-red-600"
+                          : status >= 400 ? "text-orange-500"
+                          : status >= 300 ? "text-blue-500"
+                          : "text-green-600";
+        const ipBadge = e.is_localhost
+            ? "text-slate-700 dark:text-slate-200"
+            : "text-orange-600 font-semibold";
+        return `
+            <tr class="border-t dark:border-slate-600">
+                <td class="px-2 py-1 font-mono">${escapeHtml(t || "")}</td>
+                <td class="px-2 py-1 font-mono ${ipBadge}">${escapeHtml(e.ip || "?")}</td>
+                <td class="px-2 py-1 font-mono">${escapeHtml(e.method || "")}</td>
+                <td class="px-2 py-1 font-mono truncate max-w-xs" title="${escapeAttr(e.path || "")}">${escapeHtml(e.path || "")}</td>
+                <td class="px-2 py-1 text-right font-mono ${statusColor}">${status}</td>
+                <td class="px-2 py-1 text-right font-mono text-gray-500">${e.duration_ms ?? 0}</td>
+            </tr>
+        `;
+    }).join("");
+}
+
+async function _lanCopyUrl(url) {
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast(`✓ Đã copy: ${url}`);
+    } catch {
+        // Fallback textarea
+        const ta = document.createElement("textarea");
+        ta.value = url;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        showToast(`✓ Đã copy: ${url}`);
+    }
+}
+window._lanCopyUrl = _lanCopyUrl;
+
 
 /** Render bảng token — mỗi row có nút Revoke + Xem snippet. */
 function _pubTokRenderList() {

@@ -117,6 +117,25 @@ echo [4/4] Khoi dong server...
 echo.
 echo ============================================================
 echo   Server: %APP_URL%
+
+REM T34 Task 2 — Auto-detect LAN IP de dong nghiep cung LAN co the truy cap.
+REM Loc IPv4 dau tien (bo IPv6). Neu tim thay -> in cong khai URL LAN.
+REM Neu user muon private mode (chi localhost) -> set IHRP_BIND_LOCAL_ONLY=1
+REM va sua host="0.0.0.0" trong app.py thanh host="127.0.0.1".
+if not defined IHRP_BIND_LOCAL_ONLY (
+    for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /R "IPv4"') do (
+        for /f "tokens=* delims= " %%b in ("%%a") do (
+            if not defined LAN_IP set LAN_IP=%%b
+        )
+    )
+    if defined LAN_IP (
+        echo   LAN URL: http://!LAN_IP!:%PORT%  ^(dong nghiep cung LAN dung URL nay^)
+        echo   ADMIN MUTATIONS ^(upload, config^) chi mo tu http://localhost:%PORT%
+    )
+) else (
+    echo   LOCAL-ONLY mode ^(IHRP_BIND_LOCAL_ONLY=1^) — LAN khong truy cap duoc.
+)
+
 echo   Nhan Ctrl+C de dung server
 echo ============================================================
 echo.

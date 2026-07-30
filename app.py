@@ -95,6 +95,28 @@ _project_mgr = ProjectManager(app.config["PROJECTS_FOLDER"])
 # Đảm bảo tồn tại project "default" ngay khi khởi động
 _project_mgr.get_or_create_default()
 
+# --------------------------------------------------------------------------
+# T34 Task 2 — LAN secure self-host: cài admin guard + access log ngay từ
+# đầu để mọi request đều đi qua.
+# --------------------------------------------------------------------------
+from analyzer import lan_security as _lansec
+
+# Path log — nằm trong .project_store để user backup cùng data
+_ACCESS_LOG_PATH = os.path.join(
+    os.path.dirname(__file__), ".project_store", "access.log",
+)
+# Cho phép override qua env (VD tester chỉ định temp dir)
+_ACCESS_LOG_PATH = os.environ.get("IHRP_ACCESS_LOG", _ACCESS_LOG_PATH)
+
+# Admin guard — chặn POST/PUT/DELETE từ non-localhost. Tắt bằng env
+# IHRP_DISABLE_ADMIN_GUARD=1 (không nên dùng, chỉ để debug).
+if os.environ.get("IHRP_DISABLE_ADMIN_GUARD", "").strip() != "1":
+    _lansec.install_admin_guard(app)
+
+# Access log — luôn bật nhưng có thể tắt qua env IHRP_DISABLE_ACCESS_LOG=1.
+if os.environ.get("IHRP_DISABLE_ACCESS_LOG", "").strip() != "1":
+    _lansec.install_access_log(app, _ACCESS_LOG_PATH)
+
 # Phase 7 Slim: dọn export cũ + giới hạn snapshot khi start
 try:
     from analyzer.disk_janitor import purge_old_exports, purge_excess_snapshots
@@ -3624,6 +3646,66 @@ def public_tokens_delete(slug: str, token_id: str):
     if not ok:
         return jsonify({"error": "Không tìm thấy token"}), 404
     return jsonify({"ok": True, "revoked": token_id})
+
+
+# ==========================================================================
+# T34 Task 2 — LAN admin API: URL LAN + access log tail (localhost only)
+# ==========================================================================
+
+@app.route("/api/lan/info")
+def lan_info():
+    """
+    Trả thông tin LAN cho UI: URL truy cập từ mọi interface + info bảo mật.
+
+    Response:
+      {
+        "urls": [{"ip": "...", "url": "...", "label": "..."}],
+        "port": 5000,
+        "admin_guard": bool,  // guard có bật không
+        "access_log": bool,   // log có bật không
+        "extra_admin_allowlist": ["192.168.1.10", ...],
+        "is_localhost_request": bool,  // request hiện tại có phải localhost không
+      }
+
+    Không cần auth — chỉ trả metadata public. Localhost check hiển thị để
+    FE có thể hiện badge "🔒 Bạn đang truy cập từ LAN, admin bị khóa".
+    """
+    from analyzer import lan_security as ls
+    return jsonify({
+        "urls": ls.detect_lan_ips(port=5000),
+        "port": 5000,
+        "admin_guard": os.environ.get("IHRP_DISABLE_ADMIN_GUARD", "") != "1",
+        "access_log": os.environ.get("IHRP_DISABLE_ACCESS_LOG", "") != "1",
+        "extra_admin_allowlist": sorted(ls._extra_allow_list()),
+        "is_localhost_request": ls.is_localhost_request(request),
+    })
+
+
+@app.route("/api/lan/access-log")
+def lan_access_log():
+    """
+    Trả tail của access log để UI Settings hiển thị lịch sử truy cập.
+
+    Query: limit (default 100, max 500).
+    Chỉ cho phép localhost xem — thông tin IP nội bộ là nhạy cảm.
+    """
+    from analyzer import lan_security as ls
+    if not ls.is_localhost_request(request):
+        return jsonify({
+            "error": "Access log chỉ xem được từ máy chủ (localhost).",
+            "code": "LOCALHOST_ONLY",
+        }), 403
+    try:
+        limit = int(request.args.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+    entries = ls.read_access_log_tail(_ACCESS_LOG_PATH, limit=limit)
+    return jsonify({
+        "entries": entries,
+        "count": len(entries),
+        "log_path": _ACCESS_LOG_PATH,
+    })
 
 
 @app.route("/api/projects/<slug>/public-scopes")
