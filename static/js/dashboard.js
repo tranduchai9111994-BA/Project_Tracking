@@ -64,6 +64,70 @@ const PHASE_COLORS = {
 };
 
 // ========================================================================
+// T35 Task 5 — apiJson helper
+// Wrap fetch + .json() với error thân thiện khi server trả HTML (stale server
+// / endpoint 404) thay vì JSON. Timeout mặc định 30s.
+// ========================================================================
+/**
+ * @param {string} url
+ * @param {RequestInit & {timeoutMs?: number}} [opts]
+ * @returns {Promise<any>} parsed JSON
+ */
+async function apiJson(url, opts = {}) {
+    const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 30000;
+    const { timeoutMs: _tm, ...fetchOpts } = opts;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    // Merge AbortSignal: nếu caller đã truyền signal → abort khi một trong hai fire
+    if (fetchOpts.signal) {
+        const outer = fetchOpts.signal;
+        if (outer.aborted) ctrl.abort();
+        else outer.addEventListener("abort", () => ctrl.abort(), { once: true });
+    }
+    fetchOpts.signal = ctrl.signal;
+    let resp;
+    try {
+        resp = await fetch(url, fetchOpts);
+    } catch (e) {
+        clearTimeout(timer);
+        if (e && e.name === "AbortError") {
+            throw new Error(`Request timeout sau ${Math.round(timeoutMs / 1000)}s — kiểm tra mạng / server.`);
+        }
+        throw e;
+    } finally {
+        clearTimeout(timer);
+    }
+
+    const ctype = (resp.headers.get("content-type") || "").toLowerCase();
+    if (!ctype.includes("application/json")) {
+        let preview = "";
+        try {
+            preview = (await resp.text()).slice(0, 500);
+        } catch (e) { /* ignore */ }
+        throw new Error(
+            `Server trả về HTML thay vì JSON (endpoint không tồn tại hoặc server chưa cập nhật — vui lòng restart Flask). Preview: ${preview.slice(0, 120)}`
+        );
+    }
+
+    let data;
+    try {
+        data = await resp.json();
+    } catch (e) {
+        throw new Error("Không parse được JSON từ server — vui lòng restart Flask.");
+    }
+
+    if (!resp.ok) {
+        const msg = (data && (data.error || data.message)) || `HTTP ${resp.status}`;
+        const err = new Error(msg);
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+    return data;
+}
+window.apiJson = apiJson;
+
+// ========================================================================
 // INIT
 // ========================================================================
 document.addEventListener("DOMContentLoaded", () => {
@@ -159,8 +223,7 @@ document.addEventListener("DOMContentLoaded", () => {
 /** Load danh sách project, populate selector. */
 async function loadProjectList() {
     try {
-        const r = await fetch("/api/projects");
-        const data = await r.json();
+        const data = await apiJson("/api/projects");
         allProjects = data.projects || [];
 
         const sel = document.getElementById("projectSelector");
@@ -184,6 +247,7 @@ async function loadProjectList() {
         updateUploadTargetLabel();
     } catch (err) {
         console.error("Không load được project list", err);
+        showToast(err.message || "Không load được danh sách project", "red");
     }
 }
 
@@ -217,16 +281,21 @@ async function tryLoadDashboardForCurrent(preserveFilters = false) {
             globalFilters = { modules: [], processes: [], pics: [] };
         }
         const url = _buildDashboardUrl();
-        const r = await fetch(url);
-        if (r.status === 404) return;
-        if (!r.ok) return;
-        const data = await r.json();
+        let data;
+        try {
+            data = await apiJson(url);
+        } catch (e) {
+            // 404 = project chưa có data — im lặng
+            if (e && e.status === 404) return;
+            throw e;
+        }
         applyDashboardResponse(data);
         if (!preserveFilters) {
             showToast(`Đã tải project: ${data.project.name}`);
         }
     } catch (err) {
         console.warn("Không load được dashboard project:", err);
+        if (err && err.message) showToast(err.message, "red");
     }
 }
 
@@ -806,12 +875,7 @@ async function _doGlobalFilterFetch() {
         // → dùng data mới từ /dashboard.
         _matrixCache = null;
         const url = _buildDashboardUrl();
-        const r = await fetch(url);
-        if (!r.ok) {
-            showToast("Không tải được dashboard", "red");
-            return;
-        }
-        const data = await r.json();
+        const data = await apiJson(url);
         applyDashboardResponse(data);
         // Nếu user đang ở mode process, refetch matrix với filter mới.
         if (_matrixGroupBy === "process") {
@@ -826,7 +890,7 @@ async function _doGlobalFilterFetch() {
             }
         }
     } catch (e) {
-        showToast("Lỗi mạng: " + e.message, "red");
+        showToast(e.message || "Lỗi mạng", "red");
     }
 }
 
@@ -1173,17 +1237,12 @@ async function _uploadLegacyFlow(file) {
     const threshold = document.getElementById("durationThreshold")?.value || 3;
     try {
         const url = `/api/projects/${currentProjectSlug}/upload?threshold=${threshold}`;
-        const resp = await fetch(url, { method: "POST", body: formData });
-        const data = await resp.json();
-        if (data.error) {
-            showToast("Lỗi: " + data.error, "red");
-            return;
-        }
+        const data = await apiJson(url, { method: "POST", body: formData });
         applyDashboardResponse(data);
         await loadProjectList();
         showToast(`Đã tải ${data.rows_count} chức năng vào project "${data.project.name}"!`);
     } catch (err) {
-        showToast("Lỗi kết nối server: " + err.message, "red");
+        showToast("Lỗi: " + (err.message || err), "red");
     } finally {
         document.getElementById("uploadProgress").classList.add("hidden");
     }
@@ -1233,12 +1292,7 @@ async function _uploadWithWizard(file) {
     formData.append("file", file);
     try {
         const url = `/api/upload-preview?project_slug=${encodeURIComponent(currentProjectSlug || "default")}`;
-        const resp = await fetch(url, { method: "POST", body: formData });
-        const data = await resp.json();
-        if (data.error) {
-            showToast("Lỗi: " + data.error, "red");
-            return;
-        }
+        const data = await apiJson(url, { method: "POST", body: formData });
         _ucmState.tmpId = data.tmp_id;
         _ucmState.filename = data.filename;
         _ucmState.headers = data.headers || [];
@@ -1258,7 +1312,7 @@ async function _uploadWithWizard(file) {
         }
         _ucmOpenModal(data);
     } catch (err) {
-        showToast("Lỗi kết nối server: " + err.message, "red");
+        showToast("Lỗi: " + (err.message || err), "red");
     } finally {
         document.getElementById("uploadProgress").classList.add("hidden");
     }
@@ -1536,7 +1590,7 @@ async function _ucmSubmit(skipMapping) {
     document.getElementById("uploadProgress").classList.remove("hidden");
     const mappingToSend = skipMapping ? {} : _ucmState.currentMapping;
     try {
-        const r = await fetch("/api/upload-confirm", {
+        const data = await apiJson("/api/upload-confirm", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1547,11 +1601,6 @@ async function _ucmSubmit(skipMapping) {
                 threshold: parseInt(document.getElementById("durationThreshold")?.value || "3", 10),
             }),
         });
-        const data = await r.json();
-        if (data.error) {
-            showToast("Lỗi: " + data.error, "red");
-            return;
-        }
         closeUploadMappingModal();
         applyDashboardResponse(data);
         await loadProjectList();
@@ -1560,7 +1609,7 @@ async function _ucmSubmit(skipMapping) {
             : " (auto-detect)";
         showToast(`Đã tải ${data.rows_count} chức năng${suffix}!`);
     } catch (err) {
-        showToast("Lỗi kết nối server: " + err.message, "red");
+        showToast("Lỗi: " + (err.message || err), "red");
     } finally {
         document.getElementById("uploadProgress").classList.add("hidden");
     }
@@ -5130,6 +5179,25 @@ function _deepMerge(target, source) {
 
 function showToast(msg, color = "green") {
     const toast = document.getElementById("toast");
+    if (!toast) return;
+    // T35 Task 5 — toast đặc biệt khi server stale (cần restart Flask)
+    const needsReload = /server chưa cập nhật|restart Flask|HTML thay vì JSON/i.test(String(msg || ""));
+    if (needsReload) {
+        toast.innerHTML = "";
+        const span = document.createElement("span");
+        span.textContent = msg;
+        toast.appendChild(span);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ml-3 underline font-semibold";
+        btn.textContent = "🔄 Reload page";
+        btn.onclick = () => location.reload();
+        toast.appendChild(btn);
+        toast.className = "fixed bottom-5 right-5 bg-amber-600 text-white px-5 py-3 rounded-lg shadow-lg z-50 max-w-md text-sm";
+        toast.classList.remove("hidden");
+        // Không auto-hide — user cần quyết định reload
+        return;
+    }
     toast.textContent = msg;
     toast.className = `fixed bottom-5 right-5 ${color === "red" ? "bg-red-600" : "bg-green-600"} text-white px-5 py-3 rounded-lg shadow-lg z-50`;
     toast.classList.remove("hidden");
@@ -10484,9 +10552,7 @@ async function loadDataQuality() {
         // Global filter (module/process/pic) đã được BE áp dụng qua _filtered_data_from_request
         const qsFilter = _buildFilterQuery();
         const url = `/api/projects/${currentProjectSlug}/data-quality${qsFilter ? "?" + qsFilter : ""}`;
-        const r = await fetch(url);
-        if (!r.ok) throw new Error(await r.text());
-        const d = await r.json();
+        const d = await apiJson(url);
         _dqState.issues = d.issues || [];
         _dqState.summary = d.summary || null;
         _dqState.page = 1;
@@ -13265,17 +13331,20 @@ async function _integSyncEndpoint(integrationId, endpointId) {
     const epName = ep?.name || "endpoint";
     _syncOpenModal(epName);
     try {
-        const r = await fetch(`/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}/sync`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ endpoint_id: endpointId }),
-        });
+        const data = await apiJson(
+            `/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}/sync`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ endpoint_id: endpointId }),
+                timeoutMs: 120000,  // sync có thể lâu
+            },
+        );
         // Đánh dấu fetch done → step parse
         _syncMarkStep("connect", 50);
         _syncMarkStep("auth", 65);
         _syncMarkStep("fetch", 80);
         _syncActiveStep("parse");
-        const data = await r.json();
         _syncMarkStep("parse", 90);
         _syncActiveStep("snapshot");
         if (data.status === "ok") {
@@ -13287,7 +13356,7 @@ async function _integSyncEndpoint(integrationId, endpointId) {
         }
         await _integReloadList();
     } catch (err) {
-        _syncShowResult(false, { message: `Lỗi kết nối: ${err.message}` }, epName);
+        _syncShowResult(false, { message: `Lỗi: ${err.message}` }, epName);
     }
 }
 
@@ -13330,12 +13399,9 @@ async function _integRefreshSyncQuickMenu() {
     if (!_integState.integrations.length && !_integState.capabilities) {
         // Chưa fetch → fetch nền
         try {
-            const r = await fetch(`/api/projects/${currentProjectSlug}/integrations`);
-            if (r.ok) {
-                const data = await r.json();
-                _integState.integrations = data.integrations || [];
-                _integState.capabilities = data.capabilities || null;
-            }
+            const data = await apiJson(`/api/projects/${currentProjectSlug}/integrations`);
+            _integState.integrations = data.integrations || [];
+            _integState.capabilities = data.capabilities || null;
         } catch {}
     }
     _integRenderSyncQuickMenu();
@@ -13457,9 +13523,7 @@ async function loadGanttCalendar() {
     qs.set("granularity", _ganttCalState.granularity);
     const url = `/api/projects/${currentProjectSlug}/gantt-calendar?${qs.toString()}${qsFilter ? "&" + qsFilter : ""}`;
     try {
-        const r = await fetch(url);
-        if (!r.ok) throw new Error(await r.text());
-        const data = await r.json();
+        const data = await apiJson(url);
         _renderGanttCalendar(data);
     } catch (err) {
         container.innerHTML = `<div class="text-red-600 text-center py-10 text-sm">Lỗi tải Gantt Calendar: ${escapeHtml(err.message)}</div>`;
