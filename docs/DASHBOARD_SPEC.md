@@ -493,27 +493,44 @@ Modal có:
 
 *Tab "Thêm mới / Chỉnh sửa":*
 - Form: `Tên` · `Base URL`.
-- Fieldset **Cấu hình đăng nhập**: `Auth method` (dropdown từ capabilities API,
-  option `basic_auth/bearer_token/api_key` disable với hint "Đang phát triển")
-  · `Login path` · `Username field` · `Password field` · `Prefix biến môi
-  trường (credential_env)` — hint hiển thị công thức `<PREFIX>_USERNAME + _PASSWORD`.
+- Fieldset **Cấu hình xác thực** (T30b — 4 method first-class, không disable):
+  - Dropdown `Auth method`: `form_login` / `basic_auth` / `bearer_token` /
+    `api_key` — với label tiếng Việt (VD "Form login (POST username/password)",
+    "Bearer token"). Description hint hiển thị bên dưới sau khi chọn.
+  - 4 block field group ẩn/hiện dynamic (`data-auth-fields="<method>"`) theo
+    method đang chọn:
+      * `form_login` → `Login path` · `Username field` · `Password field` ·
+        `Prefix env (credential_env)`.
+      * `basic_auth` → `Prefix env (credential_env)`.
+      * `bearer_token` → `Prefix env (bearer_env)`.
+      * `api_key` → `Prefix env (apikey_env)` · `Header/param name` ·
+        `Vị trí (header|query)`.
 - Fieldset **Danh sách Endpoint**: mỗi row = `Tên · Path · HTTP method ·
   Response type · Target action · Params (JSON)`. Có nút `➕ Thêm endpoint`
   / `🗑 Xoá` từng row. Template dùng `<template id="integEndpointTemplate">`
   để clone.
+  - Khi user chọn `Response type = json` → hiện panel **🗺 Field Mapping**
+    (T30b) với:
+      * Input `data_path` — dot-notation trỏ đến list-of-records.
+      * Textarea JSON `field_mapping` — `{"col_iHRP": "json.dot.path"}`.
+      * Nút `🔮 Auto-suggest từ endpoint` → gọi `/preview-json`, nhận flat
+        keys từ 1 record thực, dùng heuristic tên field để gợi ý mapping.
+        User có thể sửa lại textarea trước khi Lưu.
 - Nút `🔍 Test login` — bấm → POST `/integrations/<id>/test` → hiển thị
-  message inline (xanh nếu ok, đỏ nếu fail + lý do).
+  message inline. Với các method non-form (basic/bearer/apikey) chỉ verify
+  credential có trong `.env` (không hit server).
 - Nút `💾 Lưu` — POST hoặc PUT tuỳ đang tạo mới hay edit.
 
 **Sync flow FE (khi user bấm 🔄):**
 1. Toast "Đang sync… có thể mất vài giây".
 2. POST `/api/projects/<slug>/integrations/<id>/sync` với body `{endpoint_id}`.
-3. Response `{status, message, rows_imported, snapshot_id}`.
+3. Response `{status, message, rows_imported, snapshot_id, response_type}`.
 4. Nếu ok → toast success + gọi `tryLoadDashboardForCurrent(true)` để dashboard
    tự refresh dữ liệu mới (giữ nguyên filter hiện tại).
 5. Refresh list integrations để badge `last_synced_at` cập nhật.
 
 **Security note:**
-Password chỉ được đọc từ `.env` phía backend khi cần. FE KHÔNG bao giờ nhìn
-thấy hoặc gửi password. Field nhập password KHÔNG tồn tại trong UI — user
-chỉnh trực tiếp file `.env` ở gốc project.
+Credential (password/token/API key) chỉ được đọc từ `.env` phía backend khi
+cần. FE KHÔNG bao giờ nhìn thấy hoặc gửi credential. Field nhập password/token
+KHÔNG tồn tại trong UI — user chỉnh trực tiếp file `.env` ở gốc project.
+Backend cũng KHÔNG log credential ra terminal (chỉ log tên biến khi thiếu).

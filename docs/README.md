@@ -127,11 +127,15 @@ Data cũ từ V2 (không có project) tự động migrate vào project "Default
   digest schedule / SLA / reminder trong 1 chỗ.
 - 👁 **UX7 View icon** — bảng lưới bỏ click-any-row, thay bằng icon 👁 cột cuối
   cho rõ affordance.
-- 🔌 **Registry API + Đồng bộ dữ liệu (T30)** — cấu hình danh sách API endpoint
-  từ nhiều ứng dụng nguồn (iHRP prod/UAT, workload report, GAP list…), bấm 1
-  nút để tự login → tải Excel → parse → append snapshot. Credential nạp qua
-  file `.env` (KHÔNG lưu JSON) theo prefix `credential_env` (VD `IHRP_PROD`
-  → `IHRP_PROD_USERNAME` + `IHRP_PROD_PASSWORD`). Chi tiết:
+- 🔌 **Registry API + Đồng bộ dữ liệu (T30 + T30b)** — cấu hình danh sách API
+  endpoint từ nhiều ứng dụng nguồn (iHRP prod/UAT, workload report, GAP list,
+  REST API team FIS…), bấm 1 nút để tự auth → tải Excel/JSON → parse → append
+  snapshot. Hỗ trợ **4 auth method first-class** (`form_login`, `basic_auth`,
+  `bearer_token`, `api_key` header/query) và **2 response type** (`excel`,
+  `json` với `data_path` + `field_mapping` dot-notation). Credential nạp qua
+  `.env` (KHÔNG lưu JSON) — mỗi method dùng prefix env riêng:
+  `<PREFIX>_USERNAME/_PASSWORD` (form/basic), `<PREFIX>_TOKEN` (bearer),
+  `<PREFIX>_KEY` (api_key). Chi tiết:
   [`docs/INTEGRATIONS_GUIDE.md`](INTEGRATIONS_GUIDE.md).
 
 ## Tech Stack
@@ -142,7 +146,7 @@ Data cũ từ V2 (không có project) tự động migrate vào project "Default
 - **Không cần database, không cần Node.js, không cần Docker**
 - Test: pytest (dev: `requests-mock` cho mock HTTP)
 
-## Cấu hình `.env` (T30 Registry API)
+## Cấu hình `.env` (T30 + T30b Registry API)
 
 Nếu dùng tính năng Đồng bộ dữ liệu, tạo file `.env` ở gốc project (đã sẵn
 trong `.gitignore`, không commit lên repo). Copy từ template:
@@ -151,16 +155,24 @@ trong `.gitignore`, không commit lên repo). Copy từ template:
 cp .env.example .env
 ```
 
-Sau đó điền username/password theo prefix của integration đã tạo trong UI.
-VD nếu integration `credential_env = IHRP_PROD`:
+Sau đó điền credential tuỳ theo **auth method** của integration:
 
 ```
+# form_login / basic_auth  →  <PREFIX>_USERNAME, <PREFIX>_PASSWORD
 IHRP_PROD_USERNAME=your_username
 IHRP_PROD_PASSWORD=your_password
+
+# bearer_token  →  <PREFIX>_TOKEN
+FIS_API_TOKEN=eyJhbGciOiJIUzI1NiIs...
+
+# api_key  →  <PREFIX>_KEY
+FIS_API_KEY=sk-abc-1234567890
 ```
 
-Xem `docs/INTEGRATIONS_GUIDE.md` để biết cách F12 Network reverse-engineer
-`login_path` + tên field trên web app nguồn.
+Xem `docs/INTEGRATIONS_GUIDE.md` để biết:
+- Cách F12 Network reverse-engineer `login_path` + tên field cho `form_login`.
+- Cách config `data_path` + `field_mapping` cho JSON API response.
+- Cách dùng "Auto-suggest field mapping" từ 1 sample record.
 
 ## Cấu trúc
 Xem `docs/ARCHITECTURE.md` để biết chi tiết.

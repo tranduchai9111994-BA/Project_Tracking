@@ -744,39 +744,106 @@
                     </div>
 
                     <fieldset class="border rounded-lg p-3 dark:border-slate-600">
-                        <legend class="text-xs font-semibold px-2">🔐 Cấu hình đăng nhập</legend>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <legend class="text-xs font-semibold px-2">🔐 Cấu hình xác thực</legend>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-2">
                             <label class="block">
-                                <span class="text-xs">Auth method</span>
-                                <select id="integAuthMethod" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600">
+                                <span class="text-xs font-semibold">Auth method *</span>
+                                <select id="integAuthMethod" onchange="_integOnAuthMethodChange()"
+                                        class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600">
                                     <!-- Populated by JS từ capabilities -->
                                 </select>
+                                <p id="integAuthDesc" class="text-[11px] text-gray-500 mt-1"></p>
                             </label>
+                        </div>
+
+                        <!-- ==== form_login fields ==== -->
+                        <div id="integAuth-form_login" data-auth-fields class="hidden space-y-2 border-l-2 border-cyan-400 pl-3">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <label class="block">
+                                    <span class="text-xs">Login path</span>
+                                    <input id="integLoginPath" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                           placeholder="/login" value="/login">
+                                </label>
+                                <label class="block">
+                                    <span class="text-xs">Prefix env (credential_env) *</span>
+                                    <input id="integCredEnv" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600 uppercase"
+                                           placeholder="VD: IHRP_PROD">
+                                </label>
+                                <label class="block">
+                                    <span class="text-xs">Username field name</span>
+                                    <input id="integUsernameField" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                           placeholder="username" value="username">
+                                </label>
+                                <label class="block">
+                                    <span class="text-xs">Password field name</span>
+                                    <input id="integPasswordField" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                           placeholder="password" value="password">
+                                </label>
+                            </div>
+                            <p class="text-[11px] text-gray-500">
+                                Thêm vào <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">.env</code>:
+                                <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">&lt;PREFIX&gt;_USERNAME</code> +
+                                <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">&lt;PREFIX&gt;_PASSWORD</code>
+                            </p>
+                        </div>
+
+                        <!-- ==== basic_auth fields ==== -->
+                        <div id="integAuth-basic_auth" data-auth-fields class="hidden space-y-2 border-l-2 border-emerald-400 pl-3">
                             <label class="block">
-                                <span class="text-xs">Login path</span>
-                                <input id="integLoginPath" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
-                                       placeholder="/login" value="/login">
+                                <span class="text-xs">Prefix env (credential_env) *</span>
+                                <!-- Chú ý: input id trùng credential_env với form_login để tái sử dụng
+                                     — hidden input riêng cho basic_auth để giữ giá trị khi switch method -->
+                                <input id="integCredEnvBasic" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600 uppercase"
+                                       placeholder="VD: FIS_UAT">
                             </label>
+                            <p class="text-[11px] text-gray-500">
+                                Thêm vào <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">.env</code>:
+                                <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">&lt;PREFIX&gt;_USERNAME</code> +
+                                <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">&lt;PREFIX&gt;_PASSWORD</code>.
+                                Client sẽ gửi header <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">Authorization: Basic base64(user:pass)</code>.
+                            </p>
+                        </div>
+
+                        <!-- ==== bearer_token fields ==== -->
+                        <div id="integAuth-bearer_token" data-auth-fields class="hidden space-y-2 border-l-2 border-indigo-400 pl-3">
                             <label class="block">
-                                <span class="text-xs">Username field name</span>
-                                <input id="integUsernameField" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
-                                       placeholder="username" value="username">
+                                <span class="text-xs">Prefix env (bearer_env) *</span>
+                                <input id="integBearerEnv" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600 uppercase"
+                                       placeholder="VD: FIS_API">
                             </label>
-                            <label class="block">
-                                <span class="text-xs">Password field name</span>
-                                <input id="integPasswordField" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
-                                       placeholder="password" value="password">
-                            </label>
-                            <label class="block md:col-span-2">
-                                <span class="text-xs">Prefix biến môi trường (credential_env)</span>
-                                <input id="integCredEnv" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600 uppercase"
-                                       placeholder="VD: IHRP_PROD (hệ thống đọc IHRP_PROD_USERNAME + IHRP_PROD_PASSWORD)">
-                                <p class="text-[11px] text-gray-500 mt-1">
-                                    Thêm vào file <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">.env</code> ở gốc project:
-                                    <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">IHRP_PROD_USERNAME=abc</code> và
-                                    <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">IHRP_PROD_PASSWORD=xyz</code>
-                                </p>
-                            </label>
+                            <p class="text-[11px] text-gray-500">
+                                Thêm vào <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">.env</code>:
+                                <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">&lt;PREFIX&gt;_TOKEN=eyJhbG…</code>.
+                                Client sẽ gửi header <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">Authorization: Bearer &lt;token&gt;</code>.
+                            </p>
+                        </div>
+
+                        <!-- ==== api_key fields ==== -->
+                        <div id="integAuth-api_key" data-auth-fields class="hidden space-y-2 border-l-2 border-fuchsia-400 pl-3">
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <label class="block">
+                                    <span class="text-xs">Prefix env (apikey_env) *</span>
+                                    <input id="integApiKeyEnv" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600 uppercase"
+                                           placeholder="VD: FIS_API">
+                                </label>
+                                <label class="block">
+                                    <span class="text-xs">Header/param name *</span>
+                                    <input id="integApiKeyHeader" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                           placeholder="X-API-Key" value="X-API-Key">
+                                </label>
+                                <label class="block">
+                                    <span class="text-xs">Vị trí</span>
+                                    <select id="integApiKeyLocation" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600">
+                                        <option value="header">Header</option>
+                                        <option value="query">Query param</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <p class="text-[11px] text-gray-500">
+                                Thêm vào <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">.env</code>:
+                                <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">&lt;PREFIX&gt;_KEY=sk-…</code>.
+                                Chọn <b>Query param</b> nếu app source yêu cầu <code>?api_key=xxx</code>.
+                            </p>
                         </div>
                     </fieldset>
 
@@ -826,7 +893,8 @@
                     <option value="GET">GET</option>
                     <option value="POST">POST</option>
                 </select>
-                <select data-field="response_type" class="border rounded p-1.5 text-xs dark:bg-slate-700 dark:border-slate-600"
+                <select data-field="response_type" onchange="_integOnResponseTypeChange(this)"
+                        class="border rounded p-1.5 text-xs dark:bg-slate-700 dark:border-slate-600"
                         data-populate="response_types"></select>
                 <select data-field="target_action" class="border rounded p-1.5 text-xs dark:bg-slate-700 dark:border-slate-600"
                         data-populate="target_actions"></select>
@@ -839,6 +907,38 @@
                 <textarea data-field="params" rows="2" class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
                           placeholder='{"module":"all"}'></textarea>
             </label>
+
+            <!-- ==== JSON response mapping panel — chỉ show khi response_type=json ==== -->
+            <div data-json-panel class="hidden border-t dark:border-slate-600 pt-2 space-y-2">
+                <div class="flex items-center justify-between">
+                    <span class="text-[11px] font-semibold text-indigo-600 dark:text-indigo-300">🗺 Field Mapping (JSON → cột iHRP)</span>
+                    <button type="button" data-json-suggest
+                            class="text-[11px] bg-indigo-100 hover:bg-indigo-200 dark:bg-indigo-900 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-200 px-2 py-0.5 rounded">
+                        🔮 Auto-suggest từ endpoint
+                    </button>
+                </div>
+                <label class="block">
+                    <span class="text-[11px] text-gray-500">data_path — dot-notation để trích ra list-of-records (rỗng nếu response là array top-level)</span>
+                    <input data-field="data_path" type="text"
+                           class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
+                           placeholder="VD: data.items">
+                </label>
+                <label class="block">
+                    <span class="text-[11px] text-gray-500">
+                        field_mapping — JSON <code>{"Tên cột iHRP": "json.path.dot"}</code>. Nhấn <b>Auto-suggest</b> để gợi ý từ record thực.
+                    </span>
+                    <textarea data-field="field_mapping" rows="8"
+                              class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
+                              placeholder='{
+  "Mã CN": "code",
+  "Tên chức năng": "name",
+  "Module": "module_code",
+  "Analysis - Start": "phases.analysis.start",
+  "Analysis - Status": "phases.analysis.status"
+}'></textarea>
+                </label>
+                <div data-json-suggest-out class="hidden text-[11px] rounded border dark:border-slate-600 p-2 bg-white dark:bg-slate-800 max-h-52 overflow-auto"></div>
+            </div>
         </div>
     </template>
 

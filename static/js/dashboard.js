@@ -10872,24 +10872,49 @@ function _escapeAttr(s) {
 // Editor: mở form thêm mới hoặc chỉnh sửa
 // ---------------------------------------------------------------------------
 
+// Label tiếng Việt cho từng auth method (dropdown option text)
+const _INTEG_AUTH_LABELS = {
+    "form_login": "Form login (POST username/password)",
+    "basic_auth": "HTTP Basic Auth",
+    "bearer_token": "Bearer token",
+    "api_key": "API Key (header/query)",
+};
+
 function _integOpenEditor(integrationId) {
     _integState.editing = integrationId
         ? (_integState.integrations.find(i => i.id === integrationId) || null)
         : null;
 
-    // Populate auth method dropdown từ capabilities
+    // Populate auth method dropdown từ capabilities (all first-class)
     _integPopulateAuthMethods();
 
     const it = _integState.editing;
     document.getElementById("integName").value = it?.name || "";
     document.getElementById("integBaseUrl").value = it?.base_url || "";
     const auth = it?.auth || {};
+
+    // Auth method: set dropdown value + trigger show/hide field group
     document.getElementById("integAuthMethod").value = auth.method || "form_login";
+
+    // form_login fields
     document.getElementById("integLoginPath").value = auth.login_path || "/login";
     document.getElementById("integUsernameField").value = auth.username_field || "username";
     document.getElementById("integPasswordField").value = auth.password_field || "password";
     document.getElementById("integCredEnv").value = auth.credential_env || "";
 
+    // basic_auth field — dùng chung credential_env nhưng có input riêng để user
+    // switch qua lại không mất giá trị
+    document.getElementById("integCredEnvBasic").value = auth.credential_env || "";
+
+    // bearer_token field
+    document.getElementById("integBearerEnv").value = auth.bearer_env || "";
+
+    // api_key fields
+    document.getElementById("integApiKeyEnv").value = auth.apikey_env || "";
+    document.getElementById("integApiKeyHeader").value = auth.apikey_header || "X-API-Key";
+    document.getElementById("integApiKeyLocation").value = auth.apikey_location || "header";
+
+    _integOnAuthMethodChange();  // show đúng block field
     _integRenderEndpoints(it?.endpoints || []);
     _integShowEditorMsg("", "");
     _integSetTab("edit");
@@ -10903,9 +10928,42 @@ function _integPopulateAuthMethods() {
     for (const m of methods) {
         const opt = document.createElement("option");
         opt.value = m.value;
-        opt.textContent = m.value + (m.supported ? "" : " (đang phát triển)");
+        const label = _INTEG_AUTH_LABELS[m.value] || m.value;
+        opt.textContent = label + (m.supported ? "" : " (đang phát triển)");
         opt.disabled = !m.supported;
         sel.appendChild(opt);
+    }
+}
+
+/**
+ * Show/hide field groups theo auth.method đang chọn + update description hint.
+ * Được gọi mỗi lần user đổi dropdown hoặc khi mở editor.
+ */
+function _integOnAuthMethodChange() {
+    const method = document.getElementById("integAuthMethod")?.value || "form_login";
+    const groups = document.querySelectorAll("[data-auth-fields]");
+    for (const g of groups) {
+        if (g.id === `integAuth-${method}`) {
+            g.classList.remove("hidden");
+        } else {
+            g.classList.add("hidden");
+        }
+    }
+    const descEl = document.getElementById("integAuthDesc");
+    if (descEl) {
+        const meta = _integState.capabilities?.auth_method_fields?.[method];
+        descEl.textContent = meta?.description || "";
+    }
+    // Đồng bộ credential_env giữa form_login và basic_auth (2 input khác nhau
+    // để không mất giá trị khi switch, nhưng backend chỉ nhận 1 field)
+    if (method === "basic_auth") {
+        const src = document.getElementById("integCredEnv");
+        const dst = document.getElementById("integCredEnvBasic");
+        if (src?.value && !dst.value) dst.value = src.value;
+    } else if (method === "form_login") {
+        const src = document.getElementById("integCredEnvBasic");
+        const dst = document.getElementById("integCredEnv");
+        if (src?.value && !dst.value) dst.value = src.value;
     }
 }
 
@@ -10930,12 +10988,14 @@ function _integAddEndpoint(ep) {
     const caps = _integState.capabilities || {};
     const respSel = node.querySelector('[data-field="response_type"]');
     const targetSel = node.querySelector('[data-field="target_action"]');
+    // Label tiếng Việt cho response type
+    const respLabels = { "excel": "Excel (.xlsx/.xls)", "json": "JSON API", "csv": "CSV" };
     if (respSel) {
         respSel.innerHTML = "";
         for (const r of (caps.response_types || [{ value: "excel", supported: true }])) {
             const opt = document.createElement("option");
             opt.value = r.value;
-            opt.textContent = r.value + (r.supported ? "" : " (đang phát triển)");
+            opt.textContent = (respLabels[r.value] || r.value) + (r.supported ? "" : " (đang phát triển)");
             opt.disabled = !r.supported;
             respSel.appendChild(opt);
         }
@@ -10959,12 +11019,180 @@ function _integAddEndpoint(ep) {
         if (targetSel) targetSel.value = ep.target_action || "snapshot";
         node.querySelector('[data-field="params"]').value =
             ep.params && Object.keys(ep.params).length ? JSON.stringify(ep.params, null, 2) : "";
+        // JSON mapping fields
+        const dpEl = node.querySelector('[data-field="data_path"]');
+        const fmEl = node.querySelector('[data-field="field_mapping"]');
+        if (dpEl) dpEl.value = ep.data_path || "";
+        if (fmEl && ep.field_mapping && Object.keys(ep.field_mapping).length) {
+            fmEl.value = JSON.stringify(ep.field_mapping, null, 2);
+        }
         node.dataset.endpointId = ep.id || "";
     }
+
+    // Show/hide JSON panel theo response_type ban đầu
+    _integOnResponseTypeChange(respSel, node);
+
     node.querySelector("[data-remove]").addEventListener("click", () => {
         node.remove();
     });
+    // Auto-suggest button — bind sau khi node vào DOM
+    const suggestBtn = node.querySelector("[data-json-suggest]");
+    if (suggestBtn) {
+        suggestBtn.addEventListener("click", () => _integAutoSuggestMapping(node));
+    }
     wrap.appendChild(node);
+}
+
+/**
+ * Show/hide JSON mapping panel dựa vào giá trị response_type.
+ * Có thể được gọi từ inline onchange (chỉ nhận element select) hoặc từ
+ * _integAddEndpoint (nhận cả node cha để không phải traverse ngược).
+ */
+function _integOnResponseTypeChange(sel, nodeCtx) {
+    const rowNode = nodeCtx || sel?.closest("[data-endpoint-row]");
+    if (!rowNode) return;
+    const panel = rowNode.querySelector("[data-json-panel]");
+    if (!panel) return;
+    const value = sel?.value || rowNode.querySelector('[data-field="response_type"]')?.value;
+    if (value === "json") {
+        panel.classList.remove("hidden");
+    } else {
+        panel.classList.add("hidden");
+    }
+}
+
+/**
+ * Auto-suggest field_mapping: gọi POST /preview-json → nhận flat_keys →
+ * suggest mapping theo heuristic tên field (code → Mã CN, phases.analysis.status
+ * → Analysis - Status…). User có thể sửa lại textarea trước khi Lưu.
+ */
+async function _integAutoSuggestMapping(rowNode) {
+    const editing = _integState.editing;
+    if (!editing) {
+        showToast("Bấm 💾 Lưu integration trước để có endpoint id, rồi mới suggest được", "red");
+        return;
+    }
+    const endpointId = rowNode.dataset.endpointId;
+    if (!endpointId) {
+        showToast("Endpoint này chưa được lưu — bấm 💾 Lưu trước", "red");
+        return;
+    }
+    const out = rowNode.querySelector("[data-json-suggest-out]");
+    if (out) {
+        out.classList.remove("hidden");
+        out.textContent = "Đang gọi endpoint để lấy sample record…";
+    }
+    try {
+        const r = await fetch(
+            `/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(editing.id)}/preview-json`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ endpoint_id: endpointId }),
+            }
+        );
+        const data = await r.json();
+        if (data.status !== "ok") {
+            if (out) out.textContent = "❌ " + (data.message || "Preview failed");
+            return;
+        }
+        const flatKeys = data.flat_keys || {};
+        // Heuristic map key → cột iHRP (name-based)
+        const suggested = _integSuggestMapping(flatKeys);
+        // Merge vào textarea hiện tại nếu user đã có mapping từ trước
+        const fmEl = rowNode.querySelector('[data-field="field_mapping"]');
+        let current = {};
+        if (fmEl?.value?.trim()) {
+            try { current = JSON.parse(fmEl.value); } catch (e) { current = {}; }
+        }
+        const merged = { ...suggested, ...current };  // giữ user's manual edits
+        if (fmEl) fmEl.value = JSON.stringify(merged, null, 2);
+        if (out) {
+            const lines = Object.entries(flatKeys).slice(0, 30).map(
+                ([k, v]) => `  • ${k} = ${JSON.stringify(v).slice(0, 60)}`
+            );
+            out.innerHTML =
+                `<div class="font-semibold text-emerald-700 dark:text-emerald-300">✅ ${data.message}</div>` +
+                `<div class="mt-1 text-gray-600 dark:text-gray-300">Đã suggest <b>${Object.keys(suggested).length}</b> cột. Xem sample keys:</div>` +
+                `<pre class="mt-1 whitespace-pre-wrap">${_escapeHtml(lines.join("\n"))}</pre>`;
+        }
+    } catch (err) {
+        if (out) out.textContent = "Lỗi mạng: " + err.message;
+    }
+}
+
+/**
+ * Heuristic suggest mapping từ flat keys.
+ * VD:
+ *   "code" → "Mã CN"
+ *   "phases.analysis.status" → "Analysis - Status"
+ *   "phases.dev.pic" → "Dev - PIC"
+ */
+function _integSuggestMapping(flatKeys) {
+    // Từ điển field → cột iHRP (lowercase key)
+    const nameMap = {
+        "code": "Mã CN",
+        "ma_cn": "Mã CN",
+        "function_code": "Mã CN",
+        "name": "Tên chức năng",
+        "function_name": "Tên chức năng",
+        "ten_chuc_nang": "Tên chức năng",
+        "module": "Module",
+        "module_code": "Module",
+        "phan_he": "Module",
+        "process": "Quy trình",
+        "quy_trinh": "Quy trình",
+        "priority": "Priority",
+        "complexity": "Complexity",
+        "fit_gap": "FIT/GAP",
+        "fit/gap": "FIT/GAP",
+        "phase": "Giai đoạn",
+        "giai_doan": "Giai đoạn",
+    };
+    // Phase attribute mapping (Vietnamese)
+    const attrMap = {
+        "start": "Start",
+        "end": "End",
+        "from": "From",
+        "to": "To",
+        "status": "Status",
+        "pic": "PIC",
+    };
+    // Phase name → Vietnamese label (giữ nguyên uppercase first letter)
+    const phaseNameMap = {
+        "analysis": "Analysis",
+        "phan_tich": "Analysis",
+        "design": "Design",
+        "dev": "Dev",
+        "development": "Dev",
+        "lap_trinh": "Dev",
+        "config": "Config",
+        "test": "Test",
+        "uat": "UAT",
+        "golive": "Golive",
+        "training": "Training",
+    };
+    const out = {};
+    for (const path of Object.keys(flatKeys)) {
+        const lower = path.toLowerCase();
+        // Case 1: flat key trực tiếp trong nameMap
+        const leaf = lower.split(".").pop();
+        if (nameMap[leaf]) {
+            out[nameMap[leaf]] = path;
+            continue;
+        }
+        // Case 2: phase-nested VD phases.analysis.status hoặc analysis.status
+        const parts = lower.split(".");
+        if (parts.length >= 2) {
+            const attr = parts[parts.length - 1];
+            const phase = parts[parts.length - 2];
+            if (attrMap[attr] && phaseNameMap[phase]) {
+                out[`${phaseNameMap[phase]} - ${attrMap[attr]}`] = path;
+                continue;
+            }
+        }
+    }
+    return out;
 }
 
 /** Đọc data từ editor DOM → payload để POST/PUT. */
@@ -10989,25 +11217,62 @@ function _integReadEditorPayload() {
                 throw new Error(`Endpoint "${name}": params không phải JSON object hợp lệ — ${err.message}`);
             }
         }
+        // JSON response type — parse field_mapping textarea
+        const responseType = row.querySelector('[data-field="response_type"]').value;
+        const dataPath = (row.querySelector('[data-field="data_path"]')?.value || "").trim();
+        let fieldMapping = {};
+        if (responseType === "json") {
+            const fmRaw = (row.querySelector('[data-field="field_mapping"]')?.value || "").trim();
+            if (fmRaw) {
+                try {
+                    const parsed = JSON.parse(fmRaw);
+                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                        fieldMapping = parsed;
+                    } else {
+                        throw new Error("field_mapping phải là JSON object {col: path}");
+                    }
+                } catch (err) {
+                    throw new Error(`Endpoint "${name}": field_mapping không hợp lệ — ${err.message}`);
+                }
+            }
+        }
         endpoints.push({
             id: row.dataset.endpointId || undefined,
             name,
             path,
             http_method: row.querySelector('[data-field="http_method"]').value,
-            response_type: row.querySelector('[data-field="response_type"]').value,
+            response_type: responseType,
             target_action: row.querySelector('[data-field="target_action"]').value,
             params,
+            data_path: dataPath,
+            field_mapping: fieldMapping,
         });
+    }
+    const method = document.getElementById("integAuthMethod").value;
+    // credential_env: 2 input riêng — chọn input đang active theo method
+    // (form_login dùng integCredEnv, basic_auth dùng integCredEnvBasic).
+    let credEnv = "";
+    if (method === "basic_auth") {
+        credEnv = document.getElementById("integCredEnvBasic").value.trim().toUpperCase();
+    } else {
+        credEnv = document.getElementById("integCredEnv").value.trim().toUpperCase();
     }
     return {
         name: document.getElementById("integName").value.trim(),
         base_url: document.getElementById("integBaseUrl").value.trim(),
         auth: {
-            method: document.getElementById("integAuthMethod").value,
+            method,
+            // form_login fields (backend chỉ dùng khi method=form_login)
             login_path: document.getElementById("integLoginPath").value.trim() || "/login",
             username_field: document.getElementById("integUsernameField").value.trim() || "username",
             password_field: document.getElementById("integPasswordField").value.trim() || "password",
-            credential_env: document.getElementById("integCredEnv").value.trim().toUpperCase(),
+            credential_env: credEnv,
+            // bearer_token
+            bearer_env: document.getElementById("integBearerEnv").value.trim().toUpperCase(),
+            // api_key
+            apikey_env: document.getElementById("integApiKeyEnv").value.trim().toUpperCase(),
+            apikey_header: document.getElementById("integApiKeyHeader").value.trim() || "X-API-Key",
+            apikey_location: document.getElementById("integApiKeyLocation").value,
         },
         endpoints,
     };
@@ -11042,9 +11307,17 @@ async function _integSaveEditor() {
         _integShowEditorMsg("Thiếu 'Tên' hoặc 'Base URL'", "err");
         return;
     }
-    if (!payload.auth.credential_env) {
-        _integShowEditorMsg("Thiếu 'Prefix biến môi trường' — sẽ không sync được", "warn");
+    // Validate credential prefix theo method — mỗi method cần prefix env khác nhau
+    const method = payload.auth.method;
+    let missingHint = "";
+    if ((method === "form_login" || method === "basic_auth") && !payload.auth.credential_env) {
+        missingHint = "Thiếu 'Prefix env' (credential_env) — sẽ không đọc được USERNAME/PASSWORD từ .env";
+    } else if (method === "bearer_token" && !payload.auth.bearer_env) {
+        missingHint = "Thiếu 'Prefix env' (bearer_env) — sẽ không đọc được TOKEN từ .env";
+    } else if (method === "api_key" && !payload.auth.apikey_env) {
+        missingHint = "Thiếu 'Prefix env' (apikey_env) — sẽ không đọc được KEY từ .env";
     }
+    if (missingHint) _integShowEditorMsg(missingHint, "warn");
 
     const editing = _integState.editing;
     const url = editing
