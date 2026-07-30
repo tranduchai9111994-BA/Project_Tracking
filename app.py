@@ -1955,6 +1955,114 @@ def project_custom_dashboard_export(slug: str, item_id: str):
 
 
 # ==========================================================================
+# T30: Registry API + Đồng bộ dữ liệu
+# ==========================================================================
+# Cho phép user cấu hình danh sách API/endpoint từ nhiều ứng dụng nguồn (iHRP
+# prod, workload report, GAP list…). Bấm "Sync" → tự login → tải Excel → parse
+# → tạo snapshot mới. Credential lưu ở `.env`, KHÔNG trong JSON.
+#
+# Storage: uploads/projects/<slug>/integrations.json (list các integration).
+# Module logic: analyzer/integrations.py.
+# ==========================================================================
+
+
+@app.route("/api/projects/<slug>/integrations", methods=["GET", "POST"])
+def project_integrations(slug: str):
+    """GET → danh sách integrations. POST → tạo mới, body JSON schema xem docs."""
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({
+            "integrations": integ_mod.list_integrations(folder),
+            "capabilities": integ_mod.integration_capabilities(),
+        })
+    body = request.get_json(silent=True) or {}
+    try:
+        created = integ_mod.create_integration(folder, body)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"integration": created}), 201
+
+
+@app.route("/api/projects/<slug>/integrations/<integration_id>",
+           methods=["GET", "PUT", "DELETE"])
+def project_integration_detail(slug: str, integration_id: str):
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        integ = integ_mod.get_integration(folder, integration_id)
+        if not integ:
+            return jsonify({"error": "Không tìm thấy integration"}), 404
+        return jsonify({"integration": integ})
+    if request.method == "PUT":
+        body = request.get_json(silent=True) or {}
+        try:
+            updated = integ_mod.update_integration(folder, integration_id, body)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        if not updated:
+            return jsonify({"error": "Không tìm thấy integration"}), 404
+        return jsonify({"integration": updated})
+    # DELETE
+    ok = integ_mod.delete_integration(folder, integration_id)
+    if not ok:
+        return jsonify({"error": "Không tìm thấy integration"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/api/projects/<slug>/integrations/<integration_id>/test",
+           methods=["POST"])
+def project_integration_test(slug: str, integration_id: str):
+    """Test login only — không tải Excel, chỉ verify creds + URL."""
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    result = integ_mod.test_integration(folder, integration_id)
+    # Trả 200 kể cả khi status=error để FE hiển thị message rõ; HTTP 500 để
+    # trường hợp integration không tồn tại thì tiện log.
+    status_code = 200 if result.get("status") == "ok" else 200
+    if "Không tìm thấy" in (result.get("message") or ""):
+        status_code = 404
+    return jsonify(result), status_code
+
+
+@app.route("/api/projects/<slug>/integrations/<integration_id>/sync",
+           methods=["POST"])
+def project_integration_sync(slug: str, integration_id: str):
+    """Đồng bộ 1 endpoint. Body: {"endpoint_id": "..."}."""
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    body = request.get_json(silent=True) or {}
+    endpoint_id = (body.get("endpoint_id") or "").strip()
+    if not endpoint_id:
+        return jsonify({"status": "error", "message": "Thiếu 'endpoint_id'"}), 400
+
+    folder = _project_dir_for(slug)
+    result = integ_mod.sync_integration(
+        project_dir=folder,
+        integration_id=integration_id,
+        endpoint_id=endpoint_id,
+        project_manager=_project_mgr,
+        project_slug=slug,
+    )
+
+    # Nếu sync ok → invalidate cache state để user thấy dữ liệu mới ở lần
+    # request /dashboard tiếp theo (tự load lại snapshot mới nhất).
+    if result.get("status") == "ok":
+        _state.pop(slug, None)
+        # Nếu target_action = replace thì cũng đã touch_last_upload trong module.
+        # append/snapshot chỉ thêm snapshot, không đổi current.xlsx.
+
+    return jsonify(result)
+
+
+# ==========================================================================
 # Task 17: overview theo `module | process | both` (rebuild bảng khi user
 # đổi segmented control mà không cần full re-fetch dashboard).
 # ==========================================================================

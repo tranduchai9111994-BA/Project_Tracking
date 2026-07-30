@@ -2,3 +2,5 @@
 -r requirements.txt
 pytest==8.3.4
 pytest-cov==6.0.0
+# T30 — mock HTTP cho unit test module Registry API (analyzer/integrations.py)
+requests-mock==1.12.1

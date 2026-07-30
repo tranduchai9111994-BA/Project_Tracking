@@ -17,6 +17,14 @@ colorama==0.4.6
 openpyxl==3.1.5
 et_xmlfile==2.0.0
 
+# --- Registry API integrations (T30) ---
+# requests: HTTP client cho luồng login + tải file Excel từ ứng dụng nguồn.
+# beautifulsoup4: parse CSRF token trong HTML form login (fallback regex vẫn
+#   hoạt động khi bs4 không có, nhưng bs4 an toàn hơn với HTML lộn xộn).
+requests==2.32.3
+beautifulsoup4==4.12.3
+soupsieve==2.6
+
 # --- Type hints (Python 3.9+ compat) ---
 typing_extensions==4.16.0
 

@@ -6,6 +6,13 @@ __pycache__/
 .coverage
 .pytest_cache/
 
+# === Credentials — Registry API integrations ===
+# Chứa username/password để login web nguồn (VD iHRP). KHÔNG commit.
+# Template mẫu: .env.example (an toàn commit).
+.env
+.env.local
+.env.*.local
+
 # === IDE / OS ===
 .DS_Store
 .vscode/
