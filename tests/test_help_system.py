@@ -226,6 +226,28 @@ class TestDashboardJsFunctions:
         assert "window.maybeStartOnboardingTour" in dashboard_js
 
 
+    def test_attach_unified_rebinds_existing_buttons(self, dashboard_js):
+        """Hollow ? từ title innerHTML restore phải bị gỡ rồi gắn lại với listener."""
+        assert "_titleHtmlWithoutHelp" in dashboard_js
+        assert '".unified-help-btn, .chart-help-btn"' in dashboard_js
+        # applyChartConfigsToDom phải re-attach sau restore title
+        idx_apply = dashboard_js.find("function applyChartConfigsToDom")
+        idx_next = dashboard_js.find("\nfunction ", idx_apply + 10)
+        chunk = dashboard_js[idx_apply:idx_next]
+        assert "attachUnifiedSectionHelp" in chunk
+
+    def test_stalled_filter_recomputes_charts(self, dashboard_js):
+        """Local Module filter phải cập nhật funnel + transitions, không chỉ table."""
+        assert "function renderStalledChartsAndTable(" in dashboard_js
+        assert "function _stalledDerivedFunnel(" in dashboard_js
+        assert "function _stalledDerivedTransitions(" in dashboard_js
+        assert "renderStalledChartsAndTable()" in dashboard_js
+        # onChange không còn chỉ gọi renderStalledTable
+        idx = dashboard_js.find("function populateStalledFilters")
+        chunk = dashboard_js[idx: idx + 1200]
+        assert "renderStalledChartsAndTable()" in chunk
+
+
 class TestUnifiedHelpCss:
     """Verify CSS đã có style cho .unified-help-btn."""
 
