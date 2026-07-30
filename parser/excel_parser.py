@@ -11,6 +11,12 @@ import openpyxl
 
 # === Trạng thái hợp lệ ===
 VALID_STATUSES = {"Open", "Assigned", "In-progress", "Resolved", "Closed", "Pending", "Cancelled"}
+# Alias phổ biến từ API/Excel → canonical VALID_STATUSES
+STATUS_ALIASES = {
+    "in progress": "In-progress",
+    "inprogress": "In-progress",
+    "in_progress": "In-progress",
+}
 
 # Ngưỡng outlier Estimate MH (1 ô phase). > 500 thường là Excel date-serial
 # bị lệch cột (VD ~45000 ngày) hoặc timestamp kiểu ~1.7e12 — không phải MH thật.
@@ -625,7 +631,11 @@ class FunctionListParser:
         s = str(value).strip()
         if not s:
             return None
-        # Match case-insensitive
+        # Alias trước (VD "In Progress" → "In-progress")
+        alias = STATUS_ALIASES.get(s.lower())
+        if alias:
+            return alias
+        # Match case-insensitive với VALID_STATUSES
         for valid in VALID_STATUSES:
             if s.lower() == valid.lower():
                 return valid

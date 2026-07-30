@@ -88,14 +88,10 @@ def _row_is_closed(row: FunctionRow) -> bool:
 
 
 def _row_is_overdue(row: FunctionRow, today: Optional[date] = None) -> bool:
-    """Có 1 phase End < today mà chưa Closed/Cancelled."""
+    """Có 1 phase End < today mà chưa Closed/Cancelled (kèm rule later-Closed)."""
+    from analyzer.overdue import row_has_overdue
     today = today or date.today()
-    for pd in row.phases.values():
-        if pd.end_date and pd.end_date < today:
-            st = (pd.status or "").strip().lower()
-            if st not in ("closed", "cancelled"):
-                return True
-    return False
+    return row_has_overdue(row, today)
 
 
 def _row_duration_days(row: FunctionRow) -> Optional[int]:

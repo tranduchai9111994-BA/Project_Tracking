@@ -30,23 +30,23 @@ from datetime import date
 from typing import Any, Callable, Optional
 
 from parser.excel_parser import ParsedData, FunctionRow, PhaseData
+from analyzer.overdue import is_phase_overdue
 
 # Status coi là "done" khi filter effort remaining
 _DONE_STATUSES = frozenset({"Closed", "Cancelled"})
 
 
-def _is_overdue(pd: PhaseData, today: date) -> bool:
-    """Phase overdue: End date < today, status khác Closed/Cancelled.
-
-    Đồng bộ với ``dashboard_engine._is_overdue``: status=None vẫn tính
-    overdue nếu có End date < today (rất phổ biến — user quên cập nhật
-    status). Trước đây drill loại status=None → count summary ≠ drill list
-    (bug: card báo số nhưng drill trả rỗng cho các row status blank).
-    """
-    return (
-        pd.end_date is not None
-        and pd.status not in ("Closed", "Cancelled")
-        and pd.end_date < today
+def _is_overdue(
+    pd: PhaseData,
+    today: date,
+    *,
+    row: Optional[FunctionRow] = None,
+    phase_name: Optional[str] = None,
+    phase_order: Optional[list[str]] = None,
+) -> bool:
+    """Phase overdue — đồng bộ ``analyzer.overdue.is_phase_overdue``."""
+    return is_phase_overdue(
+        pd, today, row=row, phase_name=phase_name, phase_order=phase_order,
     )
 
 
@@ -63,8 +63,17 @@ def _is_phase_active_for_unassigned(pd: PhaseData) -> bool:
     return bool(pd.status) or pd.start_date is not None or pd.end_date is not None
 
 
-def _days_overdue(pd: PhaseData, today: date) -> int:
-    if not _is_overdue(pd, today):
+def _days_overdue(
+    pd: PhaseData,
+    today: date,
+    *,
+    row: Optional[FunctionRow] = None,
+    phase_name: Optional[str] = None,
+    phase_order: Optional[list[str]] = None,
+) -> int:
+    if not _is_overdue(
+        pd, today, row=row, phase_name=phase_name, phase_order=phase_order,
+    ):
         return 0
     return (today - pd.end_date).days
 
@@ -73,6 +82,7 @@ def _row_to_dict(
     row: FunctionRow,
     phase_name: Optional[str] = None,
     today: Optional[date] = None,
+    phase_order: Optional[list[str]] = None,
 ) -> dict:
     """
     Build dict chuẩn cho drill-down output.
@@ -81,6 +91,7 @@ def _row_to_dict(
     """
     today = today or date.today()
     meta = row.meta
+    order = phase_order or list(row.phases.keys())
 
     if phase_name:
         pd = row.phases.get(phase_name, PhaseData())
@@ -118,8 +129,12 @@ def _row_to_dict(
         "pics": pd.pics,
         "start_date": pd.start_date.isoformat() if pd.start_date else "",
         "end_date": pd.end_date.isoformat() if pd.end_date else "",
-        "days_overdue": _days_overdue(pd, today),
-        "is_overdue": _is_overdue(pd, today),
+        "days_overdue": _days_overdue(
+            pd, today, row=row, phase_name=active_phase or None, phase_order=order,
+        ),
+        "is_overdue": _is_overdue(
+            pd, today, row=row, phase_name=active_phase or None, phase_order=order,
+        ),
         "estimate_mh": pd.estimate_mh,
     }
 
@@ -179,12 +194,19 @@ def _filter_pic_workload(data: ParsedData, filters: dict, today: date) -> list[d
             if pic not in pd.pics:
                 continue
             if status == "overdue":
-                if not _is_overdue(pd, today):
+                if not _is_overdue(
+                    pd, today,
+                    row=row, phase_name=phase_name,
+                    phase_order=data.all_phases,
+                ):
                     continue
             elif status:
                 if pd.status != status:
                     continue
-            result.append(_row_to_dict(row, phase_name=phase_name, today=today))
+            result.append(_row_to_dict(
+                row, phase_name=phase_name, today=today,
+                phase_order=data.all_phases,
+            ))
     return result
 
 
@@ -433,9 +455,16 @@ def _filter_overdue(data: ParsedData, filters: dict, today: date) -> list[dict]:
                 continue
             if pic and pic not in pd.pics:
                 continue
-            if not _is_overdue(pd, today):
+            if not _is_overdue(
+                pd, today,
+                row=row, phase_name=phase_name,
+                phase_order=data.all_phases,
+            ):
                 continue
-            records.append(_row_to_dict(row, phase_name=phase_name, today=today))
+            records.append(_row_to_dict(
+                row, phase_name=phase_name, today=today,
+                phase_order=data.all_phases,
+            ))
     # Gom theo ma_cn (case-sensitive): 1 function trễ nhiều phase → 1 row.
     result = _dedupe_by_ma_cn(records)
     result.sort(key=lambda x: x["days_overdue"], reverse=True)

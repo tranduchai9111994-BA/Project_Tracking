@@ -15,6 +15,7 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from parser.excel_parser import FunctionRow, ParsedData, PhaseData
+from analyzer.overdue import is_phase_overdue
 
 
 # ==========================================================================
@@ -347,11 +348,13 @@ def _aggregate_rows(
             if pd.status == "Closed":
                 closed += 1
             # Overdue = end < today, status != Closed/Cancelled
+            # (+ blank + later Closed → không overdue)
             if (
                 pd.end_date is not None
                 and not _is_outlier_date(pd.end_date, today)
-                and pd.end_date < today
-                and pd.status not in ("Closed", "Cancelled")
+                and is_phase_overdue(
+                    pd, today, row=r, phase_name=ph, phase_order=all_phases,
+                )
             ):
                 row_has_overdue = True
         if row_has_overdue:

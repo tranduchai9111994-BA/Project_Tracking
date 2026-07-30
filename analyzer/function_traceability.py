@@ -50,17 +50,33 @@ def _is_phase_closed(status: Optional[str]) -> bool:
     return status.strip().lower() in CLOSED_STATUSES
 
 
-def _is_phase_overdue(pd: PhaseData, today: date) -> bool:
-    """
-    Theo `.cursorrules`: overdue = End date < today AND status ∉ {Closed, Cancelled}.
-    Nếu không có End date → không tính overdue.
-    """
+def _is_phase_overdue(
+    pd: PhaseData,
+    today: date,
+    *,
+    row: Optional[FunctionRow] = None,
+    phase_name: Optional[str] = None,
+    phase_order: Optional[list[str]] = None,
+) -> bool:
+    """Theo `.cursorrules` + ngoại lệ blank+later-Closed (analyzer.overdue)."""
+    from analyzer.overdue import is_phase_overdue as _shared
     end = _to_date(pd.end_date)
     if end is None:
         return False
-    if _is_phase_closed(pd.status):
-        return False
-    return end < today
+    check = pd
+    if end is not pd.end_date:
+        check = PhaseData(
+            start_date=_to_date(pd.start_date),
+            end_date=end,
+            status=pd.status,
+            pics=list(pd.pics or []),
+            estimate_mh=pd.estimate_mh,
+            note=pd.note,
+        )
+    return _shared(
+        check, today,
+        row=row, phase_name=phase_name, phase_order=phase_order,
+    )
 
 
 def _match_query(row: FunctionRow, q_lower: str) -> bool:
@@ -125,7 +141,14 @@ def search_functions(data: ParsedData, query: str, limit: int = 10) -> list[dict
     return combined
 
 
-def _phase_detail(pg: PhaseGroup, pd: PhaseData, today: date) -> dict:
+def _phase_detail(
+    pg: PhaseGroup,
+    pd: PhaseData,
+    today: date,
+    *,
+    row: Optional[FunctionRow] = None,
+    phase_order: Optional[list[str]] = None,
+) -> dict:
     """Convert 1 (PhaseGroup, PhaseData) → dict cho FE, thêm derived fields."""
     start = _to_date(pd.start_date)
     end = _to_date(pd.end_date)
@@ -147,7 +170,10 @@ def _phase_detail(pg: PhaseGroup, pd: PhaseData, today: date) -> dict:
         "estimate_mh": pd.estimate_mh,
         "note": pd.note,
         "is_closed": _is_phase_closed(pd.status),
-        "is_overdue": _is_phase_overdue(pd, today),
+        "is_overdue": _is_phase_overdue(
+            pd, today,
+            row=row, phase_name=pg.name, phase_order=phase_order,
+        ),
         "duration_days": duration_days,
         "days_to_end": days_to_end,
     }
@@ -262,10 +288,13 @@ def get_function_detail(
             meta_out[k] = v
 
     # Phases — theo thứ tự phase_groups của file gốc
+    phase_order = [pg.name for pg in data.phase_groups]
     phases_out: list[dict] = []
     for pg in data.phase_groups:
         pd = row.phases.get(pg.name) or PhaseData()
-        phases_out.append(_phase_detail(pg, pd, today))
+        phases_out.append(_phase_detail(
+            pg, pd, today, row=row, phase_order=phase_order,
+        ))
 
     summary = _summarize(phases_out, meta_out)
 

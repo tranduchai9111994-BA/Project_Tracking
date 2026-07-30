@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any
 
 from parser.excel_parser import ParsedData, FunctionRow, PhaseData
+from analyzer.overdue import is_phase_overdue, row_has_overdue
 
 
 class DashboardEngine:
@@ -120,11 +121,14 @@ class DashboardEngine:
         total = len(data.rows)
 
         # ==== Overdue: đếm function unique VÀ phase-level record ====
-        overdue_functions = sum(1 for r in data.rows if self._row_has_overdue(r))
+        order = data.all_phases
+        overdue_functions = sum(
+            1 for r in data.rows if self._row_has_overdue(r, order)
+        )
         overdue_records = 0
         for r in data.rows:
-            for _, pd in r.phases.items():
-                if self._is_overdue(pd):
+            for phase_name, pd in r.phases.items():
+                if self._is_overdue(pd, r, phase_name, order):
                     overdue_records += 1
 
         # ==== Tiến độ chung (weighted_all): % phase-record Closed / (row × phase) ====
@@ -264,7 +268,9 @@ class DashboardEngine:
         else:
             progress_pct = 0
         active_phase = self._detect_active_phase(rows, data.all_phases)
-        overdue_count = sum(1 for r in rows if self._row_has_overdue(r))
+        overdue_count = sum(
+            1 for r in rows if self._row_has_overdue(r, data.all_phases)
+        )
         return {
             "stt": idx,
             "module": module,
@@ -455,7 +461,7 @@ class DashboardEngine:
                         st["assigned"] += 1
                         ph["assigned"] += 1
 
-                    if self._is_overdue(pd):
+                    if self._is_overdue(pd, r, phase_name, data.all_phases):
                         st["overdue"] += 1
                         ph["overdue"] += 1
 
@@ -481,9 +487,10 @@ class DashboardEngine:
 
     def _overdue_list(self, data: ParsedData) -> list[dict]:
         overdue_items = []
+        order = data.all_phases
         for r in data.rows:
             for phase_name, pd in r.phases.items():
-                if self._is_overdue(pd):
+                if self._is_overdue(pd, r, phase_name, order):
                     days = (self.today - pd.end_date).days
                     overdue_items.append({
                         "stt": r.meta.get("stt", r.row_num),
@@ -635,8 +642,14 @@ class DashboardEngine:
                         "priority": r.meta.get("priority", ""),
                         "complexity": r.meta.get("complexity", ""),
                         "end_date": pd.end_date.isoformat() if pd.end_date else "",
-                        "is_overdue": self._is_overdue(pd),
-                        "days_overdue": (self.today - pd.end_date).days if self._is_overdue(pd) else 0,
+                        "is_overdue": self._is_overdue(
+                            pd, r, phase_name, data.all_phases,
+                        ),
+                        "days_overdue": (
+                            (self.today - pd.end_date).days
+                            if self._is_overdue(pd, r, phase_name, data.all_phases)
+                            else 0
+                        ),
                     })
         # Sort: overdue trước, sau đó Must-have trước
         results.sort(key=lambda x: (
@@ -937,7 +950,9 @@ class DashboardEngine:
                 {r.meta.get("module") for r in rows if r.meta.get("module")},
                 order,
             )
-            overdue = sum(1 for r in rows if self._row_has_overdue(r))
+            overdue = sum(
+                1 for r in rows if self._row_has_overdue(r, data.all_phases)
+            )
 
             # % weighted_all: closed_records / (row × phase)
             if total > 0 and all_phases_cnt > 0:
@@ -1016,7 +1031,7 @@ class DashboardEngine:
                         total += 1
                         if pd.status == "Closed":
                             closed += 1
-                    if self._is_overdue(pd):
+                    if self._is_overdue(pd, r, phase_name, data.all_phases):
                         overdue += 1
 
                 if starts and ends:
@@ -1041,7 +1056,7 @@ class DashboardEngine:
                     # Bỏ qua phase không có bất kỳ date/status nào (chưa touch)
                     if not pd.start_date and not pd.end_date and not pd.status:
                         continue
-                    is_od = self._is_overdue(pd)
+                    is_od = self._is_overdue(pd, r, phase_name, data.all_phases)
                     if is_od:
                         has_overdue = True
                     phase_segments.append({
@@ -1116,7 +1131,13 @@ class DashboardEngine:
     # Helper methods
     # ------------------------------------------------------------------
 
-    def _is_overdue(self, pd: PhaseData) -> bool:
+    def _is_overdue(
+        self,
+        pd: PhaseData,
+        row: FunctionRow | None = None,
+        phase_name: str | None = None,
+        phase_order: list[str] | None = None,
+    ) -> bool:
         """
         Kiểm tra phase data có overdue không.
 
@@ -1125,16 +1146,14 @@ class DashboardEngine:
           - End date < today
           - Status KHÔNG phải "Closed" hoặc "Cancelled"
 
-        Note: Status = None/blank vẫn tính là OVERDUE nếu có End < today. Ở
-        thực tế Excel, rất nhiều phase có ngày plan nhưng người dùng quên
-        cập nhật status → đó chính là signal của overdue. TRƯỚC ĐÂY code
-        loại luôn status=None làm mất hàng chục overdue thực tế.
+        Note: Status = None/blank vẫn tính là OVERDUE nếu có End < today.
+        Ngoại lệ: status blank nhưng phase SAU đã Closed/Cancelled → không
+        overdue (false positive sync API, VD TMS.FR.84 UAT blank + Golive Closed).
         """
-        if pd.end_date is None:
-            return False
-        if pd.status in ("Closed", "Cancelled"):
-            return False
-        return pd.end_date < self.today
+        return is_phase_overdue(
+            pd, self.today,
+            row=row, phase_name=phase_name, phase_order=phase_order,
+        )
 
     def _is_phase_active(self, pd: PhaseData) -> bool:
         """
@@ -1154,9 +1173,13 @@ class DashboardEngine:
             return False
         return bool(pd.status) or pd.start_date is not None or pd.end_date is not None
 
-    def _row_has_overdue(self, row: FunctionRow) -> bool:
+    def _row_has_overdue(
+        self,
+        row: FunctionRow,
+        phase_order: list[str] | None = None,
+    ) -> bool:
         """Kiểm tra function row có bất kỳ phase nào overdue."""
-        return any(self._is_overdue(pd) for pd in row.phases.values())
+        return row_has_overdue(row, self.today, phase_order)
 
     def _group_by_module(self, data: ParsedData) -> dict[str, list[FunctionRow]]:
         result = defaultdict(list)
