@@ -10363,10 +10363,19 @@ function closeChartConfigPopover() {
 
 function _updateStickyHeaderVar() {
     const header = document.querySelector("header.no-print");
-    if (!header) return;
-    const h = header.offsetHeight;
-    if (h > 0) {
-        document.documentElement.style.setProperty("--header-h", `${h}px`);
+    if (header) {
+        const h = header.offsetHeight;
+        if (h > 0) {
+            document.documentElement.style.setProperty("--header-h", `${h}px`);
+        }
+    }
+    // Chiều cao stack sticky (cards + filter) → scroll-margin để không che Overdue
+    const block = document.getElementById("stickyTopBlock");
+    if (block && block.offsetParent !== null) {
+        const bh = block.offsetHeight;
+        if (bh > 0) {
+            document.documentElement.style.setProperty("--sticky-block-h", `${bh}px`);
+        }
     }
 }
 
@@ -10389,10 +10398,11 @@ window.addEventListener("scroll", _updateFilterScrolledClass, { passive: true })
 // ========================================================================
 // TASK 18 — Sticky top block với auto-collapse compact mode khi scroll
 // ========================================================================
-// Threshold: 200px. Manual toggle (nút 🔼/🔽) override auto — nếu user
-// force-compact hoặc force-full, ignore scroll cho đến khi user nhấn lại.
+// Threshold: 120px (sớm hơn → stack gọn trước khi tới bảng Overdue).
+// Manual toggle (nút 🔼/🔽) override auto tạm thời.
 
 let _stickyManualState = null;   // null = auto; "compact" | "full" = manual
+const STICKY_COMPACT_Y = 120;
 
 function _stickyApplyMode(mode) {
     const block = document.getElementById("stickyTopBlock");
@@ -10409,13 +10419,15 @@ function _stickyApplyMode(mode) {
     }
     const btn = document.getElementById("stickyToggleBtn");
     if (btn) btn.textContent = mode === "compact" ? "🔽" : "🔼";
-    // Update CSS var --header-h dùng cho sticky offset các phần tử khác
-    if (typeof _updateStickyHeaderVar === "function") _updateStickyHeaderVar();
+    // Đo lại --header-h + --sticky-block-h sau khi layout đổi (compact/full)
+    requestAnimationFrame(() => {
+        if (typeof _updateStickyHeaderVar === "function") _updateStickyHeaderVar();
+    });
 }
 
 function _stickyAutoUpdate() {
     if (_stickyManualState) return;  // manual override
-    const mode = window.scrollY >= 200 ? "compact" : "full";
+    const mode = window.scrollY >= STICKY_COMPACT_Y ? "compact" : "full";
     _stickyApplyMode(mode);
 }
 
@@ -10712,7 +10724,7 @@ function _presentApplyIndex() {
     // QUAN TRỌNG: gỡ cả present-off VÀ present-active trước khi gắn lại.
     // Bug cũ: chỉ add present-off, không remove present-active → element cũ
     // mang cả 2 class; CSS .present-active { display:block !important } thắng
-    // .present-off → panel trắng (đặc biệt #stickyTopBlock sticky z-45) đè chart.
+    // .present-off → panel trắng (đặc biệt #stickyTopBlock sticky) đè chart.
     dash.querySelectorAll(".present-active, .present-off, .present-host").forEach(el => {
         el.classList.remove("present-active", "present-host");
         el.classList.add("present-off");
