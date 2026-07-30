@@ -320,12 +320,111 @@ def _filter_effort_pic(data: ParsedData, filters: dict, today: date) -> list[dic
     return result
 
 
+def _dedupe_by_ma_cn(items: list[dict]) -> list[dict]:
+    """Gom nhiều phase-record của cùng 1 function → 1 row.
+
+    Dùng cho drill 'overdue' và 'unassigned' — card summary đếm distinct
+    function nên drill phải khớp count. Trước đây drill trả phase-records
+    khiến card=47 nhưng modal='85' → user confuse.
+
+    Nguyên tắc aggregate cho 1 nhóm cùng ma_cn:
+      - ``phase``: join tên các phase (thứ tự lần lượt xuất hiện, VD
+        "Analysis, UAT"). Nếu chỉ 1 phase → giữ nguyên.
+      - ``status``: join unique các status (đã sort). Nếu chỉ 1 status →
+        giữ nguyên (statusBadge render đúng màu).
+      - ``pics``: union unique tất cả pics của các phase.
+      - ``start_date``: sớm nhất.
+      - ``end_date``: sớm nhất (phase overdue nặng nhất).
+      - ``days_overdue``: max.
+      - ``is_overdue``: True nếu bất kỳ phase nào overdue.
+      - ``estimate_mh``: tổng (nếu số, null nếu không có phase nào có MH).
+      - ``phase_count``: số phase gộp (để user biết row này gộp mấy phase).
+    Các meta field (module, ten_cn, priority, complexity, fit_gap,
+    giai_doan, quy_trinh) giữ nguyên vì cùng function → giống nhau.
+    Row có ma_cn rỗng vẫn giữ nguyên (không gom được).
+    """
+    by_code: dict[str, dict] = {}
+    order: list[str] = []
+    for it in items:
+        code = it.get("ma_cn", "") or ""
+        # Fallback: nếu ma_cn rỗng, mỗi item tự thành 1 row (không thể gom).
+        key = code if code else f"__anon_{len(order)}"
+        if key not in by_code:
+            by_code[key] = {
+                # Copy meta + placeholder cho aggregate field
+                **it,
+                "_phase_list": [],
+                "_status_set": set(),
+                "_pics_set": set(),
+                "_start_dates": [],
+                "_end_dates": [],
+                "_days": [],
+                "_est": [],
+                "_extras": {},  # giữ các extra field VD wait_days, risk_score
+                "is_overdue": bool(it.get("is_overdue")),
+            }
+            order.append(key)
+        agg = by_code[key]
+        ph = it.get("phase") or ""
+        if ph and ph not in agg["_phase_list"]:
+            agg["_phase_list"].append(ph)
+        st = it.get("status") or ""
+        if st:
+            agg["_status_set"].add(st)
+        for p in it.get("pics") or []:
+            if p:
+                agg["_pics_set"].add(p)
+        if it.get("start_date"):
+            agg["_start_dates"].append(it["start_date"])
+        if it.get("end_date"):
+            agg["_end_dates"].append(it["end_date"])
+        if it.get("days_overdue"):
+            try:
+                agg["_days"].append(int(it["days_overdue"]))
+            except (TypeError, ValueError):
+                pass
+        if it.get("is_overdue"):
+            agg["is_overdue"] = True
+        est = it.get("estimate_mh")
+        if isinstance(est, (int, float)):
+            agg["_est"].append(est)
+
+    result = []
+    for key in order:
+        agg = by_code[key]
+        phase_list = agg.pop("_phase_list", [])
+        status_set = sorted(agg.pop("_status_set", set()))
+        pics_set = sorted(agg.pop("_pics_set", set()))
+        start_dates = sorted([d for d in agg.pop("_start_dates", []) if d])
+        end_dates = sorted([d for d in agg.pop("_end_dates", []) if d])
+        days = agg.pop("_days", [])
+        est = agg.pop("_est", [])
+        agg.pop("_extras", None)
+        agg["phase"] = ", ".join(phase_list) if phase_list else agg.get("phase", "")
+        agg["status"] = ", ".join(status_set) if status_set else agg.get("status", "")
+        agg["pics"] = pics_set
+        agg["start_date"] = start_dates[0] if start_dates else ""
+        agg["end_date"] = end_dates[0] if end_dates else ""
+        agg["days_overdue"] = max(days) if days else 0
+        agg["estimate_mh"] = sum(est) if est else None
+        agg["phase_count"] = len(phase_list)
+        result.append(agg)
+    return result
+
+
 def _filter_overdue(data: ParsedData, filters: dict, today: date) -> list[dict]:
-    """Tất cả overdue phase records; hỗ trợ filter module/phase/pic tùy chọn."""
+    """Tất cả overdue → dedupe theo ma_cn: 1 row / function.
+
+    Trước đây trả về phase-records (VD 1 function trễ ở 2 phase = 2 row).
+    Giờ dedupe cho khớp card summary (đếm distinct function). Cột phase
+    hiện dạng "Analysis, UAT" — user vẫn thấy được danh sách phase trễ.
+    Hỗ trợ filter module/phase/pic tùy chọn (chỉ hạn chế phase-records
+    trước khi gom).
+    """
     module = filters.get("module", "")
     phase_f = filters.get("phase", "")
     pic = filters.get("pic", "")
-    result = []
+    records = []
     for row in data.rows:
         if module and row.meta.get("module") != module:
             continue
@@ -336,22 +435,27 @@ def _filter_overdue(data: ParsedData, filters: dict, today: date) -> list[dict]:
                 continue
             if not _is_overdue(pd, today):
                 continue
-            result.append(_row_to_dict(row, phase_name=phase_name, today=today))
+            records.append(_row_to_dict(row, phase_name=phase_name, today=today))
+    # Gom theo ma_cn (case-sensitive): 1 function trễ nhiều phase → 1 row.
+    result = _dedupe_by_ma_cn(records)
     result.sort(key=lambda x: x["days_overdue"], reverse=True)
     return result
 
 
 def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dict]:
-    """Phase đang active (≠ Closed/Cancelled) mà không có PIC.
+    """Phase đang active (≠ Closed/Cancelled) mà không có PIC → dedupe theo ma_cn.
 
     Đồng bộ với ``dashboard_engine._is_phase_active``: phase được coi là
     active nếu status truthy HOẶC có Start/End date. Bug cũ chỉ bắt phase
     có status truthy nên card summary hiển thị số nhưng drill trả rỗng
     khi phase chỉ có End date mà status blank.
+
+    Sau khi collect phase-records, gom lại theo ma_cn để card (đếm
+    distinct function) khớp với drill (cũng distinct function).
     """
     module = filters.get("module", "")
     phase_f = filters.get("phase", "")
-    result = []
+    records = []
     for row in data.rows:
         if module and row.meta.get("module") != module:
             continue
@@ -362,7 +466,8 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
                 continue
             if pd.pics:
                 continue
-            result.append(_row_to_dict(row, phase_name=phase_name, today=today))
+            records.append(_row_to_dict(row, phase_name=phase_name, today=today))
+    result = _dedupe_by_ma_cn(records)
     result.sort(key=lambda x: (0 if x["is_overdue"] else 1, -x["days_overdue"]))
     return result
 

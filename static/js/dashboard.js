@@ -4873,12 +4873,21 @@ function renderDrillTable() {
         return;
     }
 
+    // Status thô có thể là chuỗi ghép sau dedupe ("In-progress, Open") → hiểu
+    // là "có chứa" thay vì bằng chính xác, để summary bar bên footer vẫn có nghĩa.
     const overdue = items.filter(i => i.is_overdue).length;
-    const closed = items.filter(i => (i.status || "").toLowerCase() === "closed").length;
-    const inProgress = items.filter(i => ["In-progress", "Assigned"].includes(i.status)).length;
+    const closed = items.filter(i => /closed/i.test(i.status || "")).length;
+    const inProgress = items.filter(i => /in-progress|assigned/i.test(i.status || "")).length;
     const { start, end, pageItems } = _pageSlice("drill", items);
-    document.getElementById("drillFooter").textContent =
-        `Tổng: ${items.length} · Đang xem ${start + 1}–${end} · Closed: ${closed} · Đang làm: ${inProgress} · Trễ: ${overdue}`;
+    // Footer nhấn mạnh Tổng vs Đang xem để user không hiểu nhầm modal chỉ có N dòng
+    // (case B: card 15 → modal show 10 vì pagination default 10/page).
+    const st = pageState.drill || { page: 1, size: 10 };
+    const totalPages = (!st.size || st.size <= 0) ? 1 : Math.max(1, Math.ceil(items.length / st.size));
+    document.getElementById("drillFooter").innerHTML =
+        `<b>Tổng ${items.length} function</b> · Trang ${st.page}/${totalPages} · Đang xem ${start + 1}–${end}`
+        + ` · <span class="text-green-700">Closed: ${closed}</span>`
+        + ` · <span class="text-blue-700">Đang làm: ${inProgress}</span>`
+        + ` · <span class="text-red-700">Trễ: ${overdue}</span>`;
 
     const thead = `<thead class="bg-gray-100 dark:bg-slate-700 sticky top-0 z-10">
         <tr class="text-xs">
@@ -5029,65 +5038,14 @@ function _matrixCellClick(el) {
 
 /**
  * Drill-down modal cho card "Function trễ deadline".
- * Backend không có chart="overdue" trong SUPPORTED_CHARTS → reuse endpoint
- * `/api/projects/<slug>/overdue` sẵn có, adapt data về format drillState.
- * Tránh phải thêm chart type mới vào backend (không muốn đụng test 195/195).
+ *
+ * Trước đây gọi `/api/projects/<slug>/overdue` trả về phase-records nên
+ * card=47 (distinct function) không khớp modal=85 (phase). Fix: dùng
+ * chart drill "overdue" chuẩn — backend đã dedupe theo ma_cn (1 row /
+ * function, cột Phase list các phase trễ). Card ↔ drill khớp nhau.
  */
 async function openOverdueDrillDown() {
-    if (!metricsData) {
-        showToast("Chưa có dữ liệu — hãy upload file", "red");
-        return;
-    }
-    // Giả lập drillState như openDrillDown chuẩn
-    drillState.chart = "_overdue_custom";  // đánh dấu để không dùng export drill-down chuẩn
-    drillState.filters = {};
-    drillState.sortKey = null;
-    drillState.sortDir = "asc";
-
-    const modal = document.getElementById("drillDownModal");
-    modal.classList.remove("hidden");
-    modal.classList.add("flex");
-
-    document.getElementById("drillBody").innerHTML =
-        `<div class="text-gray-400 text-center py-10">⏳ Đang tải danh sách trễ deadline…</div>`;
-    document.getElementById("drillTitle").textContent = "⚠️ Chi tiết Function trễ deadline";
-    document.getElementById("drillSubtitle").textContent = "";
-    document.getElementById("drillSearch").value = "";
-
-    try {
-        const res = await fetch(`/api/projects/${currentProjectSlug}/overdue`);
-        const data = await res.json();
-        if (!res.ok || data.error) {
-            document.getElementById("drillBody").innerHTML =
-                `<div class="text-red-600 text-center py-10">Lỗi: ${escapeHtml(data.error || "unknown")}</div>`;
-            return;
-        }
-        // Adapt overdue item → drill-down row schema (ma_cn, ten_cn, module, phase, status, pics, end_date, days_overdue, priority, is_overdue)
-        const items = (data.overdue || []).map(it => ({
-            ma_cn: it.ma_cn,
-            ten_cn: it.ten_cn,
-            module: it.module,
-            phase: it.phase,
-            status: it.status,
-            pics: it.pic || [],
-            start_date: it.start_date || "",
-            end_date: it.end_date || "",
-            days_overdue: it.days_overdue,
-            priority: it.priority || "",
-            complexity: it.complexity || "",
-            fit_gap: it.fit_gap || "",
-            is_overdue: true,
-        }));
-        drillState.items = items;
-        drillState.filtered = items.slice();
-        drillState.title = "⚠️ Chi tiết Function trễ deadline";
-        document.getElementById("drillSubtitle").textContent =
-            `Tổng: ${items.length} phase-record trễ · Project: ${currentProjectSlug}`;
-        renderDrillTable();
-    } catch (e) {
-        document.getElementById("drillBody").innerHTML =
-            `<div class="text-red-600 text-center py-10">Lỗi mạng: ${escapeHtml(e.message)}</div>`;
-    }
+    await openDrillDown("overdue", {}, "⚠️ Chi tiết Function trễ deadline");
 }
 
 // Cursor pointer khi hover element có thể click
