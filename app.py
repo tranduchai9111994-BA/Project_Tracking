@@ -37,6 +37,7 @@ from analyzer.portfolio import (
 )
 from exporter.excel_exporter import (
     export_overdue_report,
+    export_stalled_report,
     export_full_report,
     export_by_pic,
     export_compare_report,
@@ -1602,6 +1603,80 @@ def export_overdue(slug=None):
         )
         return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
     except Exception as e:
+        return jsonify({"error": f"Lỗi khi xuất file: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-stalled", methods=["GET", "POST"])
+@app.route("/api/export-stalled", methods=["GET", "POST"])
+def export_stalled(slug=None):
+    """
+    Xuất Excel danh sách task bị đình trệ.
+
+    Chấp nhận 2 loại filter (áp tuần tự, giống export-overdue):
+      1. Global filter — g_module / g_process / g_pic:
+         → filter parsed data → recompute stalled_tasks.
+      2. Local widget filter — module (comma-sep multi):
+         → thu hẹp thêm trên stalled items.
+    """
+    try:
+        slug = slug or _resolve_slug()
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    st, err = _need_state(slug)
+    if err:
+        return err
+
+    def _as_list(val) -> list[str]:
+        if not val:
+            return []
+        if isinstance(val, list):
+            out: list[str] = []
+            for it in val:
+                out.extend(_as_list(it))
+            return out
+        return [x.strip() for x in str(val).split(",") if x.strip()]
+
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        filters = {"module": body.get("module")}
+        g_modules = _as_list(body.get("g_module") or body.get("g_modules"))
+        g_processes = _as_list(body.get("g_process") or body.get("g_processes"))
+        g_pics = _as_list(body.get("g_pic") or body.get("g_pics"))
+    else:
+        filters = {"module": request.args.get("module")}
+        g_modules = _parse_multi_arg("g_module")
+        g_processes = _parse_multi_arg("g_process")
+        g_pics = _parse_multi_arg("g_pic")
+
+    filters = {k: v for k, v in filters.items() if v}
+
+    try:
+        if g_modules or g_processes or g_pics:
+            filtered_data = _filter_parsed_data(
+                st["data"],
+                modules=g_modules,
+                processes=g_processes,
+                pics=g_pics,
+            )
+            stalled_items = (
+                DashboardEngine().compute_all(filtered_data)
+                .get("stalled_tasks", {})
+                .get("items", [])
+            )
+        else:
+            stalled_items = (
+                st["metrics"].get("stalled_tasks", {}) or {}
+            ).get("items", [])
+
+        filepath = export_stalled_report(
+            stalled_items=stalled_items,
+            output_dir=_project_mgr.get_export_dir(slug),
+            filters=filters if filters else None,
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": f"Lỗi khi xuất file: {str(e)}"}), 500
 
 

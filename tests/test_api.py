@@ -103,6 +103,83 @@ def test_stalled_endpoint(flask_client, sample_xlsx_path):
     assert r.status_code == 200
 
 
+def _count_stalled_rows_in_xlsx(resp_data: bytes) -> int:
+    """Đếm số row data trong file stalled export (header ở row 4)."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(resp_data))
+    ws = wb.active
+    n = 0
+    for row in ws.iter_rows(min_row=5, values_only=True):
+        first = row[0]
+        if first is None:
+            continue
+        try:
+            int(str(first))
+            n += 1
+        except (TypeError, ValueError):
+            pass
+    wb.close()
+    return n
+
+
+def _stalled_modules_in_xlsx(resp_data: bytes) -> set[str]:
+    """Lấy set Module từ cột Module (index 3) của file stalled export."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(resp_data))
+    ws = wb.active
+    mods: set[str] = set()
+    for row in ws.iter_rows(min_row=5, values_only=True):
+        if row[0] is None:
+            continue
+        try:
+            int(str(row[0]))
+        except (TypeError, ValueError):
+            continue
+        if row[3]:
+            mods.add(str(row[3]))
+    wb.close()
+    return mods
+
+
+def test_export_stalled_download(flask_client, sample_xlsx_path):
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get("/api/projects/default/export-stalled")
+    assert r.status_code == 200
+    ctype = r.headers.get("Content-Type", "")
+    assert "spreadsheet" in ctype or "excel" in ctype
+    assert _count_stalled_rows_in_xlsx(r.data) >= 1
+
+
+def test_export_stalled_local_module_filter(flask_client, sample_xlsx_path):
+    """Local module=HR → chỉ HR; module=NONEXISTENT → 0 row."""
+    _upload(flask_client, sample_xlsx_path)
+    r_all = flask_client.get("/api/projects/default/export-stalled")
+    n_all = _count_stalled_rows_in_xlsx(r_all.data)
+    assert n_all >= 1
+
+    r_hr = flask_client.get("/api/projects/default/export-stalled?module=HR")
+    assert r_hr.status_code == 200
+    n_hr = _count_stalled_rows_in_xlsx(r_hr.data)
+    assert n_hr >= 1
+    assert n_hr <= n_all
+    assert _stalled_modules_in_xlsx(r_hr.data) == {"HR"}
+
+    r_none = flask_client.get("/api/projects/default/export-stalled?module=NONEXISTENT_XYZ")
+    assert r_none.status_code == 200
+    assert _count_stalled_rows_in_xlsx(r_none.data) == 0
+
+
+def test_export_stalled_global_and_local_intersect(flask_client, sample_xlsx_path):
+    """g_module=HR,TMS + local module=HR → chỉ HR."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get(
+        "/api/projects/default/export-stalled?g_module=HR,TMS&module=HR"
+    )
+    assert r.status_code == 200
+    assert _stalled_modules_in_xlsx(r.data) <= {"HR"}
+    assert _count_stalled_rows_in_xlsx(r.data) >= 1
+
+
 def test_risk_scores_endpoint(flask_client, sample_xlsx_path):
     _upload(flask_client, sample_xlsx_path)
     r = flask_client.get("/api/risk-scores?top=5")

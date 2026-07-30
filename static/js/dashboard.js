@@ -10316,9 +10316,9 @@ function _destroySortable() {
     }
 }
 
-/** Reset về default HTML (xoá custom order). */
+/** Reset về default HTML (xoá custom order) — cảnh báo trước, quản trị cuối. */
 window.resetSectionOrder = async function () {
-    if (!confirm("Reset về thứ tự mặc định?")) return;
+    if (!confirm("Khôi phục thứ tự mặc định (cảnh báo trước)?")) return;
     try {
         const r = await fetch(_apiUrl("section-order/reset"), { method: "POST" });
         if (!r.ok) throw new Error(await r.text());

@@ -2,9 +2,11 @@
 import os
 
 import openpyxl
+import pytest
 
 from exporter.excel_exporter import (
     export_overdue_report,
+    export_stalled_report,
     export_full_report,
     export_by_pic,
     export_compare_report,
@@ -41,6 +43,38 @@ def test_export_overdue_with_filter(tmp_path, metrics):
         val = r[module_idx]
         if val and str(val).startswith(("TMS", "ESS", "HR", "SI")):
             assert val == "TMS", f"Row bị lọt: {val}"
+    wb.close()
+
+
+def test_export_stalled_creates_file(tmp_path, metrics):
+    """export_stalled_report tạo file .xlsx với title ĐÌNH TRỆ."""
+    items = metrics["stalled_tasks"]["items"]
+    path = export_stalled_report(items, str(tmp_path))
+    assert os.path.exists(path)
+    wb = openpyxl.load_workbook(path)
+    assert "Dinh_Tre" in wb.sheetnames
+    ws = wb.active
+    assert "ĐÌNH TRỆ" in str(ws["A1"].value)
+    wb.close()
+
+
+def test_export_stalled_with_module_filter(tmp_path, metrics):
+    """Filter module → chỉ giữ module đã chọn."""
+    items = metrics["stalled_tasks"]["items"]
+    if not items:
+        pytest.skip("sample không có stalled items")
+    target = items[0]["module"]
+    path = export_stalled_report(items, str(tmp_path), filters={"module": target})
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    for row in ws.iter_rows(min_row=5, values_only=True):
+        if row[0] is None:
+            continue
+        try:
+            int(str(row[0]))
+        except (TypeError, ValueError):
+            continue
+        assert row[3] == target
     wb.close()
 
 

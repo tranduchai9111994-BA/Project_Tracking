@@ -121,6 +121,40 @@ def test_stalled_tasks_funnel_has_all_phases(metrics):
     assert "Analysis" in phases_in_funnel
 
 
+def test_stalled_wait_days_ignores_outlier_date(parsed_data, today):
+    """
+    Date outlier (năm < 2000, VD 1936) không được dùng để tính wait_days
+    → tránh số khủng ~30000 ngày.
+    """
+    from copy import deepcopy
+    from datetime import date as date_cls
+    from analyzer.dashboard_engine import DashboardEngine
+
+    data = deepcopy(parsed_data)
+    # Gắn end_date outlier vào 1 phase Closed để tạo stalled với date xấu
+    for r in data.rows:
+        analysis = r.phases.get("Analysis")
+        if analysis and analysis.status == "Closed":
+            analysis.end_date = date_cls(1936, 3, 26)
+            # Đảm bảo phase sau chưa bắt đầu → stalled
+            for nxt in ("Dev", "UAT"):
+                pd = r.phases.get(nxt)
+                if pd:
+                    pd.status = "Open"
+                    pd.start_date = None
+                    pd.end_date = None
+            break
+
+    st = DashboardEngine(today=today)._stalled_tasks(data)
+    outlier_items = [
+        i for i in st["items"]
+        if i.get("completed_date", "").startswith("1936")
+    ]
+    assert outlier_items, "Phải có ít nhất 1 stalled với completed_date 1936"
+    for i in outlier_items:
+        assert i["wait_days"] == 0, f"Outlier date phải cho wait_days=0, got {i['wait_days']}"
+
+
 def test_risk_scores_sorted_desc(metrics):
     """Risk scores được sort giảm dần."""
     scores = [r["risk_score"] for r in metrics["risk_scores"]]

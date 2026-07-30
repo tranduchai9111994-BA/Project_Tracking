@@ -743,6 +743,8 @@ class DashboardEngine:
         Function bị kẹt: phase trước Closed nhưng phase sau vẫn None/Open.
         Kèm funnel data (số function Closed mỗi phase) và transition heatmap.
         """
+        from analyzer.gantt_calendar import _is_outlier_date
+
         items = []
         phase_names = [pg.name for pg in data.phase_groups]
 
@@ -769,7 +771,9 @@ class DashboardEngine:
 
                 if curr_done and next_not_started:
                     wait_days = 0
-                    if curr_pd.end_date:
+                    # Bỏ date outlier (VD 1936-03-26) khi tính Chờ (ngày) —
+                    # cùng logic Gantt `_is_outlier_date`.
+                    if curr_pd.end_date and not _is_outlier_date(curr_pd.end_date, self.today):
                         wait_days = (self.today - curr_pd.end_date).days
 
                     transition[(curr, nxt)] += 1

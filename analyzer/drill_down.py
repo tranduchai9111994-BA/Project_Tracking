@@ -477,6 +477,8 @@ def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
     Function bị kẹt: phase trước Closed, phase sau None/Open.
     Optional phase = completed_phase hoặc waiting_phase.
     """
+    from analyzer.gantt_calendar import _is_outlier_date
+
     phase_f = filters.get("phase", "")
     module = filters.get("module", "")
     phase_names = [pg.name for pg in data.phase_groups]
@@ -502,9 +504,11 @@ def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
             item["completed_date"] = (
                 curr_pd.end_date.isoformat() if curr_pd and curr_pd.end_date else ""
             )
-            item["wait_days"] = (
-                (today - curr_pd.end_date).days if curr_pd and curr_pd.end_date else 0
-            )
+            # Bỏ date outlier (VD 1936) khi tính wait_days — cùng Gantt
+            wait_days = 0
+            if curr_pd and curr_pd.end_date and not _is_outlier_date(curr_pd.end_date, today):
+                wait_days = (today - curr_pd.end_date).days
+            item["wait_days"] = wait_days
             result.append(item)
     result.sort(key=lambda x: x.get("wait_days", 0), reverse=True)
     return result

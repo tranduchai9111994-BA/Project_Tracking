@@ -260,6 +260,80 @@ def export_overdue_report(
     return filepath
 
 
+def export_stalled_report(
+    stalled_items: list[dict[str, Any]],
+    output_dir: str = "uploads",
+    filters: Optional[dict] = None,
+) -> str:
+    """
+    Tạo file Excel danh sách task bị đình trệ (kẹt giữa 2 phase).
+
+    Args:
+        stalled_items: items từ metrics.stalled_tasks
+        output_dir: thư mục lưu file
+        filters: optional {"module": "PR" | "PR,SI" | ["PR","SI"]}
+
+    Returns:
+        Filepath .xlsx
+    """
+    def _norm_multi(v):
+        if not v:
+            return []
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return [x.strip() for x in str(v).split(",") if x.strip()]
+
+    items = list(stalled_items or [])
+    if filters:
+        mods = _norm_multi(filters.get("module"))
+        if mods:
+            items = [i for i in items if i.get("module") in mods]
+
+    columns = [
+        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+        ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
+        ("Chờ (ngày)", 12), ("Priority", 12),
+    ]
+    data_rows = [
+        [
+            idx + 1,
+            i.get("ma_cn", ""),
+            i.get("ten_cn", ""),
+            i.get("module", ""),
+            i.get("completed_phase", ""),
+            i.get("waiting_phase", ""),
+            i.get("completed_date", ""),
+            i.get("wait_days", 0),
+            i.get("priority", ""),
+        ]
+        for idx, i in enumerate(items)
+    ]
+
+    filter_parts = []
+    if filters:
+        mods = _norm_multi(filters.get("module"))
+        if mods:
+            filter_parts.append(f"Module: {', '.join(mods)}")
+    subtitle = f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+    if filter_parts:
+        subtitle += "  |  Bộ lọc: " + " | ".join(filter_parts)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Dinh_Tre"
+    _write_sheet(
+        ws, "ĐÌNH TRỆ", columns, data_rows, subtitle=subtitle,
+        row_fill_fn=lambda ri, idx: _fill_by_days(items[idx].get("wait_days", 0)),
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filename = f"Dinh_Tre_Report_{date.today().strftime('%Y%m%d')}.xlsx"
+    filepath = os.path.join(output_dir, filename)
+    wb.save(filepath)
+    wb.close()
+    return filepath
+
+
 # ======================================================================
 # V2 EXPORTS
 # ======================================================================
@@ -1392,7 +1466,7 @@ def export_chart(
             ]
             for idx, i in enumerate(items)
         ]
-        _write_sheet(ws, "TASK BỊ ĐÌNH TRỆ", columns, data_rows, subtitle=sub)
+        _write_sheet(ws, "ĐÌNH TRỆ", columns, data_rows, subtitle=sub)
 
     elif chart == "unassigned":
         ws.title = "Unassigned"
