@@ -11174,6 +11174,7 @@ const _INTEG_AUTH_LABELS = {
     "basic_auth": "HTTP Basic Auth",
     "bearer_token": "Bearer token",
     "api_key": "API Key (header/query)",
+    "database": "Database (SQL view)",
 };
 
 function _integOpenEditor(integrationId) {
@@ -11210,7 +11211,22 @@ function _integOpenEditor(integrationId) {
     document.getElementById("integApiKeyHeader").value = auth.apikey_header || "X-API-Key";
     document.getElementById("integApiKeyLocation").value = auth.apikey_location || "header";
 
+    // T31 — database fields
+    const dbDriver = document.getElementById("integDbDriver");
+    const dbHost = document.getElementById("integDbHost");
+    const dbPort = document.getElementById("integDbPort");
+    const dbDatabase = document.getElementById("integDbDatabase");
+    const dbCredEnv = document.getElementById("integDbCredEnv");
+    if (dbDriver) dbDriver.value = auth.db_driver || "";
+    if (dbHost) dbHost.value = auth.db_host || "";
+    if (dbPort) dbPort.value = auth.db_port || "";
+    if (dbDatabase) dbDatabase.value = auth.db_database || "";
+    // credential_env dùng chung với form_login/basic_auth ở backend; input riêng
+    // trong UI để không mất giá trị khi switch method qua lại.
+    if (dbCredEnv) dbCredEnv.value = auth.credential_env || "";
+
     _integOnAuthMethodChange();  // show đúng block field
+    _integOnDbDriverChange();     // hint driver (nếu database)
     _integRenderEndpoints(it?.endpoints || []);
     _integShowEditorMsg("", "");
     _integSetTab("edit");
@@ -11250,16 +11266,71 @@ function _integOnAuthMethodChange() {
         const meta = _integState.capabilities?.auth_method_fields?.[method];
         descEl.textContent = meta?.description || "";
     }
-    // Đồng bộ credential_env giữa form_login và basic_auth (2 input khác nhau
-    // để không mất giá trị khi switch, nhưng backend chỉ nhận 1 field)
-    if (method === "basic_auth") {
-        const src = document.getElementById("integCredEnv");
-        const dst = document.getElementById("integCredEnvBasic");
-        if (src?.value && !dst.value) dst.value = src.value;
-    } else if (method === "form_login") {
-        const src = document.getElementById("integCredEnvBasic");
-        const dst = document.getElementById("integCredEnv");
-        if (src?.value && !dst.value) dst.value = src.value;
+    // Đồng bộ credential_env giữa 3 method dùng chung field (form_login,
+    // basic_auth, database) — 3 input khác nhau để không mất giá trị khi
+    // switch, nhưng backend chỉ nhận 1 field `credential_env`.
+    const credInputs = [
+        document.getElementById("integCredEnv"),      // form_login
+        document.getElementById("integCredEnvBasic"), // basic_auth
+        document.getElementById("integDbCredEnv"),    // database
+    ].filter(Boolean);
+    const firstFilled = credInputs.find(el => el.value?.trim());
+    if (firstFilled) {
+        credInputs.forEach(el => { if (!el.value?.trim()) el.value = firstFilled.value; });
+    }
+}
+
+/**
+ * Hint driver hiện tại (VD SQL Server → cảnh báo cần ODBC Driver 17/18).
+ * Cũng auto-fill default port nếu port đang trống.
+ */
+function _integOnDbDriverChange() {
+    const driver = document.getElementById("integDbDriver")?.value || "";
+    const hintEl = document.getElementById("integDbDriverHint");
+    const portEl = document.getElementById("integDbPort");
+    const meta = (_integState.capabilities?.db_drivers || [])
+        .find(d => d.value === driver);
+    if (hintEl) {
+        if (meta?.hint) {
+            hintEl.textContent = "ℹ️ " + meta.hint;
+            hintEl.classList.remove("hidden");
+        } else {
+            hintEl.textContent = "";
+            hintEl.classList.add("hidden");
+        }
+    }
+    if (portEl && meta?.default_port && !portEl.value) {
+        portEl.value = String(meta.default_port);
+    }
+}
+
+/**
+ * Test kết nối DB — gọi endpoint mới `/test-db`. Verify:
+ * - Driver đã cài trên server (backend lazy-import).
+ * - Host/port/database + credential_env resolve được từ .env.
+ * - Ping SELECT 1 thành công.
+ * KHÔNG chạy query của bất kỳ endpoint nào (dùng /sync cho việc đó).
+ */
+async function _integTestDb() {
+    const integrationId = _integState.editing?.id;
+    if (!integrationId) {
+        _integShowEditorMsg("Bấm 💾 Lưu trước để tạo integration, rồi mới test được", "warn");
+        return;
+    }
+    _integShowEditorMsg("Đang test kết nối DB…", "warn");
+    try {
+        const r = await fetch(
+            `/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}/test-db`,
+            { method: "POST" }
+        );
+        const data = await r.json();
+        if (data.status === "ok") {
+            _integShowEditorMsg("✅ " + (data.message || "Connect OK"), "ok");
+        } else {
+            _integShowEditorMsg("❌ " + (data.message || "Connect fail"), "err");
+        }
+    } catch (err) {
+        _integShowEditorMsg("Lỗi mạng: " + err.message, "err");
     }
 }
 
@@ -11285,7 +11356,7 @@ function _integAddEndpoint(ep) {
     const respSel = node.querySelector('[data-field="response_type"]');
     const targetSel = node.querySelector('[data-field="target_action"]');
     // Label tiếng Việt cho response type
-    const respLabels = { "excel": "Excel (.xlsx/.xls)", "json": "JSON API", "csv": "CSV" };
+    const respLabels = { "excel": "Excel (.xlsx/.xls)", "json": "JSON API", "database": "Database (SQL view)", "csv": "CSV" };
     if (respSel) {
         respSel.innerHTML = "";
         for (const r of (caps.response_types || [{ value: "excel", supported: true }])) {
@@ -11322,6 +11393,19 @@ function _integAddEndpoint(ep) {
         if (fmEl && ep.field_mapping && Object.keys(ep.field_mapping).length) {
             fmEl.value = JSON.stringify(ep.field_mapping, null, 2);
         }
+        // T31 — Database fields: query + query_params + field_mapping (dùng textarea
+        // riêng data-field="field_mapping_db" trong panel DB để không ghi đè JSON panel).
+        const qEl = node.querySelector('[data-field="query"]');
+        const qpEl = node.querySelector('[data-field="query_params"]');
+        const fmDbEl = node.querySelector('[data-field="field_mapping_db"]');
+        if (qEl) qEl.value = ep.query || "";
+        if (qpEl && ep.query_params && Object.keys(ep.query_params).length) {
+            qpEl.value = JSON.stringify(ep.query_params, null, 2);
+        }
+        if (fmDbEl && ep.field_mapping && Object.keys(ep.field_mapping).length
+                   && ep.response_type === "database") {
+            fmDbEl.value = JSON.stringify(ep.field_mapping, null, 2);
+        }
         node.dataset.endpointId = ep.id || "";
     }
 
@@ -11340,21 +11424,21 @@ function _integAddEndpoint(ep) {
 }
 
 /**
- * Show/hide JSON mapping panel dựa vào giá trị response_type.
+ * Show/hide panel mapping dựa vào giá trị response_type:
+ *   - "json"     → panel Field Mapping (JSON path).
+ *   - "database" → panel SQL (query + query_params + field_mapping cột SQL).
+ *   - khác       → ẩn cả 2.
  * Có thể được gọi từ inline onchange (chỉ nhận element select) hoặc từ
  * _integAddEndpoint (nhận cả node cha để không phải traverse ngược).
  */
 function _integOnResponseTypeChange(sel, nodeCtx) {
     const rowNode = nodeCtx || sel?.closest("[data-endpoint-row]");
     if (!rowNode) return;
-    const panel = rowNode.querySelector("[data-json-panel]");
-    if (!panel) return;
+    const jsonPanel = rowNode.querySelector("[data-json-panel]");
+    const dbPanel = rowNode.querySelector("[data-db-panel]");
     const value = sel?.value || rowNode.querySelector('[data-field="response_type"]')?.value;
-    if (value === "json") {
-        panel.classList.remove("hidden");
-    } else {
-        panel.classList.add("hidden");
-    }
+    if (jsonPanel) jsonPanel.classList.toggle("hidden", value !== "json");
+    if (dbPanel) dbPanel.classList.toggle("hidden", value !== "database");
 }
 
 /**
@@ -11493,12 +11577,18 @@ function _integSuggestMapping(flatKeys) {
 
 /** Đọc data từ editor DOM → payload để POST/PUT. */
 function _integReadEditorPayload() {
+    const authMethod = document.getElementById("integAuthMethod").value;
     const rows = document.querySelectorAll("#integEndpointsWrap [data-endpoint-row]");
     const endpoints = [];
     for (const row of rows) {
         const name = row.querySelector('[data-field="name"]').value.trim();
         const path = row.querySelector('[data-field="path"]').value.trim();
-        if (!name || !path) continue;   // skip row rỗng
+        const responseType = row.querySelector('[data-field="response_type"]').value;
+        // Với response_type=database: path optional (query mới quan trọng).
+        // Với các response_type khác: name + path bắt buộc.
+        if (!name) continue;
+        if (responseType !== "database" && !path) continue;
+
         let params = {};
         const paramsRaw = row.querySelector('[data-field="params"]').value.trim();
         if (paramsRaw) {
@@ -11513,10 +11603,9 @@ function _integReadEditorPayload() {
                 throw new Error(`Endpoint "${name}": params không phải JSON object hợp lệ — ${err.message}`);
             }
         }
-        // JSON response type — parse field_mapping textarea
-        const responseType = row.querySelector('[data-field="response_type"]').value;
         const dataPath = (row.querySelector('[data-field="data_path"]')?.value || "").trim();
         let fieldMapping = {};
+        // JSON response type — parse field_mapping textarea (data-field="field_mapping").
         if (responseType === "json") {
             const fmRaw = (row.querySelector('[data-field="field_mapping"]')?.value || "").trim();
             if (fmRaw) {
@@ -11532,6 +11621,41 @@ function _integReadEditorPayload() {
                 }
             }
         }
+        // T31 — Database response type: parse query + query_params + field_mapping_db.
+        let query = "";
+        let queryParams = {};
+        if (responseType === "database") {
+            query = (row.querySelector('[data-field="query"]')?.value || "").trim();
+            if (!query) {
+                throw new Error(`Endpoint "${name}": chưa nhập SQL 'query'`);
+            }
+            const qpRaw = (row.querySelector('[data-field="query_params"]')?.value || "").trim();
+            if (qpRaw) {
+                try {
+                    const parsed = JSON.parse(qpRaw);
+                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                        queryParams = parsed;
+                    } else {
+                        throw new Error("query_params phải là JSON object");
+                    }
+                } catch (err) {
+                    throw new Error(`Endpoint "${name}": query_params không hợp lệ — ${err.message}`);
+                }
+            }
+            const fmDbRaw = (row.querySelector('[data-field="field_mapping_db"]')?.value || "").trim();
+            if (fmDbRaw) {
+                try {
+                    const parsed = JSON.parse(fmDbRaw);
+                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                        fieldMapping = parsed;
+                    } else {
+                        throw new Error("field_mapping (DB) phải là JSON object {col_iHRP: col_sql}");
+                    }
+                } catch (err) {
+                    throw new Error(`Endpoint "${name}": field_mapping (DB) không hợp lệ — ${err.message}`);
+                }
+            }
+        }
         endpoints.push({
             id: row.dataset.endpointId || undefined,
             name,
@@ -11542,14 +11666,18 @@ function _integReadEditorPayload() {
             params,
             data_path: dataPath,
             field_mapping: fieldMapping,
+            // Database-only
+            query,
+            query_params: queryParams,
         });
     }
-    const method = document.getElementById("integAuthMethod").value;
-    // credential_env: 2 input riêng — chọn input đang active theo method
-    // (form_login dùng integCredEnv, basic_auth dùng integCredEnvBasic).
+    // credential_env: 3 input riêng — chọn input theo method đang active.
+    // (form_login → integCredEnv, basic_auth → integCredEnvBasic, database → integDbCredEnv.)
     let credEnv = "";
-    if (method === "basic_auth") {
+    if (authMethod === "basic_auth") {
         credEnv = document.getElementById("integCredEnvBasic").value.trim().toUpperCase();
+    } else if (authMethod === "database") {
+        credEnv = document.getElementById("integDbCredEnv")?.value.trim().toUpperCase() || "";
     } else {
         credEnv = document.getElementById("integCredEnv").value.trim().toUpperCase();
     }
@@ -11557,7 +11685,7 @@ function _integReadEditorPayload() {
         name: document.getElementById("integName").value.trim(),
         base_url: document.getElementById("integBaseUrl").value.trim(),
         auth: {
-            method,
+            method: authMethod,
             // form_login fields (backend chỉ dùng khi method=form_login)
             login_path: document.getElementById("integLoginPath").value.trim() || "/login",
             username_field: document.getElementById("integUsernameField").value.trim() || "username",
@@ -11569,6 +11697,11 @@ function _integReadEditorPayload() {
             apikey_env: document.getElementById("integApiKeyEnv").value.trim().toUpperCase(),
             apikey_header: document.getElementById("integApiKeyHeader").value.trim() || "X-API-Key",
             apikey_location: document.getElementById("integApiKeyLocation").value,
+            // T31 — database
+            db_driver: document.getElementById("integDbDriver")?.value || "",
+            db_host: document.getElementById("integDbHost")?.value.trim() || "",
+            db_port: parseInt(document.getElementById("integDbPort")?.value || "0", 10) || 0,
+            db_database: document.getElementById("integDbDatabase")?.value.trim() || "",
         },
         endpoints,
     };
@@ -11599,19 +11732,31 @@ async function _integSaveEditor() {
         _integShowEditorMsg(err.message, "err");
         return;
     }
-    if (!payload.name || !payload.base_url) {
-        _integShowEditorMsg("Thiếu 'Tên' hoặc 'Base URL'", "err");
+    const authMethod = payload.auth.method;
+    if (!payload.name) {
+        _integShowEditorMsg("Thiếu 'Tên'", "err");
         return;
     }
+    // T31 — Database method KHÔNG cần base_url (backend cho phép rỗng).
+    if (authMethod !== "database" && !payload.base_url) {
+        _integShowEditorMsg("Thiếu 'Base URL'", "err");
+        return;
+    }
+
     // Validate credential prefix theo method — mỗi method cần prefix env khác nhau
-    const method = payload.auth.method;
     let missingHint = "";
-    if ((method === "form_login" || method === "basic_auth") && !payload.auth.credential_env) {
+    if ((authMethod === "form_login" || authMethod === "basic_auth") && !payload.auth.credential_env) {
         missingHint = "Thiếu 'Prefix env' (credential_env) — sẽ không đọc được USERNAME/PASSWORD từ .env";
-    } else if (method === "bearer_token" && !payload.auth.bearer_env) {
+    } else if (authMethod === "bearer_token" && !payload.auth.bearer_env) {
         missingHint = "Thiếu 'Prefix env' (bearer_env) — sẽ không đọc được TOKEN từ .env";
-    } else if (method === "api_key" && !payload.auth.apikey_env) {
+    } else if (authMethod === "api_key" && !payload.auth.apikey_env) {
         missingHint = "Thiếu 'Prefix env' (apikey_env) — sẽ không đọc được KEY từ .env";
+    } else if (authMethod === "database") {
+        const dbAuth = payload.auth;
+        if (!dbAuth.db_driver) missingHint = "Thiếu 'Driver' (SQL Server / Postgres / MySQL)";
+        else if (!dbAuth.db_host) missingHint = "Thiếu 'Host / IP'";
+        else if (!dbAuth.db_database) missingHint = "Thiếu 'Database name'";
+        else if (!dbAuth.credential_env) missingHint = "Thiếu 'Prefix env' — không đọc được USERNAME/PASSWORD từ .env";
     }
     if (missingHint) _integShowEditorMsg(missingHint, "warn");
 
@@ -11619,10 +11764,11 @@ async function _integSaveEditor() {
     const url = editing
         ? `/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(editing.id)}`
         : `/api/projects/${currentProjectSlug}/integrations`;
-    const method = editing ? "PUT" : "POST";
+    // Fix bug T31: đổi tên biến để không đè `method` = auth.method ở trên.
+    const httpVerb = editing ? "PUT" : "POST";
     try {
         const r = await fetch(url, {
-            method,
+            method: httpVerb,
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
         });

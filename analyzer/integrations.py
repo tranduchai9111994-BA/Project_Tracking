@@ -57,12 +57,19 @@ DEFAULT_AUTH_METHOD = "form_login"
 # FE dropdown hiển thị tất cả không disable, backend cũng chấp nhận + xử lý.
 # `csv` được để trong PLANNED (chưa implement) — nếu user cấu hình sẽ bị reject
 # tại thời điểm sync với message rõ ràng.
-SUPPORTED_AUTH_METHODS = {"form_login", "basic_auth", "bearer_token", "api_key"}
+#
+# T31 (v4.1): "database" là auth method + response type mới để tích hợp trực
+# tiếp với SQL view do khách trả. Flow: mở connection (pyodbc/psycopg2/pymysql
+# lazy-import) → execute SELECT với param binding an toàn → fetchall → convert
+# sang list[dict] → apply field_mapping giống JSON API → build_xlsx → parse.
+SUPPORTED_AUTH_METHODS = {"form_login", "basic_auth", "bearer_token", "api_key", "database"}
 _PLANNED_AUTH_METHODS: set[str] = set()  # tất cả method đều đã ready
-SUPPORTED_RESPONSE_TYPES = {"excel", "json"}
+SUPPORTED_RESPONSE_TYPES = {"excel", "json", "database"}
 _PLANNED_RESPONSE_TYPES = {"csv"}
 SUPPORTED_TARGET_ACTIONS = {"snapshot", "append", "replace"}
 SUPPORTED_APIKEY_LOCATIONS = {"header", "query"}
+SUPPORTED_DB_DRIVERS = {"sqlserver", "postgres", "mysql"}
+DEFAULT_DB_PORTS = {"sqlserver": 1433, "postgres": 5432, "mysql": 3306}
 
 # Detect file Excel qua content-type / extension (mỗi web app trả kiểu khác nhau)
 _EXCEL_MIME_HINTS = {
@@ -117,17 +124,30 @@ def _write(project_dir: str, data: dict[str, Any]) -> None:
 
 
 def _sanitize_endpoint(ep: dict) -> Optional[dict]:
-    """Chuẩn hoá 1 endpoint entry. Trả None nếu invalid (thiếu name/path)."""
+    """
+    Chuẩn hoá 1 endpoint entry. Trả None nếu invalid.
+
+    - HTTP endpoint: yêu cầu name + path.
+    - Database endpoint (response_type='database'): yêu cầu name + query
+      (path có thể rỗng, giữ field cho consistency).
+    """
     if not isinstance(ep, dict):
         return None
     name = str(ep.get("name") or "").strip()
     path = str(ep.get("path") or "").strip()
-    if not name or not path:
-        return None
+    response_type = str(ep.get("response_type") or "excel").strip().lower()
+    query = str(ep.get("query") or "").strip()
+
+    # Với database endpoint: cho phép path rỗng nhưng phải có query.
+    if response_type == "database":
+        if not name or not query:
+            return None
+    else:
+        if not name or not path:
+            return None
     http_method = str(ep.get("http_method") or "GET").strip().upper()
     if http_method not in {"GET", "POST"}:
         http_method = "GET"
-    response_type = str(ep.get("response_type") or "excel").strip().lower()
     target_action = str(ep.get("target_action") or "snapshot").strip().lower()
     params = ep.get("params")
     if not isinstance(params, dict):
@@ -135,8 +155,7 @@ def _sanitize_endpoint(ep: dict) -> Optional[dict]:
     # Coerce tất cả value về string để tương thích requests
     params = {str(k): "" if v is None else str(v) for k, v in params.items()}
 
-    # JSON response mapping (chỉ có ý nghĩa khi response_type = "json").
-    # Sanitize nhẹ nhàng: giữ nếu là dict/str, drop nếu không phải type mong đợi.
+    # JSON/DB response mapping (dùng cho response_type = "json" HOẶC "database").
     data_path = str(ep.get("data_path") or "").strip()[:200]
     fm_raw = ep.get("field_mapping")
     field_mapping: dict[str, str] = {}
@@ -149,6 +168,21 @@ def _sanitize_endpoint(ep: dict) -> Optional[dict]:
             if key_s and val_s:
                 field_mapping[key_s] = val_s
 
+    # Database-only fields (T31). query_params là dict {named_param: value}
+    # dùng cho bind an toàn qua cursor.execute — không string concat.
+    query_params_raw = ep.get("query_params")
+    query_params: dict[str, Any] = {}
+    if isinstance(query_params_raw, dict):
+        for k, v in query_params_raw.items():
+            if not k:
+                continue
+            key_s = str(k).strip()[:60]
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key_s):
+                # Bỏ qua tên param không hợp lệ để tránh gây SQL error khó debug.
+                continue
+            # Giữ nguyên type (int/float/str/None/bool) — driver tự cast.
+            query_params[key_s] = v
+
     return {
         "id": str(ep.get("id") or f"ep_{uuid.uuid4().hex[:10]}"),
         "name": name[:120],
@@ -157,10 +191,13 @@ def _sanitize_endpoint(ep: dict) -> Optional[dict]:
         "params": params,
         "response_type": response_type[:16],
         "target_action": target_action[:16],
-        # JSON-only fields — thừa ở excel endpoint nhưng lưu vẫn OK để giữ
+        # JSON/DB-only fields — thừa ở excel endpoint nhưng lưu vẫn OK để giữ
         # config nếu user chuyển response_type qua lại.
         "data_path": data_path,
         "field_mapping": field_mapping,
+        # Database-only fields
+        "query": query[:10000],           # SELECT SQL (giới hạn 10KB để tránh abuse)
+        "query_params": query_params,
     }
 
 
@@ -207,6 +244,24 @@ def _sanitize_auth(auth: Any) -> dict:
     if apikey_location not in SUPPORTED_APIKEY_LOCATIONS:
         apikey_location = "header"
 
+    # --- database fields (T31) ---
+    # KHÔNG chứa username/password — 2 biến này resolve từ .env qua credential_env
+    # cùng cơ chế với form_login/basic_auth. Chỉ lưu host/port/database/driver để
+    # user thấy được config trong UI + backend build connection string.
+    db_driver_raw = str(auth.get("db_driver") or "").strip().lower()
+    db_driver = db_driver_raw if db_driver_raw in SUPPORTED_DB_DRIVERS else ""
+    db_host = str(auth.get("db_host") or "").strip()[:200]
+    try:
+        db_port = int(auth.get("db_port") or 0)
+    except (TypeError, ValueError):
+        db_port = 0
+    if db_port < 0 or db_port > 65535:
+        db_port = 0
+    # Nếu chưa set port → dùng port mặc định của driver để user khỏi phải nhớ.
+    if db_port == 0 and db_driver:
+        db_port = DEFAULT_DB_PORTS.get(db_driver, 0)
+    db_database = str(auth.get("db_database") or "").strip()[:200]
+
     return {
         "method": method[:32],
         "login_path": login_path,
@@ -218,6 +273,11 @@ def _sanitize_auth(auth: Any) -> dict:
         "apikey_env": apikey_env,
         "apikey_header": apikey_header,
         "apikey_location": apikey_location,
+        # database
+        "db_driver": db_driver,
+        "db_host": db_host,
+        "db_port": db_port,
+        "db_database": db_database,
     }
 
 
@@ -233,10 +293,14 @@ def _sanitize_integration(data: dict, existing: Optional[dict] = None) -> dict:
     base_url = str(data.get("base_url") or "").strip().rstrip("/")
     if not name:
         raise ValueError("Thiếu 'name'")
-    if not base_url:
-        raise ValueError("Thiếu 'base_url'")
-    if not re.match(r"^https?://", base_url, re.IGNORECASE):
-        raise ValueError("base_url phải bắt đầu bằng http:// hoặc https://")
+    # T31: database method KHÔNG có URL → base_url optional. Với các method
+    # HTTP khác vẫn require + validate scheme.
+    auth_method = str((data.get("auth") or {}).get("method") or DEFAULT_AUTH_METHOD).strip().lower()
+    if auth_method != "database":
+        if not base_url:
+            raise ValueError("Thiếu 'base_url'")
+        if not re.match(r"^https?://", base_url, re.IGNORECASE):
+            raise ValueError("base_url phải bắt đầu bằng http:// hoặc https://")
 
     endpoints_raw = data.get("endpoints") or []
     if not isinstance(endpoints_raw, list):
@@ -706,6 +770,9 @@ def build_xlsx_from_json_records(
             → tạo file có 2 cột "Mã CN" (từ record["code"]) và "Analysis - Start"
             (từ record["phases"]["analysis"]["start"]).
         Empty value ở field_mapping → skip cột đó.
+        Nếu field_mapping RỖNG hoàn toàn → dùng union tất cả keys của records
+        làm header (dùng cho database endpoint không cấu hình mapping — SQL
+        query có thể alias cột thành tên iHRP chuẩn sẵn).
 
     Trả bytes của file .xlsx (workbook 1 sheet "Function List").
     """
@@ -715,17 +782,288 @@ def build_xlsx_from_json_records(
 
     # Chỉ giữ mapping có json_path không rỗng — cột rỗng gây confusion cho parser
     valid_pairs = [(k, v) for k, v in field_mapping.items() if k and v]
-    headers = [k for k, _ in valid_pairs]
-    paths = [p for _, p in valid_pairs]
-    ws.append(headers)
-    for rec in records:
-        if not isinstance(rec, dict):
-            continue
-        ws.append([_stringify_json_value(_dig_json(rec, p)) for p in paths])
+    if valid_pairs:
+        headers = [k for k, _ in valid_pairs]
+        paths = [p for _, p in valid_pairs]
+        ws.append(headers)
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            ws.append([_stringify_json_value(_dig_json(rec, p)) for p in paths])
+    else:
+        # Fallback: không có mapping → dump raw. Header = union keys giữ thứ tự
+        # xuất hiện đầu tiên (đảm bảo ổn định qua các lần chạy — quan trọng
+        # cho parser auto-detect cột).
+        seen: dict[str, None] = {}
+        for rec in records:
+            if isinstance(rec, dict):
+                for k in rec.keys():
+                    if k not in seen:
+                        seen[str(k)] = None
+        headers = list(seen.keys())
+        ws.append(headers)
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            ws.append([_stringify_json_value(rec.get(h)) for h in headers])
 
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ============================================================================
+# Database connection + query (T31)
+# ============================================================================
+#
+# Design notes:
+# - Lazy-import driver bên trong `_open_db_connection` để user không cài driver
+#   vẫn dùng được các auth method HTTP khác (không crash khi import module).
+# - Chỉ chấp nhận SELECT / WITH — reject UPDATE/DELETE/DROP/INSERT ở tầng
+#   `_run_database_query` (guard cứng, không phụ thuộc DB permission).
+# - Bind param NAMED (`:name`) → convert sang placeholder driver-specific
+#   (`?` cho pyodbc, `%(name)s` cho psycopg2/pymysql) — CHỈ dùng cursor bind,
+#   KHÔNG string concat → an toàn SQL injection.
+# - Connection close chắc chắn qua try/finally.
+
+
+def _convert_named_to_qmark(sql: str, params: dict) -> tuple[str, list]:
+    """
+    Convert `:name` → `?` cho pyodbc. Trả (sql_mới, ordered_values).
+
+    Regex `(?<!:):([A-Za-z_][A-Za-z0-9_]*)` không match `::` (cast operator
+    trong Postgres/SQL Server) — vẫn hoạt động đúng nếu user viết
+    `col::text`.
+    """
+    ordered: list = []
+    def _rep(m):
+        name = m.group(1)
+        ordered.append(params.get(name))
+        return "?"
+    new_sql = re.sub(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)", _rep, sql)
+    return new_sql, ordered
+
+
+def _convert_named_to_pyformat(sql: str, params: dict) -> tuple[str, dict]:
+    """
+    Convert `:name` → `%(name)s` cho psycopg2 / pymysql. Trả (sql_mới,
+    dict_params) — chỉ giữ những key thực sự có trong SQL để tránh driver
+    error khi truyền param dư.
+    """
+    used: set[str] = set()
+    def _rep(m):
+        name = m.group(1)
+        used.add(name)
+        return f"%({name})s"
+    new_sql = re.sub(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)", _rep, sql)
+    return new_sql, {k: params.get(k) for k in used}
+
+
+def _open_db_connection(auth: dict, username: str, password: str, timeout: int = 10):
+    """
+    Mở connection tới DB theo `auth.db_driver`. Lazy-import driver.
+
+    Raises:
+        ValueError: config thiếu / driver không hỗ trợ / library chưa cài
+            (message có gợi ý `pip install ...`).
+        Exception subclass tuỳ driver khi connect fail (VD pyodbc.OperationalError,
+            psycopg2.OperationalError, pymysql.err.OperationalError).
+
+    Caller có trách nhiệm close connection.
+    """
+    driver = str(auth.get("db_driver") or "").strip().lower()
+    host = str(auth.get("db_host") or "").strip()
+    port = int(auth.get("db_port") or 0) or DEFAULT_DB_PORTS.get(driver, 0)
+    database = str(auth.get("db_database") or "").strip()
+
+    if driver not in SUPPORTED_DB_DRIVERS:
+        raise ValueError(
+            f"db_driver không hỗ trợ. Chấp nhận: {', '.join(sorted(SUPPORTED_DB_DRIVERS))}"
+        )
+    if not host:
+        raise ValueError("Thiếu db_host")
+    if not database:
+        raise ValueError("Thiếu db_database")
+
+    if driver == "sqlserver":
+        try:
+            import pyodbc  # type: ignore  # noqa: WPS433 (lazy import intentional)
+        except ImportError as e:
+            raise ValueError(
+                "Chưa cài driver 'pyodbc'. Chạy: pip install pyodbc "
+                "(Windows: cần cài sẵn ODBC Driver 17 hoặc 18 for SQL Server). "
+                f"[import err: {e}]"
+            )
+        # Ưu tiên ODBC Driver 18 (phổ biến nhất 2024+), fallback về 17 rồi
+        # driver mặc định "SQL Server". Nếu tất cả fail → raise từ lần cuối.
+        candidates = (
+            "ODBC Driver 18 for SQL Server",
+            "ODBC Driver 17 for SQL Server",
+            "SQL Server",
+        )
+        last_err: Optional[Exception] = None
+        for odbc in candidates:
+            conn_str = (
+                f"DRIVER={{{odbc}}};SERVER={host},{port};DATABASE={database};"
+                f"UID={username};PWD={password};"
+                # TrustServerCertificate=yes cần cho ODBC 18 (mặc định
+                # Encrypt=yes) nếu server dùng self-signed cert (đa số
+                # internal DB đều rơi vào case này).
+                "TrustServerCertificate=yes;"
+            )
+            try:
+                return pyodbc.connect(conn_str, timeout=timeout)
+            except Exception as e:  # pyodbc.Error subclass
+                last_err = e
+                continue
+        raise ValueError(
+            f"Không kết nối được SQL Server (đã thử {len(candidates)} ODBC driver). "
+            f"Lỗi cuối: {type(last_err).__name__}: {str(last_err)[:200]}"
+        )
+
+    if driver == "postgres":
+        try:
+            import psycopg2  # type: ignore
+        except ImportError as e:
+            raise ValueError(
+                "Chưa cài driver 'psycopg2'. Chạy: pip install psycopg2-binary. "
+                f"[import err: {e}]"
+            )
+        return psycopg2.connect(
+            host=host, port=port, dbname=database,
+            user=username, password=password,
+            connect_timeout=timeout,
+        )
+
+    if driver == "mysql":
+        try:
+            import pymysql  # type: ignore
+        except ImportError as e:
+            raise ValueError(
+                "Chưa cài driver 'pymysql'. Chạy: pip install pymysql. "
+                f"[import err: {e}]"
+            )
+        return pymysql.connect(
+            host=host, port=port, database=database,
+            user=username, password=password,
+            connect_timeout=timeout,
+        )
+
+    raise ValueError(f"Chưa implement db_driver='{driver}'")
+
+
+# SELECT-only guard: chỉ cho phép statement bắt đầu bằng SELECT / WITH.
+# Chặn UPDATE/DELETE/DROP/INSERT/CALL/EXEC v.v. ở tầng backend (không phụ
+# thuộc user setup DB permission — defense in depth).
+_ALLOWED_QUERY_KEYWORDS = {"SELECT", "WITH"}
+
+
+def _run_database_query(auth: dict, username: str, password: str, endpoint: dict,
+                        *, timeout: int = 10) -> list[dict]:
+    """
+    Execute SELECT query trên DB → list[dict] (key = column name).
+
+    Bind param an toàn qua cursor.execute(sql, params) — KHÔNG string concat.
+
+    Raises ValueError với message rõ ràng cho các case:
+        - query rỗng / không phải SELECT.
+        - driver chưa cài / config thiếu (từ `_open_db_connection`).
+        - query fail (bắt exception cụ thể của driver, format lại).
+    """
+    query = str(endpoint.get("query") or "").strip()
+    if not query:
+        raise ValueError("Endpoint chưa có SQL 'query'")
+
+    # Strip trailing semicolons + comment đơn giản để lấy keyword đầu.
+    query_stripped = re.sub(r"^\s*(--[^\n]*\n)+", "", query).lstrip()
+    first_word = (query_stripped.split(None, 1)[0] if query_stripped else "").upper()
+    if first_word not in _ALLOWED_QUERY_KEYWORDS:
+        raise ValueError(
+            f"Query phải bắt đầu bằng SELECT hoặc WITH (read-only). "
+            f"Nhận: '{first_word or query_stripped[:20]}'"
+        )
+
+    params = endpoint.get("query_params") or {}
+    if not isinstance(params, dict):
+        params = {}
+
+    driver = str(auth.get("db_driver") or "").strip().lower()
+    conn = _open_db_connection(auth, username, password, timeout=timeout)
+    try:
+        cursor = conn.cursor()
+        try:
+            if driver == "sqlserver":
+                sql, ordered = _convert_named_to_qmark(query, params)
+                cursor.execute(sql, ordered)
+            else:
+                # psycopg2 + pymysql đều support pyformat named param.
+                sql, pyparams = _convert_named_to_pyformat(query, params)
+                cursor.execute(sql, pyparams)
+            columns: list[str] = (
+                [str(d[0]) for d in cursor.description] if cursor.description else []
+            )
+            rows = cursor.fetchall() if columns else []
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        # Convert rows → list[dict] cho consistency với JSON flow.
+        # pyodbc.Row / tuple / list đều iterable → zip an toàn.
+        out: list[dict] = []
+        for row in rows:
+            try:
+                out.append({columns[i]: row[i] for i in range(len(columns))})
+            except (IndexError, TypeError):
+                # Row có kích thước khác columns → skip để không crash toàn bộ.
+                continue
+        return out
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def test_database_connection(auth: dict) -> dict:
+    """
+    Verify config DB: resolve creds từ .env → mở connection → ping bằng
+    query đơn giản `SELECT 1` (an toàn với mọi driver) → close.
+
+    Trả dict {status, message} tương tự `test_integration`.
+    """
+    try:
+        username, password = resolve_credentials(auth.get("credential_env", ""))
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    try:
+        conn = _open_db_connection(auth, username, password)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    except Exception as e:
+        return {"status": "error",
+                "message": f"Kết nối DB fail: {type(e).__name__}: {str(e)[:250]}"}
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        try:
+            cur.fetchone()
+        except Exception:
+            pass  # 1 số driver không có fetchone trên SELECT 1 → OK
+        cur.close()
+        driver = str(auth.get("db_driver") or "").strip().lower()
+        return {
+            "status": "ok",
+            "message": f"Kết nối {driver} tới {auth.get('db_host')}/{auth.get('db_database')} OK",
+        }
+    except Exception as e:
+        return {"status": "error",
+                "message": f"Ping SELECT 1 fail: {type(e).__name__}: {str(e)[:200]}"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ============================================================================
@@ -799,6 +1137,13 @@ def test_integration(
         return {"status": "error",
                 "message": f"Auth method '{method}' chưa được hỗ trợ."}
 
+    # T31: database method → verify connection thay vì auth HTTP.
+    if method == "database":
+        result = test_database_connection(integ.get("auth") or {})
+        _update_last_status(project_dir, integration_id, result.get("status", "error"),
+                            result.get("message", ""))
+        return result
+
     try:
         session, _extra_query, info = _prepare_authenticated_session(
             base_url=integ["base_url"],
@@ -857,6 +1202,110 @@ def _fetch_endpoint(
     return session.get(endpoint_url, params=params, timeout=timeout, allow_redirects=True)
 
 
+def _run_database_sync(
+    integ: dict,
+    endpoint: dict,
+    *,
+    project_dir: str,
+    project_manager,
+    project_slug: str,
+    long_duration_threshold: int,
+    timeout: int,
+) -> dict:
+    """
+    Sync 1 endpoint database: resolve creds → execute query → build xlsx →
+    parse → save snapshot. Cấu trúc trả về giống `sync_integration` để FE
+    không phải phân biệt.
+    """
+    integration_id = integ.get("id") or ""
+    auth = integ.get("auth") or {}
+    # 1) Resolve creds
+    try:
+        username, password = resolve_credentials(auth.get("credential_env", ""))
+    except ValueError as e:
+        _update_last_status(project_dir, integration_id, "error", str(e))
+        return _err(str(e))
+
+    # 2) Execute query → list[dict]
+    try:
+        records = _run_database_query(auth, username, password, endpoint, timeout=timeout)
+    except ValueError as e:
+        _update_last_status(project_dir, integration_id, "error", str(e))
+        return _err(str(e))
+    except Exception as e:
+        msg = f"Query fail: {type(e).__name__}: {str(e)[:250]}"
+        _update_last_status(project_dir, integration_id, "error", msg)
+        return _err(msg)
+
+    if not records:
+        msg = ("Query trả 0 row. Kiểm tra lại WHERE clause hoặc query_params.")
+        _update_last_status(project_dir, integration_id, "error", msg)
+        return _err(msg)
+
+    # 3) Convert list[dict] → xlsx (dùng chung logic với JSON API).
+    #    field_mapping rỗng → dùng union keys làm header (SQL alias =
+    #    tên cột iHRP chuẩn nếu user viết `SELECT col AS [Mã CN] ...`).
+    field_mapping = endpoint.get("field_mapping") or {}
+    try:
+        xlsx_bytes = build_xlsx_from_json_records(records, field_mapping if isinstance(field_mapping, dict) else {})
+    except Exception as e:
+        msg = f"Build xlsx từ DB records lỗi: {type(e).__name__}: {str(e)[:200]}"
+        _update_last_status(project_dir, integration_id, "error", msg)
+        return _err(msg)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"synced_db_{ts}.xlsx"
+    target_path = os.path.join(project_dir, filename)
+    try:
+        with open(target_path, "wb") as fout:
+            fout.write(xlsx_bytes)
+    except OSError as e:
+        msg = f"Không lưu được file tạm: {e}"
+        _update_last_status(project_dir, integration_id, "error", msg)
+        return _err(msg)
+
+    # 4) Parse (chung với excel/json flow)
+    try:
+        parsed = FunctionListParser().parse(target_path)
+        metrics = DashboardEngine(long_duration_threshold=long_duration_threshold).compute_all(parsed)
+    except Exception as e:
+        msg = f"Parse file lỗi: {type(e).__name__}: {str(e)[:300]}"
+        _update_last_status(project_dir, integration_id, "error", msg)
+        return _err(msg, filename=filename)
+
+    rows_count = len(parsed.rows)
+
+    # 5) Save snapshot
+    target_action = (endpoint.get("target_action") or "snapshot").lower()
+    snapshot_entry = None
+    try:
+        smgr = project_manager.get_snapshot_manager(project_slug)
+        snapshot_entry = smgr.save_snapshot(target_path, parsed, metrics)
+        if target_action == "replace":
+            import shutil as _sh
+            _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
+            project_manager.touch_last_upload(project_slug)
+    except Exception as e:
+        msg = f"Lưu snapshot lỗi: {type(e).__name__}: {str(e)[:200]}"
+        _update_last_status(project_dir, integration_id, "error", msg)
+        return _err(msg, rows_imported=rows_count, filename=filename)
+
+    ok_msg = (f"Đã query {rows_count} dòng · snapshot "
+              f"{snapshot_entry.get('date') if snapshot_entry else '?'} · "
+              f"endpoint '{endpoint.get('name')}' [database]")
+    _update_last_status(project_dir, integration_id, "ok", ok_msg, sync_time=True)
+    return {
+        "status": "ok",
+        "message": ok_msg,
+        "snapshot_id": snapshot_entry.get("date") if snapshot_entry else None,
+        "snapshot_entry": snapshot_entry,
+        "rows_imported": rows_count,
+        "filename": filename,
+        "target_action": target_action,
+        "response_type": "database",
+    }
+
+
 def sync_integration(
     project_dir: str,
     integration_id: str,
@@ -910,6 +1359,28 @@ def sync_integration(
         return _err(
             f"Response type '{response_type}' chưa hỗ trợ "
             f"(supported: {', '.join(sorted(SUPPORTED_RESPONSE_TYPES))})."
+        )
+
+    # ---- T31: DATABASE branch — bypass HTTP session hoàn toàn ----
+    # Database method KHÔNG có URL / session; đọc trực tiếp qua SQL query.
+    # Response type 'database' bắt buộc pair với auth.method='database'
+    # (khách trả view → chỉ có 1 flow duy nhất).
+    if method == "database" or response_type == "database":
+        if method != "database":
+            return _err(
+                "response_type='database' chỉ dùng khi auth.method='database'"
+            )
+        if response_type != "database":
+            return _err(
+                "auth.method='database' chỉ dùng khi response_type='database'"
+            )
+        return _run_database_sync(
+            integ, endpoint,
+            project_dir=project_dir,
+            project_manager=project_manager,
+            project_slug=project_slug,
+            long_duration_threshold=long_duration_threshold,
+            timeout=timeout,
         )
 
     # 1) Prepare session (auth)
@@ -1212,6 +1683,16 @@ def integration_capabilities() -> dict:
                 "env_vars": ["<PREFIX>_KEY"],
                 "description": "API Key — gửi qua header (VD X-API-Key) hoặc query param.",
             },
+            "database": {
+                "required": ["db_driver", "db_host", "db_database", "credential_env"],
+                "optional": ["db_port"],
+                "env_vars": ["<PREFIX>_USERNAME", "<PREFIX>_PASSWORD"],
+                "description": (
+                    "Database (SQL view) — kết nối trực tiếp SQL Server / Postgres / MySQL "
+                    "và execute SELECT view/query do khách trả. "
+                    "Endpoint dùng 'query' + 'query_params' (bind :name an toàn)."
+                ),
+            },
         },
         "response_types": [
             {"value": r, "supported": True}
@@ -1222,6 +1703,17 @@ def integration_capabilities() -> dict:
         ],
         "target_actions": sorted(SUPPORTED_TARGET_ACTIONS),
         "apikey_locations": sorted(SUPPORTED_APIKEY_LOCATIONS),
+        "db_drivers": [
+            {"value": "sqlserver", "label": "SQL Server (pyodbc)",
+             "default_port": DEFAULT_DB_PORTS["sqlserver"],
+             "hint": "Windows cần cài sẵn ODBC Driver 17 hoặc 18 for SQL Server"},
+            {"value": "postgres", "label": "PostgreSQL (psycopg2)",
+             "default_port": DEFAULT_DB_PORTS["postgres"],
+             "hint": "pip install psycopg2-binary"},
+            {"value": "mysql", "label": "MySQL (pymysql)",
+             "default_port": DEFAULT_DB_PORTS["mysql"],
+             "hint": "pip install pymysql"},
+        ],
         "default_timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
         # Gợi ý cột chuẩn để FE prefill Field Mapping panel (JSON response_type).
         # Không bắt buộc — user có thể thêm cột riêng.

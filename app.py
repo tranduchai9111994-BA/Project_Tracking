@@ -2054,6 +2054,33 @@ def project_integration_test(slug: str, integration_id: str):
     return jsonify(result), status_code
 
 
+@app.route("/api/projects/<slug>/integrations/<integration_id>/test-db",
+           methods=["POST"])
+def project_integration_test_db(slug: str, integration_id: str):
+    """
+    T31 — Test kết nối DB cho integration có auth.method='database'.
+    Chỉ mở connection + ping `SELECT 1`, KHÔNG chạy query của endpoint.
+    Alias tiện lợi cho FE — logic backend giống hệt `/test` với method=database.
+    """
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    integ = integ_mod.get_integration(folder, integration_id)
+    if not integ:
+        return jsonify({"status": "error", "message": "Không tìm thấy integration"}), 404
+    method = (integ.get("auth") or {}).get("method") or ""
+    if method != "database":
+        return jsonify({
+            "status": "error",
+            "message": f"Endpoint này dùng auth.method='{method}', không phải database. Dùng /test.",
+        }), 400
+    result = integ_mod.test_database_connection(integ.get("auth") or {})
+    integ_mod._update_last_status(  # type: ignore[attr-defined]
+        folder, integration_id, result.get("status", "error"), result.get("message", ""))
+    return jsonify(result)
+
+
 @app.route("/api/projects/<slug>/integrations/<integration_id>/sync",
            methods=["POST"])
 def project_integration_sync(slug: str, integration_id: str):

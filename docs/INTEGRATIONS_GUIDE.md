@@ -407,7 +407,195 @@ Sau khi cấu hình xong:
 
 ---
 
-## 7. Roadmap (còn lại chưa support)
+## 7. 🆕 Database view integration (T31)
+
+Khi khách trả **view SQL** thay vì Excel/JSON API, dùng `auth.method="database"`.
+Backend sẽ mở connection trực tiếp qua ODBC/psycopg2/pymysql (lazy import),
+execute SELECT query, convert kết quả sang xlsx-in-memory rồi đi vào parser
++ snapshot flow giống các integration khác.
+
+### 7.1. Prerequisites
+
+Cài driver Python **chỉ khi cần** (backend lazy-import → không cài vẫn dùng
+được các HTTP integration khác):
+
+| DB | Package Python | Prerequisites hệ điều hành |
+|----|----------------|----------------------------|
+| SQL Server | `pip install pyodbc>=5.0.0` | **Windows:** cài sẵn [ODBC Driver 18 for SQL Server](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) (fallback tự động sang 17 rồi driver mặc định "SQL Server" nếu 18 chưa có). **Linux:** `apt-get install unixodbc-dev` + driver tương ứng. |
+| PostgreSQL | `pip install psycopg2-binary>=2.9.0` | Không cần driver hệ thống (binary wheel đã bundled). |
+| MySQL/MariaDB | `pip install pymysql>=1.1.0` | Không cần driver hệ thống. |
+
+Verify sau khi cài:
+```bash
+python -c "import pyodbc; print(pyodbc.drivers())"    # SQL Server
+python -c "import psycopg2; print(psycopg2.__version__)"  # Postgres
+python -c "import pymysql; print(pymysql.__version__)"    # MySQL
+```
+
+### 7.2. Cấu hình `.env`
+
+Dùng chung schema với `form_login`/`basic_auth` — 2 biến `USERNAME` + `PASSWORD`:
+
+```dotenv
+# Prefix ví dụ: FIS_DB
+FIS_DB_USERNAME=readonly_user
+FIS_DB_PASSWORD=xxx
+```
+
+**⚠️ Bắt buộc dùng account read-only.** Backend đã có guard chặn statement
+UPDATE/DELETE/DROP/INSERT/EXEC/CALL/TRUNCATE ở tầng app (chỉ chấp nhận
+`SELECT` và `WITH`), nhưng defense in depth — hãy cấp permission thực tế
+`GRANT SELECT ON <view>` cho user thay vì dùng admin.
+
+### 7.3. Ví dụ cấu hình theo từng DB
+
+**SQL Server (view khách trả):**
+```json
+{
+  "name": "iHRP DB view",
+  "base_url": "",
+  "auth": {
+    "method": "database",
+    "db_driver": "sqlserver",
+    "db_host": "10.1.2.3",
+    "db_port": 1433,
+    "db_database": "iHRP_Prod",
+    "credential_env": "FIS_DB"
+  },
+  "endpoints": [
+    {
+      "name": "Function List",
+      "response_type": "database",
+      "target_action": "snapshot",
+      "query": "SELECT * FROM dbo.v_function_list WHERE project_id = :project_id",
+      "query_params": {"project_id": "MPHG"},
+      "field_mapping": {
+        "Mã CN": "code",
+        "Tên chức năng": "name",
+        "Module": "module_code",
+        "Analysis - Start": "analysis_start",
+        "Analysis - Status": "analysis_status"
+      }
+    }
+  ]
+}
+```
+
+**PostgreSQL:**
+```json
+{
+  "auth": {"method": "database", "db_driver": "postgres",
+           "db_host": "pg.company.com", "db_port": 5432,
+           "db_database": "ihrp", "credential_env": "PG_IHRP"},
+  "endpoints": [{
+    "name": "Function view",
+    "response_type": "database",
+    "query": "SELECT * FROM public.v_function_list WHERE org = :org",
+    "query_params": {"org": "MPHG"}
+  }]
+}
+```
+
+**MySQL:**
+```json
+{
+  "auth": {"method": "database", "db_driver": "mysql",
+           "db_host": "mysql.company.com", "db_port": 3306,
+           "db_database": "ihrp", "credential_env": "MY_IHRP"},
+  "endpoints": [{
+    "name": "Function view",
+    "response_type": "database",
+    "query": "SELECT * FROM v_function_list WHERE project_id = :pid",
+    "query_params": {"pid": "MPHG"}
+  }]
+}
+```
+
+### 7.4. Param binding an toàn (chống SQL injection)
+
+**Luôn dùng named param `:tên_param`** trong query, KHÔNG string concat:
+
+- Backend tự convert `:name` → placeholder phù hợp driver:
+  * `sqlserver` → `?` (pyodbc positional).
+  * `postgres` / `mysql` → `%(name)s` (pyformat).
+- Value truyền qua `query_params` → driver bind như literal, KHÔNG execute.
+- Attack payload `"MPHG'; DROP TABLE ...; --"` → an toàn (trở thành 1 string
+  literal, không match record nào).
+
+Ví dụ **SAI** (KHÔNG làm vậy):
+```json
+{"query": "SELECT * FROM t WHERE id = 'MPHG'"}  // hard-coded → không flexible
+{"query": "SELECT * FROM t WHERE id = '" + userInput + "'"}  // string concat → INJECTION!
+```
+
+Ví dụ **ĐÚNG**:
+```json
+{
+  "query": "SELECT * FROM t WHERE id = :id AND created_at >= :since",
+  "query_params": {"id": "MPHG", "since": "2026-01-01"}
+}
+```
+
+### 7.5. Field mapping (tuỳ chọn)
+
+3 cách xử lý tên cột:
+
+1. **Alias thẳng trong SQL** (đơn giản nhất, khuyến nghị):
+   ```sql
+   SELECT
+     code AS [Mã CN],
+     name AS [Tên chức năng],
+     module_code AS [Module]
+   FROM v_function_list
+   ```
+   → không cần khai báo `field_mapping` (để rỗng `{}`).
+
+2. **field_mapping** (dict) — mapping thủ công `{tên_cột_iHRP: tên_col_SQL}`:
+   ```json
+   "field_mapping": {"Mã CN": "code", "Tên chức năng": "name"}
+   ```
+
+3. **Bỏ trống hoàn toàn** → parser dùng nguyên tên cột SQL làm header,
+   cột nào có prefix "Phase - " sẽ tự group (VD `SELECT analysis_start AS
+   [Analysis - Start]`).
+
+### 7.6. Test connection
+
+Trong editor, sau khi Lưu integration → bấm **🔌 Test connection** (nút
+teal trong panel Database). Backend sẽ:
+1. Resolve `<PREFIX>_USERNAME` + `<PREFIX>_PASSWORD` từ `.env`.
+2. Mở connection (lazy-import driver) → nếu driver chưa cài → message
+   hướng dẫn `pip install ...`.
+3. Ping `SELECT 1` → verify server accept credential + user có permission.
+4. Close connection.
+
+Endpoint API: `POST /api/projects/<slug>/integrations/<id>/test-db`.
+Không execute query của bất kỳ endpoint nào (dùng `/sync` cho việc đó).
+
+### 7.7. Firewall / network
+
+- SQL Server default port `1433/tcp`. Nếu named instance → có thể port
+  động, hỏi DBA để mở static port.
+- PostgreSQL default `5432/tcp`.
+- MySQL default `3306/tcp`.
+- Máy chạy iHRP Tracker phải có route mạng đến DB server. Nếu qua VPN:
+  connect VPN trước khi bấm Sync.
+
+### 7.8. Troubleshooting DB-specific
+
+| Message | Nguyên nhân | Fix |
+|---------|-------------|-----|
+| `Chưa cài driver 'pyodbc'` | Chưa cài package Python | `pip install pyodbc` |
+| `Không kết nối được SQL Server (đã thử 3 ODBC driver)` | Windows chưa có ODBC Driver 17/18 | Tải từ Microsoft link ở trên |
+| `db_driver không hỗ trợ` | Sai giá trị driver | Chọn 1 trong `sqlserver`/`postgres`/`mysql` |
+| `Query phải bắt đầu bằng SELECT hoặc WITH` | Có UPDATE/DELETE/DROP | Guard cứng — chỉ dùng SELECT |
+| `Query trả 0 row` | WHERE clause sai / query_params sai value | Verify query trong SSMS/DBeaver trước, sau đó copy vào |
+| `psycopg2.OperationalError: FATAL: password authentication failed` | Sai USERNAME/PASSWORD trong .env | Verify `.env` + reload dotenv (không cần restart) |
+| `Endpoint này dùng auth.method='basic_auth'` khi bấm /test-db | Chọn nhầm endpoint | Chỉ integration `auth.method=database` mới dùng `/test-db` |
+
+---
+
+## 8. Roadmap (còn lại chưa support)
 
 - `response_type = csv` — Parse CSV (reserve, priority thấp).
 - OAuth 2.0 flow đầy đủ (authorize/refresh) — chưa có kế hoạch. Bearer PAT tĩnh
@@ -416,5 +604,8 @@ Sau khi cấu hình xong:
 - Body-JSON cho POST endpoint (hiện dùng form-data). Nếu API yêu cầu POST + JSON
   body → gõ backdoor qua `endpoint.params` sẽ không hoạt động, cần mở rộng
   thêm `body_json` field.
+- Oracle DB (không có trong `SUPPORTED_DB_DRIVERS`) — chờ user request. Có thể
+  thêm qua `cx_Oracle` với logic tương tự.
+- Stored procedure với OUT params — chưa hỗ trợ, hiện chỉ SELECT/WITH đơn thuần.
 
 Feedback + feature request: liên hệ dev team.

@@ -28,6 +28,14 @@ soupsieve==2.6
 # --- Type hints (Python 3.9+ compat) ---
 typing_extensions==4.16.0
 
+# --- Database integration drivers (T31 — OPTIONAL) ---
+# Chỉ cần cài khi user dùng auth.method='database' cho integration.
+# Backend lazy-import → không cài vẫn dùng được các HTTP method khác.
+# Uncomment / cài thủ công driver phù hợp với DB đích:
+#   pyodbc>=5.0.0            # SQL Server (Windows: cần ODBC Driver 17/18)
+#   psycopg2-binary>=2.9.0   # PostgreSQL
+#   pymysql>=1.1.0           # MySQL / MariaDB
+
 # --- Dev / testing (optional cho user cuối) ---
 pytest==8.3.4
 pytest-cov==6.0.0

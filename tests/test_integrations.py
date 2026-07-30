@@ -449,22 +449,27 @@ def env_apikey(monkeypatch):
 
 
 def test_capabilities_all_first_class(project_dir):
-    """4 auth methods + 2 response types (excel + json) đều supported=True."""
+    """5 auth methods + 3 response types (excel/json/database) đều supported=True."""
     caps = integ_mod.integration_capabilities()
     supported_auth = {m["value"] for m in caps["auth_methods"] if m["supported"]}
-    assert supported_auth == {"form_login", "basic_auth", "bearer_token", "api_key"}
+    # T31: thêm "database" method vào danh sách supported.
+    assert supported_auth == {"form_login", "basic_auth", "bearer_token", "api_key", "database"}
     supported_resp = {r["value"] for r in caps["response_types"] if r["supported"]}
     assert "excel" in supported_resp
     assert "json" in supported_resp
+    assert "database" in supported_resp
     # csv vẫn planned
     unsupported_resp = {r["value"] for r in caps["response_types"] if not r["supported"]}
     assert "csv" in unsupported_resp
-    # auth_method_fields metadata cho FE dynamic render
+    # auth_method_fields metadata cho FE dynamic render — bao gồm cả 'database'.
     assert set(caps["auth_method_fields"].keys()) == supported_auth
     assert caps["auth_method_fields"]["bearer_token"]["env_vars"] == ["<PREFIX>_TOKEN"]
     assert caps["auth_method_fields"]["api_key"]["env_vars"] == ["<PREFIX>_KEY"]
+    assert caps["auth_method_fields"]["database"]["env_vars"] == ["<PREFIX>_USERNAME", "<PREFIX>_PASSWORD"]
     # apikey_locations expose để FE render dropdown
     assert set(caps["apikey_locations"]) == {"header", "query"}
+    # T31: db_drivers metadata
+    assert {d["value"] for d in caps["db_drivers"]} == {"sqlserver", "postgres", "mysql"}
 
 
 def test_resolve_bearer_token(env_bearer):

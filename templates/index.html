@@ -887,6 +887,58 @@
                                 Chọn <b>Query param</b> nếu app source yêu cầu <code>?api_key=xxx</code>.
                             </p>
                         </div>
+
+                        <!-- ==== database fields (T31) ==== -->
+                        <div id="integAuth-database" data-auth-fields class="hidden space-y-2 border-l-2 border-teal-500 pl-3">
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                <label class="block">
+                                    <span class="text-xs">Driver *</span>
+                                    <select id="integDbDriver" onchange="_integOnDbDriverChange()"
+                                            class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600">
+                                        <option value="">— chọn —</option>
+                                        <option value="sqlserver">SQL Server (pyodbc)</option>
+                                        <option value="postgres">PostgreSQL (psycopg2)</option>
+                                        <option value="mysql">MySQL (pymysql)</option>
+                                    </select>
+                                </label>
+                                <label class="block md:col-span-2">
+                                    <span class="text-xs">Host / IP *</span>
+                                    <input id="integDbHost" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                           placeholder="VD: 10.1.2.3 hoặc db.company.local">
+                                </label>
+                                <label class="block">
+                                    <span class="text-xs">Port</span>
+                                    <input id="integDbPort" type="number" min="0" max="65535"
+                                           class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                           placeholder="1433/5432/3306">
+                                </label>
+                                <label class="block md:col-span-2">
+                                    <span class="text-xs">Database name *</span>
+                                    <input id="integDbDatabase" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                           placeholder="VD: iHRP_Prod">
+                                </label>
+                                <label class="block md:col-span-2">
+                                    <span class="text-xs">Prefix env (credential_env) *</span>
+                                    <input id="integDbCredEnv" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600 uppercase"
+                                           placeholder="VD: FIS_DB">
+                                </label>
+                            </div>
+                            <p class="text-[11px] text-gray-500">
+                                Thêm vào <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">.env</code>:
+                                <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">&lt;PREFIX&gt;_USERNAME=readonly_user</code>
+                                + <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">&lt;PREFIX&gt;_PASSWORD=xxx</code>.
+                                Dùng account <b>read-only</b>. Backend chỉ chấp nhận
+                                <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">SELECT/WITH</code>, block UPDATE/DELETE/DROP.
+                            </p>
+                            <div id="integDbDriverHint" class="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 px-2 py-1 rounded hidden"></div>
+                            <div>
+                                <button type="button" onclick="_integTestDb()"
+                                        class="bg-teal-600 hover:bg-teal-700 text-white px-3 py-1.5 rounded text-xs font-semibold">
+                                    🔌 Test connection
+                                </button>
+                                <span class="text-[11px] text-gray-500 ml-2">Mở connection + ping <code>SELECT 1</code>, không chạy query.</span>
+                            </div>
+                        </div>
                     </fieldset>
 
                     <fieldset class="border rounded-lg p-3 dark:border-slate-600">
@@ -980,6 +1032,46 @@
 }'></textarea>
                 </label>
                 <div data-json-suggest-out class="hidden text-[11px] rounded border dark:border-slate-600 p-2 bg-white dark:bg-slate-800 max-h-52 overflow-auto"></div>
+            </div>
+
+            <!-- ==== Database SQL panel — chỉ show khi response_type=database (T31) ==== -->
+            <div data-db-panel class="hidden border-t dark:border-slate-600 pt-2 space-y-2">
+                <div class="text-[11px] font-semibold text-teal-600 dark:text-teal-300">
+                    🗄 SQL Query (read-only — SELECT / WITH)
+                </div>
+                <label class="block">
+                    <span class="text-[11px] text-gray-500">
+                        Query — dùng <code>:tên_param</code> để bind an toàn (không nhận string concat).
+                    </span>
+                    <textarea data-field="query" rows="6"
+                              class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
+                              placeholder="SELECT * FROM v_function_list&#10;WHERE project_id = :project_id&#10;  AND created_at >= :since"></textarea>
+                </label>
+                <label class="block">
+                    <span class="text-[11px] text-gray-500">
+                        query_params — JSON <code>{"tên_param": value}</code>. Bỏ trống nếu query không có <code>:param</code>.
+                    </span>
+                    <textarea data-field="query_params" rows="2"
+                              class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
+                              placeholder='{"project_id": "MPHG", "since": "2026-01-01"}'></textarea>
+                </label>
+                <label class="block">
+                    <span class="text-[11px] text-gray-500">
+                        field_mapping (tuỳ chọn) — JSON <code>{"Tên cột iHRP": "column_name"}</code>.
+                        Bỏ trống → dùng nguyên tên cột SQL. Tip: dùng <code>SELECT col AS [Mã CN]</code> để đặt tên iHRP thẳng trong SQL.
+                    </span>
+                    <textarea data-field="field_mapping_db" rows="4"
+                              class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
+                              placeholder='{
+  "Mã CN": "code",
+  "Tên chức năng": "name",
+  "Module": "module_code"
+}'></textarea>
+                </label>
+                <p class="text-[11px] text-amber-700 dark:text-amber-300">
+                    ⚠️ Backend chỉ chấp nhận statement bắt đầu bằng <code>SELECT</code> hoặc <code>WITH</code>.
+                    Tuyệt đối không dùng account admin — hãy tạo user <code>readonly</code> trên DB.
+                </p>
             </div>
         </div>
     </template>
