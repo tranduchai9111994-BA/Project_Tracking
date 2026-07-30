@@ -430,3 +430,504 @@ def test_api_sync_missing_endpoint_id(flask_client):
         json={},
     )
     assert r2.status_code == 400
+
+
+# =========================================================================
+# T30-extra: Auth methods bearer_token / basic_auth / api_key
+# =========================================================================
+
+@pytest.fixture
+def env_bearer(monkeypatch):
+    monkeypatch.setenv("FIS_API_TOKEN", "test-token-123")
+    yield
+
+
+@pytest.fixture
+def env_apikey(monkeypatch):
+    monkeypatch.setenv("FIS_API_KEY", "sk-abc-999")
+    yield
+
+
+def test_capabilities_all_first_class(project_dir):
+    """4 auth methods + 2 response types (excel + json) đều supported=True."""
+    caps = integ_mod.integration_capabilities()
+    supported_auth = {m["value"] for m in caps["auth_methods"] if m["supported"]}
+    assert supported_auth == {"form_login", "basic_auth", "bearer_token", "api_key"}
+    supported_resp = {r["value"] for r in caps["response_types"] if r["supported"]}
+    assert "excel" in supported_resp
+    assert "json" in supported_resp
+    # csv vẫn planned
+    unsupported_resp = {r["value"] for r in caps["response_types"] if not r["supported"]}
+    assert "csv" in unsupported_resp
+    # auth_method_fields metadata cho FE dynamic render
+    assert set(caps["auth_method_fields"].keys()) == supported_auth
+    assert caps["auth_method_fields"]["bearer_token"]["env_vars"] == ["<PREFIX>_TOKEN"]
+    assert caps["auth_method_fields"]["api_key"]["env_vars"] == ["<PREFIX>_KEY"]
+    # apikey_locations expose để FE render dropdown
+    assert set(caps["apikey_locations"]) == {"header", "query"}
+
+
+def test_resolve_bearer_token(env_bearer):
+    assert integ_mod.resolve_bearer_token("FIS_API") == "test-token-123"
+
+
+def test_resolve_bearer_missing(monkeypatch):
+    monkeypatch.delenv("NOSUCH_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="NOSUCH_TOKEN"):
+        integ_mod.resolve_bearer_token("NOSUCH")
+
+
+def test_resolve_api_key(env_apikey):
+    assert integ_mod.resolve_api_key("FIS_API") == "sk-abc-999"
+
+
+def test_resolve_api_key_missing():
+    with pytest.raises(ValueError, match="apikey_env"):
+        integ_mod.resolve_api_key("")
+
+
+def test_prepare_session_bearer(env_bearer):
+    session, extra, info = integ_mod._prepare_authenticated_session(
+        base_url="https://fis.example.com",
+        auth={"method": "bearer_token", "bearer_env": "FIS_API"},
+    )
+    try:
+        assert session.headers.get("Authorization") == "Bearer test-token-123"
+        assert extra == {}
+        assert info["method"] == "bearer_token"
+    finally:
+        session.close()
+
+
+def test_prepare_session_apikey_header(env_apikey):
+    session, extra, _info = integ_mod._prepare_authenticated_session(
+        base_url="https://fis.example.com",
+        auth={"method": "api_key", "apikey_env": "FIS_API",
+              "apikey_header": "X-API-Token", "apikey_location": "header"},
+    )
+    try:
+        assert session.headers.get("X-API-Token") == "sk-abc-999"
+        assert extra == {}
+    finally:
+        session.close()
+
+
+def test_prepare_session_apikey_query(env_apikey):
+    session, extra, _info = integ_mod._prepare_authenticated_session(
+        base_url="https://fis.example.com",
+        auth={"method": "api_key", "apikey_env": "FIS_API",
+              "apikey_header": "api_key", "apikey_location": "query"},
+    )
+    try:
+        # Header không bị set
+        assert "api_key" not in session.headers
+        # Extra query merge vào params khi fetch
+        assert extra == {"api_key": "sk-abc-999"}
+    finally:
+        session.close()
+
+
+def test_prepare_session_basic_auth(env_creds):
+    session, extra, _info = integ_mod._prepare_authenticated_session(
+        base_url="https://fis.example.com",
+        auth={"method": "basic_auth", "credential_env": "IHRP_TEST"},
+    )
+    try:
+        # Base64('abc:xyz') = YWJjOnh5eg==
+        assert session.headers.get("Authorization") == "Basic YWJjOnh5eg=="
+        assert extra == {}
+    finally:
+        session.close()
+
+
+def test_bearer_sync_headers_sent(project_dir, env_bearer):
+    """Verify bearer token thực sự đi kèm mỗi request tới endpoint."""
+    integ = integ_mod.create_integration(project_dir, {
+        "name": "FIS API",
+        "base_url": "https://fis.example.com",
+        "auth": {"method": "bearer_token", "bearer_env": "FIS_API"},
+        "endpoints": [{
+            "name": "Functions",
+            "path": "/v1/functions",
+            "response_type": "json",
+            "data_path": "data",
+            "field_mapping": {"Mã CN": "code"},
+        }],
+    })
+    endpoint_id = integ["endpoints"][0]["id"]
+
+    from app import _project_mgr
+    with requests_mock.Mocker() as m:
+        m.get("https://fis.example.com/v1/functions",
+              json={"data": [{"code": "F001"}]},
+              headers={"Content-Type": "application/json"})
+        _res = integ_mod.sync_integration(
+            project_dir=project_dir,
+            integration_id=integ["id"],
+            endpoint_id=endpoint_id,
+            project_manager=_project_mgr,
+            project_slug="default",
+        )
+        # 1 request duy nhất, mang Authorization: Bearer <token>
+        assert len(m.request_history) == 1
+        req = m.request_history[0]
+        assert req.headers.get("Authorization") == "Bearer test-token-123"
+
+
+def test_apikey_query_appended_to_url(project_dir, env_apikey):
+    """api_key location=query → phải append vào query string endpoint."""
+    integ = integ_mod.create_integration(project_dir, {
+        "name": "Q",
+        "base_url": "https://api.example.com",
+        "auth": {"method": "api_key", "apikey_env": "FIS_API",
+                 "apikey_header": "api_key", "apikey_location": "query"},
+        "endpoints": [{
+            "name": "List",
+            "path": "/list",
+            "response_type": "json",
+            "data_path": "",
+            "field_mapping": {"Mã CN": "code"},
+            "params": {"module": "HR"},
+        }],
+    })
+    endpoint_id = integ["endpoints"][0]["id"]
+    from app import _project_mgr
+    with requests_mock.Mocker() as m:
+        m.get("https://api.example.com/list",
+              json=[{"code": "F001"}],
+              headers={"Content-Type": "application/json"})
+        integ_mod.sync_integration(
+            project_dir=project_dir,
+            integration_id=integ["id"],
+            endpoint_id=endpoint_id,
+            project_manager=_project_mgr,
+            project_slug="default",
+        )
+        req = m.request_history[0]
+        assert "api_key=sk-abc-999" in req.url
+        # Params gốc vẫn giữ
+        assert "module=HR" in req.url
+
+
+# =========================================================================
+# JSON response mapping — unit test cho _dig_json / extract_records / build_xlsx
+# =========================================================================
+
+def test_dig_json_dot_notation():
+    obj = {"data": {"items": [{"code": "F001", "phases": {"analysis": {"status": "Closed"}}}]}}
+    assert integ_mod._dig_json(obj, "data.items.0.code") == "F001"
+    assert integ_mod._dig_json(obj, "data.items.0.phases.analysis.status") == "Closed"
+    # Không tồn tại → None
+    assert integ_mod._dig_json(obj, "data.items.5.code") is None
+    assert integ_mod._dig_json(obj, "data.items.0.nonexistent") is None
+    # Path rỗng → identity
+    assert integ_mod._dig_json(obj, "") is obj
+
+
+def test_extract_records_root_list():
+    """Payload là array top-level → data_path='' để trích trực tiếp."""
+    payload = [{"a": 1}, {"a": 2}]
+    assert integ_mod.extract_records(payload, "") == [{"a": 1}, {"a": 2}]
+
+
+def test_extract_records_nested():
+    payload = {"data": {"items": [{"code": "F1"}, {"code": "F2"}]}}
+    assert integ_mod.extract_records(payload, "data.items") == [{"code": "F1"}, {"code": "F2"}]
+
+
+def test_extract_records_not_list():
+    payload = {"data": "not a list"}
+    assert integ_mod.extract_records(payload, "data") == []
+
+
+def test_build_xlsx_from_json_records(tmp_path):
+    """Build xlsx từ 3 records với field mapping — verify parser đọc lại đúng."""
+    records = [
+        {"code": "F001", "name": "Chức năng 1", "module": "TMS", "priority": "Must-have",
+         "phases": {"analysis": {"start": "2026-01-01", "end": "2026-01-05",
+                                  "status": "Closed", "pic": "SonHN6"}}},
+        {"code": "F002", "name": "Chức năng 2", "module": "HR", "priority": "Should-have",
+         "phases": {"analysis": {"start": "2026-02-01", "end": None,
+                                  "status": "In-progress", "pic": "PhatTPT3"}}},
+    ]
+    mapping = {
+        "Mã CN": "code",
+        "Tên chức năng": "name",
+        "Module": "module",
+        "Priority": "priority",
+        "Analysis - Start": "phases.analysis.start",
+        "Analysis - End": "phases.analysis.end",
+        "Analysis - Status": "phases.analysis.status",
+        "Analysis - PIC": "phases.analysis.pic",
+    }
+    xlsx_bytes = integ_mod.build_xlsx_from_json_records(records, mapping)
+    # Ghi ra file rồi parse lại bằng parser thật
+    p = tmp_path / "out.xlsx"
+    p.write_bytes(xlsx_bytes)
+    from parser.excel_parser import FunctionListParser
+    parsed = FunctionListParser().parse(str(p))
+    assert len(parsed.rows) == 2
+    # Auto-detect phase Analysis
+    assert "Analysis" in parsed.all_phases
+    # Row 1 verify meta + phase status
+    r1 = parsed.rows[0]
+    assert r1.meta["ma_cn"] == "F001"
+    assert r1.meta["module"] == "TMS"
+    assert r1.phases["Analysis"].status == "Closed"
+    assert "SonHN6" in r1.phases["Analysis"].pics
+
+
+def test_build_xlsx_skips_empty_mapping():
+    """field_mapping với value rỗng phải skip cột đó."""
+    records = [{"a": 1, "b": 2}]
+    xlsx = integ_mod.build_xlsx_from_json_records(records, {"A": "a", "SkipMe": "", "B": "b"})
+    import openpyxl, io
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx))
+    ws = wb.active
+    headers = [c.value for c in ws[1]]
+    assert headers == ["A", "B"]  # SkipMe không có
+
+
+# =========================================================================
+# E2E sync — Bearer + JSON API (mô phỏng REST API của team FIS)
+# =========================================================================
+
+def test_e2e_sync_bearer_json_api(flask_client, env_bearer):
+    """
+    Kịch bản chính: user config Bearer token + JSON API → mock endpoint trả 5
+    record với structure {data: {items: [{...phases nested...}]}} → sync →
+    verify snapshot có 5 dòng đúng cột map.
+    """
+    # 1) Tạo integration qua API
+    r = flask_client.post(
+        "/api/projects/default/integrations",
+        json={
+            "name": "FIS REST API",
+            "base_url": "https://fis-api.company.com",
+            "auth": {"method": "bearer_token", "bearer_env": "FIS_API"},
+            "endpoints": [{
+                "name": "Functions Export",
+                "path": "/v1/projects/ihrp/functions",
+                "http_method": "GET",
+                "response_type": "json",
+                "data_path": "data.items",
+                "field_mapping": {
+                    "Mã CN": "code",
+                    "Tên chức năng": "name",
+                    "Module": "module_code",
+                    "Priority": "priority",
+                    "FIT/GAP": "fit_gap",
+                    "Analysis - Start": "phases.analysis.start",
+                    "Analysis - End": "phases.analysis.end",
+                    "Analysis - Status": "phases.analysis.status",
+                    "Analysis - PIC": "phases.analysis.pic",
+                    "Dev - Start": "phases.dev.start",
+                    "Dev - End": "phases.dev.end",
+                    "Dev - Status": "phases.dev.status",
+                    "Dev - PIC": "phases.dev.pic",
+                },
+                "target_action": "snapshot",
+            }],
+        },
+    )
+    assert r.status_code == 201
+    integ = r.get_json()["integration"]
+    endpoint_id = integ["endpoints"][0]["id"]
+
+    # 2) Mock 5 records
+    fake_payload = {
+        "data": {
+            "items": [
+                {
+                    "code": f"FIS.FR.{i:02d}",
+                    "name": f"Chức năng test {i}",
+                    "module_code": ("TMS" if i % 2 == 0 else "HR"),
+                    "priority": "Must-have",
+                    "fit_gap": "FIT",
+                    "phases": {
+                        "analysis": {
+                            "start": "2026-01-01",
+                            "end": "2026-01-10",
+                            "status": "Closed",
+                            "pic": "SonHN6",
+                        },
+                        "dev": {
+                            "start": "2026-01-11",
+                            "end": None,
+                            "status": ("In-progress" if i == 0 else "Assigned"),
+                            "pic": "PhatTPT3",
+                        },
+                    },
+                }
+                for i in range(5)
+            ]
+        }
+    }
+
+    with requests_mock.Mocker() as m:
+        m.get(
+            "https://fis-api.company.com/v1/projects/ihrp/functions",
+            json=fake_payload,
+            headers={"Content-Type": "application/json"},
+        )
+        r_sync = flask_client.post(
+            f"/api/projects/default/integrations/{integ['id']}/sync",
+            json={"endpoint_id": endpoint_id},
+        )
+        # Verify Authorization header đã đi kèm request
+        req = m.request_history[0]
+        assert req.headers.get("Authorization") == "Bearer test-token-123"
+
+    body = r_sync.get_json()
+    assert body["status"] == "ok", body
+    assert body["rows_imported"] == 5
+    assert body["response_type"] == "json"
+    assert body["snapshot_id"], "snapshot phải được tạo"
+
+    # 3) Verify snapshot content — mở lại pkl / xlsx qua parser
+    from app import _project_mgr
+    smgr = _project_mgr.get_snapshot_manager("default")
+    snaps = smgr.list_snapshots()
+    assert snaps[0]["total_functions"] == 5
+    loaded = smgr.load_snapshot(snaps[0]["date"])
+    parsed = loaded["parsed"]
+    assert len(parsed.rows) == 5
+    # Verify field_mapping đã convert đúng: mã CN + module + phase
+    ma_cns = {r.meta["ma_cn"] for r in parsed.rows}
+    assert ma_cns == {"FIS.FR.00", "FIS.FR.01", "FIS.FR.02", "FIS.FR.03", "FIS.FR.04"}
+    modules = {r.meta["module"] for r in parsed.rows}
+    assert modules == {"TMS", "HR"}
+    # Phase auto-detect từ header "Analysis - Start" etc.
+    assert "Analysis" in parsed.all_phases
+    assert "Dev" in parsed.all_phases
+    # Verify status + PIC
+    r0 = next(r for r in parsed.rows if r.meta["ma_cn"] == "FIS.FR.00")
+    assert r0.phases["Analysis"].status == "Closed"
+    assert "SonHN6" in r0.phases["Analysis"].pics
+    assert r0.phases["Dev"].status == "In-progress"
+
+
+def test_json_sync_missing_field_mapping_errors(flask_client, env_bearer):
+    """response_type=json nhưng không config mapping → error rõ ràng."""
+    r = flask_client.post(
+        "/api/projects/default/integrations",
+        json={
+            "name": "X",
+            "base_url": "https://x.example.com",
+            "auth": {"method": "bearer_token", "bearer_env": "FIS_API"},
+            "endpoints": [{
+                "name": "E",
+                "path": "/e",
+                "response_type": "json",
+                # KHÔNG có field_mapping
+            }],
+        },
+    )
+    integ = r.get_json()["integration"]
+    endpoint_id = integ["endpoints"][0]["id"]
+    with requests_mock.Mocker() as m:
+        m.get("https://x.example.com/e",
+              json=[{"a": 1}], headers={"Content-Type": "application/json"})
+        r2 = flask_client.post(
+            f"/api/projects/default/integrations/{integ['id']}/sync",
+            json={"endpoint_id": endpoint_id},
+        )
+    body = r2.get_json()
+    assert body["status"] == "error"
+    assert "field_mapping" in body["message"]
+
+
+def test_json_sync_wrong_data_path_errors(flask_client, env_bearer):
+    """data_path sai → không trích được record → error rõ ràng."""
+    r = flask_client.post(
+        "/api/projects/default/integrations",
+        json={
+            "name": "X",
+            "base_url": "https://x.example.com",
+            "auth": {"method": "bearer_token", "bearer_env": "FIS_API"},
+            "endpoints": [{
+                "name": "E",
+                "path": "/e",
+                "response_type": "json",
+                "data_path": "wrong.path",
+                "field_mapping": {"Mã CN": "code"},
+            }],
+        },
+    )
+    integ = r.get_json()["integration"]
+    endpoint_id = integ["endpoints"][0]["id"]
+    with requests_mock.Mocker() as m:
+        m.get("https://x.example.com/e",
+              json={"data": [{"code": "F1"}]},
+              headers={"Content-Type": "application/json"})
+        r2 = flask_client.post(
+            f"/api/projects/default/integrations/{integ['id']}/sync",
+            json={"endpoint_id": endpoint_id},
+        )
+    body = r2.get_json()
+    assert body["status"] == "error"
+    assert "data_path" in body["message"] or "record nào" in body["message"]
+
+
+# =========================================================================
+# Preview endpoint — auto-suggest field_mapping
+# =========================================================================
+
+def test_preview_json_endpoint_returns_flat_keys(flask_client, env_bearer):
+    r = flask_client.post(
+        "/api/projects/default/integrations",
+        json={
+            "name": "P",
+            "base_url": "https://p.example.com",
+            "auth": {"method": "bearer_token", "bearer_env": "FIS_API"},
+            "endpoints": [{
+                "name": "E",
+                "path": "/e",
+                "response_type": "json",
+                "data_path": "data",
+                "field_mapping": {},
+            }],
+        },
+    )
+    integ = r.get_json()["integration"]
+    endpoint_id = integ["endpoints"][0]["id"]
+    with requests_mock.Mocker() as m:
+        m.get("https://p.example.com/e",
+              json={"data": [{"code": "F1", "name": "N", "phases": {"analysis": {"status": "Closed"}}}]},
+              headers={"Content-Type": "application/json"})
+        r2 = flask_client.post(
+            f"/api/projects/default/integrations/{integ['id']}/preview-json",
+            json={"endpoint_id": endpoint_id},
+        )
+    body = r2.get_json()
+    assert body["status"] == "ok"
+    assert body["record_count"] == 1
+    # flat_keys nên có "code", "name", "phases.analysis.status"
+    keys = set(body["flat_keys"].keys())
+    assert "code" in keys
+    assert "name" in keys
+    assert "phases.analysis.status" in keys
+
+
+# =========================================================================
+# Backward compat — old integrations chỉ có credential_env vẫn hoạt động
+# =========================================================================
+
+def test_backward_compat_old_form_login_config(project_dir, env_creds):
+    """
+    Entry cũ chỉ có auth={method:form_login, credential_env:X} (không có
+    bearer_env / apikey_env) vẫn sync được.
+    """
+    integ = integ_mod.create_integration(project_dir, {
+        "name": "Legacy",
+        "base_url": "https://legacy.example.com",
+        "auth": {"method": "form_login", "credential_env": "IHRP_TEST"},
+        "endpoints": [{
+            "name": "E", "path": "/e", "response_type": "excel",
+        }],
+    })
+    assert integ["auth"]["method"] == "form_login"
+    # sanitize đã tự thêm default cho các field mới với giá trị rỗng — backward safe
+    assert integ["auth"]["bearer_env"] == ""
+    assert integ["auth"]["apikey_env"] == ""
+    assert integ["auth"]["apikey_location"] == "header"

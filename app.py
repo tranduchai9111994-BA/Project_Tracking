@@ -2062,6 +2062,31 @@ def project_integration_sync(slug: str, integration_id: str):
     return jsonify(result)
 
 
+@app.route("/api/projects/<slug>/integrations/<integration_id>/preview-json",
+           methods=["POST"])
+def project_integration_preview_json(slug: str, integration_id: str):
+    """
+    Preview 1 endpoint JSON để FE auto-suggest field_mapping.
+    Body: {"endpoint_id": "..."}.
+    Trả: {status, sample_records, flat_keys, record_count}.
+    Không tạo snapshot, không thay đổi state.
+    """
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    body = request.get_json(silent=True) or {}
+    endpoint_id = (body.get("endpoint_id") or "").strip()
+    if not endpoint_id:
+        return jsonify({"status": "error", "message": "Thiếu 'endpoint_id'"}), 400
+    folder = _project_dir_for(slug)
+    result = integ_mod.preview_json_endpoint(
+        project_dir=folder,
+        integration_id=integration_id,
+        endpoint_id=endpoint_id,
+    )
+    return jsonify(result)
+
+
 # ==========================================================================
 # Task 17: overview theo `module | process | both` (rebuild bảng khi user
 # đổi segmented control mà không cần full re-fetch dashboard).
