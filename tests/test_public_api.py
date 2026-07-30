@@ -500,3 +500,197 @@ class TestPublicReadHTTP:
         assert r.status_code == 429
         assert r.headers.get("Retry-After")
         assert "retry_after" in r.get_json()
+
+
+# ==========================================================================
+# D. iframe embed (Task 2B)
+# ==========================================================================
+
+class TestIframeEmbed:
+    def _make_token(self, client, scope):
+        r = client.post(
+            "/api/projects/default/public-tokens",
+            json={"name": "embed-test", "scope": scope},
+        )
+        return r.get_json()["token"]
+
+    def test_embed_serves_html(self, flask_client, sample_xlsx_path):
+        _upload(flask_client, sample_xlsx_path)
+        tok = self._make_token(flask_client, ["*"])
+        # Embed KHÔNG verify token server-side — JS mới gọi API verify.
+        # → HTML render ngay, kể cả không có token (nhưng JS sẽ báo error).
+        r = flask_client.get(f"/embed/default/module-overview?token={tok}")
+        assert r.status_code == 200
+        assert "text/html" in r.content_type
+        body = r.data.decode("utf-8")
+        # Có canvas + slug + chart_id trong CFG object (JS build URL runtime)
+        assert "chartCanvas" in body
+        assert '"default"' in body   # slug embedded
+        assert '"module-overview"' in body   # chart_id embedded
+        assert "/public/api/v1/projects/" in body   # URL prefix có sẵn trong JS
+
+    def test_embed_frame_ancestors_permissive(self, flask_client):
+        r = flask_client.get("/embed/default/module-overview?token=pub_x")
+        # X-Frame-Options ALLOWALL — override reverse-proxy default
+        assert r.headers.get("X-Frame-Options") == "ALLOWALL"
+        # CSP frame-ancestors * → nhúng vào bất cứ site nào
+        csp = r.headers.get("Content-Security-Policy", "")
+        assert "frame-ancestors *" in csp
+
+    def test_embed_unsupported_chart_400(self, flask_client):
+        r = flask_client.get("/embed/default/xyz-nonexistent?token=pub_x")
+        assert r.status_code == 400
+        assert "supported" in r.get_json()
+
+    def test_embed_bg_transparent(self, flask_client):
+        r = flask_client.get("/embed/default/module-overview?token=pub_x&bg=transparent")
+        body = r.data.decode("utf-8")
+        # CSS style dùng 'transparent' thay vì '#ffffff'
+        assert "background: transparent" in body
+
+    def test_embed_default_bg_white(self, flask_client):
+        r = flask_client.get("/embed/default/module-overview?token=pub_x")
+        body = r.data.decode("utf-8")
+        assert "background: #ffffff" in body
+
+
+# ==========================================================================
+# E. PNG snapshot (Task 2B — Playwright fallback)
+# ==========================================================================
+
+class TestPngSnapshot:
+    def _make_token(self, client, scope):
+        r = client.post(
+            "/api/projects/default/public-tokens",
+            json={"name": "png-test", "scope": scope},
+        )
+        return r.get_json()["token"]
+
+    def test_png_requires_token(self, flask_client, sample_xlsx_path):
+        _upload(flask_client, sample_xlsx_path)
+        r = flask_client.get("/public/api/v1/projects/default/charts/module-overview/image")
+        assert r.status_code == 401
+
+    def test_png_wrong_scope(self, flask_client, sample_xlsx_path):
+        _upload(flask_client, sample_xlsx_path)
+        tok = self._make_token(flask_client, ["overdue"])
+        r = flask_client.get(
+            "/public/api/v1/projects/default/charts/module-overview/image",
+            headers={"X-API-Key": tok},
+        )
+        assert r.status_code == 403
+
+    def test_png_unsupported_chart_400(self, flask_client, sample_xlsx_path):
+        _upload(flask_client, sample_xlsx_path)
+        tok = self._make_token(flask_client, ["*"])
+        r = flask_client.get(
+            "/public/api/v1/projects/default/charts/xyz-fake/image",
+            headers={"X-API-Key": tok},
+        )
+        assert r.status_code == 400
+
+    def test_png_playwright_fallback_returns_503(self, flask_client, sample_xlsx_path, monkeypatch):
+        """
+        Playwright thường CHƯA install trong CI. Endpoint phải trả 503 với
+        message hướng dẫn cài — không crash. Nếu Playwright ĐÃ install →
+        test này skip (chấp nhận cả 200 và 503 = kết quả mong đợi).
+        """
+        _upload(flask_client, sample_xlsx_path)
+        tok = self._make_token(flask_client, ["*"])
+
+        # Force-simulate playwright chưa install bằng cách patch hàm helper
+        import app as app_module
+        monkeypatch.setattr(
+            app_module,
+            "_try_playwright_screenshot",
+            lambda *a, **kw: "Playwright chưa cài. Chạy: pip install playwright",
+        )
+        r = flask_client.get(
+            "/public/api/v1/projects/default/charts/module-overview/image?w=400&h=200",
+            headers={"X-API-Key": tok},
+        )
+        assert r.status_code == 503
+        payload = r.get_json()
+        assert "chưa cài" in payload["error"]
+        assert "hint" in payload
+
+    def test_png_cache_serves_from_disk(self, flask_client, sample_xlsx_path, monkeypatch, tmp_path):
+        """
+        Khi có sẵn file cache PNG → serve trực tiếp, KHÔNG gọi Playwright.
+        Verify bằng cách tạo cache file thủ công + patch _try_playwright
+        thành assert-never-called.
+        """
+        _upload(flask_client, sample_xlsx_path)
+        tok = self._make_token(flask_client, ["*"])
+
+        # Tạo cache file giả trong project dir
+        import app as app_module
+        cache_dir = app_module._png_cache_dir("default")
+        cache_key = app_module._png_cache_key("module-overview", 400, 200, "")
+        cache_path = os.path.join(cache_dir, cache_key)
+        # PNG magic bytes để mimetype detect đúng
+        with open(cache_path, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+
+        # Playwright sẽ raise nếu bị gọi — xác nhận serve từ cache
+        def _no_call(*a, **kw):
+            raise AssertionError("Playwright bị gọi dù có cache")
+        monkeypatch.setattr(app_module, "_try_playwright_screenshot", _no_call)
+
+        r = flask_client.get(
+            "/public/api/v1/projects/default/charts/module-overview/image?w=400&h=200",
+            headers={"X-API-Key": tok},
+        )
+        assert r.status_code == 200
+        assert r.headers.get("X-Cache") == "HIT"
+        assert r.content_type.startswith("image/png")
+
+    def test_png_cache_key_deterministic(self):
+        import app as app_module
+        assert app_module._png_cache_key("module-overview", 800, 400, "") == "module-overview_800x400_white.png"
+        assert app_module._png_cache_key("overdue", 400, 200, "transparent") == "overdue_400x200_transparent.png"
+
+    def test_png_w_h_clamped(self, flask_client, sample_xlsx_path, monkeypatch):
+        """w/h vượt cap (VD 10000x10000) phải clamp về 1920x1200."""
+        _upload(flask_client, sample_xlsx_path)
+        tok = self._make_token(flask_client, ["*"])
+        captured = {}
+        def _capture(url, w, h, out_path, **kw):
+            captured["w"] = w
+            captured["h"] = h
+            # Ghi file placeholder để endpoint không lỗi
+            with open(out_path, "wb") as f:
+                f.write(b"\x89PNG\r\n\x1a\n")
+            return None
+        import app as app_module
+        monkeypatch.setattr(app_module, "_try_playwright_screenshot", _capture)
+        flask_client.get(
+            "/public/api/v1/projects/default/charts/module-overview/image?w=10000&h=99999",
+            headers={"X-API-Key": tok},
+        )
+        assert captured["w"] == 1920
+        assert captured["h"] == 1200
+
+    def test_png_cors_headers(self, flask_client, sample_xlsx_path, monkeypatch):
+        _upload(flask_client, sample_xlsx_path)
+        tok = self._make_token(flask_client, ["*"])
+        import app as app_module
+        # Return err để không phải gọi Playwright thật
+        monkeypatch.setattr(
+            app_module,
+            "_try_playwright_screenshot",
+            lambda *a, **kw: "Playwright chưa cài.",
+        )
+        r = flask_client.get(
+            "/public/api/v1/projects/default/charts/module-overview/image",
+            headers={"X-API-Key": tok},
+        )
+        # CORS headers phải luôn present, cả trên error response
+        assert r.headers.get("Access-Control-Allow-Origin") == "*"
+
+    def test_png_options_preflight(self, flask_client):
+        r = flask_client.options(
+            "/public/api/v1/projects/default/charts/module-overview/image"
+        )
+        assert r.status_code == 204
+        assert r.headers.get("Access-Control-Allow-Origin") == "*"

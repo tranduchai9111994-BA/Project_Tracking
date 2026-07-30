@@ -3658,6 +3658,234 @@ def public_functions(slug: str):
 
 
 # ==========================================================================
+# T33 Task 2B — iframe embed + PNG snapshot (Playwright)
+# ==========================================================================
+
+# Label tiếng Việt cho từng chart_id — hiển thị làm title trong iframe/PNG.
+_PUBLIC_CHART_LABELS: dict[str, str] = {
+    "module-overview":    "Tổng quan theo Module",
+    "phase-matrix":       "Phase × Status Matrix",
+    "phase-stacked":      "Tiến độ theo Phase",
+    "progress-task-type": "Tiến độ theo loại công việc",
+    "pic-workload":       "Khối lượng PIC",
+    "priority":           "Phân bố Priority",
+    "complexity":         "Phân bố Complexity",
+    "fit-gap":            "Phân tích FIT/GAP",
+    "giai-doan":          "Tiến độ theo Giai đoạn",
+    "overdue":            "Danh sách trễ deadline",
+    "unassigned":         "Task chưa có PIC",
+    "stalled":            "Task đình trệ",
+    "risk":               "Top 20 Risk Score",
+    "effort-heatmap":     "Effort Heatmap",
+    "process":            "Phân tích Quy trình",
+}
+
+
+@app.route("/embed/<slug>/<chart_id>")
+def embed_chart(slug: str, chart_id: str):
+    """
+    Trang embed chart cho iframe / PNG snapshot.
+
+    Query:
+      token=pub_...     (bắt buộc — verify inside embed JS gọi public API)
+      bg=transparent    (optional — nền trong suốt cho blend UI)
+
+    KHÔNG verify token ở đây — token verify khi FE gọi
+    /public/api/v1/.../charts/<chart_id>. Điều này giúp OPTIONS preflight
+    và HTML render nhanh; nếu token sai FE sẽ hiển error box.
+
+    X-Frame-Options: bỏ hoàn toàn (mặc định Flask không set). Nếu deploy
+    sau reverse proxy có set → override thêm response header
+    'X-Frame-Options: ALLOWALL'.
+    """
+    if chart_id not in _PUBLIC_CHART_MAP:
+        return jsonify({
+            "error": f"Chart không hỗ trợ embed: {chart_id}",
+            "supported": sorted(_PUBLIC_CHART_MAP.keys()),
+        }), 400
+    project = _project_mgr.get_project(slug)
+    project_name = project.name if project else slug
+    bg = (request.args.get("bg") or "").strip().lower()
+    resp = app.make_response(render_template(
+        "embed.html",
+        slug=slug,
+        chart_id=chart_id,
+        chart_label=_PUBLIC_CHART_LABELS.get(chart_id, chart_id),
+        project_name=project_name,
+        bg=bg,
+    ))
+    # Cho phép nhúng vào bất kỳ site nào — override reverse-proxy default
+    resp.headers["X-Frame-Options"] = "ALLOWALL"
+    # CSP tối thiểu: script từ jsdelivr (Chart.js), style inline (ok cho embed)
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors *"
+    )
+    return resp
+
+
+# --- PNG snapshot (Playwright) ---
+
+# Cache config: TTL 5 phút — refresh khi dashboard update tương đối chậm rãi.
+_PNG_CACHE_TTL_SEC = 300
+_PNG_CACHE_DIR_NAME = "public_cache"
+
+
+def _png_cache_dir(slug: str) -> str:
+    """Thư mục cache PNG per-project."""
+    d = os.path.join(_project_dir_for(slug), _PNG_CACHE_DIR_NAME)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _png_cache_key(chart_id: str, w: int, h: int, bg: str) -> str:
+    """
+    Cache key = chart_id_WxH_bg.png.
+    Không hash token — cache là public per-project (mọi token cùng scope
+    xem cùng ảnh). Đảm bảo revoke token vẫn hoạt động vì verify vẫn chạy
+    trước khi serve cache.
+    """
+    bg_tag = bg or "white"
+    return f"{chart_id}_{w}x{h}_{bg_tag}.png"
+
+
+def _try_playwright_screenshot(url: str, w: int, h: int, out_path: str,
+                               wait_selector: str = "body[data-chart-ready]",
+                               timeout_ms: int = 15000) -> Optional[str]:
+    """
+    Chạy Playwright headless chromium để chụp ảnh. Trả None nếu thành công,
+    hoặc chuỗi error nếu fail (VD Playwright chưa install).
+
+    Playwright là **optional dep**. Nếu chưa install → return error message
+    hướng dẫn user cài. Endpoint gọi hàm này trả 503.
+    """
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except ImportError:
+        return (
+            "Playwright chưa cài. Chạy: pip install playwright "
+            "&& python -m playwright install chromium (~200MB)"
+        )
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(viewport={"width": w, "height": h})
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                # Chờ chart render xong — JS embed set data-chart-ready
+                page.wait_for_selector(wait_selector, timeout=timeout_ms)
+                # Extra 200ms cho animation cuối
+                page.wait_for_timeout(200)
+                page.screenshot(path=out_path, full_page=False,
+                                clip={"x": 0, "y": 0, "width": w, "height": h})
+                context.close()
+            finally:
+                browser.close()
+        return None
+    except Exception as e:
+        return f"Playwright chụp ảnh lỗi: {e}"
+
+
+@app.route("/public/api/v1/projects/<slug>/charts/<chart_id>/image",
+           methods=["GET", "OPTIONS"])
+def public_chart_image(slug: str, chart_id: str):
+    """
+    PNG snapshot của 1 chart. Query:
+      w=800, h=400     (viewport size — default 800x400, max 1920x1200)
+      bg=transparent   (optional)
+      token=pub_...    (bắt buộc — verify scope <chart_id>)
+
+    Flow:
+      1. Verify token + scope + rate limit (giống public_chart).
+      2. Check cache PNG → serve nếu chưa TTL.
+      3. Playwright: mở http://localhost:<port>/embed/<slug>/<chart_id>?token=
+         → screenshot → lưu cache → serve.
+
+    Playwright chưa install → HTTP 503 với hướng dẫn cài.
+    """
+    if request.method == "OPTIONS":
+        return _add_cors_headers(app.response_class(status=204))
+    if not _project_mgr.project_exists(slug):
+        return _add_cors_headers(jsonify({"error": "Project không tồn tại"})), 404
+    if chart_id not in _PUBLIC_CHART_MAP:
+        return _add_cors_headers(jsonify({
+            "error": f"Chart không hỗ trợ: {chart_id}",
+            "supported": sorted(_PUBLIC_CHART_MAP.keys()),
+        })), 400
+
+    project_dir = _project_dir_for(slug)
+    token = _extract_public_token()
+    try:
+        entry = _pubapi.verify_token(project_dir, token, required_scope=chart_id)
+        _pubapi.check_rate_limit(entry["id"])
+    except _pubapi.RateLimitError as e:
+        resp = jsonify({"error": str(e), "retry_after": e.retry_after})
+        resp = _add_cors_headers(resp)
+        resp.headers["Retry-After"] = str(e.retry_after)
+        return resp, 429
+    except _pubapi.PublicApiError as e:
+        return _add_cors_headers(jsonify({"error": str(e)})), e.status_code
+    _pubapi.touch_last_used(project_dir, entry["id"])
+
+    # Parse w/h với cap để tránh abuse (chụp 10000x10000 nướng CPU)
+    try:
+        w = max(200, min(1920, int(request.args.get("w") or 800)))
+    except ValueError:
+        w = 800
+    try:
+        h = max(150, min(1200, int(request.args.get("h") or 400)))
+    except ValueError:
+        h = 400
+    bg = (request.args.get("bg") or "").strip().lower()
+
+    cache_dir = _png_cache_dir(slug)
+    cache_name = _png_cache_key(chart_id, w, h, bg)
+    cache_path = os.path.join(cache_dir, cache_name)
+
+    # Cache hit → serve trực tiếp
+    if os.path.isfile(cache_path):
+        age = time.time() - os.path.getmtime(cache_path)
+        if age < _PNG_CACHE_TTL_SEC:
+            resp = send_file(cache_path, mimetype="image/png", as_attachment=False,
+                             download_name=cache_name, max_age=_PNG_CACHE_TTL_SEC)
+            _add_cors_headers(resp)
+            resp.headers["X-Cache"] = "HIT"
+            resp.headers["X-Cache-Age"] = str(int(age))
+            return resp
+
+    # Cache miss → screenshot
+    # Build embed URL nội bộ — dùng request.host_url để hỗ trợ mọi host
+    embed_qs = f"?token={token}"
+    if bg == "transparent":
+        embed_qs += "&bg=transparent"
+    embed_url = f"{request.host_url.rstrip('/')}/embed/{slug}/{chart_id}{embed_qs}"
+
+    err = _try_playwright_screenshot(embed_url, w, h, cache_path)
+    if err:
+        # ImportError message → 503; runtime error → 500
+        status = 503 if "chưa cài" in err else 500
+        return _add_cors_headers(jsonify({
+            "error": err,
+            "hint": "Xem docs/PUBLIC_API_GUIDE.md section Playwright install.",
+        })), status
+
+    resp = send_file(cache_path, mimetype="image/png", as_attachment=False,
+                     download_name=cache_name, max_age=_PNG_CACHE_TTL_SEC)
+    _add_cors_headers(resp)
+    resp.headers["X-Cache"] = "MISS"
+    return resp
+
+
+# Import time module ở top-level cho _png_cache
+import time  # noqa: E402
+
+
+# ==========================================================================
 # Main
 # ==========================================================================
 

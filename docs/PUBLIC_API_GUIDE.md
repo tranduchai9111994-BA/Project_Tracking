@@ -251,10 +251,84 @@ Sau đó Power BI Data Source → JSON File → point tới `module_overview.jso
 
 ---
 
-## 10. Roadmap
+## 10. iframe embed (Task 2B)
 
-- ✅ **Task 2A** — REST API + token CRUD + rate limit (bản này).
-- 🚧 **Task 2B** — iframe embed + PNG snapshot (Playwright).
+Nhúng chart trực tiếp vào Confluence / Notion / trang web:
+
+```html
+<iframe
+  src="http://ihrp-tracker.company.local/embed/mphg/module-overview?token=pub_xxx"
+  width="800" height="400"
+  frameborder="0"></iframe>
+```
+
+- **URL pattern**: `/embed/<slug>/<chart_id>?token=pub_...&bg=transparent`
+- **Query params**:
+  - `token` (bắt buộc) — như REST.
+  - `bg=transparent` (optional) — nền trong suốt để blend với UI host.
+- **Chart hỗ trợ embed** (Task 2B v1): xem `analyzer/public_api.py::PUBLIC_SCOPES`
+  — 15 loại (module-overview, phase-stacked, pic-workload, priority,
+  complexity, fit-gap, giai-doan, overdue, unassigned, stalled, risk...).
+  Các chart list-based (overdue/unassigned/stalled/risk) hiển thị table
+  50 dòng đầu (dùng REST /functions cho full list).
+- **Headers**:
+  - `X-Frame-Options: ALLOWALL` — override reverse-proxy default block.
+  - `Content-Security-Policy: frame-ancestors *` — nhúng vào bất kỳ site nào.
+- **Auth flow**: server render HTML KHÔNG verify token — JS trong iframe gọi
+  `/public/api/v1/.../charts/<id>` với `X-API-Key` để lấy data → verify.
+  Token sai → iframe hiển "⚠️ Token không hợp lệ".
+
+---
+
+## 11. PNG snapshot (Task 2B)
+
+Ảnh tĩnh cho Word / email / báo cáo PDF:
+
+```html
+<img src="http://ihrp-tracker.company.local/public/api/v1/projects/mphg/charts/module-overview/image?w=800&h=400&token=pub_xxx"
+     alt="Module Overview" />
+```
+
+- **URL pattern**: `/public/api/v1/projects/<slug>/charts/<chart_id>/image?w=&h=&bg=&token=`
+- **Query params**:
+  - `token` (bắt buộc, scope `<chart_id>`).
+  - `w` (default 800, min 200, max 1920).
+  - `h` (default 400, min 150, max 1200).
+  - `bg=transparent` (optional).
+- **Caching**: file PNG lưu ở `.project_store/<slug>/public_cache/<chart>_<WxH>_<bg>.png`.
+  TTL 5 phút — sau đó regenerate. Header:
+  - `X-Cache: HIT` = serve từ disk (nhanh, ~ms).
+  - `X-Cache: MISS` = mới generate (~2-5s, tuỳ Chart.js render).
+  - `X-Cache-Age: <s>` = tuổi cache khi HIT.
+
+### Cài Playwright
+
+PNG endpoint dùng Playwright headless Chromium để render iframe → screenshot.
+Nếu chưa cài → HTTP 503 với message hướng dẫn.
+
+```bash
+pip install playwright>=1.40.0
+python -m playwright install chromium         # tải ~200MB browser binary
+```
+
+Sau đó restart Flask. Endpoint /image sẽ hoạt động ngay.
+
+### Lỗi thường gặp
+
+| Lỗi | Nguyên nhân |
+|-----|-------------|
+| 503 `Playwright chưa cài` | Chưa `pip install playwright && python -m playwright install chromium` |
+| 500 `Playwright chụp ảnh lỗi: Timeout` | Iframe không set `data-chart-ready` — chart_id không hỗ trợ hoặc data rỗng |
+| Ảnh trắng | Chart data empty → JS render error → screenshot lấy khung trống. Kiểm tra REST API cùng chart_id có data không |
+| Chậm 10s+ mỗi request | Chưa cache — miss lần đầu. Sau 5 phút TTL, cùng request rất nhanh |
+
+---
+
+## 12. Roadmap
+
+- ✅ **Task 2A** — REST API + token CRUD + rate limit.
+- ✅ **Task 2B** — iframe embed + PNG snapshot (Playwright).
 - 🚧 **Task 2C** — Settings tab "Public API" với snippet copy UI.
 - 💭 Redis-backed rate limit cho multi-worker.
 - 💭 IP whitelist per-token.
+- 💭 Signed URL (JWT) cho time-limited access.

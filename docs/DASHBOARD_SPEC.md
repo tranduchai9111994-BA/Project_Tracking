@@ -828,11 +828,31 @@ mà không cần login app chính. Xem đầy đủ ở `docs/PUBLIC_API_GUIDE.m
   đụng gì. Route `/api/...` cũ giữ nguyên hành vi. Public route ở prefix
   riêng `/public/api/v1/...`.
 
-### Task 2B (planned) — iframe + PNG
+### Task 2B — iframe + PNG (đã ship)
 
-Route `/embed/<slug>/<chart_id>?token=` render template mini chỉ chart, +
-route `/public/api/v1/.../image?w=&h=&token=` Playwright screenshot →
-PNG cached 5 phút.
+- **iframe route**: `GET /embed/<slug>/<chart_id>?token=&bg=`
+  - Render `templates/embed.html` — trang tối giản Chart.js chỉ 1 chart,
+    fetch data qua public API bằng JS + token trong query.
+  - Header `X-Frame-Options: ALLOWALL` + `CSP frame-ancestors *` — nhúng
+    được vào bất kỳ site (Confluence, Notion, portal partner).
+  - `bg=transparent` → nền trong suốt (blend vào UI host).
+  - **Không** verify token server-side — token verify khi JS gọi API.
+    Token sai → iframe hiển "⚠️ Token không hợp lệ".
+  - 15 chart_id hỗ trợ: chart-type (bar/doughnut/stacked bar/horizontal bar)
+    + list-based (table 50 dòng đầu — full list dùng REST `/functions`).
+
+- **PNG snapshot route**: `GET /public/api/v1/projects/<slug>/charts/<id>/image?w=&h=&bg=&token=`
+  - Verify token + scope + rate limit (giống REST).
+  - Cache: `.project_store/<slug>/public_cache/<chart>_<WxH>_<bg>.png`,
+    TTL 300s. Response header `X-Cache: HIT/MISS`.
+  - Miss → dùng Playwright headless chromium: mở `/embed/<slug>/<chart_id>?token=`
+    trong viewport `w×h`, wait `body[data-chart-ready]` selector, screenshot.
+  - `w/h` clamp [200, 1920] × [150, 1200] — tránh abuse chụp size khổng lồ.
+  - Playwright là **optional dep**: `pip install playwright + python -m
+    playwright install chromium` (~200MB). Chưa cài → HTTP 503 + message.
+  - Cache là **public per-project** (không hash token) — mọi token cùng
+    scope xem ảnh cached giống nhau; verify vẫn chạy trước khi serve nên
+    revoke token vẫn hoạt động.
 
 ### Task 2C (planned) — Settings tab "🌐 Public API"
 

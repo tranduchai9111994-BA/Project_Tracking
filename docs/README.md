@@ -183,8 +183,10 @@ Tình trạng roadmap:
 - ✅ **Task 2A** — REST + token CRUD + rate limit (60 req/60s/token) —
   endpoint `/public/api/v1/projects/<slug>/{summary,charts/<id>,functions}`.
   Token: `pub_<40 hex>`, SHA-256 hash storage, scope-based ACL, revoke idempotent.
-- 🚧 **Task 2B** — iframe embed + PNG snapshot (Playwright headless — cần
-  `python -m playwright install chromium` ~200MB nếu dùng).
+- ✅ **Task 2B** — iframe embed (`/embed/<slug>/<chart_id>?token=`) + PNG
+  snapshot (`/public/api/v1/.../charts/<id>/image?w=&h=`). PNG dùng Playwright
+  headless chromium (optional — cần `pip install playwright && python -m
+  playwright install chromium` ~200MB; chưa cài → endpoint trả 503).
 - 🚧 **Task 2C** — Settings tab "🌐 Public API" với UI generate token +
   snippet copy REST/iframe/PNG.
 

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ chart_id }} — {{ project_name }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+    <style>
+        /*
+          T33 Task 2B — Embed page cho iframe / PNG snapshot.
+          Rất tối giản: KHÔNG header/sidebar/filter, chỉ 1 chart chiếm full viewport.
+          Playwright screenshot sẽ đợi attribute data-chart-ready="1" trên body
+          trước khi capture PNG.
+        */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            width: 100%; height: 100%;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 13px; color: #1e293b;
+            background: {{ 'transparent' if bg == 'transparent' else '#ffffff' }};
+        }
+        .embed-wrap {
+            width: 100%; height: 100%;
+            display: flex; flex-direction: column;
+            padding: 12px 16px;
+        }
+        .embed-title {
+            font-size: 14px; font-weight: 600; color: #0f172a;
+            margin-bottom: 8px; line-height: 1.2;
+        }
+        .embed-subtitle {
+            font-size: 11px; color: #64748b; margin-bottom: 12px;
+        }
+        .chart-holder {
+            flex: 1; min-height: 0; position: relative;
+        }
+        canvas { max-width: 100%; }
+        .embed-error {
+            padding: 16px; background: #fef2f2; color: #991b1b;
+            border: 1px solid #fecaca; border-radius: 6px;
+            font-size: 12px; text-align: center;
+        }
+        table.embed-table {
+            width: 100%; border-collapse: collapse; font-size: 11px;
+        }
+        table.embed-table th, table.embed-table td {
+            border: 1px solid #e2e8f0; padding: 4px 8px; text-align: left;
+        }
+        table.embed-table th {
+            background: #f8fafc; font-weight: 600; color: #334155;
+        }
+        table.embed-table tr.critical td { background: #fef2f2; color: #991b1b; }
+        table.embed-table tr.warning td  { background: #fff7ed; color: #9a3412; }
+        .footer-note {
+            font-size: 10px; color: #94a3b8; margin-top: 8px; text-align: right;
+        }
+    </style>
+</head>
+<body>
+    <div class="embed-wrap">
+        <div class="embed-title" id="embedTitle">{{ chart_label }}</div>
+        <div class="embed-subtitle" id="embedSubtitle">{{ project_name }}</div>
+        <div class="chart-holder" id="chartHolder">
+            <canvas id="chartCanvas"></canvas>
+        </div>
+        <div class="footer-note" id="footerNote"></div>
+    </div>
+
+    <script>
+        // ================================================================
+        // T33 Task 2B — Embed chart renderer
+        // ================================================================
+        //
+        // Flow:
+        //   1. Parse query params (token, chart_id from URL path, w/h from CSS).
+        //   2. Fetch data từ /public/api/v1/projects/<slug>/charts/<chart_id>
+        //      với header X-API-Key.
+        //   3. Render Chart.js theo chart_id — mỗi loại có config riêng.
+        //   4. Set document.body.dataset.chartReady = "1" khi xong → Playwright
+        //      wait cho attribute này rồi mới screenshot.
+        //   5. Error → hiển span error đỏ + set data-chart-ready = "error" để
+        //      Playwright vẫn không đợi vô hạn.
+        // ================================================================
+
+        const CFG = {
+            slug: {{ slug|tojson }},
+            chartId: {{ chart_id|tojson }},
+            chartLabel: {{ chart_label|tojson }},
+            projectName: {{ project_name|tojson }},
+            token: new URLSearchParams(window.location.search).get('token') || '',
+            bg: {{ bg|tojson }},
+        };
+
+        Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+        Chart.defaults.font.size = 11;
+        Chart.defaults.color = '#1e293b';
+        // Datalabels plugin tắt mặc định — mỗi chart bật riêng nếu cần
+        Chart.register(ChartDataLabels);
+        Chart.defaults.plugins.datalabels.display = false;
+
+        // Palette đơn giản, đồng bộ với dashboard chính
+        const PALETTE = {
+            primary:   '#3b82f6',
+            success:   '#10b981',
+            warning:   '#f59e0b',
+            danger:    '#ef4444',
+            slate:     '#64748b',
+            purple:    '#8b5cf6',
+            teal:      '#14b8a6',
+            pink:      '#ec4899',
+        };
+        const PALETTE_LIST = Object.values(PALETTE);
+
+        function markReady(status) {
+            document.body.dataset.chartReady = status || '1';
+        }
+
+        function showError(msg) {
+            const holder = document.getElementById('chartHolder');
+            holder.innerHTML = '<div class="embed-error">⚠️ ' + msg + '</div>';
+            markReady('error');
+        }
+
+        // ============================================================
+        // Chart renderers — mỗi chart_id là 1 hàm nhận data trả lại
+        // Chart.js config (type + data + options).
+        // ============================================================
+
+        const RENDERERS = {
+            'module-overview': (data) => {
+                // data.modules = [{module, total, closed, progress_pct, ...}, ...]
+                const rows = data.modules || data || [];
+                if (!Array.isArray(rows) || rows.length === 0) {
+                    return { empty: true };
+                }
+                const labels = rows.map(r => r.module || r.name || '');
+                return {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [
+                            { label: 'Tổng function', data: rows.map(r => r.total || 0),
+                              backgroundColor: PALETTE.primary },
+                            { label: 'Đã đóng',     data: rows.map(r => r.closed || 0),
+                              backgroundColor: PALETTE.success },
+                        ],
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'top', labels: { boxWidth: 12 } },
+                            datalabels: { display: false },
+                        },
+                        scales: { y: { beginAtZero: true } },
+                    },
+                };
+            },
+            'phase-stacked': (data) => {
+                // data.phases: [{phase, closed, in_progress, open, ...}]
+                const arr = data.phases || data || [];
+                if (!Array.isArray(arr) || arr.length === 0) return { empty: true };
+                const labels = arr.map(p => p.phase);
+                return {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [
+                            { label: 'Closed',      data: arr.map(p => p.closed || 0),      backgroundColor: PALETTE.success, stack: 's' },
+                            { label: 'In-progress', data: arr.map(p => p.in_progress || 0), backgroundColor: PALETTE.warning, stack: 's' },
+                            { label: 'Open',        data: arr.map(p => p.open || 0),        backgroundColor: PALETTE.slate,   stack: 's' },
+                        ],
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { position: 'top', labels: { boxWidth: 12 } }, datalabels: { display: false } },
+                        scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
+                    },
+                };
+            },
+            'pic-workload': (data) => {
+                const rows = data || [];
+                if (!Array.isArray(rows) || rows.length === 0) return { empty: true };
+                // Top 15 để chart không quá dài
+                const top = rows.slice(0, 15);
+                return {
+                    type: 'bar',
+                    data: {
+                        labels: top.map(r => r.pic || ''),
+                        datasets: [{
+                            label: 'Số task',
+                            data: top.map(r => r.total_tasks || r.count || 0),
+                            backgroundColor: PALETTE.purple,
+                        }],
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { display: false }, datalabels: { display: false } },
+                        scales: { x: { beginAtZero: true } },
+                    },
+                };
+            },
+            'priority': (data) => _doughnut(data),
+            'complexity': (data) => _doughnut(data),
+            'fit-gap': (data) => {
+                // data.rows: [{module, fit, gap, customization, ...}]
+                const arr = data.rows || data || [];
+                if (!Array.isArray(arr) || arr.length === 0) return { empty: true };
+                return {
+                    type: 'bar',
+                    data: {
+                        labels: arr.map(r => r.module),
+                        datasets: [
+                            { label: 'FIT',           data: arr.map(r => r.fit || 0),           backgroundColor: PALETTE.success, stack: 's' },
+                            { label: 'GAP',           data: arr.map(r => r.gap || 0),           backgroundColor: PALETTE.warning, stack: 's' },
+                            { label: 'Customization', data: arr.map(r => r.customization || 0), backgroundColor: PALETTE.purple,  stack: 's' },
+                        ],
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { position: 'top', labels: { boxWidth: 12 } }, datalabels: { display: false } },
+                        scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
+                    },
+                };
+            },
+            'giai-doan': (data) => {
+                const arr = data || [];
+                if (!Array.isArray(arr) || arr.length === 0) return { empty: true };
+                return {
+                    type: 'bar',
+                    data: {
+                        labels: arr.map(r => 'Giai đoạn ' + (r.giai_doan || '')),
+                        datasets: [
+                            { label: 'Tổng',   data: arr.map(r => r.total || 0),   backgroundColor: PALETTE.primary },
+                            { label: 'Closed', data: arr.map(r => r.closed || 0),  backgroundColor: PALETTE.success },
+                        ],
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { position: 'top', labels: { boxWidth: 12 } }, datalabels: { display: false } },
+                        scales: { y: { beginAtZero: true } },
+                    },
+                };
+            },
+            'overdue': (data) => _renderTable(data, [
+                { key: 'ma_cn',        label: 'Mã CN',       cls: 'font-mono' },
+                { key: 'ten_cn',       label: 'Tên chức năng' },
+                { key: 'module',       label: 'Module' },
+                { key: 'phase',        label: 'Phase' },
+                { key: 'end_date',     label: 'Deadline' },
+                { key: 'days_overdue', label: 'Trễ (ngày)' },
+            ], { critical: r => (r.days_overdue || 0) > 14, warning: r => (r.days_overdue || 0) > 7 }),
+            'unassigned': (data) => _renderTable(data, [
+                { key: 'ma_cn',    label: 'Mã CN' },
+                { key: 'ten_cn',   label: 'Tên chức năng' },
+                { key: 'module',   label: 'Module' },
+                { key: 'phase',    label: 'Phase' },
+                { key: 'status',   label: 'Status' },
+                { key: 'priority', label: 'Priority' },
+            ]),
+            'stalled': (data) => {
+                const items = data.items || data || [];
+                return _renderTable(items, [
+                    { key: 'ma_cn',           label: 'Mã CN' },
+                    { key: 'ten_cn',          label: 'Tên chức năng' },
+                    { key: 'module',          label: 'Module' },
+                    { key: 'completed_phase', label: 'Phase xong' },
+                    { key: 'waiting_phase',   label: 'Phase chờ' },
+                    { key: 'wait_days',       label: 'Chờ (ngày)' },
+                ], { critical: r => (r.wait_days || 0) > 14, warning: r => (r.wait_days || 0) > 7 });
+            },
+            'risk': (data) => {
+                const items = data.items || data || [];
+                return _renderTable(items.slice(0, 20), [
+                    { key: 'ma_cn',      label: 'Mã CN' },
+                    { key: 'ten_cn',     label: 'Tên chức năng' },
+                    { key: 'module',     label: 'Module' },
+                    { key: 'risk_score', label: 'Risk score' },
+                    { key: 'priority',   label: 'Priority' },
+                ], { critical: r => (r.risk_score || 0) >= 70, warning: r => (r.risk_score || 0) >= 40 });
+            },
+        };
+
+        // Helper: doughnut chart cho priority/complexity
+        function _doughnut(data) {
+            const arr = Array.isArray(data) ? data : (data.items || []);
+            if (arr.length === 0) return { empty: true };
+            const labels = arr.map(r => r.priority || r.complexity || r.label || '');
+            return {
+                type: 'doughnut',
+                data: {
+                    labels,
+                    datasets: [{
+                        data: arr.map(r => r.count || r.total || 0),
+                        backgroundColor: labels.map((_, i) => PALETTE_LIST[i % PALETTE_LIST.length]),
+                    }],
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'right', labels: { boxWidth: 12, font: { size: 11 } } },
+                        datalabels: {
+                            display: true, color: '#fff',
+                            font: { weight: 'bold', size: 11 },
+                            formatter: (v) => v > 0 ? v : '',
+                        },
+                    },
+                },
+            };
+        }
+
+        // Helper: render bảng cho các list-based chart (overdue/unassigned/...).
+        function _renderTable(rows, columns, colorRules) {
+            if (!Array.isArray(rows) || rows.length === 0) return { empty: true };
+            const holder = document.getElementById('chartHolder');
+            // Thay canvas bằng bảng
+            holder.innerHTML = '';
+            const table = document.createElement('table');
+            table.className = 'embed-table';
+            const thead = document.createElement('thead');
+            const trh = document.createElement('tr');
+            columns.forEach(c => {
+                const th = document.createElement('th');
+                th.textContent = c.label;
+                trh.appendChild(th);
+            });
+            thead.appendChild(trh);
+            table.appendChild(thead);
+            const tbody = document.createElement('tbody');
+            rows.slice(0, 50).forEach(r => {
+                const tr = document.createElement('tr');
+                if (colorRules && colorRules.critical && colorRules.critical(r)) tr.className = 'critical';
+                else if (colorRules && colorRules.warning && colorRules.warning(r)) tr.className = 'warning';
+                columns.forEach(c => {
+                    const td = document.createElement('td');
+                    if (c.cls) td.className = c.cls;
+                    let v = r[c.key];
+                    if (Array.isArray(v)) v = v.join(', ');
+                    td.textContent = v === undefined || v === null ? '' : String(v);
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            holder.appendChild(table);
+            if (rows.length > 50) {
+                document.getElementById('footerNote').textContent = 'Hiển thị 50/' + rows.length + ' — dùng REST API để lấy full list';
+            }
+            return { rendered: true };
+        }
+
+        // ============================================================
+        // Main flow
+        // ============================================================
+
+        async function main() {
+            if (!CFG.token) {
+                showError('Thiếu ?token=pub_... trong URL');
+                return;
+            }
+            if (!RENDERERS[CFG.chartId]) {
+                showError('Chart chưa hỗ trợ embed: ' + CFG.chartId);
+                return;
+            }
+
+            const url = '/public/api/v1/projects/' + encodeURIComponent(CFG.slug)
+                + '/charts/' + encodeURIComponent(CFG.chartId)
+                + '?token=' + encodeURIComponent(CFG.token);
+            let resp, payload;
+            try {
+                resp = await fetch(url, { headers: { 'X-API-Key': CFG.token } });
+                payload = await resp.json();
+            } catch (err) {
+                showError('Không gọi được API: ' + err.message);
+                return;
+            }
+            if (!resp.ok) {
+                showError((payload && payload.error) || ('Lỗi HTTP ' + resp.status));
+                return;
+            }
+            if (payload && payload.generated_at) {
+                document.getElementById('footerNote').textContent = 'Cập nhật: ' + payload.generated_at;
+            }
+
+            const cfg = RENDERERS[CFG.chartId](payload.data);
+            if (!cfg || cfg.empty) {
+                showError('Không có dữ liệu cho chart này');
+                return;
+            }
+            if (cfg.rendered) {
+                // Đã render bảng trực tiếp — chỉ set ready flag
+                markReady('1');
+                return;
+            }
+            try {
+                new Chart(document.getElementById('chartCanvas'), cfg);
+            } catch (err) {
+                showError('Render chart lỗi: ' + err.message);
+                return;
+            }
+            // Chart.js render synchronous nhưng để chắc animation xong (200ms mặc định)
+            setTimeout(() => markReady('1'), 300);
+        }
+
+        main();
+    </script>
+</body>
+</html>

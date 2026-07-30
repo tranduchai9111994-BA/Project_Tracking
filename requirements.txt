@@ -36,6 +36,16 @@ typing_extensions==4.16.0
 #   psycopg2-binary>=2.9.0   # PostgreSQL
 #   pymysql>=1.1.0           # MySQL / MariaDB
 
+# --- Public API — PNG snapshot (T33 — OPTIONAL) ---
+# Playwright headless chromium để chụp ảnh PNG của chart embed. Chỉ cần khi
+# muốn dùng endpoint /public/api/v1/.../charts/<chart_id>/image. REST +
+# iframe embed (Task 2A/2B) KHÔNG cần Playwright.
+# Cài (~ 20MB Python + 200MB Chromium binary):
+#   pip install playwright>=1.40.0
+#   python -m playwright install chromium
+# Endpoint image sẽ trả 503 kèm hướng dẫn nếu chưa cài.
+#   playwright>=1.40.0
+
 # --- Dev / testing (optional cho user cuối) ---
 pytest==8.3.4
 pytest-cov==6.0.0
