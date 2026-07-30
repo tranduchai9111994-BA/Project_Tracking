@@ -12940,7 +12940,27 @@ function _integAddEndpoint(ep) {
                    && ep.response_type === "database") {
             fmDbEl.value = JSON.stringify(ep.field_mapping, null, 2);
         }
+        // Multi-project routing
+        const pcfEl = node.querySelector('[data-field="project_code_field"]');
+        const pcFilterEl = node.querySelector('[data-field="project_code_filter"]');
+        if (pcfEl) pcfEl.value = ep.project_code_field || "";
+        if (pcFilterEl) pcFilterEl.value = ep.project_code_filter || "";
         node.dataset.endpointId = ep.id || "";
+    }
+
+    // Project code map rows
+    const mapWrap = node.querySelector("[data-pc-map-rows]");
+    if (mapWrap) {
+        mapWrap.innerHTML = "";
+        const mapObj = (ep && ep.project_code_map) || {};
+        const entries = Object.entries(mapObj);
+        if (entries.length) {
+            for (const [code, slug] of entries) _integAddProjectCodeMapRow(node, code, slug);
+        }
+    }
+    const addMapBtn = node.querySelector("[data-pc-map-add]");
+    if (addMapBtn) {
+        addMapBtn.addEventListener("click", () => _integAddProjectCodeMapRow(node, "", ""));
     }
 
     // Show/hide JSON panel theo response_type ban đầu
@@ -12955,6 +12975,45 @@ function _integAddEndpoint(ep) {
         suggestBtn.addEventListener("click", () => _integAutoSuggestMapping(node));
     }
     wrap.appendChild(node);
+}
+
+/**
+ * Thêm 1 dòng map mã nguồn → slug project local trong endpoint editor.
+ */
+function _integAddProjectCodeMapRow(rowNode, code, slug) {
+    const wrap = rowNode.querySelector("[data-pc-map-rows]");
+    if (!wrap) return;
+    const div = document.createElement("div");
+    div.className = "flex gap-1 items-center";
+    div.setAttribute("data-pc-map-row", "1");
+    const opts = (typeof allProjects !== "undefined" ? allProjects : [])
+        .filter(p => !p.is_archived)
+        .map(p => {
+            const sel = p.slug === slug ? " selected" : "";
+            return `<option value="${_escapeAttr(p.slug)}"${sel}>${_escapeHtml(p.name || p.slug)} (${_escapeHtml(p.slug)})</option>`;
+        })
+        .join("");
+    div.innerHTML = `
+        <input type="text" data-pc-code class="flex-1 border rounded p-1 text-xs font-mono dark:bg-slate-700 dark:border-slate-600"
+               placeholder="Mã nguồn (VD: MPHG_IHRP_2025_PM)" value="${_escapeAttr(code || "")}">
+        <select data-pc-slug class="flex-1 border rounded p-1 text-xs dark:bg-slate-700 dark:border-slate-600">
+            <option value="">— chọn project —</option>
+            ${opts}
+        </select>
+        <button type="button" data-pc-remove class="text-red-500 text-xs px-1" title="Xoá">✕</button>
+    `;
+    div.querySelector("[data-pc-remove]").addEventListener("click", () => div.remove());
+    wrap.appendChild(div);
+}
+
+function _integReadProjectCodeMap(rowNode) {
+    const out = {};
+    rowNode.querySelectorAll("[data-pc-map-row]").forEach(r => {
+        const code = (r.querySelector("[data-pc-code]")?.value || "").trim();
+        const slug = (r.querySelector("[data-pc-slug]")?.value || "").trim();
+        if (code && slug) out[code] = slug;
+    });
+    return out;
 }
 
 /**
@@ -13048,6 +13107,7 @@ function _integSuggestMapping(flatKeys) {
         "code": "Mã CN",
         "ma_cn": "Mã CN",
         "function_code": "Mã CN",
+        "functioncode": "Mã CN",
         "name": "Tên chức năng",
         "function_name": "Tên chức năng",
         "ten_chuc_nang": "Tên chức năng",
@@ -13060,8 +13120,13 @@ function _integSuggestMapping(flatKeys) {
         "complexity": "Complexity",
         "fit_gap": "FIT/GAP",
         "fit/gap": "FIT/GAP",
+        "fitgap": "FIT/GAP",
         "phase": "Giai đoạn",
         "giai_doan": "Giai đoạn",
+        "project": "Mã dự án",
+        "project_code": "Mã dự án",
+        "projectcode": "Mã dự án",
+        "ma_du_an": "Mã dự án",
     };
     // Phase attribute mapping (Vietnamese)
     const attrMap = {
@@ -13203,6 +13268,10 @@ function _integReadEditorPayload() {
             // Database-only
             query,
             query_params: queryParams,
+            // Multi-project routing
+            project_code_field: (row.querySelector('[data-field="project_code_field"]')?.value || "").trim(),
+            project_code_filter: (row.querySelector('[data-field="project_code_filter"]')?.value || "").trim(),
+            project_code_map: _integReadProjectCodeMap(row),
         });
     }
     // credential_env: 3 input riêng — chọn input theo method đang active.
@@ -13526,6 +13595,18 @@ function _syncShowResult(success, data, endpointName) {
         const rowsImported = data.rows_imported || data.rows_count || 0;
         const snapId = data.snapshot_id || data.snapshot_entry?.date || "?";
         const stats = data.snapshot_entry || {};
+        const projectResults = Array.isArray(data.project_results) ? data.project_results : [];
+        const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+        let multiHtml = "";
+        if (projectResults.length > 1 || skipped.some(s => s.reason === "unmapped")) {
+            const lines = projectResults
+                .filter(p => p.status === "ok")
+                .map(p => `• ${(p.project_code || p.slug)}: <strong>${p.rows}</strong> dòng → <code>${escapeHtml(p.slug)}</code>`);
+            const unmapped = skipped.filter(s => s.reason === "unmapped")
+                .reduce((n, s) => n + (s.count || 0), 0);
+            if (unmapped) lines.push(`• Bỏ qua mã lạ: <strong>${unmapped}</strong>`);
+            multiHtml = `<div class="mt-2 pt-2 border-t border-emerald-200 text-xs space-y-0.5">${lines.join("")}</div>`;
+        }
         if (result) {
             result.classList.remove("hidden", "bg-red-50", "text-red-700", "border-red-200");
             result.classList.add("bg-emerald-50", "dark:bg-emerald-900/20", "text-emerald-800", "dark:text-emerald-200", "border", "border-emerald-200");
@@ -13537,7 +13618,8 @@ function _syncShowResult(success, data, endpointName) {
                     ${stats.overdue_count != null ? `<div>• Task trễ deadline: <strong>${stats.overdue_count}</strong></div>` : ""}
                     ${stats.unassigned_count != null ? `<div>• Task chưa có PIC: <strong>${stats.unassigned_count}</strong></div>` : ""}
                     ${stats.high_risk_count != null ? `<div>• Task rủi ro cao: <strong>${stats.high_risk_count}</strong></div>` : ""}
-                    <div class="pt-1 text-emerald-600">Dashboard sẽ tự động refresh với dữ liệu mới.</div>
+                    ${multiHtml}
+                    <div class="pt-1 text-emerald-600">${escapeHtml(data.message || "Dashboard sẽ tự động refresh với dữ liệu mới.")}</div>
                 </div>
             `;
         }

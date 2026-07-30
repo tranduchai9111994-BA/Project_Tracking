@@ -53,12 +53,13 @@ print(len(r.json()["data"]))  # → 387
 
 ### Field mapping (JSON → iHRP columns)
 
-64 cột được map từ JSON response, gồm:
+65 cột được map từ JSON response, gồm:
 
-**Meta (17 cột):**
+**Meta (18 cột):**
 - `functionCode` → Mã CN
 - `name` → Tên chức năng
 - `module`, `system`, `fid`, `process`, `requirementId`
+- `project` → **Mã dự án** (JSON key thật: `project`, VD `MPHG_IHRP_2025_PM`)
 - `fitGap` → FIT/GAP
 - `phase` → Giai đoạn
 - `priority`, `complexity`, `description`, `dependencies`, `riskBlocker`, `lastUpdatedDate`, `remark`, `id` → STT
@@ -67,6 +68,29 @@ print(len(r.json()["data"]))  # → 387
 - `stages.analysis.{startDate,endDate,status,estimateMh,pic,note}` → `Analysis - Start/End/Status/Estimate MH/PIC/Note`
 - Tương tự cho `dev`, `configLocal`, `configUat`, `document`, `configProd`, `uat`
 - `stages.golive.{plannedDate,actualDate,status,pic,note}` → `Golive - Planned/Actual/Status/PIC/Note`
+
+### Phân phối đa project (Mã dự án → folder local)
+
+Khi API trả nhiều mã dự án trong 1 response, cấu hình trên endpoint:
+
+| Field | Ý nghĩa | Ví dụ MPHG |
+|-------|---------|------------|
+| `project_code_field` | JSON path (hoặc tên cột Excel) chứa mã dự án | `project` |
+| `project_code_map` | Map mã nguồn → slug local | `{"MPHG_IHRP_2025_PM": "mphg"}` |
+| `project_code_filter` | (tuỳ chọn) chỉ giữ 1 mã; nếu không có map → ghi vào project đang sync | `MPHG_IHRP_2025_PM` |
+
+**Hướng dẫn map MPHG:**
+
+1. Mở project bất kỳ có integration Task Daily → **🔌 API Registry** → edit endpoint.
+2. Field Mapping: thêm `"Mã dự án": "project"` (đã có sẵn nếu dùng config mẫu).
+3. Panel **📁 Phân phối theo Mã dự án**:
+   - Cột/JSON path = `project`
+   - Thêm dòng map: `MPHG_IHRP_2025_PM` → project **mphg**
+   - (Tuỳ chọn) Filter = `MPHG_IHRP_2025_PM` nếu muốn chỉ lấy MPHG khi API trả nhiều mã.
+4. Lưu → **Đồng bộ**. Toast dạng: `MPHG_IHRP_2025_PM: 387 dòng · Bỏ qua mã lạ: N`.
+5. Không cấu hình `project_code_field` → behavior cũ (toàn bộ vào project đang mở).
+
+**Lưu ý:** mã nguồn thực tế hiện tại là `MPHG_IHRP_2025_PM` (không phải `MPHG` ngắn). Kiểm tra bằng Auto-suggest hoặc sample record.
 
 ### Env variables (`.env` gốc project)
 ```

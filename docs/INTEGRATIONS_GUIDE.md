@@ -1,5 +1,8 @@
 # Registry API Integrations — Hướng dẫn cấu hình (T30 + T30b)
 
+> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> Schema storage → [`DATA_MODEL.md`](DATA_MODEL.md) mục `integrations.json`.
+
 Tính năng "🔌 API Registry + Đồng bộ dữ liệu" cho phép PM/BA cấu hình 1 lần rồi
 sau đó chỉ cần bấm 1 nút để tự động:
 
@@ -175,6 +178,7 @@ Value là dot-notation path trong 1 record. Ví dụ:
   "Mã CN": "code",
   "Tên chức năng": "name",
   "Module": "module_code",
+  "Mã dự án": "project",
   "Priority": "priority",
   "FIT/GAP": "fit_gap",
   "Giai đoạn": "phase",
@@ -186,6 +190,35 @@ Value là dot-notation path trong 1 record. Ví dụ:
   "Dev - Status": "phases.dev.status"
 }
 ```
+
+### 3.3. Phân phối đa project theo Mã dự án
+
+Khi 1 API trả dữ liệu nhiều dự án, cấu hình thêm trên endpoint (UI: panel
+**📁 Phân phối theo Mã dự án**):
+
+```json
+{
+  "project_code_field": "project",
+  "project_code_map": {
+    "MPHG_IHRP_2025_PM": "mphg",
+    "OTHER_CODE": "other-slug"
+  },
+  "project_code_filter": ""
+}
+```
+
+| Field | Bắt buộc? | Ý nghĩa |
+|-------|-----------|---------|
+| `project_code_field` | Để bật routing | JSON path / tên cột Excel chứa mã (Task Daily: `project`) |
+| `project_code_map` | Khuyến nghị | `{ "mã nguồn": "slug-local" }` — mã không có trong map → **skip** (không đổ vào project đang mở) |
+| `project_code_filter` | Tuỳ chọn | Chỉ giữ records khớp 1 mã. Nếu map rỗng → ghi vào project đang sync |
+
+**Backward compat:** không set `project_code_field` (hoặc set field nhưng không có map/filter)
+→ toàn bộ records vào project đang bấm Sync (behavior cũ).
+
+Toast sau sync: `MPHG_IHRP_2025_PM: 387 dòng · OTHER: 120 · Bỏ qua mã lạ: 3`.
+
+Chi tiết Task Daily → [`IHRP_TASKDAILY_API_SETUP.md`](IHRP_TASKDAILY_API_SETUP.md).
 
 Với record JSON:
 

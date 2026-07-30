@@ -39,6 +39,7 @@ Parser tự detect bằng keyword matching (`META_KEYWORDS` trong `parser/excel_
 | `risk_blocker` | "Risk/Blocker", "Risk", "Blocker"                 | Rủi ro                     | Text tự do                                |
 | `last_updated` | "Last Updated Date", "Last Updated", "Ngày cập nhật" | Ngày cập nhật cuối      | datetime                                  |
 | `remark`       | "Remark", "Ghi chú chung"                         | Ghi chú                    | Text tự do                                |
+| `ma_du_an`     | "Mã dự án", "Project Code", "Project"             | Mã dự án nguồn            | "MPHG_IHRP_2025_PM"                       |
 
 **Rule detect:**
 1. Exact match (case-insensitive) trước

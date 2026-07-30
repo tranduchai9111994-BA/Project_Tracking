@@ -41,6 +41,8 @@ META_KEYWORDS = {
     "risk_blocker": ["Risk/Blocker", "Risk", "Blocker"],
     "last_updated": ["Last Updated Date", "Last Updated", "Ngày cập nhật"],
     "remark": ["Remark", "Ghi chú chung"],
+    # Mã dự án (iHRP Task Daily API: JSON key `project`, VD "MPHG_IHRP_2025_PM")
+    "ma_du_an": ["Mã dự án", "Project Code", "Project"],
 }
 
 # === Mapping phase name → task type (tiếng Việt) ===

@@ -183,6 +183,12 @@ def _sanitize_endpoint(ep: dict) -> Optional[dict]:
             # Giữ nguyên type (int/float/str/None/bool) — driver tự cast.
             query_params[key_s] = v
 
+    # Multi-project routing (Mã dự án → slug local).
+    # Backward compat: nếu project_code_field rỗng → sync cũ (toàn bộ vào slug đang mở).
+    project_code_field = str(ep.get("project_code_field") or "").strip()[:200]
+    project_code_filter = str(ep.get("project_code_filter") or "").strip()[:120]
+    project_code_map = _sanitize_project_code_map(ep.get("project_code_map"))
+
     return {
         "id": str(ep.get("id") or f"ep_{uuid.uuid4().hex[:10]}"),
         "name": name[:120],
@@ -198,6 +204,10 @@ def _sanitize_endpoint(ep: dict) -> Optional[dict]:
         # Database-only fields
         "query": query[:10000],           # SELECT SQL (giới hạn 10KB để tránh abuse)
         "query_params": query_params,
+        # Multi-project routing
+        "project_code_field": project_code_field,
+        "project_code_map": project_code_map,
+        "project_code_filter": project_code_filter,
     }
 
 
@@ -205,6 +215,96 @@ def _sanitize_env_prefix(raw: Any) -> str:
     """Chuẩn hoá 1 prefix env: uppercase + chỉ giữ A-Z0-9_, cắt 60 ký tự."""
     s = str(raw or "").strip().upper()
     return re.sub(r"[^A-Z0-9_]+", "_", s)[:60]
+
+
+def _sanitize_project_code_map(raw: Any) -> dict[str, str]:
+    """Chuẩn hoá map mã nguồn → slug local. Bỏ entry rỗng / slug không hợp lệ."""
+    out: dict[str, str] = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        code = str(k or "").strip()[:120]
+        slug = str(v or "").strip().lower()[:80]
+        if not code or not slug:
+            continue
+        # Slug local: chữ thường, số, gạch ngang/dưới (giống ProjectManager).
+        if not re.match(r"^[a-z0-9][a-z0-9_-]*$", slug):
+            continue
+        out[code] = slug
+    return out
+
+
+def group_records_by_project_code(
+    records: list[dict],
+    *,
+    project_code_field: str,
+    project_code_map: dict[str, str],
+    project_code_filter: str = "",
+    default_slug: str = "",
+) -> tuple[dict[str, list[dict]], list[dict]]:
+    """
+    Group JSON/DB records theo mã dự án → slug local.
+
+    Returns:
+        groups: {slug: [records]} — chỉ gồm code đã resolve được.
+        skipped: list[{code, count, reason}] — filtered / unmapped / empty.
+
+    Rules:
+      - project_code_filter set → bỏ record khác mã (reason=filtered).
+      - project_code_map có code → slug = map[code].
+      - map rỗng + filter khớp → slug = default_slug (filter-only mode).
+      - còn lại → skip (unmapped / empty).
+    """
+    field = (project_code_field or "").strip()
+    code_filter = (project_code_filter or "").strip()
+    code_map = project_code_map if isinstance(project_code_map, dict) else {}
+    default_slug = (default_slug or "").strip()
+
+    groups: dict[str, list[dict]] = {}
+    skip_counts: dict[tuple[str, str], int] = {}  # (code, reason) → count
+
+    def _bump(code: str, reason: str) -> None:
+        key = (code or "(empty)", reason)
+        skip_counts[key] = skip_counts.get(key, 0) + 1
+
+    for rec in records:
+        if not isinstance(rec, dict):
+            _bump("", "invalid")
+            continue
+        raw = _dig_json(rec, field) if field else None
+        code = "" if raw is None else str(raw).strip()
+        if not code:
+            _bump("", "empty")
+            continue
+        if code_filter and code != code_filter:
+            _bump(code, "filtered")
+            continue
+        slug = ""
+        if code in code_map:
+            slug = code_map[code]
+        elif not code_map and code_filter and default_slug:
+            # Filter-only: mọi record đã khớp filter → ghi vào project đang sync.
+            slug = default_slug
+        if not slug:
+            _bump(code, "unmapped")
+            continue
+        groups.setdefault(slug, []).append(rec)
+
+    skipped = [
+        {"code": code, "count": count, "reason": reason}
+        for (code, reason), count in sorted(skip_counts.items())
+    ]
+    return groups, skipped
+
+
+def _routing_enabled(endpoint: dict) -> bool:
+    """True khi endpoint cấu hình routing đa project (field + map hoặc filter)."""
+    field = str(endpoint.get("project_code_field") or "").strip()
+    if not field:
+        return False
+    code_map = endpoint.get("project_code_map") or {}
+    code_filter = str(endpoint.get("project_code_filter") or "").strip()
+    return bool(code_map) or bool(code_filter)
 
 
 def _sanitize_auth(auth: Any) -> dict:
@@ -1215,6 +1315,317 @@ def _fetch_endpoint(
     return session.get(endpoint_url, params=params, timeout=timeout, allow_redirects=True)
 
 
+def _persist_synced_xlsx(
+    *,
+    xlsx_bytes: bytes,
+    target_dir: str,
+    filename: str,
+    project_manager,
+    project_slug: str,
+    integration_id: str,
+    endpoint_id: str,
+    target_action: str,
+    long_duration_threshold: int,
+) -> dict:
+    """
+    Ghi xlsx → parse → snapshot vào 1 project. Dùng chung single/multi sync.
+
+    Trả dict ok=True|False kèm rows_imported / snapshot_id / error.
+    """
+    target_path = os.path.join(target_dir, filename)
+    try:
+        with open(target_path, "wb") as fout:
+            fout.write(xlsx_bytes)
+    except OSError as e:
+        return {"ok": False, "error": f"Không lưu được file tạm: {e}", "filename": filename}
+
+    try:
+        parsed = FunctionListParser().parse(target_path)
+        metrics = DashboardEngine(long_duration_threshold=long_duration_threshold).compute_all(parsed)
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"Parse file lỗi: {type(e).__name__}: {str(e)[:300]}",
+            "filename": filename,
+        }
+
+    rows_count = len(parsed.rows)
+    snapshot_entry = None
+    try:
+        smgr = project_manager.get_snapshot_manager(project_slug)
+        snapshot_entry = smgr.save_snapshot(
+            target_path, parsed, metrics,
+            source=f"sync:{integration_id}:{endpoint_id}",
+        )
+        if target_action == "replace":
+            import shutil as _sh
+            _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
+            project_manager.touch_last_upload(project_slug)
+        try:
+            from analyzer import project_store as _ps
+            _ps.append_upload_history(
+                target_dir,
+                filename=filename or os.path.basename(target_path),
+                row_count=rows_count,
+                source=f"sync:{integration_id}:{endpoint_id}",
+                extra={
+                    "modules": len(getattr(parsed, "all_modules", []) or []),
+                    "phases": len(getattr(parsed, "all_phases", []) or []),
+                    "integration_id": integration_id,
+                    "endpoint_id": endpoint_id,
+                    "project_slug": project_slug,
+                },
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"Lưu snapshot lỗi: {type(e).__name__}: {str(e)[:200]}",
+            "filename": filename,
+            "rows_imported": rows_count,
+        }
+
+    return {
+        "ok": True,
+        "rows_imported": rows_count,
+        "snapshot_entry": snapshot_entry,
+        "snapshot_id": snapshot_entry.get("date") if snapshot_entry else None,
+        "filename": filename,
+        "project_slug": project_slug,
+    }
+
+
+def _sync_records_to_projects(
+    records: list[dict],
+    endpoint: dict,
+    *,
+    source_project_dir: str,
+    project_manager,
+    default_slug: str,
+    integration_id: str,
+    long_duration_threshold: int,
+    response_type: str,
+    filename_prefix: str = "synced",
+) -> dict:
+    """
+    Convert records → xlsx và lưu snapshot.
+
+    - Không bật routing → toàn bộ vào default_slug (behavior cũ).
+    - Có routing → group theo mã dự án; mã lạ skip + warning.
+    """
+    field_mapping = endpoint.get("field_mapping") or {}
+    if not isinstance(field_mapping, dict):
+        field_mapping = {}
+    target_action = (endpoint.get("target_action") or "snapshot").lower()
+    endpoint_id = endpoint.get("id") or "ep"
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+
+    if not _routing_enabled(endpoint):
+        try:
+            xlsx_bytes = build_xlsx_from_json_records(records, field_mapping)
+        except Exception as e:
+            msg = f"Convert JSON → xlsx lỗi: {type(e).__name__}: {str(e)[:200]}"
+            _update_last_status(source_project_dir, integration_id, "error", msg)
+            return _err(msg)
+
+        filename = f"{filename_prefix}_{ts}.xlsx"
+        result = _persist_synced_xlsx(
+            xlsx_bytes=xlsx_bytes,
+            target_dir=source_project_dir,
+            filename=filename,
+            project_manager=project_manager,
+            project_slug=default_slug,
+            integration_id=integration_id,
+            endpoint_id=endpoint_id,
+            target_action=target_action,
+            long_duration_threshold=long_duration_threshold,
+        )
+        if not result.get("ok"):
+            _update_last_status(
+                source_project_dir, integration_id, "error", result.get("error", "Lỗi"),
+            )
+            return _err(
+                result.get("error", "Lỗi"),
+                filename=result.get("filename"),
+                rows_imported=result.get("rows_imported", 0),
+            )
+
+        rows_count = result["rows_imported"]
+        ok_msg = (
+            f"Đã tải {rows_count} dòng · snapshot "
+            f"{result.get('snapshot_id') or '?'} · "
+            f"endpoint '{endpoint.get('name')}' [{response_type}]"
+        )
+        _update_last_status(source_project_dir, integration_id, "ok", ok_msg, sync_time=True)
+        return {
+            "status": "ok",
+            "message": ok_msg,
+            "snapshot_id": result.get("snapshot_id"),
+            "snapshot_entry": result.get("snapshot_entry"),
+            "rows_imported": rows_count,
+            "filename": filename,
+            "target_action": target_action,
+            "response_type": response_type,
+            "synced_slugs": [default_slug],
+            "project_results": [{
+                "project_code": "",
+                "slug": default_slug,
+                "rows": rows_count,
+                "snapshot_id": result.get("snapshot_id"),
+                "status": "ok",
+            }],
+            "skipped": [],
+        }
+
+    # ---- Multi-project routing ----
+    groups, skipped = group_records_by_project_code(
+        records,
+        project_code_field=str(endpoint.get("project_code_field") or ""),
+        project_code_map=endpoint.get("project_code_map") or {},
+        project_code_filter=str(endpoint.get("project_code_filter") or ""),
+        default_slug=default_slug,
+    )
+
+    code_by_slug: dict[str, list[str]] = {}
+    pc_map = endpoint.get("project_code_map") or {}
+    pc_filter = str(endpoint.get("project_code_filter") or "").strip()
+    if isinstance(pc_map, dict):
+        for code, slug in pc_map.items():
+            if slug in groups:
+                code_by_slug.setdefault(slug, []).append(str(code))
+    if not pc_map and pc_filter and default_slug in groups:
+        code_by_slug[default_slug] = [pc_filter]
+
+    project_results: list[dict] = []
+    total_rows = 0
+    synced_slugs: list[str] = []
+    warnings: list[str] = []
+
+    for slug, group_recs in groups.items():
+        if not project_manager.project_exists(slug):
+            warnings.append(f"Project '{slug}' không tồn tại — bỏ qua {len(group_recs)} dòng")
+            skipped.append({
+                "code": ",".join(code_by_slug.get(slug, [])),
+                "count": len(group_recs),
+                "reason": "missing_project",
+            })
+            project_results.append({
+                "project_code": ",".join(code_by_slug.get(slug, [])),
+                "slug": slug,
+                "rows": 0,
+                "status": "error",
+                "message": f"Project '{slug}' không tồn tại",
+            })
+            continue
+
+        try:
+            xlsx_bytes = build_xlsx_from_json_records(group_recs, field_mapping)
+        except Exception as e:
+            msg = f"Convert JSON → xlsx lỗi ({slug}): {type(e).__name__}: {str(e)[:160]}"
+            warnings.append(msg)
+            project_results.append({
+                "project_code": ",".join(code_by_slug.get(slug, [])),
+                "slug": slug,
+                "rows": 0,
+                "status": "error",
+                "message": msg,
+            })
+            continue
+
+        target_dir = project_manager.get_project_folder(slug)
+        safe_slug = re.sub(r"[^a-z0-9_-]+", "_", slug)[:40]
+        filename = f"{filename_prefix}_{safe_slug}_{ts}.xlsx"
+        result = _persist_synced_xlsx(
+            xlsx_bytes=xlsx_bytes,
+            target_dir=target_dir,
+            filename=filename,
+            project_manager=project_manager,
+            project_slug=slug,
+            integration_id=integration_id,
+            endpoint_id=endpoint_id,
+            target_action=target_action,
+            long_duration_threshold=long_duration_threshold,
+        )
+        if not result.get("ok"):
+            warnings.append(f"{slug}: {result.get('error')}")
+            project_results.append({
+                "project_code": ",".join(code_by_slug.get(slug, [])),
+                "slug": slug,
+                "rows": result.get("rows_imported") or 0,
+                "status": "error",
+                "message": result.get("error"),
+            })
+            continue
+
+        rows_count = result["rows_imported"]
+        total_rows += rows_count
+        synced_slugs.append(slug)
+        codes_label = "/".join(code_by_slug.get(slug, [])) or "?"
+        project_results.append({
+            "project_code": codes_label,
+            "slug": slug,
+            "rows": rows_count,
+            "snapshot_id": result.get("snapshot_id"),
+            "filename": filename,
+            "status": "ok",
+        })
+
+    unmapped_n = sum(s["count"] for s in skipped if s.get("reason") == "unmapped")
+    filtered_n = sum(s["count"] for s in skipped if s.get("reason") == "filtered")
+    empty_n = sum(s["count"] for s in skipped if s.get("reason") in ("empty", "invalid"))
+    missing_n = sum(s["count"] for s in skipped if s.get("reason") == "missing_project")
+
+    parts = [
+        f"{(pr.get('project_code') or pr['slug'])}: {pr['rows']} dòng"
+        for pr in project_results if pr.get("status") == "ok"
+    ]
+    if unmapped_n:
+        parts.append(f"Bỏ qua mã lạ: {unmapped_n}")
+    if filtered_n:
+        parts.append(f"Lọc bỏ: {filtered_n}")
+    if empty_n:
+        parts.append(f"Thiếu mã: {empty_n}")
+    if missing_n:
+        parts.append(f"Project thiếu: {missing_n}")
+
+    summary = " · ".join(parts) if parts else "Không có dòng nào được sync"
+    if warnings:
+        summary += " · " + "; ".join(warnings[:3])
+
+    if not synced_slugs:
+        msg = f"Không sync được project nào. {summary}"
+        _update_last_status(source_project_dir, integration_id, "error", msg)
+        return _err(
+            msg,
+            project_results=project_results,
+            skipped=skipped,
+            rows_imported=0,
+            synced_slugs=[],
+        )
+
+    ok_msg = (
+        f"Đã phân phối {total_rows} dòng → {len(synced_slugs)} project · "
+        f"{summary} · endpoint '{endpoint.get('name')}' [{response_type}]"
+    )
+    _update_last_status(source_project_dir, integration_id, "ok", ok_msg, sync_time=True)
+    first_ok = next((p for p in project_results if p.get("status") == "ok"), {})
+    return {
+        "status": "ok",
+        "message": ok_msg,
+        "snapshot_id": first_ok.get("snapshot_id"),
+        "snapshot_entry": None,
+        "rows_imported": total_rows,
+        "filename": first_ok.get("filename"),
+        "target_action": target_action,
+        "response_type": response_type,
+        "synced_slugs": synced_slugs,
+        "project_results": project_results,
+        "skipped": skipped,
+        "warnings": warnings,
+    }
+
+
 def _run_database_sync(
     integ: dict,
     endpoint: dict,
@@ -1228,18 +1639,16 @@ def _run_database_sync(
     """
     Sync 1 endpoint database: resolve creds → execute query → build xlsx →
     parse → save snapshot. Cấu trúc trả về giống `sync_integration` để FE
-    không phải phân biệt.
+    không phải phân biệt. Hỗ trợ multi-project routing nếu cấu hình.
     """
     integration_id = integ.get("id") or ""
     auth = integ.get("auth") or {}
-    # 1) Resolve creds
     try:
         username, password = resolve_credentials(auth.get("credential_env", ""))
     except ValueError as e:
         _update_last_status(project_dir, integration_id, "error", str(e))
         return _err(str(e))
 
-    # 2) Execute query → list[dict]
     try:
         records = _run_database_query(auth, username, password, endpoint, timeout=timeout)
     except ValueError as e:
@@ -1255,89 +1664,17 @@ def _run_database_sync(
         _update_last_status(project_dir, integration_id, "error", msg)
         return _err(msg)
 
-    # 3) Convert list[dict] → xlsx (dùng chung logic với JSON API).
-    #    field_mapping rỗng → dùng union keys làm header (SQL alias =
-    #    tên cột iHRP chuẩn nếu user viết `SELECT col AS [Mã CN] ...`).
-    field_mapping = endpoint.get("field_mapping") or {}
-    try:
-        xlsx_bytes = build_xlsx_from_json_records(records, field_mapping if isinstance(field_mapping, dict) else {})
-    except Exception as e:
-        msg = f"Build xlsx từ DB records lỗi: {type(e).__name__}: {str(e)[:200]}"
-        _update_last_status(project_dir, integration_id, "error", msg)
-        return _err(msg)
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M")
-    filename = f"synced_db_{ts}.xlsx"
-    target_path = os.path.join(project_dir, filename)
-    try:
-        with open(target_path, "wb") as fout:
-            fout.write(xlsx_bytes)
-    except OSError as e:
-        msg = f"Không lưu được file tạm: {e}"
-        _update_last_status(project_dir, integration_id, "error", msg)
-        return _err(msg)
-
-    # 4) Parse (chung với excel/json flow)
-    try:
-        parsed = FunctionListParser().parse(target_path)
-        metrics = DashboardEngine(long_duration_threshold=long_duration_threshold).compute_all(parsed)
-    except Exception as e:
-        msg = f"Parse file lỗi: {type(e).__name__}: {str(e)[:300]}"
-        _update_last_status(project_dir, integration_id, "error", msg)
-        return _err(msg, filename=filename)
-
-    rows_count = len(parsed.rows)
-
-    # 5) Save snapshot
-    target_action = (endpoint.get("target_action") or "snapshot").lower()
-    snapshot_entry = None
-    try:
-        smgr = project_manager.get_snapshot_manager(project_slug)
-        snapshot_entry = smgr.save_snapshot(
-            target_path, parsed, metrics,
-            source=f"sync:{integration_id}:{endpoint.get('id') or 'db'}",
-        )
-        if target_action == "replace":
-            import shutil as _sh
-            _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
-            project_manager.touch_last_upload(project_slug)
-        # Ghi lịch sử upload với source=sync:...
-        try:
-            from analyzer import project_store as _ps
-            ep_id = endpoint.get("id") or "db"
-            _ps.append_upload_history(
-                project_dir,
-                filename=filename or os.path.basename(target_path),
-                row_count=rows_count,
-                source=f"sync:{integration_id}:{ep_id}",
-                extra={
-                    "modules": len(getattr(parsed, "all_modules", []) or []),
-                    "phases": len(getattr(parsed, "all_phases", []) or []),
-                    "integration_id": integration_id,
-                    "endpoint_id": ep_id,
-                },
-            )
-        except Exception:
-            pass
-    except Exception as e:
-        msg = f"Lưu snapshot lỗi: {type(e).__name__}: {str(e)[:200]}"
-        _update_last_status(project_dir, integration_id, "error", msg)
-        return _err(msg, rows_imported=rows_count, filename=filename)
-
-    ok_msg = (f"Đã query {rows_count} dòng · snapshot "
-              f"{snapshot_entry.get('date') if snapshot_entry else '?'} · "
-              f"endpoint '{endpoint.get('name')}' [database]")
-    _update_last_status(project_dir, integration_id, "ok", ok_msg, sync_time=True)
-    return {
-        "status": "ok",
-        "message": ok_msg,
-        "snapshot_id": snapshot_entry.get("date") if snapshot_entry else None,
-        "snapshot_entry": snapshot_entry,
-        "rows_imported": rows_count,
-        "filename": filename,
-        "target_action": target_action,
-        "response_type": "database",
-    }
+    return _sync_records_to_projects(
+        records,
+        endpoint,
+        source_project_dir=project_dir,
+        project_manager=project_manager,
+        default_slug=project_slug,
+        integration_id=integration_id,
+        long_duration_threshold=long_duration_threshold,
+        response_type="database",
+        filename_prefix="synced_db",
+    )
 
 
 def sync_integration(
@@ -1449,11 +1786,8 @@ def sync_integration(
             _update_last_status(project_dir, integration_id, "error", msg)
             return _err(msg)
 
-        # 3) Lưu bytes → file tạm .xlsx (JSON convert trong memory trước)
-        ts = datetime.now().strftime("%Y%m%d_%H%M")
-        filename = f"synced_{ts}.xlsx"
-        target_path = os.path.join(project_dir, filename)
-
+        # 3) Excel → single project (hoặc multi nếu bật routing)
+        #    JSON → luôn đi qua _sync_records_to_projects (routing optional)
         if response_type == "excel":
             if not _looks_like_excel(r_data):
                 ctype = r_data.headers.get("Content-Type", "unknown")
@@ -1462,11 +1796,33 @@ def sync_integration(
                 _update_last_status(project_dir, integration_id, "error", msg)
                 return _err(msg)
             xlsx_bytes = r_data.content
+            if _routing_enabled(endpoint):
+                try:
+                    records = _xlsx_bytes_to_records(xlsx_bytes)
+                except Exception as e:
+                    msg = f"Đọc Excel để phân project lỗi: {type(e).__name__}: {str(e)[:200]}"
+                    _update_last_status(project_dir, integration_id, "error", msg)
+                    return _err(msg)
+                if not records:
+                    msg = "Excel không có dòng dữ liệu để sync."
+                    _update_last_status(project_dir, integration_id, "error", msg)
+                    return _err(msg)
+                # field_mapping rỗng → build_xlsx giữ nguyên tên cột Excel.
+                return _sync_records_to_projects(
+                    records,
+                    endpoint,
+                    source_project_dir=project_dir,
+                    project_manager=project_manager,
+                    default_slug=project_slug,
+                    integration_id=integration_id,
+                    long_duration_threshold=long_duration_threshold,
+                    response_type="excel",
+                    filename_prefix="synced",
+                )
         elif response_type == "json":
             try:
                 payload = r_data.json()
             except ValueError as e:
-                # Content-Type có thể vẫn json/text, nhưng body không parse được
                 msg = f"Response không phải JSON hợp lệ: {str(e)[:200]}"
                 _update_last_status(project_dir, integration_id, "error", msg)
                 return _err(msg)
@@ -1485,14 +1841,25 @@ def sync_integration(
                        f", type={type(payload).__name__}). Kiểm tra lại data_path.")
                 _update_last_status(project_dir, integration_id, "error", msg)
                 return _err(msg)
-            try:
-                xlsx_bytes = build_xlsx_from_json_records(records, field_mapping)
-            except Exception as e:
-                msg = f"Convert JSON → xlsx lỗi: {type(e).__name__}: {str(e)[:200]}"
-                _update_last_status(project_dir, integration_id, "error", msg)
-                return _err(msg)
-        else:  # pragma: no cover — đã guard ở đầu, giữ để phòng ngừa
+
+            return _sync_records_to_projects(
+                records,
+                endpoint,
+                source_project_dir=project_dir,
+                project_manager=project_manager,
+                default_slug=project_slug,
+                integration_id=integration_id,
+                long_duration_threshold=long_duration_threshold,
+                response_type="json",
+                filename_prefix="synced",
+            )
+        else:  # pragma: no cover
             return _err(f"Response type '{response_type}' chưa implement.")
+
+        # ---- Excel single-project (không routing) — behavior cũ ----
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        filename = f"synced_{ts}.xlsx"
+        target_path = os.path.join(project_dir, filename)
 
         try:
             with open(target_path, "wb") as fout:
@@ -1502,7 +1869,7 @@ def sync_integration(
             _update_last_status(project_dir, integration_id, "error", msg)
             return _err(msg)
 
-        # 4) Parse Excel (chung cho cả excel + json converted)
+        # 4) Parse Excel
         try:
             parsed = FunctionListParser().parse(target_path)
             metrics = DashboardEngine(long_duration_threshold=long_duration_threshold).compute_all(parsed)
@@ -1513,7 +1880,7 @@ def sync_integration(
 
         rows_count = len(parsed.rows)
 
-        # 5) Save snapshot (append vào project) — tận dụng SnapshotManager
+        # 5) Save snapshot
         target_action = (endpoint.get("target_action") or "snapshot").lower()
         snapshot_entry = None
         try:
@@ -1522,13 +1889,10 @@ def sync_integration(
                 target_path, parsed, metrics,
                 source=f"sync:{integration_id}:{endpoint_id}",
             )
-            # replace → copy đè current.xlsx để dashboard load ngay dữ liệu mới.
-            # append/snapshot chỉ append, không đổi current.xlsx.
             if target_action == "replace":
                 import shutil as _sh
                 _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
                 project_manager.touch_last_upload(project_slug)
-            # T35 Task 4 — ghi lịch sử với source sync
             try:
                 from analyzer import project_store as _ps
                 _ps.append_upload_history(
@@ -1550,7 +1914,6 @@ def sync_integration(
             _update_last_status(project_dir, integration_id, "error", msg)
             return _err(msg, rows_imported=rows_count, filename=filename)
 
-        # 6) Cập nhật status
         ok_msg = (f"Đã tải {rows_count} dòng · snapshot "
                   f"{snapshot_entry.get('date') if snapshot_entry else '?'} · "
                   f"endpoint '{endpoint.get('name')}' [{response_type}]")
@@ -1565,9 +1928,47 @@ def sync_integration(
             "filename": filename,
             "target_action": target_action,
             "response_type": response_type,
+            "synced_slugs": [project_slug],
+            "project_results": [{
+                "project_code": "",
+                "slug": project_slug,
+                "rows": rows_count,
+                "snapshot_id": snapshot_entry.get("date") if snapshot_entry else None,
+                "status": "ok",
+            }],
+            "skipped": [],
         }
     finally:
         session.close()
+
+
+def _xlsx_bytes_to_records(xlsx_bytes: bytes) -> list[dict]:
+    """Đọc workbook bytes → list[dict] (header row 1 làm key) để group theo mã dự án."""
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True, read_only=True)
+    try:
+        ws = wb.active
+        rows_iter = ws.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration:
+            return []
+        headers = [str(h).strip() if h is not None else "" for h in header_row]
+        out: list[dict] = []
+        for row in rows_iter:
+            rec: dict[str, Any] = {}
+            empty = True
+            for i, h in enumerate(headers):
+                if not h:
+                    continue
+                val = row[i] if i < len(row) else None
+                if val is not None and str(val).strip() != "":
+                    empty = False
+                rec[h] = val
+            if not empty:
+                out.append(rec)
+        return out
+    finally:
+        wb.close()
 
 
 def preview_json_endpoint(

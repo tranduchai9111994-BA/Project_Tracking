@@ -44,6 +44,7 @@ _META_STANDARD = [
     "Mã CN",
     "Tên chức năng",
     "Module",
+    "Mã dự án",
     "Priority",
     "Complexity",
     "FIT/GAP",

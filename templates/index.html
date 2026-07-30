@@ -1483,6 +1483,42 @@
                 <div data-json-suggest-out class="hidden text-[11px] rounded border dark:border-slate-600 p-2 bg-white dark:bg-slate-800 max-h-52 overflow-auto"></div>
             </div>
 
+            <!-- ==== Multi-project routing (Mã dự án → folder local) ==== -->
+            <div data-project-route-panel class="border-t dark:border-slate-600 pt-2 space-y-2">
+                <div class="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                    📁 Phân phối theo Mã dự án (tuỳ chọn)
+                </div>
+                <p class="text-[10px] text-gray-500 dark:text-gray-400">
+                    Để trống «Cột/JSON path» → sync toàn bộ vào project đang mở (behavior cũ).
+                    Có path + map (hoặc filter) → group theo mã nguồn, ghi đúng
+                    <code>uploads/projects/&lt;slug&gt;/</code>; mã lạ bị bỏ qua.
+                </p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <label class="block">
+                        <span class="text-[11px] text-gray-500">Cột / JSON path Mã dự án</span>
+                        <input data-field="project_code_field" type="text"
+                               class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
+                               placeholder="VD: project (Task Daily) hoặc Mã dự án">
+                    </label>
+                    <label class="block">
+                        <span class="text-[11px] text-gray-500">Filter 1 mã (tuỳ chọn) — chỉ lấy mã này → project đang sync nếu không có map</span>
+                        <input data-field="project_code_filter" type="text"
+                               class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
+                               placeholder="VD: MPHG_IHRP_2025_PM">
+                    </label>
+                </div>
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <span class="text-[11px] text-gray-500">Map mã nguồn → Project local</span>
+                        <button type="button" data-pc-map-add
+                                class="text-[11px] bg-amber-100 hover:bg-amber-200 dark:bg-amber-900 dark:hover:bg-amber-800 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded">
+                            ➕ Thêm dòng
+                        </button>
+                    </div>
+                    <div data-pc-map-rows class="space-y-1"></div>
+                </div>
+            </div>
+
             <!-- ==== Database SQL panel — chỉ show khi response_type=database (T31) ==== -->
             <div data-db-panel class="hidden border-t dark:border-slate-600 pt-2 space-y-2">
                 <div class="text-[11px] font-semibold text-teal-600 dark:text-teal-300">

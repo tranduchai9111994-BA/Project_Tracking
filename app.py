@@ -2907,10 +2907,10 @@ def project_integration_sync(slug: str, integration_id: str):
 
     # Nếu sync ok → invalidate cache state để user thấy dữ liệu mới ở lần
     # request /dashboard tiếp theo (tự load lại snapshot mới nhất).
+    # Multi-project routing: invalidate tất cả slug đã nhận data.
     if result.get("status") == "ok":
-        _state.pop(slug, None)
-        # Nếu target_action = replace thì cũng đã touch_last_upload trong module.
-        # append/snapshot chỉ thêm snapshot, không đổi current.xlsx.
+        for s in (result.get("synced_slugs") or [slug]):
+            _state.pop(s, None)
 
     return jsonify(result)
 
