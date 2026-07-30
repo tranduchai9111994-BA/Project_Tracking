@@ -911,6 +911,82 @@
                     </p>
                     <div id="visibilityPanel" class="space-y-2"></div>
                 </section>
+
+                <!-- ================================================
+                     T-AA — Auto-archive snapshots
+                     ================================================ -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40" id="setArchiveSection">
+                    <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+                        <h4 class="font-semibold text-gray-800 dark:text-gray-100">🗄️ Archive — Nén snapshot cũ giải phóng dung lượng</h4>
+                        <button type="button" onclick="_archRefresh()"
+                                class="text-xs px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500"
+                                title="Reload danh sách snapshot">🔄 Reload</button>
+                    </div>
+                    <p class="text-xs text-gray-500 mb-3">
+                        Snapshot cũ hơn X ngày được gzip (~30–40% tiết kiệm) và chuyển sang
+                        <code class="text-[11px] bg-slate-200 dark:bg-slate-600 px-1 rounded">snapshots/archive/</code>.
+                        Load/compare vẫn đọc được (transparent decompress). Chi tiết:
+                        <code class="text-[11px] bg-slate-200 dark:bg-slate-600 px-1 rounded">docs/ARCHIVE_GUIDE.md</code>.
+                    </p>
+
+                    <label class="flex items-center gap-2 mb-3">
+                        <input type="checkbox" id="setArchEnabled" class="scale-125">
+                        <span class="text-xs">Bật auto-archive</span>
+                    </label>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                        <label class="block">
+                            <span class="text-xs">Archive snapshot cũ hơn: <b id="setArchDaysLabel">90</b> ngày</span>
+                            <input type="range" id="setArchDays" min="0" max="365" step="1" value="90"
+                                   class="w-full mt-1"
+                                   oninput="document.getElementById('setArchDaysLabel').textContent=this.value==0?'(never)':this.value">
+                            <span class="text-[11px] text-gray-500">0 = không bao giờ auto-archive</span>
+                        </label>
+                        <label class="block">
+                            <span class="text-xs">Xóa vĩnh viễn archive cũ hơn: <b id="setArchPurgeLabel">365</b> ngày</span>
+                            <input type="range" id="setArchPurgeDays" min="0" max="730" step="1" value="365"
+                                   class="w-full mt-1"
+                                   oninput="document.getElementById('setArchPurgeLabel').textContent=this.value==0?'(never)':this.value">
+                            <span class="text-[11px] text-gray-500">0 = không bao giờ purge</span>
+                        </label>
+                    </div>
+
+                    <label class="flex items-center gap-2 mb-3">
+                        <input type="checkbox" id="setArchAutoStartup" class="scale-125" checked>
+                        <span class="text-xs">Tự động archive khi server start</span>
+                    </label>
+
+                    <div class="flex flex-wrap items-center gap-2 mb-3">
+                        <button type="button" onclick="_archRunNow()"
+                                class="text-xs px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded font-semibold">
+                            ▶ Archive ngay
+                        </button>
+                        <button type="button" onclick="_archSaveSettings()"
+                                class="text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded">
+                            💾 Lưu cấu hình Archive
+                        </button>
+                        <span id="archDiskInfo" class="text-[11px] text-gray-500"></span>
+                    </div>
+                    <div id="archRunProgress" class="hidden text-xs mb-2 px-2 py-1.5 rounded bg-amber-50 border border-amber-200 text-amber-900"></div>
+
+                    <div class="overflow-x-auto max-h-56 border rounded bg-white dark:bg-slate-800 dark:border-slate-600">
+                        <table class="w-full text-[11px]">
+                            <thead class="bg-slate-100 dark:bg-slate-700 sticky top-0">
+                                <tr>
+                                    <th class="px-2 py-1 text-left">Ngày</th>
+                                    <th class="px-2 py-1 text-left">Nguồn</th>
+                                    <th class="px-2 py-1 text-left">Status</th>
+                                    <th class="px-2 py-1 text-right">Functions</th>
+                                    <th class="px-2 py-1 text-right">%</th>
+                                    <th class="px-2 py-1 text-left">Thao tác</th>
+                                </tr>
+                            </thead>
+                            <tbody id="archSnapshotTableBody">
+                                <tr><td colspan="6" class="px-2 py-3 text-center text-gray-400">Đang tải…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
             </div>
             <div class="px-5 py-3 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
                 <button onclick="closeSettingsModal()" class="px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-slate-700 text-sm">Huỷ</button>

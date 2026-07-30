@@ -98,22 +98,42 @@ class SnapshotManager:
         """Return list of snapshot metadata (sorted giảm dần theo ngày).
 
         Backward compat: entry cũ không có `source` → default \"upload\".
+        Thêm field `archived` (bool) cho UI Hot/Archived badge.
         """
         out = []
         for e in self._load_index():
-            if "source" not in e or not e.get("source"):
-                e = {**e, "source": "upload"}
-            out.append(e)
+            entry = dict(e)
+            if "source" not in entry or not entry.get("source"):
+                entry["source"] = "upload"
+            entry["archived"] = bool(entry.get("archived"))
+            out.append(entry)
         return out
 
     def load_snapshot(self, snapshot_date: str) -> Optional[dict]:
         """
         Load 1 snapshot theo ngày (YYYY-MM-DD).
         Return: {"parsed": ParsedData, "meta": entry_dict} hoặc None.
+
+        T-AA: nếu archived=True → decompress gzip pickle trong memory
+        (không extract ra disk).
         """
         entry = self._find_entry(snapshot_date)
         if not entry:
             return None
+
+        if entry.get("archived"):
+            # Transparent decompress từ archive/
+            try:
+                from analyzer.archive_manager import load_archived_pickle_bytes
+                import io
+                raw = load_archived_pickle_bytes(self.dir, entry)
+                if raw is None:
+                    return None
+                parsed = pickle.loads(raw)
+            except Exception:
+                return None
+            return {"parsed": parsed, "meta": entry}
+
         pkl_path = os.path.join(self.dir, entry["pickle"])
         if not os.path.exists(pkl_path):
             return None

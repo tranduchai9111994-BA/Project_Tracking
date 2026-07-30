@@ -144,6 +144,64 @@ def _run_startup_digest_scheduler() -> None:
         print(f"[digest] Bỏ qua: {_digest_err}", file=sys.stderr)
 
 
+def _run_startup_auto_archive() -> None:
+    """
+    T-AA — Background thread: auto-archive snapshot cũ cho project có
+    auto_run_on_startup=True. Log vào access.log + stderr.
+    """
+    import threading
+
+    def _worker():
+        try:
+            from analyzer import project_store as ps
+            from analyzer import archive_manager as am
+            from analyzer import lan_security as lansec
+            projects = _project_mgr.list_projects(include_archived=False)
+            total_archived = 0
+            total_purged = 0
+            for proj in projects:
+                try:
+                    folder = _project_mgr.get_project_folder(proj.slug)
+                    settings = ps.load_archive_settings(folder)
+                    if not settings.get("enabled") or not settings.get("auto_run_on_startup"):
+                        continue
+                    smgr = _project_mgr.get_snapshot_manager(proj.slug)
+                    days = int(settings.get("archive_after_days") or 0)
+                    archived = am.auto_archive_project(smgr.dir, days=days) if days > 0 else []
+                    purge_days = int(settings.get("purge_after_days") or 0)
+                    purged = am.purge_archive(smgr.dir, days=purge_days) if purge_days > 0 else []
+                    total_archived += len(archived)
+                    total_purged += len(purged)
+                    if archived or purged:
+                        msg = (
+                            f"[archive] project={proj.slug} "
+                            f"archived={len(archived)} purged={len(purged)}"
+                        )
+                        print(msg, file=sys.stderr)
+                        try:
+                            # Ghi thêm dòng vào access.log (best-effort)
+                            with open(_ACCESS_LOG_PATH, "a", encoding="utf-8") as lf:
+                                lf.write(
+                                    f"{datetime.now().isoformat(timespec='seconds')} "
+                                    f"STARTUP ARCHIVE {proj.slug} "
+                                    f"archived={len(archived)} purged={len(purged)}\n"
+                                )
+                        except OSError:
+                            pass
+                except Exception as e:
+                    print(f"[archive] Bỏ qua {getattr(proj, 'slug', '?')}: {e}", file=sys.stderr)
+            if total_archived or total_purged:
+                print(
+                    f"[archive] Tổng: archived={total_archived} purged={total_purged}",
+                    file=sys.stderr,
+                )
+        except Exception as e:
+            print(f"[archive] Startup worker lỗi: {e}", file=sys.stderr)
+
+    t = threading.Thread(target=_worker, name="auto-archive", daemon=True)
+    t.start()
+
+
 # ==========================================================================
 # Helpers
 # ==========================================================================
@@ -3145,6 +3203,111 @@ def project_settings(slug: str):
 
 
 # --------------------------------------------------------------------------
+# T-AA — Snapshot archive settings / run / restore
+# --------------------------------------------------------------------------
+
+@app.route("/api/projects/<slug>/archive-settings", methods=["GET", "PUT"])
+def project_archive_settings(slug: str):
+    """GET/PUT cấu hình auto-archive per-project."""
+    from analyzer import project_store as ps
+    from analyzer import archive_manager as am
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        settings = ps.load_archive_settings(folder)
+        smgr = _project_mgr.get_snapshot_manager(slug)
+        snaps = smgr.list_snapshots()
+        usage = am.snapshot_disk_usage(smgr.dir)
+        return jsonify({
+            "settings": settings,
+            "snapshots": snaps,
+            "archived_count": sum(1 for s in snaps if s.get("archived")),
+            "hot_count": sum(1 for s in snaps if not s.get("archived")),
+            "disk": usage,
+        })
+    body = request.get_json(silent=True) or {}
+    return jsonify({"settings": ps.save_archive_settings(folder, body)})
+
+
+@app.route("/api/projects/<slug>/archive-run", methods=["POST"])
+def project_archive_run(slug: str):
+    """
+    Manual trigger archive + optional purge.
+    Body: { days?: int, purge_days?: int, purge?: bool }
+    """
+    from analyzer import project_store as ps
+    from analyzer import archive_manager as am
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    settings = ps.load_archive_settings(folder)
+    body = request.get_json(silent=True) or {}
+    days = body.get("days")
+    if days is None:
+        days = settings.get("archive_after_days", 90)
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        days = 90
+
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    archived = am.auto_archive_project(smgr.dir, days=days)
+    purged: list[str] = []
+    do_purge = bool(body.get("purge"))
+    purge_days = body.get("purge_days")
+    if purge_days is None:
+        purge_days = settings.get("purge_after_days", 365)
+    try:
+        purge_days = int(purge_days)
+    except (TypeError, ValueError):
+        purge_days = 365
+    if do_purge and purge_days > 0:
+        purged = am.purge_archive(smgr.dir, days=purge_days)
+
+    return jsonify({
+        "success": True,
+        "archived": [e.get("date") for e in archived],
+        "archived_count": len(archived),
+        "purged": purged,
+        "purged_count": len(purged),
+        "disk": am.snapshot_disk_usage(smgr.dir),
+    })
+
+
+@app.route("/api/projects/<slug>/snapshots/<snap_id>/restore", methods=["POST"])
+def project_snapshot_restore(slug: str, snap_id: str):
+    """Rã đông 1 snapshot đã archive."""
+    from analyzer import archive_manager as am
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    try:
+        entry = am.restore_snapshot(smgr.dir, snap_id)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": f"Restore lỗi: {e}"}), 500
+    return jsonify({"success": True, "entry": entry})
+
+
+@app.route("/api/projects/<slug>/snapshots/<snap_id>/archive", methods=["POST"])
+def project_snapshot_archive_one(slug: str, snap_id: str):
+    """Archive thủ công 1 snapshot."""
+    from analyzer import archive_manager as am
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    try:
+        entry = am.archive_snapshot(smgr.dir, snap_id)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": f"Archive lỗi: {e}"}), 500
+    return jsonify({"success": True, "entry": entry})
+
+
+# --------------------------------------------------------------------------
 # T26 — Weekly Digest endpoints
 # --------------------------------------------------------------------------
 
@@ -4281,6 +4444,7 @@ if __name__ == "__main__":
     # khi Flask debug=True fork worker.
     if not reloader or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         _run_startup_digest_scheduler()
+        _run_startup_auto_archive()
     try:
         app.run(debug=debug_mode, use_reloader=reloader, port=5000, host="0.0.0.0")
     except Exception as e:

@@ -4069,9 +4069,29 @@ function renderCompareSection() {
 function fillSnapshotSelect(id, snapshots, selectedDate) {
     const sel = document.getElementById(id);
     if (!sel) return;
-    sel.innerHTML = snapshots.map(s =>
-        `<option value="${s.date}" ${s.date === selectedDate ? "selected" : ""}>${s.date} (${s.total_functions} func, ${s.overall_pct}%)</option>`
-    ).join("");
+    sel.innerHTML = snapshots.map(s => {
+        const arch = s.archived ? " 📦" : "";
+        return `<option value="${s.date}" ${s.date === selectedDate ? "selected" : ""}>${s.date}${arch} (${s.total_functions} func, ${s.overall_pct}%)</option>`;
+    }).join("");
+}
+
+/** T-AA — Nếu snapshot archived → restore trước khi compare/load. */
+async function _ensureSnapshotHot(snapDate) {
+    const meta = (snapshotsData || []).find(s => s.date === snapDate);
+    if (!meta || !meta.archived) return true;
+    try {
+        showToast(`Đang rã đông snapshot ${snapDate}…`);
+        await apiJson(
+            `/api/projects/${currentProjectSlug}/snapshots/${encodeURIComponent(snapDate)}/restore`,
+            { method: "POST" },
+        );
+        // Cập nhật cache local
+        meta.archived = false;
+        return true;
+    } catch (err) {
+        showToast("Không rã đông được snapshot: " + err.message, "red");
+        return false;
+    }
 }
 
 async function doCompare() {
@@ -4082,8 +4102,12 @@ async function doCompare() {
         return;
     }
     try {
-        const resp = await fetch(`/api/projects/${currentProjectSlug}/compare?old=${oldDate}&new=${newDate}`);
-        const data = await resp.json();
+        // T-AA — auto-restore nếu archived
+        if (!(await _ensureSnapshotHot(oldDate))) return;
+        if (!(await _ensureSnapshotHot(newDate))) return;
+        const data = await apiJson(
+            `/api/projects/${currentProjectSlug}/compare?old=${oldDate}&new=${newDate}`,
+        );
         if (data.error) {
             showToast("Lỗi: " + data.error, "red");
             return;
@@ -7728,9 +7752,9 @@ function renderUploadHistorySection(hist) {
                     ? new Date(it.time).toLocaleString("vi-VN")
                     : "—";
                 return `
-                <tr class="border-b ${globalIdx === 0 ? "bg-blue-50" : "hover:bg-gray-50"}">
+                <tr class="border-b ${globalIdx === 0 ? "bg-blue-50" : "hover:bg-gray-50"}${((() => { try { const d = String(it.time||"").slice(0,10); const s=(snapshotsData||[]).find(x=>x.date===d); return s&&s.archived ? " opacity-60" : ""; } catch(e){return "";} })())}">
                     <td class="px-2 py-1 whitespace-nowrap">${escapeHtml(timeTxt)} ${globalIdx === 0 ? '<span class="text-[10px] bg-blue-200 text-blue-800 px-1 rounded ml-1">mới nhất</span>' : ""}</td>
-                    <td class="px-2 py-1">${_historySourceBadge(it.source)}</td>
+                    <td class="px-2 py-1">${_historySourceBadge(it.source, it)}</td>
                     <td class="px-2 py-1 font-mono text-[11px]">${escapeHtml(it.filename)}</td>
                     <td class="px-2 py-1 text-right font-bold">${it.row_count}</td>
                     <td class="px-2 py-1 text-right">${deltaTxt}</td>
@@ -7749,13 +7773,21 @@ function renderUploadHistorySection(hist) {
  * T35 Task 4 — Badge nguồn Upload/Sync cho lịch sử.
  * source="upload" → xám; source="sync:integ:ep" → cyan + tooltip tên integration.
  */
-function _historySourceBadge(source) {
+function _historySourceBadge(source, entry) {
     const src = source || "upload";
+    // T-AA — badge Archived nếu snapshot cùng ngày đang archived
+    let archBadge = "";
+    try {
+        const day = (entry && entry.time) ? String(entry.time).slice(0, 10) : "";
+        const snap = (snapshotsData || []).find(s => s.date === day);
+        if (snap && snap.archived) {
+            archBadge = ` <span class="inline-flex text-[10px] px-1 py-0.5 rounded bg-slate-200 text-slate-600 border border-slate-300" title="Snapshot đã archive — click Rã đông ở Settings → Archive">📦 Archived</span>`;
+        }
+    } catch (e) {}
     if (src.startsWith("sync:")) {
         const parts = src.split(":");
         const integId = parts[1] || "";
         const epId = parts[2] || "";
-        // Lookup tên từ cache integrations nếu có
         let tip = src;
         try {
             const list = (window._integState && window._integState.integrations) || [];
@@ -7766,10 +7798,10 @@ function _historySourceBadge(source) {
             }
         } catch (e) {}
         return `<span class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-800 border border-cyan-300"
-                      title="${escapeAttr(tip)}">🔄 Sync</span>`;
+                      title="${escapeAttr(tip)}">🔄 Sync</span>${archBadge}`;
     }
     return `<span class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 border border-gray-300"
-                  title="Upload thủ công">📄 Upload</span>`;
+                  title="Upload thủ công">📄 Upload</span>${archBadge}`;
 }
 
 function renderBaselineSection(bsl) {
@@ -11197,6 +11229,8 @@ window.openSettingsModal = async function () {
     _pubTokRefresh().catch(err => console.warn("[pubtok load]", err));
     // T34 Task 2 — load LAN info + access log (best-effort)
     _lanRefresh().catch(err => console.warn("[lan load]", err));
+    // T-AA — load archive settings + snapshot list
+    _archRefresh().catch(err => console.warn("[archive load]", err));
     modal.classList.remove("hidden");
     modal.classList.add("flex");
 };
@@ -14324,3 +14358,170 @@ if (document.readyState === "loading") {
 // dashboard code chính có thể gọi window.attachUnifiedSectionHelp() sau).
 window.attachUnifiedSectionHelp = attachUnifiedSectionHelp;
 
+
+// ========================================================================
+// T-AA — ARCHIVE SETTINGS UI
+// ========================================================================
+let _archState = { settings: null, snapshots: [], disk: null };
+
+function _archFmtBytes(n) {
+    if (n == null || isNaN(n)) return "—";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(2) + " MB";
+}
+
+async function _archRefresh() {
+    if (!currentProjectSlug) return;
+    try {
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/archive-settings`);
+        _archState.settings = data.settings || {};
+        _archState.snapshots = data.snapshots || [];
+        _archState.disk = data.disk || null;
+        // Đồng bộ snapshotsData.archived nếu cùng project
+        if (Array.isArray(snapshotsData) && _archState.snapshots.length) {
+            const map = Object.fromEntries(_archState.snapshots.map(s => [s.date, !!s.archived]));
+            snapshotsData.forEach(s => { if (map[s.date] != null) s.archived = map[s.date]; });
+        }
+        _archFillForm();
+        _archRenderTable();
+    } catch (err) {
+        console.warn("[archive]", err);
+        const tbody = document.getElementById("archSnapshotTableBody");
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="px-2 py-3 text-center text-red-500">${escapeHtml(err.message)}</td></tr>`;
+    }
+}
+window._archRefresh = _archRefresh;
+
+function _archFillForm() {
+    const s = _archState.settings || {};
+    const chk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    chk("setArchEnabled", s.enabled !== false);
+    chk("setArchAutoStartup", s.auto_run_on_startup !== false);
+    set("setArchDays", s.archive_after_days != null ? s.archive_after_days : 90);
+    set("setArchPurgeDays", s.purge_after_days != null ? s.purge_after_days : 365);
+    const dl = document.getElementById("setArchDaysLabel");
+    const pl = document.getElementById("setArchPurgeLabel");
+    if (dl) dl.textContent = (s.archive_after_days === 0) ? "(never)" : (s.archive_after_days ?? 90);
+    if (pl) pl.textContent = (s.purge_after_days === 0) ? "(never)" : (s.purge_after_days ?? 365);
+    const diskEl = document.getElementById("archDiskInfo");
+    if (diskEl && _archState.disk) {
+        const d = _archState.disk;
+        diskEl.textContent = `Hot ${_archFmtBytes(d.hot_bytes)} · Archived ${_archFmtBytes(d.archived_bytes)} · Tổng ${_archFmtBytes(d.total_bytes)}`;
+    }
+}
+
+function _archRenderTable() {
+    const tbody = document.getElementById("archSnapshotTableBody");
+    if (!tbody) return;
+    const rows = _archState.snapshots || [];
+    if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="px-2 py-3 text-center text-gray-400">Chưa có snapshot</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = rows.map(s => {
+        const archived = !!s.archived;
+        const status = archived
+            ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 border">📦 Archived</span>`
+            : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 border border-orange-300">🔥 Hot</span>`;
+        const src = (s.source || "upload").startsWith("sync:")
+            ? `<span class="text-cyan-700">🔄 Sync</span>`
+            : `<span class="text-gray-600">📄 Upload</span>`;
+        const action = archived
+            ? `<button type="button" onclick="_archRestoreOne('${escapeAttr(s.date)}')"
+                       class="text-[10px] px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded">🔓 Rã đông</button>`
+            : `<button type="button" onclick="_archOne('${escapeAttr(s.date)}')"
+                       class="text-[10px] px-2 py-0.5 border rounded hover:bg-amber-50">📦 Archive</button>`;
+        return `<tr class="border-b ${archived ? "opacity-70 bg-slate-50" : "hover:bg-white"}">
+            <td class="px-2 py-1 font-mono">${escapeHtml(s.date)}</td>
+            <td class="px-2 py-1">${src}</td>
+            <td class="px-2 py-1">${status}</td>
+            <td class="px-2 py-1 text-right">${s.total_functions ?? "—"}</td>
+            <td class="px-2 py-1 text-right">${s.overall_pct ?? "—"}%</td>
+            <td class="px-2 py-1">${action}</td>
+        </tr>`;
+    }).join("");
+}
+
+async function _archSaveSettings() {
+    if (!currentProjectSlug) return;
+    const payload = {
+        enabled: !!document.getElementById("setArchEnabled")?.checked,
+        auto_run_on_startup: !!document.getElementById("setArchAutoStartup")?.checked,
+        archive_after_days: parseInt(document.getElementById("setArchDays")?.value || "90", 10),
+        purge_after_days: parseInt(document.getElementById("setArchPurgeDays")?.value || "365", 10),
+    };
+    try {
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/archive-settings`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        _archState.settings = data.settings || payload;
+        showToast("Đã lưu cấu hình Archive");
+    } catch (err) {
+        showToast("Lỗi lưu Archive: " + err.message, "red");
+    }
+}
+window._archSaveSettings = _archSaveSettings;
+
+async function _archRunNow() {
+    if (!currentProjectSlug) return;
+    const prog = document.getElementById("archRunProgress");
+    if (prog) {
+        prog.classList.remove("hidden");
+        prog.textContent = "⏳ Đang archive…";
+    }
+    // Lưu settings trước
+    await _archSaveSettings();
+    const days = parseInt(document.getElementById("setArchDays")?.value || "90", 10);
+    const purgeDays = parseInt(document.getElementById("setArchPurgeDays")?.value || "365", 10);
+    try {
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/archive-run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ days, purge: purgeDays > 0, purge_days: purgeDays }),
+        });
+        if (prog) {
+            prog.textContent = `✅ Đã archive ${data.archived_count || 0} snapshot` +
+                (data.purged_count ? `, purge ${data.purged_count}` : "") + ".";
+        }
+        showToast(`Archive xong: ${data.archived_count || 0} snapshot`);
+        await _archRefresh();
+    } catch (err) {
+        if (prog) prog.textContent = "❌ " + err.message;
+        showToast("Archive lỗi: " + err.message, "red");
+    }
+}
+window._archRunNow = _archRunNow;
+
+async function _archRestoreOne(snapId) {
+    if (!currentProjectSlug || !snapId) return;
+    try {
+        await apiJson(
+            `/api/projects/${currentProjectSlug}/snapshots/${encodeURIComponent(snapId)}/restore`,
+            { method: "POST" },
+        );
+        showToast(`Đã rã đông ${snapId}`);
+        await _archRefresh();
+    } catch (err) {
+        showToast("Rã đông lỗi: " + err.message, "red");
+    }
+}
+window._archRestoreOne = _archRestoreOne;
+
+async function _archOne(snapId) {
+    if (!currentProjectSlug || !snapId) return;
+    try {
+        await apiJson(
+            `/api/projects/${currentProjectSlug}/snapshots/${encodeURIComponent(snapId)}/archive`,
+            { method: "POST" },
+        );
+        showToast(`Đã archive ${snapId}`);
+        await _archRefresh();
+    } catch (err) {
+        showToast("Archive lỗi: " + err.message, "red");
+    }
+}
+window._archOne = _archOne;

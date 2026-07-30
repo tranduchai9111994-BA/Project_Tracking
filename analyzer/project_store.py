@@ -955,3 +955,60 @@ def delete_integration_mapping_preset(
         _write_json(_path(project_dir, _INTEG_MAPPING_PRESETS_FILE),
                     {"presets": all_presets})
     return deleted, presets
+
+# ------------------------------------------------------------------
+# T-AA — Archive settings (per-project)
+# File: archive_settings.json
+# ------------------------------------------------------------------
+
+DEFAULT_ARCHIVE_SETTINGS = {
+    "enabled": True,
+    "archive_after_days": 90,      # 0 = never auto-archive
+    "auto_run_on_startup": True,
+    "purge_after_days": 365,       # 0 = never purge
+}
+
+_ARCHIVE_SETTINGS_FILE = "archive_settings.json"
+
+
+def load_archive_settings(project_dir: str) -> dict[str, Any]:
+    """Load archive settings với default hợp lý."""
+    data = _read_json(_path(project_dir, _ARCHIVE_SETTINGS_FILE), {})
+    if not isinstance(data, dict):
+        data = {}
+    out = dict(DEFAULT_ARCHIVE_SETTINGS)
+    out.update(data)
+    out["enabled"] = bool(out.get("enabled", True))
+    out["auto_run_on_startup"] = bool(out.get("auto_run_on_startup", True))
+    try:
+        out["archive_after_days"] = max(0, min(3650, int(out.get("archive_after_days", 90))))
+    except (TypeError, ValueError):
+        out["archive_after_days"] = 90
+    try:
+        out["purge_after_days"] = max(0, min(3650, int(out.get("purge_after_days", 365))))
+    except (TypeError, ValueError):
+        out["purge_after_days"] = 365
+    return out
+
+
+def save_archive_settings(project_dir: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Merge + lưu archive settings. Return settings sau khi lưu."""
+    current = load_archive_settings(project_dir)
+    if not isinstance(payload, dict):
+        payload = {}
+    if "enabled" in payload:
+        current["enabled"] = bool(payload["enabled"])
+    if "auto_run_on_startup" in payload:
+        current["auto_run_on_startup"] = bool(payload["auto_run_on_startup"])
+    if "archive_after_days" in payload:
+        try:
+            current["archive_after_days"] = max(0, min(3650, int(payload["archive_after_days"])))
+        except (TypeError, ValueError):
+            pass
+    if "purge_after_days" in payload:
+        try:
+            current["purge_after_days"] = max(0, min(3650, int(payload["purge_after_days"])))
+        except (TypeError, ValueError):
+            pass
+    _write_json(_path(project_dir, _ARCHIVE_SETTINGS_FILE), current)
+    return current
