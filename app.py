@@ -1927,6 +1927,14 @@ def project_export_all_issues(slug: str):
     project = _project_mgr.get_project(slug)
     project_name = project.name if project else slug
 
+    # Ngôn ngữ export (sheet/header) — theo UI đang chọn
+    from analyzer.i18n import normalize_lang
+    lang_raw = request.args.get("lang")
+    if request.method == "POST":
+        _body = request.get_json(silent=True) or {}
+        lang_raw = _body.get("lang") or lang_raw
+    lang = normalize_lang(lang_raw)
+
     try:
         filepath = export_all_issues(
             project_name=project_name,
@@ -1945,6 +1953,7 @@ def project_export_all_issues(slug: str):
                 "project_codes": fproject_codes,
             },
             output_dir=_project_mgr.get_export_dir(slug),
+            lang=lang,
         )
         return send_file(filepath, as_attachment=True,
                          download_name=os.path.basename(filepath))

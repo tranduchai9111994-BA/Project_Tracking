@@ -158,21 +158,38 @@ class TestWorkbookShape:
 
     def test_sheet_names_and_order(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
+        # Default lang=vi → tên sheet tiếng Việt (U26)
         expected = [
-            "Cover", "Overdue", "Chua_Co_PIC", "Dinh_Tre",
-            "High_Risk", "Aging_WIP", "Data_Quality", "Bookmark",
+            "Tong_quan", "Tre_han", "Chua_PIC", "Dinh_tre",
+            "Rui_ro_cao", "Aging_WIP", "Chat_luong_DL", "Bookmark",
         ]
         assert wb.sheetnames == expected
 
+    def test_sheet_names_en(self, tmp_path):
+        path = export_all_issues(
+            project_name="EN",
+            slug="en",
+            overdue_list=[], unassigned_list=[], stalled_list=[],
+            risk_list=[], aging_wip_items=[], data_quality_issues=[],
+            bookmark_functions=[],
+            output_dir=str(tmp_path),
+            lang="en",
+        )
+        wb = openpyxl.load_workbook(path)
+        assert wb.sheetnames == [
+            "Cover", "Overdue", "Unassigned", "Stalled",
+            "High_Risk", "Aging_WIP", "Data_Quality", "Bookmark",
+        ]
+
     def test_cover_has_project_name(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
-        ws = wb["Cover"]
+        ws = wb["Tong_quan"]
         # Row 1 = banner với project name
         assert "Test Project" in str(ws["A1"].value)
 
     def test_cover_shows_filter_modules(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
-        ws = wb["Cover"]
+        ws = wb["Tong_quan"]
         # Scan cả sheet Cover tìm "HR, PR"
         found = False
         for row in ws.iter_rows(min_row=1, max_row=20, max_col=4, values_only=True):
@@ -184,19 +201,19 @@ class TestWorkbookShape:
 
     def test_cover_has_hyperlinks_to_sheets(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
-        ws = wb["Cover"]
-        # Tìm ít nhất 1 hyperlink trỏ đến Overdue
+        ws = wb["Tong_quan"]
+        # Tìm ít nhất 1 hyperlink trỏ đến Tre_han
         found_overdue_link = False
         for row in ws.iter_rows(min_row=1, max_row=50):
             for cell in row:
-                if cell.hyperlink and "Overdue" in str(cell.hyperlink.location or ""):
+                if cell.hyperlink and "Tre_han" in str(cell.hyperlink.location or ""):
                     found_overdue_link = True
                     break
         assert found_overdue_link
 
     def test_overdue_dedup_by_ma_cn(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
-        ws = wb["Overdue"]
+        ws = wb["Tre_han"]
         # Row 1 = banner, Row 2 = header, Row 3+ = data
         # Data có 2 record của A.01 → chỉ còn 1 sau dedup
         data_rows = [row for row in ws.iter_rows(min_row=3, values_only=True) if row[0] is not None]
@@ -208,24 +225,24 @@ class TestWorkbookShape:
 
     def test_overdue_days_takes_max(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
-        ws = wb["Overdue"]
+        ws = wb["Tre_han"]
         data_rows = [row for row in ws.iter_rows(min_row=3, values_only=True) if row[0] is not None]
         # Cột 6 = "Số ngày trễ (max)" — dedup nhận MAX(15, 5) = 15
         assert data_rows[0][6] == 15
 
     def test_all_sheets_have_banner_row_1(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
-        for name in ["Overdue", "Chua_Co_PIC", "Dinh_Tre", "High_Risk",
-                     "Aging_WIP", "Data_Quality", "Bookmark"]:
+        for name in ["Tre_han", "Chua_PIC", "Dinh_tre", "Rui_ro_cao",
+                     "Aging_WIP", "Chat_luong_DL", "Bookmark"]:
             ws = wb[name]
             # Row 1 phải là banner merged A1:...
             assert ws["A1"].value is not None
-            assert "Tổng" in str(ws["A1"].value)
+            assert "Tổng" in str(ws["A1"].value) or "Total" in str(ws["A1"].value)
 
     def test_all_sheets_freeze_row_3(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
-        for name in ["Overdue", "Chua_Co_PIC", "Dinh_Tre", "High_Risk",
-                     "Aging_WIP", "Data_Quality", "Bookmark"]:
+        for name in ["Tre_han", "Chua_PIC", "Dinh_tre", "Rui_ro_cao",
+                     "Aging_WIP", "Chat_luong_DL", "Bookmark"]:
             ws = wb[name]
             assert ws.freeze_panes == "A3"
 
@@ -247,7 +264,7 @@ class TestWorkbookShape:
             output_dir=str(tmp_path),
         )
         wb = openpyxl.load_workbook(path)
-        ws = wb["Overdue"]
+        ws = wb["Tre_han"]
         # Row 3 có message placeholder
         assert "Không có record" in str(ws["A3"].value or "")
 
@@ -287,7 +304,7 @@ class TestExportAllIssuesEndpoint:
         # Load workbook từ bytes → must not raise
         wb = openpyxl.load_workbook(io.BytesIO(r.data))
         assert len(wb.sheetnames) == 8
-        assert wb.sheetnames[0] == "Cover"
+        assert wb.sheetnames[0] == "Tong_quan"
 
     def test_global_filter_reduces_rows(self, flask_client, sample_xlsx_path):
         _upload(flask_client, sample_xlsx_path)
@@ -295,13 +312,13 @@ class TestExportAllIssuesEndpoint:
         # Fetch không filter
         r_all = flask_client.get("/api/projects/default/export-all-issues")
         wb_all = openpyxl.load_workbook(io.BytesIO(r_all.data))
-        overdue_all = [row for row in wb_all["Overdue"].iter_rows(
+        overdue_all = [row for row in wb_all["Tre_han"].iter_rows(
             min_row=3, values_only=True) if row[0] is not None]
 
         # Fetch với filter module=TMS (chỉ có TMS.FR.01/02 — chỉ .02 overdue)
         r_tms = flask_client.get("/api/projects/default/export-all-issues?g_module=TMS")
         wb_tms = openpyxl.load_workbook(io.BytesIO(r_tms.data))
-        overdue_tms = [row for row in wb_tms["Overdue"].iter_rows(
+        overdue_tms = [row for row in wb_tms["Tre_han"].iter_rows(
             min_row=3, values_only=True) if row[0] is not None]
 
         # Sample data: overdue có TMS.FR.02 + ESS.FR.10 → all >= tms + 1
@@ -320,7 +337,7 @@ class TestExportAllIssuesEndpoint:
         assert r.status_code == 200
         wb = openpyxl.load_workbook(io.BytesIO(r.data))
         # Cover sheet phải reflect filter TMS
-        ws = wb["Cover"]
+        ws = wb["Tong_quan"]
         found = False
         for row in ws.iter_rows(min_row=1, max_row=20, max_col=4, values_only=True):
             for cell in row:

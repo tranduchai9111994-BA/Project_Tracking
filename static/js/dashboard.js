@@ -11620,6 +11620,11 @@ function _fillSettingsForm(s) {
     chk("setDigestEnabled", dig.enabled);
     set("setDigestDay", String(dig.day_of_week ?? 0));
     set("setDigestHour", dig.hour ?? 9);
+    // Đồng bộ dropdown ngôn ngữ với localStorage
+    const langEl = document.getElementById("setUiLang");
+    if (langEl && window.I18n) langEl.value = I18n.getLang();
+    // U27 — retention (snapshot + history)
+    set("setRetention", s.max_snapshots ?? s.max_upload_history ?? 10);
     const last = document.getElementById("setDigestLast");
     if (last) {
         last.textContent = dig.last_generated_date
@@ -11650,6 +11655,9 @@ window.saveSettings = async function () {
             day_of_week: int0("setDigestDay", 0),
             hour: int0("setDigestHour", 9),
         },
+        // U27 — cùng 1 số cho snapshot + upload history
+        max_snapshots: int0("setRetention", 10),
+        max_upload_history: int0("setRetention", 10),
     };
     // Thu thập state của tab Hiển thị (bulk toggle ẩn/hiện section).
     const visMap = _collectVisibilityMap();

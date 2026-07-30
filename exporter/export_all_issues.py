@@ -42,6 +42,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
+from analyzer.i18n import normalize_lang, sheet_name as _sn, t as _t
+
 
 # ==========================================================================
 # STYLE — Palette theo spec (banner màu category)
@@ -104,12 +106,14 @@ def _fill_by_risk(score: int) -> Optional[PatternFill]:
 # Helper — banner + header + data + freeze
 # ==========================================================================
 
-def _write_banner(ws, title: str, count: int, category: str, n_cols: int) -> None:
+def _write_banner(
+    ws, title: str, count: int, category: str, n_cols: int, lang: str = "vi",
+) -> None:
     """Row 1: banner merge A1:<lastcol>1, fill màu category, text trắng đậm."""
     last = get_column_letter(n_cols)
     ws.merge_cells(f"A1:{last}1")
     c = ws["A1"]
-    c.value = f"{title}  —  Tổng: {count} record"
+    c.value = f"{title}  —  {_t('all_issues.total_records', lang, count=count)}"
     c.font = Font(name="Arial", bold=True, size=13, color="FFFFFF")
     c.alignment = Alignment(horizontal="center", vertical="center")
     c.fill = PatternFill(
@@ -234,6 +238,7 @@ def export_all_issues(
     bookmark_functions: list[dict],
     filter_info: Optional[dict] = None,
     output_dir: str = "uploads",
+    lang: str = "vi",
 ) -> str:
     """
     Xuất 1 workbook 8 sheet (Cover + 7 loại vấn đề).
@@ -245,52 +250,52 @@ def export_all_issues(
       filter_info: {"modules": [...], "processes": [...], "pics": [...]}
         — để render dòng "Filter đang áp dụng" ở cover.
       output_dir: thư mục output (mặc định uploads/).
+      lang: 'vi' | 'en' — tên sheet + banner theo ngôn ngữ UI.
 
     Returns:
       Path to Excel file.
     """
+    lang = normalize_lang(lang)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    # === Sheet 0: Cover ===
+    names = {
+        "cover": _sn("cover", lang),
+        "overdue": _sn("overdue", lang),
+        "unassigned": _sn("unassigned", lang),
+        "stalled": _sn("stalled", lang),
+        "high_risk": _sn("high_risk", lang),
+        "aging_wip": _sn("aging_wip", lang),
+        "data_quality": _sn("data_quality", lang),
+        "bookmark": _sn("bookmark", lang),
+    }
+
     _write_cover_sheet(
         wb,
         project_name=project_name,
         slug=slug,
         counts={
-            "Overdue":     len(_dedup_by_ma_cn(overdue_list)),
-            "Chua_Co_PIC": len(unassigned_list),
-            "Dinh_Tre":    len(stalled_list),
-            "High_Risk":   len(risk_list),
-            "Aging_WIP":   len(aging_wip_items),
-            "Data_Quality":len(data_quality_issues),
-            "Bookmark":    len(bookmark_functions),
+            names["overdue"]: len(_dedup_by_ma_cn(overdue_list)),
+            names["unassigned"]: len(unassigned_list),
+            names["stalled"]: len(stalled_list),
+            names["high_risk"]: len(risk_list),
+            names["aging_wip"]: len(aging_wip_items),
+            names["data_quality"]: len(data_quality_issues),
+            names["bookmark"]: len(bookmark_functions),
         },
         filter_info=filter_info or {},
+        lang=lang,
+        sheet_names=names,
     )
 
-    # === Sheet 1: Overdue (dedup theo Mã CN, phase merged) ===
-    _write_overdue_sheet(wb, _dedup_by_ma_cn(overdue_list))
+    _write_overdue_sheet(wb, _dedup_by_ma_cn(overdue_list), lang=lang, name=names["overdue"])
+    _write_unassigned_sheet(wb, unassigned_list, lang=lang, name=names["unassigned"])
+    _write_stalled_sheet(wb, stalled_list, lang=lang, name=names["stalled"])
+    _write_risk_sheet(wb, risk_list, lang=lang, name=names["high_risk"])
+    _write_aging_sheet(wb, aging_wip_items, lang=lang, name=names["aging_wip"])
+    _write_dq_sheet(wb, data_quality_issues, lang=lang, name=names["data_quality"])
+    _write_bookmark_sheet(wb, bookmark_functions, lang=lang, name=names["bookmark"])
 
-    # === Sheet 2: Chua_Co_PIC ===
-    _write_unassigned_sheet(wb, unassigned_list)
-
-    # === Sheet 3: Dinh_Tre ===
-    _write_stalled_sheet(wb, stalled_list)
-
-    # === Sheet 4: High_Risk ===
-    _write_risk_sheet(wb, risk_list)
-
-    # === Sheet 5: Aging_WIP ===
-    _write_aging_sheet(wb, aging_wip_items)
-
-    # === Sheet 6: Data_Quality ===
-    _write_dq_sheet(wb, data_quality_issues)
-
-    # === Sheet 7: Bookmark ===
-    _write_bookmark_sheet(wb, bookmark_functions)
-
-    # Set active = Cover
     wb.active = 0
 
     os.makedirs(output_dir, exist_ok=True)
@@ -308,56 +313,58 @@ def export_all_issues(
 
 def _write_cover_sheet(
     wb, *, project_name: str, slug: str, counts: dict[str, int], filter_info: dict,
+    lang: str = "vi", sheet_names: Optional[dict] = None,
 ) -> None:
     """Cover sheet: project name, filter info, timestamp, count mỗi loại với link."""
-    ws = wb.create_sheet("Cover")
+    sn = sheet_names or {}
+    cover = sn.get("cover") or _sn("cover", lang)
+    ws = wb.create_sheet(cover)
 
-    # Banner
     ws.merge_cells("A1:D1")
     c = ws["A1"]
-    c.value = f"📊 BÁO CÁO TỔNG HỢP VẤN ĐỀ — {project_name}"
+    c.value = f"📊 {_t('all_issues.title', lang)} — {project_name}"
     c.font = Font(name="Arial", bold=True, size=15, color="FFFFFF")
     c.alignment = Alignment(horizontal="center", vertical="center")
     c.fill = PatternFill(start_color=BANNER_COLORS["cover"],
                          end_color=BANNER_COLORS["cover"], fill_type="solid")
     ws.row_dimensions[1].height = 32
 
-    # Metadata block
+    all_label = "(all)" if lang == "en" else "(tất cả)"
     meta_rows = [
         ("Project", project_name),
         ("Slug", slug),
-        ("Ngày xuất", date.today().strftime("%d/%m/%Y")),
-        ("Tổng loại vấn đề", len(counts)),
+        (_t("all_issues.export_date", lang), date.today().strftime("%d/%m/%Y")),
     ]
-    # Filter info
-    modules = ", ".join(filter_info.get("modules") or []) or "(tất cả)"
-    processes = ", ".join(filter_info.get("processes") or []) or "(tất cả)"
-    pics = ", ".join(filter_info.get("pics") or []) or "(tất cả)"
+    modules = ", ".join(filter_info.get("modules") or []) or all_label
+    processes = ", ".join(filter_info.get("processes") or []) or all_label
+    pics = ", ".join(filter_info.get("pics") or []) or all_label
     meta_rows.extend([
-        ("Filter Module", modules),
-        ("Filter Quy trình", processes),
-        ("Filter PIC", pics),
+        (f"{_t('all_issues.filter', lang)} Module", modules),
+        (f"{_t('all_issues.filter', lang)} Process", processes),
+        (f"{_t('all_issues.filter', lang)} PIC", pics),
     ])
 
-    for idx, (label, value) in enumerate(meta_rows, start=3):
-        lc = ws.cell(row=idx, column=1, value=label)
+    for idx_r, (label, value) in enumerate(meta_rows, start=3):
+        lc = ws.cell(row=idx_r, column=1, value=label)
         lc.font = Font(name="Arial", bold=True, size=11)
         lc.alignment = Alignment(horizontal="left", vertical="center")
         lc.border = THIN_BORDER
-        vc = ws.cell(row=idx, column=2, value=str(value))
+        vc = ws.cell(row=idx_r, column=2, value=str(value))
         vc.font = Font(name="Arial", size=11)
         vc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         vc.border = THIN_BORDER
-        ws.merge_cells(start_row=idx, start_column=2, end_row=idx, end_column=4)
+        ws.merge_cells(start_row=idx_r, start_column=2, end_row=idx_r, end_column=4)
 
-    # Count table với link đến sheet — bắt đầu ở row 12
-    start = 3 + len(meta_rows) + 2  # thêm 2 dòng blank buffer
-    ws.cell(row=start - 1, column=1, value="📋 TỔNG HỢP THEO LOẠI VẤN ĐỀ").font = Font(
+    start = 3 + len(meta_rows) + 2
+    ws.cell(row=start - 1, column=1, value=_t("all_issues.title", lang)).font = Font(
         name="Arial", bold=True, size=12, color="1F4E79"
     )
     ws.merge_cells(start_row=start - 1, start_column=1, end_row=start - 1, end_column=4)
 
-    headers = ["Loại vấn đề", "Số record", "Sheet", "Link"]
+    headers = (
+        ["Issue type", "Count", "Sheet", "Link"] if lang == "en"
+        else ["Loại vấn đề", "Số record", "Sheet", "Link"]
+    )
     for i, h in enumerate(headers, 1):
         cell = ws.cell(row=start, column=i, value=h)
         cell.font = HEADER_FONT
@@ -365,18 +372,19 @@ def _write_cover_sheet(
         cell.alignment = HEADER_ALIGN
         cell.border = THIN_BORDER
 
+    open_lbl = "→ Open" if lang == "en" else "→ Mở sheet"
     display_map = [
-        ("🔴 Trễ deadline", "Overdue"),
-        ("🟠 Chưa có PIC", "Chua_Co_PIC"),
-        ("🟡 Đình trệ", "Dinh_Tre"),
-        ("🔺 High Risk (≥30)", "High_Risk"),
-        ("🟡 Aging WIP", "Aging_WIP"),
-        ("⚫ Data Quality", "Data_Quality"),
-        ("🟣 Bookmark", "Bookmark"),
+        (_t("all_issues.sheet.overdue", lang), sn.get("overdue") or _sn("overdue", lang)),
+        (_t("all_issues.sheet.unassigned", lang), sn.get("unassigned") or _sn("unassigned", lang)),
+        (_t("all_issues.sheet.stalled", lang), sn.get("stalled") or _sn("stalled", lang)),
+        (_t("all_issues.sheet.high_risk", lang), sn.get("high_risk") or _sn("high_risk", lang)),
+        (_t("all_issues.sheet.aging", lang), sn.get("aging_wip") or _sn("aging_wip", lang)),
+        (_t("all_issues.sheet.dq", lang), sn.get("data_quality") or _sn("data_quality", lang)),
+        (_t("all_issues.sheet.bookmark", lang), sn.get("bookmark") or _sn("bookmark", lang)),
     ]
-    for offset, (label, sheet_name) in enumerate(display_map):
+    for offset, (label, sheet) in enumerate(display_map):
         r = start + 1 + offset
-        cnt = counts.get(sheet_name, 0)
+        cnt = counts.get(sheet, 0)
 
         c1 = ws.cell(row=r, column=1, value=label)
         c1.font = BODY_FONT
@@ -389,51 +397,44 @@ def _write_cover_sheet(
         c2.alignment = Alignment(horizontal="right", vertical="center")
         c2.border = THIN_BORDER
 
-        c3 = ws.cell(row=r, column=3, value=sheet_name)
+        c3 = ws.cell(row=r, column=3, value=sheet)
         c3.font = BODY_FONT
         c3.alignment = BODY_ALIGN
         c3.border = THIN_BORDER
 
-        c4 = ws.cell(row=r, column=4, value="→ Mở sheet")
-        # Hyperlink nội bộ tới sheet
+        c4 = ws.cell(row=r, column=4, value=open_lbl)
         c4.hyperlink = Hyperlink(
             ref=f"D{r}",
-            location=f"'{sheet_name}'!A1",
-            display=f"→ Mở sheet {sheet_name}",
+            location=f"'{sheet}'!A1",
+            display=f"{open_lbl} {sheet}",
         )
         c4.font = Font(name="Arial", size=10, color="0563C1", underline="single")
         c4.alignment = BODY_ALIGN
         c4.border = THIN_BORDER
 
-    # Column width
     ws.column_dimensions["A"].width = 28
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 20
     ws.column_dimensions["D"].width = 28
 
-    # Footer help
-    footer_r = start + 1 + len(display_map) + 2
-    ws.merge_cells(start_row=footer_r, start_column=1, end_row=footer_r, end_column=4)
-    fc = ws.cell(row=footer_r, column=1)
-    fc.value = (
-        "💡 Ghi chú: 'Số record' đã áp dụng filter global hiện tại. "
-        "Sheet Overdue dedup theo Mã CN (phase merged). Các sheet khác giữ mọi record."
-    )
-    fc.font = Font(name="Arial", italic=True, size=9, color="666666")
-    fc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    ws.row_dimensions[footer_r].height = 32
 
-
-def _write_overdue_sheet(wb, items: list[dict]) -> None:
-    """Sheet Overdue dedup theo Mã CN."""
-    ws = wb.create_sheet("Overdue")
-    cols = [
-        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
-        ("Phase trễ (gộp)", 28), ("Deadline (max)", 13), ("Số ngày trễ (max)", 15),
-        ("Status", 13), ("PIC", 22), ("Priority", 12), ("Ghi chú", 30),
-    ]
-    _write_banner(ws, "🔴 TASK TRỄ DEADLINE (dedup theo Mã CN)",
-                  len(items), "overdue", len(cols))
+def _write_overdue_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") -> None:
+    ws = wb.create_sheet(name or _sn("overdue", lang))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
+            ("Overdue phases", 28), ("Deadline (max)", 13), ("Days late (max)", 15),
+            ("Status", 13), ("PIC", 22), ("Priority", 12), ("Note", 30),
+        ]
+        title = "🔴 OVERDUE TASKS (dedup by Code)"
+    else:
+        cols = [
+            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
+            ("Phase trễ (gộp)", 28), ("Deadline (max)", 13), ("Số ngày trễ (max)", 15),
+            ("Status", 13), ("PIC", 22), ("Priority", 12), ("Ghi chú", 30),
+        ]
+        title = "🔴 TASK TRỄ DEADLINE (dedup theo Mã CN)"
+    _write_banner(ws, title, len(items), "overdue", len(cols), lang=lang)
     _write_header(ws, cols)
 
     rows = []
@@ -454,15 +455,23 @@ def _write_overdue_sheet(wb, items: list[dict]) -> None:
     _finalize_sheet(ws, len(rows), len(cols))
 
 
-def _write_unassigned_sheet(wb, items: list[dict]) -> None:
-    ws = wb.create_sheet("Chua_Co_PIC")
-    cols = [
-        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
-        ("Phase", 16), ("Status", 16), ("Priority", 12), ("Complexity", 12),
-        ("Deadline", 13), ("Trễ (ngày)", 12),
-    ]
-    _write_banner(ws, "🟠 TASK CHƯA CÓ PIC PHỤ TRÁCH",
-                  len(items), "unassigned", len(cols))
+def _write_unassigned_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") -> None:
+    ws = wb.create_sheet(name or _sn("unassigned", lang))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
+            ("Phase", 16), ("Status", 16), ("Priority", 12), ("Complexity", 12),
+            ("Deadline", 13), ("Days late", 12),
+        ]
+        title = "🟠 UNASSIGNED TASKS"
+    else:
+        cols = [
+            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
+            ("Phase", 16), ("Status", 16), ("Priority", 12), ("Complexity", 12),
+            ("Deadline", 13), ("Trễ (ngày)", 12),
+        ]
+        title = "🟠 TASK CHƯA CÓ PIC PHỤ TRÁCH"
+    _write_banner(ws, title, len(items), "unassigned", len(cols), lang=lang)
     _write_header(ws, cols)
 
     rows = []
@@ -487,15 +496,23 @@ def _write_unassigned_sheet(wb, items: list[dict]) -> None:
     _finalize_sheet(ws, len(rows), len(cols))
 
 
-def _write_stalled_sheet(wb, items: list[dict]) -> None:
-    ws = wb.create_sheet("Dinh_Tre")
-    cols = [
-        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
-        ("Phase đã xong", 18), ("Phase chờ", 18),
-        ("Xong ngày", 13), ("Số ngày chờ", 12), ("Priority", 12),
-    ]
-    _write_banner(ws, "🟡 TASK ĐÌNH TRỆ (KẸT GIỮA 2 PHASE)",
-                  len(items), "stalled", len(cols))
+def _write_stalled_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") -> None:
+    ws = wb.create_sheet(name or _sn("stalled", lang))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
+            ("Completed phase", 18), ("Waiting phase", 18),
+            ("Completed on", 13), ("Wait days", 12), ("Priority", 12),
+        ]
+        title = "🟡 STALLED TASKS (BETWEEN PHASES)"
+    else:
+        cols = [
+            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
+            ("Phase đã xong", 18), ("Phase chờ", 18),
+            ("Xong ngày", 13), ("Số ngày chờ", 12), ("Priority", 12),
+        ]
+        title = "🟡 TASK ĐÌNH TRỆ (KẸT GIỮA 2 PHASE)"
+    _write_banner(ws, title, len(items), "stalled", len(cols), lang=lang)
     _write_header(ws, cols)
 
     rows = []
@@ -515,15 +532,23 @@ def _write_stalled_sheet(wb, items: list[dict]) -> None:
     _finalize_sheet(ws, len(rows), len(cols))
 
 
-def _write_risk_sheet(wb, items: list[dict]) -> None:
-    ws = wb.create_sheet("High_Risk")
-    cols = [
-        ("STT", 6), ("Risk Score", 12), ("Mã CN", 14),
-        ("Tên chức năng", 40), ("Module", 12),
-        ("Priority", 12), ("Complexity", 12), ("Risk Factors", 50),
-    ]
-    _write_banner(ws, "🔺 FUNCTION CÓ ĐIỂM RỦI RO CAO (≥30)",
-                  len(items), "high_risk", len(cols))
+def _write_risk_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") -> None:
+    ws = wb.create_sheet(name or _sn("high_risk", lang))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Risk Score", 12), ("Code", 14),
+            ("Function Name", 40), ("Module", 12),
+            ("Priority", 12), ("Complexity", 12), ("Risk Factors", 50),
+        ]
+        title = "🔺 HIGH RISK FUNCTIONS (≥30)"
+    else:
+        cols = [
+            ("STT", 6), ("Risk Score", 12), ("Mã CN", 14),
+            ("Tên chức năng", 40), ("Module", 12),
+            ("Priority", 12), ("Complexity", 12), ("Risk Factors", 50),
+        ]
+        title = "🔺 FUNCTION CÓ ĐIỂM RỦI RO CAO (≥30)"
+    _write_banner(ws, title, len(items), "high_risk", len(cols), lang=lang)
     _write_header(ws, cols)
 
     rows = []
@@ -542,17 +567,27 @@ def _write_risk_sheet(wb, items: list[dict]) -> None:
     _finalize_sheet(ws, len(rows), len(cols))
 
 
-def _write_aging_sheet(wb, items: list[dict]) -> None:
-    ws = wb.create_sheet("Aging_WIP")
-    cols = [
-        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
-        ("Quy trình", 20), ("Phase", 16), ("Status", 13),
-        ("Start", 13), ("End (plan)", 13), ("PIC", 22),
-        ("Aging (ngày)", 12), ("Over by (ngày)", 12),
-        ("Priority", 12), ("Complexity", 12),
-    ]
-    _write_banner(ws, "🟡 TASK AGING WIP (In-progress quá lâu)",
-                  len(items), "aging", len(cols))
+def _write_aging_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") -> None:
+    ws = wb.create_sheet(name or _sn("aging_wip", lang))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
+            ("Process", 20), ("Phase", 16), ("Status", 13),
+            ("Start", 13), ("End (plan)", 13), ("PIC", 22),
+            ("Aging (days)", 12), ("Over by (days)", 12),
+            ("Priority", 12), ("Complexity", 12),
+        ]
+        title = "🟡 AGING WIP (In-progress too long)"
+    else:
+        cols = [
+            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
+            ("Quy trình", 20), ("Phase", 16), ("Status", 13),
+            ("Start", 13), ("End (plan)", 13), ("PIC", 22),
+            ("Aging (ngày)", 12), ("Over by (ngày)", 12),
+            ("Priority", 12), ("Complexity", 12),
+        ]
+        title = "🟡 TASK AGING WIP (In-progress quá lâu)"
+    _write_banner(ws, title, len(items), "aging", len(cols), lang=lang)
     _write_header(ws, cols)
 
     rows = []
@@ -574,15 +609,23 @@ def _write_aging_sheet(wb, items: list[dict]) -> None:
     _finalize_sheet(ws, len(rows), len(cols))
 
 
-def _write_dq_sheet(wb, items: list[dict]) -> None:
-    ws = wb.create_sheet("Data_Quality")
-    cols = [
-        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 32), ("Module", 12),
-        ("Phase", 14), ("Mã lỗi", 22), ("Mức", 8),
-        ("Mô tả", 40), ("Chi tiết", 40), ("Gợi ý", 30),
-    ]
-    _write_banner(ws, "⚫ DATA QUALITY — LỖI DỮ LIỆU",
-                  len(items), "data_quality", len(cols))
+def _write_dq_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") -> None:
+    ws = wb.create_sheet(name or _sn("data_quality", lang))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Code", 14), ("Function Name", 32), ("Module", 12),
+            ("Phase", 14), ("Issue code", 22), ("Severity", 8),
+            ("Label", 40), ("Detail", 40), ("Suggestion", 30),
+        ]
+        title = "⚫ DATA QUALITY ISSUES"
+    else:
+        cols = [
+            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 32), ("Module", 12),
+            ("Phase", 14), ("Mã lỗi", 22), ("Mức", 8),
+            ("Mô tả", 40), ("Chi tiết", 40), ("Gợi ý", 30),
+        ]
+        title = "⚫ DATA QUALITY — LỖI DỮ LIỆU"
+    _write_banner(ws, title, len(items), "data_quality", len(cols), lang=lang)
     _write_header(ws, cols)
 
     rows = []
@@ -608,15 +651,23 @@ def _write_dq_sheet(wb, items: list[dict]) -> None:
     _finalize_sheet(ws, len(rows), len(cols))
 
 
-def _write_bookmark_sheet(wb, items: list[dict]) -> None:
-    ws = wb.create_sheet("Bookmark")
-    cols = [
-        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
-        ("Quy trình", 20), ("Priority", 12), ("Complexity", 12),
-        ("Giai đoạn", 16), ("FIT/GAP", 10),
-    ]
-    _write_banner(ws, "🟣 FUNCTION ĐÃ BOOKMARK",
-                  len(items), "bookmark", len(cols))
+def _write_bookmark_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") -> None:
+    ws = wb.create_sheet(name or _sn("bookmark", lang))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
+            ("Process", 20), ("Priority", 12), ("Complexity", 12),
+            ("Phase group", 16), ("FIT/GAP", 10),
+        ]
+        title = "🟣 BOOKMARKED FUNCTIONS"
+    else:
+        cols = [
+            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
+            ("Quy trình", 20), ("Priority", 12), ("Complexity", 12),
+            ("Giai đoạn", 16), ("FIT/GAP", 10),
+        ]
+        title = "🟣 FUNCTION ĐÃ BOOKMARK"
+    _write_banner(ws, title, len(items), "bookmark", len(cols), lang=lang)
     _write_header(ws, cols)
 
     rows = []
