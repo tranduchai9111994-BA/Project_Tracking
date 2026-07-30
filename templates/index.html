@@ -412,6 +412,42 @@
     </div>
 </div>
 
+<!-- ============ SYNC PROGRESS MODAL (feedback khi bấm Đồng bộ) ============ -->
+<div id="syncProgressModal"
+     class="fixed inset-0 bg-black/50 z-[60] hidden items-center justify-center p-4 no-print"
+     onclick="if(event.target===this && _syncModalCanClose) closeSyncProgressModal()">
+    <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div id="syncProgressHeader" class="px-6 py-4 border-b dark:border-slate-700 bg-gradient-to-r from-cyan-500 to-blue-600 text-white">
+            <div class="flex items-center gap-3">
+                <div id="syncProgressIcon" class="text-3xl animate-pulse">🔄</div>
+                <div class="flex-1">
+                    <div id="syncProgressTitle" class="text-base font-bold">Đang đồng bộ dữ liệu…</div>
+                    <div id="syncProgressSubtitle" class="text-xs opacity-90">Vui lòng đợi trong giây lát</div>
+                </div>
+            </div>
+        </div>
+        <div class="p-6 space-y-4">
+            <div class="w-full bg-gray-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
+                <div id="syncProgressBar" class="h-full bg-gradient-to-r from-cyan-400 to-blue-600 transition-all duration-300" style="width:0%"></div>
+            </div>
+            <ul id="syncProgressSteps" class="space-y-2 text-sm">
+                <li data-step="connect"  class="flex items-center gap-2 text-gray-400"><span class="w-5 text-center">○</span> <span>Kết nối server nguồn</span></li>
+                <li data-step="auth"     class="flex items-center gap-2 text-gray-400"><span class="w-5 text-center">○</span> <span>Xác thực (API key)</span></li>
+                <li data-step="fetch"    class="flex items-center gap-2 text-gray-400"><span class="w-5 text-center">○</span> <span>Tải dữ liệu về</span></li>
+                <li data-step="parse"    class="flex items-center gap-2 text-gray-400"><span class="w-5 text-center">○</span> <span>Chuẩn hóa &amp; parse function list</span></li>
+                <li data-step="snapshot" class="flex items-center gap-2 text-gray-400"><span class="w-5 text-center">○</span> <span>Tạo snapshot &amp; cập nhật dashboard</span></li>
+            </ul>
+            <div id="syncProgressResult" class="hidden rounded-lg p-3 text-sm"></div>
+            <div id="syncProgressFooter" class="hidden flex items-center justify-end gap-2">
+                <button type="button" onclick="closeSyncProgressModal()"
+                        class="bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-1.5 rounded font-semibold text-sm">
+                    Đóng
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- ============ DRILL-DOWN MODAL (mở rộng tối đa + filter bar) ============ -->
 <div id="drillDownModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-2 no-print" onclick="if(event.target===this)closeDrillDown()">
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-[98vw] h-[96vh] flex flex-col">
@@ -1670,18 +1706,48 @@
                             ✖ Xoá tất cả
                         </button>
                         <span class="text-gray-500">Ô có background xanh nhạt = auto-suggest score cao. Ô xám = chưa map.</span>
+                        <label class="ml-auto flex items-center gap-1 text-[11px]" title="Bỏ filter kiểu — hiện tất cả header trong dropdown">
+                            <input type="checkbox" onchange="_ucmToggleShowIncompatible(this)" class="rounded">
+                            Hiện tất cả (bỏ filter kiểu)
+                        </label>
                     </div>
                     <div class="overflow-x-auto">
                         <table class="w-full text-xs">
                             <thead class="bg-slate-100 dark:bg-slate-700">
                                 <tr>
-                                    <th class="px-2 py-1.5 text-left w-1/3">Cột iHRP chuẩn</th>
-                                    <th class="px-2 py-1.5 text-left">Header trong file</th>
-                                    <th class="px-2 py-1.5 text-center w-24">Score</th>
+                                    <th class="px-2 py-1.5 text-left w-1/4">Cột iHRP chuẩn</th>
+                                    <th class="px-2 py-1.5 text-left">Header trong file (+ sample)</th>
+                                    <th class="px-2 py-1.5 text-center w-28">Kiểu suy đoán</th>
+                                    <th class="px-2 py-1.5 text-center w-20">Score</th>
                                 </tr>
                             </thead>
                             <tbody id="ucmMappingTbody"></tbody>
                         </table>
+                    </div>
+                </fieldset>
+
+                <!-- T34 Task 3E — Dry-run preview area -->
+                <fieldset class="border rounded-lg p-3 dark:border-slate-700" id="ucmDryRunPanel">
+                    <legend class="px-2 text-sm font-semibold text-gray-700 dark:text-gray-200">🔍 4. Test parse với mapping (dry-run 5 record)</legend>
+                    <div class="flex flex-wrap gap-2 items-center mb-2 text-xs">
+                        <button onclick="_ucmRunDryRun()" type="button"
+                                class="bg-amber-100 hover:bg-amber-200 dark:bg-amber-900 text-amber-800 dark:text-amber-200 px-3 py-1.5 rounded font-semibold">
+                            🔍 Test parse 5 record đầu
+                        </button>
+                        <span class="text-gray-500">Chạy parser thử để xem output iHRP có đúng không TRƯỚC KHI xác nhận.</span>
+                    </div>
+                    <div id="ucmDryRunResult" class="hidden">
+                        <div id="ucmDryRunSummary" class="text-xs mb-2"></div>
+                        <div id="ucmDryRunErrors" class="text-xs mb-2"></div>
+                        <div id="ucmDryRunWarnings" class="text-xs mb-2"></div>
+                        <div class="overflow-x-auto max-h-72 border rounded">
+                            <table class="w-full text-[11px]" id="ucmDryRunTable">
+                                <thead class="bg-slate-100 dark:bg-slate-700 sticky top-0">
+                                    <tr id="ucmDryRunThead"></tr>
+                                </thead>
+                                <tbody id="ucmDryRunTbody"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </fieldset>
             </div>

@@ -595,9 +595,135 @@ Không execute query của bất kỳ endpoint nào (dùng `/sync` cho việc đ
 
 ---
 
-## 8. Roadmap (còn lại chưa support)
+## 🆕 8. Smart mapping features (T34 — Task 3)
+
+Column Mapping Wizard (Excel upload) + Field Mapping panel (JSON API) đều
+được nâng cấp với 4 cơ chế smart, không cần LLM.
+
+### 8.1. Sample value preview (A)
+
+Mỗi header trong Wizard/Panel hiển thị 3 giá trị mẫu từ 3 record đầu tiên
+của file/response, format italic monospace. Giúp user quyết định nhanh mà
+không phải mở file gốc ra check.
+
+**Backend**:
+- `POST /api/upload-preview` — response thêm field `column_types`:
+  ```json
+  {
+    "column_types": {
+      "Analysis - Start": {
+        "type": "date_iso",
+        "badge": {"label": "date", "icon": "📅", "color": "blue"},
+        "samples": ["2026-05-01", "2026-06-15", "2026-07-30"]
+      },
+      "PIC": {
+        "type": "pic_list",
+        "badge": {"label": "PIC", "icon": "👥", "color": "orange"},
+        "samples": ["Alice, Bob", "Cai; Dee", "Eve"]
+      }
+    }
+  }
+  ```
+- `POST /api/projects/<slug>/integrations/<id>/preview-json` — response
+  thêm `field_types` với cùng structure (per JSON path).
+
+### 8.2. Type inference (B)
+
+`analyzer/type_infer.py::infer_type(samples) → str` phát hiện 9 loại:
+
+| Type | Pattern nhận dạng | Icon |
+|------|--------------------|------|
+| `date_iso` | `2026-07-30`, `2026/01/15`, datetime object | 📅 |
+| `date_dmy` | `30/07/2026`, `15-01-26` | 📅 |
+| `date_excel_serial` | Float 30000–80000 (Excel epoch) | 📅 |
+| `integer` | `42`, `-100` | 🔢 |
+| `decimal` | `3.14`, `100,5` | 🔢 |
+| `pic_list` | Multi-token separator `,;\n+` | 👥 |
+| `status_enum` | Open/Assigned/In-progress/Closed/Pending/Cancelled | 🏷 |
+| `boolean` | TRUE/FALSE/YES/NO/1/0/có/không | ✓ |
+| `string` | Fallback | 📝 |
+
+Logic voting: all same → return; majority ≥ 60% → return top; mix hoàn
+toàn → `string` (safe fallback).
+
+`compatible_ihrp_cols(type)` map type → list iHRP cols expected:
+- date → `Analysis-Start`, `Analysis-End`, `Dev-Start`, ..., `Last Updated Date`
+- pic_list → `Analysis-PIC`, `Dev-PIC`, ..., `Golive-PIC`
+- status_enum → `Analysis-Status`, ..., `Golive-Status`
+- integer/decimal → `Analysis-Estimate MH`, ..., `Priority`, `Giai đoạn`
+- string → mọi iHRP col (không restrict)
+
+**UI**: dropdown "Header trong file" **chỉ hiển thị header có type tương
+thích** với iHRP col. VD map "Analysis - Start" → dropdown chỉ hiện các
+header có type = date. Muốn bypass → checkbox "Hiện tất cả (bỏ filter kiểu)".
+
+### 8.3. Multi preset per source (C)
+
+- **Excel presets (đã có ở T32)**: `.project_store/<slug>/excel_mapping_presets.json`.
+  Cap 30/project, sort desc theo `updated_at`.
+- **JSON API presets (mới)**: `.project_store/<slug>/integrations_mapping_presets.json`
+  schema `{presets: {integration_id: [preset]}}`. Preset per integration
+  (mỗi integration có nhiều endpoint với shape khác nhau).
+
+CRUD endpoints:
+```
+GET    /api/projects/<slug>/integrations/<id>/mapping-presets
+POST   /api/projects/<slug>/integrations/<id>/mapping-presets  → body {name, mapping}
+DELETE /api/projects/<slug>/integrations/<id>/mapping-presets/<name>
+```
+
+Với JSON API panel — dropdown "Load preset" + nút "Lưu preset" + "Xoá preset"
+tương tự Excel wizard.
+
+### 8.4. Validation dry-run (E)
+
+`POST /api/validate-mapping` — chạy `FunctionListParser` trên 5 record
+đầu với mapping user chọn, KHÔNG lưu vào state.
+
+**Body**:
+```json
+{
+  "tmp_id": "<uuid từ upload-preview>",
+  "column_mapping": {"Mã CN": "Function Code", ...},
+  "n_rows": 5
+}
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "rows": [
+    {"row_num": 2, "ma_cn": "FN.01", "ten_cn": "Login", "module": "HR",
+     "priority": "Must-have", "phases": {
+       "Analysis": {"start_date": "2026-01-01", "status": "Closed",
+                    "pic": ["Alice"], "estimate_mh": 8}
+     }}, ...
+  ],
+  "errors": [
+    {"row_idx": 3, "col": "Dev - Start", "msg": "Không parse được 'invalid' làm ngày"}
+  ],
+  "warnings": [
+    "Cột iHRP 'Golive - PIC' map đến header 'Non-Existent' không có trong file."
+  ],
+  "row_count_scanned": 5
+}
+```
+
+**UI**: nút 🔍 "Test parse 5 record đầu" ở cuối wizard → hiện bảng preview
+5 dòng data iHRP (Mã CN, Tên CN, Module, phase status) + list errors +
+warnings. Row có error → highlight nền đỏ nhạt + tooltip.
+
+Detect error: nếu cell raw non-empty nhưng iHRP expect date và không parse
+được → error với message "Không parse được '<value truncated>' làm ngày".
+
+---
+
+## 9. Roadmap (còn lại chưa support)
 
 - `response_type = csv` — Parse CSV (reserve, priority thấp).
+- Smart mapping "auto-apply preset" — hiện tại user phải chọn preset thủ
+  công. Có thể auto-detect preset khớp dựa fingerprint headers file.
 - OAuth 2.0 flow đầy đủ (authorize/refresh) — chưa có kế hoạch. Bearer PAT tĩnh
   đã đủ cho case nội bộ.
 - MFA — chưa có kế hoạch (blocker: cần user tương tác OTP).

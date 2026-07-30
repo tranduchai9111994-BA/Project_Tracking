@@ -716,6 +716,10 @@ def upload_preview():
 
     suggestion = cm_mod.suggest_mapping(headers, cm_mod.IHRP_STANDARD_COLUMNS)
 
+    # T34 Task 3 (A+B) — Sample preview + type inference cho mỗi header
+    from analyzer.type_infer import infer_all_headers
+    column_types = infer_all_headers(headers, preview)
+
     # Nếu FE có gửi project_slug trong query → trả kèm list preset đã lưu
     presets: list[dict] = []
     slug = (request.args.get("project_slug") or "").strip()
@@ -732,6 +736,7 @@ def upload_preview():
         "preview_rows": preview,
         "ihrp_columns": cm_mod.IHRP_STANDARD_COLUMNS,
         "auto_suggest": suggestion,
+        "column_types": column_types,  # T34 Task 3 (A+B): {header: {type, badge, samples}}
         "presets": presets,
     })
 
@@ -859,6 +864,137 @@ def project_mapping_preset_delete(slug: str, name: str):
     if not deleted:
         return jsonify({"error": "Không tìm thấy preset"}), 404
     return jsonify({"success": True, "presets": presets})
+
+
+# ==========================================================================
+# T34 Task 3E — Validate mapping dry-run (test parse 5 row đầu)
+# ==========================================================================
+
+@app.route("/api/validate-mapping", methods=["POST"])
+def validate_mapping():
+    """
+    Chạy parser dry-run trên tmp file với mapping user chọn → trả preview
+    5 record + errors/warnings để user check trước khi confirm.
+
+    Body JSON:
+      {
+        "tmp_id": "<uuid từ upload-preview>",
+        "column_mapping": {"Mã CN": "Function Code", ...},
+        "n_rows": 5    // optional, default 5, max 20
+      }
+
+    Response:
+      {
+        "success": true,
+        "rows": [{ma_cn, ten_cn, phases: {...}}, ...],
+        "errors": [{row_idx, col, msg}, ...],
+        "warnings": ["...", ...],
+        "row_count_scanned": N
+      }
+    """
+    from analyzer.type_infer import validate_mapping_dry_run
+    from parser import column_mapping as cm_mod
+
+    body = request.get_json(silent=True) or {}
+    tmp_id = str(body.get("tmp_id") or "").strip()
+    mapping = cm_mod.sanitize_column_mapping(body.get("column_mapping") or {})
+    n_rows = int(body.get("n_rows") or 5)
+    n_rows = max(1, min(n_rows, 20))
+
+    if not tmp_id:
+        return jsonify({"error": "Thiếu 'tmp_id'"}), 400
+    if not all(c in "abcdef0123456789" for c in tmp_id.lower()):
+        return jsonify({"error": "tmp_id không hợp lệ"}), 400
+
+    tmp_path = os.path.join(_TMP_UPLOAD_DIR, f"{tmp_id}.xlsx")
+    if not os.path.isfile(tmp_path):
+        return jsonify({
+            "error": "tmp_id không tồn tại hoặc đã hết hạn (24h)"
+        }), 404
+
+    result = validate_mapping_dry_run(tmp_path, mapping, n_rows=n_rows)
+    return jsonify(result)
+
+
+# ==========================================================================
+# T34 Task 3C — Integration mapping preset CRUD (JSON API preset per integ)
+# ==========================================================================
+
+@app.route(
+    "/api/projects/<slug>/integrations/<integration_id>/mapping-presets",
+    methods=["GET", "POST"],
+)
+def integration_mapping_presets(slug: str, integration_id: str):
+    """
+    GET → list preset của integration_id.
+    POST → save preset {name, mapping}.
+    """
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+
+    if request.method == "GET":
+        return jsonify({
+            "presets": ps.list_integration_mapping_presets(folder, integration_id),
+        })
+
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    mapping = body.get("mapping") or {}
+    if not name:
+        return jsonify({"error": "Thiếu 'name'"}), 400
+    if not isinstance(mapping, dict):
+        return jsonify({"error": "'mapping' phải là object"}), 400
+    try:
+        presets = ps.save_integration_mapping_preset(folder, integration_id, name, mapping)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"presets": presets}), 201
+
+
+@app.route(
+    "/api/projects/<slug>/integrations/<integration_id>/mapping-presets/<name>",
+    methods=["DELETE"],
+)
+def integration_mapping_preset_delete(slug: str, integration_id: str, name: str):
+    """Xoá 1 preset của integration."""
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    deleted, presets = ps.delete_integration_mapping_preset(folder, integration_id, name)
+    if not deleted:
+        return jsonify({"error": "Không tìm thấy preset"}), 404
+    return jsonify({"success": True, "presets": presets})
+
+
+def _flatten_records_for_preview(records: list) -> list[dict]:
+    """
+    Flatten list of dict (chỉ 1 level nested — nếu value là dict → prefix
+    dot). Value list/scalar → giữ nguyên.
+
+    Ví dụ:
+      [{"code": "A", "meta": {"module": "HR"}}]
+      → [{"code": "A", "meta.module": "HR"}]
+
+    Không dùng recursive để tránh explode với json phức tạp.
+    """
+    if not isinstance(records, list):
+        return []
+    out: list[dict] = []
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        flat: dict = {}
+        for k, v in r.items():
+            if isinstance(v, dict):
+                for k2, v2 in v.items():
+                    flat[f"{k}.{k2}"] = v2
+            else:
+                flat[k] = v
+        out.append(flat)
+    return out
 
 
 def _parse_multi_arg(name: str) -> list[str]:
@@ -2556,10 +2692,14 @@ def project_integration_preview_json(slug: str, integration_id: str):
     """
     Preview 1 endpoint JSON để FE auto-suggest field_mapping.
     Body: {"endpoint_id": "..."}.
-    Trả: {status, sample_records, flat_keys, record_count}.
+    Trả: {status, sample_records, flat_keys, record_count, field_types}.
     Không tạo snapshot, không thay đổi state.
+
+    T34 Task 3A — Thêm `field_types` với sample values + type inference cho
+    mỗi JSON path để UI Field Mapping panel hiển thị badge.
     """
     from analyzer import integrations as integ_mod
+    from analyzer.type_infer import infer_all_headers
     if not _project_mgr.project_exists(slug):
         return jsonify({"error": "Project không tồn tại"}), 404
     body = request.get_json(silent=True) or {}
@@ -2572,6 +2712,22 @@ def project_integration_preview_json(slug: str, integration_id: str):
         integration_id=integration_id,
         endpoint_id=endpoint_id,
     )
+
+    # T34 Task 3A+B — Sinh field_types dùng type inference nếu có sample_records
+    samples = result.get("sample_records") or []
+    if samples:
+        all_fields = sorted({k for r in _flatten_records_for_preview(samples)
+                              for k in r.keys()})
+        flat_samples = _flatten_records_for_preview(samples)
+        fake_headers = all_fields
+        fake_preview = [
+            [r.get(field, None) for field in all_fields]
+            for r in flat_samples
+        ]
+        result["field_types"] = infer_all_headers(fake_headers, fake_preview)
+    else:
+        result["field_types"] = {}
+
     return jsonify(result)
 
 

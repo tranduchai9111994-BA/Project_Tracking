@@ -820,3 +820,121 @@ def delete_mapping_preset(project_dir: str, name: str) -> tuple[bool, list[dict]
     if deleted:
         _write_json(_path(project_dir, _MAPPING_PRESETS_FILE), {"presets": presets})
     return deleted, presets
+
+
+# ------------------------------------------------------------------
+# T34 Task 3C — JSON API integration mapping presets
+# ------------------------------------------------------------------
+# File: integrations_mapping_presets.json = {
+#   "presets": {
+#     "<integration_id>": [
+#       {"name": str, "mapping": {ihrp_col: json_path}, "updated_at": iso},
+#       ...
+#     ]
+#   }
+# }
+# Scope preset PER integration (mỗi integration có nhiều endpoint với
+# response shape khác nhau; user thường muốn giữ mapping riêng cho từng
+# vendor). Reuse cùng cap _MAX_PRESETS cho consistency.
+
+_INTEG_MAPPING_PRESETS_FILE = "integrations_mapping_presets.json"
+
+
+def list_integration_mapping_presets(project_dir: str, integration_id: str) -> list[dict]:
+    """
+    List preset của 1 integration cụ thể.
+
+    Sort desc theo updated_at. File / integration không tồn tại → [].
+    """
+    integration_id = str(integration_id or "").strip()
+    if not integration_id:
+        return []
+    data = _read_json(_path(project_dir, _INTEG_MAPPING_PRESETS_FILE), {"presets": {}})
+    if not isinstance(data, dict):
+        return []
+    all_presets = data.get("presets") or {}
+    if not isinstance(all_presets, dict):
+        return []
+    presets = all_presets.get(integration_id) or []
+    if not isinstance(presets, list):
+        return []
+    out: list[dict] = []
+    for p in presets:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or "").strip()
+        mapping = p.get("mapping")
+        if not name or not isinstance(mapping, dict):
+            continue
+        clean = {str(k).strip(): str(v).strip()
+                 for k, v in mapping.items()
+                 if str(k).strip() and str(v).strip()}
+        out.append({
+            "name": name[:_MAX_PRESET_NAME],
+            "mapping": clean,
+            "updated_at": str(p.get("updated_at") or ""),
+        })
+    out.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    return out
+
+
+def save_integration_mapping_preset(
+    project_dir: str,
+    integration_id: str,
+    name: str,
+    mapping: dict[str, str],
+) -> list[dict]:
+    """Upsert 1 preset cho integration cụ thể. Trả list mới nhất."""
+    integration_id = str(integration_id or "").strip()
+    if not integration_id:
+        raise ValueError("integration_id không được rỗng")
+    clean_name = str(name or "").strip()[:_MAX_PRESET_NAME]
+    if not clean_name:
+        raise ValueError("Preset name không được rỗng")
+    clean_mapping = {str(k).strip(): str(v).strip()
+                     for k, v in (mapping or {}).items()
+                     if str(k).strip() and str(v).strip()}
+
+    data = _read_json(_path(project_dir, _INTEG_MAPPING_PRESETS_FILE),
+                     {"presets": {}})
+    if not isinstance(data, dict):
+        data = {"presets": {}}
+    all_presets = data.get("presets") if isinstance(data.get("presets"), dict) else {}
+
+    presets = list_integration_mapping_presets(project_dir, integration_id)
+    presets = [p for p in presets if p.get("name") != clean_name]
+    presets.insert(0, {
+        "name": clean_name,
+        "mapping": clean_mapping,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    if len(presets) > _MAX_PRESETS:
+        presets = presets[:_MAX_PRESETS]
+
+    all_presets[integration_id] = presets
+    _write_json(_path(project_dir, _INTEG_MAPPING_PRESETS_FILE),
+                {"presets": all_presets})
+    return presets
+
+
+def delete_integration_mapping_preset(
+    project_dir: str, integration_id: str, name: str,
+) -> tuple[bool, list[dict]]:
+    """Xoá preset của integration. Trả (deleted, remaining_list)."""
+    integration_id = str(integration_id or "").strip()
+    if not integration_id:
+        return False, []
+    data = _read_json(_path(project_dir, _INTEG_MAPPING_PRESETS_FILE),
+                     {"presets": {}})
+    if not isinstance(data, dict):
+        return False, []
+    all_presets = data.get("presets") if isinstance(data.get("presets"), dict) else {}
+    presets = list_integration_mapping_presets(project_dir, integration_id)
+    before = len(presets)
+    presets = [p for p in presets if p.get("name") != name]
+    deleted = len(presets) < before
+    if deleted:
+        all_presets[integration_id] = presets
+        _write_json(_path(project_dir, _INTEG_MAPPING_PRESETS_FILE),
+                    {"presets": all_presets})
+    return deleted, presets

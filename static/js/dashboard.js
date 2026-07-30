@@ -1194,6 +1194,9 @@ const _ucmState = {
     autoSuggest: {},        // {ihrp_col: [{header, score}, ...]}
     currentMapping: {},     // {ihrp_col: actual_header} — user pick
     presets: [],
+    columnTypes: {},        // T34 Task 3B — {header: {type, badge, samples}}
+    showIncompatible: false,// T34 Task 3B — checkbox "Hiện tất cả (bỏ filter kiểu)"
+    dryRunResult: null,     // T34 Task 3E — kết quả validate-mapping gần nhất
 };
 
 function _uploadReadSkipWizardPref() {
@@ -1233,6 +1236,9 @@ async function _uploadWithWizard(file) {
         _ucmState.ihrpColumns = data.ihrp_columns || [];
         _ucmState.autoSuggest = data.auto_suggest || {};
         _ucmState.presets = data.presets || [];
+        // T34 Task 3B — column type info cho badge + filter
+        _ucmState.columnTypes = data.column_types || {};
+        _ucmState.dryRunResult = null;
         // Pre-fill mapping bằng top suggestion (score cao) — user có thể sửa
         _ucmState.currentMapping = {};
         for (const ihrp of _ucmState.ihrpColumns) {
@@ -1317,17 +1323,42 @@ function _ucmRenderMappingTable() {
                 : "")
             : "bg-slate-50 dark:bg-slate-900/20 text-gray-400";
 
-        // Options: "(không có)" + tất cả header trong file
+        // T34 Task 3B — Compatible type filter: xác định các type iHRP col này expect
+        const ihrpExpectedTypes = _ucmIhrpExpectedTypes(ihrp);
+
+        // Options: "(không có)" + tất cả header trong file, filter theo type compatibility
         let optsHtml = `<option value="">— không có —</option>`;
         for (const h of headers) {
             if (!h) continue;
+            const info = _ucmState.columnTypes[h] || {};
+            const type = info.type || "string";
+            // Ẩn header có kiểu không phù hợp — trừ khi user check "hiện tất cả"
+            const compatible = _ucmState.showIncompatible ||
+                              ihrpExpectedTypes.length === 0 ||
+                              ihrpExpectedTypes.includes(type) ||
+                              type === "string" ||  // string luôn cho phép
+                              type === "empty";     // empty cũng cho phép
+            if (!compatible) continue;
             const selected = h === current ? "selected" : "";
-            optsHtml += `<option value="${escapeAttr(h)}" ${selected}>${escapeHtml(h)}</option>`;
+            // Thêm badge type + sample vào label option
+            const samples = (info.samples || []).slice(0, 1);
+            const sampleHint = samples.length ? ` — "${samples[0]}"`.slice(0, 40) : "";
+            const badgeIcon = info.badge?.icon || "";
+            optsHtml += `<option value="${escapeAttr(h)}" ${selected}>${badgeIcon} ${escapeHtml(h)}${escapeHtml(sampleHint)}</option>`;
         }
 
         const scoreLabel = current && top && current === top.header
             ? `${Math.round(topScore * 100)}%`
             : (isMapped ? "manual" : "—");
+
+        // T34 Task 3B — Badge inferred type cho HEADER được chọn (không phải iHRP col)
+        const currInfo = current ? (_ucmState.columnTypes[current] || {}) : {};
+        const badgeHtml = currInfo.badge ? _ucmBadgeHtml(currInfo.badge, currInfo.type) : "";
+        // Sample values dưới header
+        const samples = (currInfo.samples || []).slice(0, 3);
+        const sampleRow = samples.length
+            ? `<div class="text-[10px] text-gray-500 italic mt-0.5 font-mono truncate max-w-xs" title="${escapeAttr(samples.join(' | '))}">${escapeHtml(samples.join(' • '))}</div>`
+            : "";
 
         rows.push(`
             <tr class="border-b ${rowClass}">
@@ -1338,13 +1369,54 @@ function _ucmRenderMappingTable() {
                             class="w-full border rounded p-1 text-xs dark:bg-slate-700 dark:border-slate-600">
                         ${optsHtml}
                     </select>
+                    ${sampleRow}
                 </td>
+                <td class="px-2 py-1 text-center text-[11px]">${badgeHtml}</td>
                 <td class="px-2 py-1 text-center text-[11px]">${scoreLabel}</td>
             </tr>
         `);
     }
     tbody.innerHTML = rows.join("");
 }
+
+// T34 Task 3B — Xác định các type expected cho iHRP col (dựa tên cột).
+function _ucmIhrpExpectedTypes(ihrpCol) {
+    if (!ihrpCol) return [];
+    if (ihrpCol.endsWith(" - Start") || ihrpCol.endsWith(" - End") || ihrpCol === "Last Updated Date") {
+        return ["date_iso", "date_dmy", "date_excel_serial"];
+    }
+    if (ihrpCol.endsWith(" - PIC")) {
+        return ["pic_list"];
+    }
+    if (ihrpCol.endsWith(" - Status")) {
+        return ["status_enum"];
+    }
+    if (ihrpCol.endsWith(" - Estimate MH")) {
+        return ["integer", "decimal"];
+    }
+    // Meta cols (Mã CN, Tên chức năng, Module...) accept mọi type
+    return [];
+}
+
+function _ucmBadgeHtml(badge, type) {
+    if (!badge) return "";
+    const colorMap = {
+        blue: "bg-blue-100 text-blue-800",
+        purple: "bg-purple-100 text-purple-800",
+        orange: "bg-orange-100 text-orange-800",
+        green: "bg-green-100 text-green-800",
+        gray: "bg-slate-100 text-slate-700",
+    };
+    const cls = colorMap[badge.color] || colorMap.gray;
+    return `<span class="inline-block px-1.5 py-0.5 rounded text-[10px] ${cls}" title="Type: ${escapeAttr(type)}">${badge.icon || ""} ${escapeHtml(badge.label || "")}</span>`;
+}
+
+// T34 Task 3B — Toggle "Hiện tất cả (bỏ filter kiểu)".
+function _ucmToggleShowIncompatible(chk) {
+    _ucmState.showIncompatible = !!chk.checked;
+    _ucmRenderMappingTable();
+}
+window._ucmToggleShowIncompatible = _ucmToggleShowIncompatible;
 
 function _ucmOnMappingChange(sel) {
     const ihrp = sel.dataset.ucmIhrp;
@@ -1485,6 +1557,140 @@ async function _ucmSubmit(skipMapping) {
     }
 }
 window._ucmSubmit = _ucmSubmit;
+
+
+// ==========================================================================
+// T34 Task 3E — Validate mapping dry-run
+// ==========================================================================
+
+async function _ucmRunDryRun() {
+    if (!_ucmState.tmpId) {
+        showToast("Không có file preview để test", "red");
+        return;
+    }
+    const mapping = _ucmState.currentMapping || {};
+    if (!Object.keys(mapping).length) {
+        showToast("Chưa map cột nào — thử áp dụng auto suggest trước", "orange");
+        return;
+    }
+    try {
+        const r = await fetch("/api/validate-mapping", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                tmp_id: _ucmState.tmpId,
+                column_mapping: mapping,
+                n_rows: 5,
+            }),
+        });
+        const d = await r.json();
+        _ucmState.dryRunResult = d;
+        _ucmRenderDryRunResult(d);
+    } catch (err) {
+        showToast("Lỗi test parse: " + err.message, "red");
+    }
+}
+window._ucmRunDryRun = _ucmRunDryRun;
+
+function _ucmRenderDryRunResult(d) {
+    const resultEl = document.getElementById("ucmDryRunResult");
+    const summaryEl = document.getElementById("ucmDryRunSummary");
+    const errorsEl = document.getElementById("ucmDryRunErrors");
+    const warningsEl = document.getElementById("ucmDryRunWarnings");
+    const thead = document.getElementById("ucmDryRunThead");
+    const tbody = document.getElementById("ucmDryRunTbody");
+    if (!resultEl) return;
+
+    resultEl.classList.remove("hidden");
+
+    // Summary
+    const success = d.success !== false;
+    const rowCount = d.row_count_scanned || (d.rows || []).length;
+    summaryEl.innerHTML = `
+        <span class="inline-block px-2 py-0.5 rounded ${success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'} font-semibold">
+            ${success ? '✓ Success' : '✗ Failed'}
+        </span>
+        · Đã scan ${rowCount} record
+        · ${d.errors?.length || 0} lỗi
+        · ${d.warnings?.length || 0} cảnh báo
+    `;
+
+    // Errors
+    const errors = d.errors || [];
+    if (errors.length) {
+        errorsEl.innerHTML = `
+            <div class="bg-red-50 border border-red-200 rounded p-2">
+                <div class="font-semibold text-red-800 mb-1">⚠ Lỗi:</div>
+                <ul class="list-disc pl-4 text-red-700 space-y-0.5">
+                    ${errors.slice(0, 10).map(e =>
+                        `<li>Row ${e.row_idx}, cột <code>${escapeHtml(e.col || '')}</code>: ${escapeHtml(e.msg || '')}</li>`
+                    ).join("")}
+                    ${errors.length > 10 ? `<li class="italic text-gray-500">…và ${errors.length - 10} lỗi khác</li>` : ""}
+                </ul>
+            </div>
+        `;
+    } else {
+        errorsEl.innerHTML = "";
+    }
+
+    // Warnings
+    const warnings = d.warnings || [];
+    if (warnings.length) {
+        warningsEl.innerHTML = `
+            <div class="bg-amber-50 border border-amber-200 rounded p-2">
+                <div class="font-semibold text-amber-800 mb-1">⚠ Cảnh báo:</div>
+                <ul class="list-disc pl-4 text-amber-700 space-y-0.5">
+                    ${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join("")}
+                </ul>
+            </div>
+        `;
+    } else {
+        warningsEl.innerHTML = "";
+    }
+
+    // Preview table
+    const rows = d.rows || [];
+    if (!rows.length) {
+        thead.innerHTML = "";
+        tbody.innerHTML = `<tr><td class="px-2 py-2 text-center text-gray-400 italic">Không có record nào parse được</td></tr>`;
+        return;
+    }
+    // Header: Mã CN, Tên CN, Module, phases (dynamic)
+    const phaseNames = new Set();
+    for (const r of rows) {
+        for (const ph of Object.keys(r.phases || {})) phaseNames.add(ph);
+    }
+    const phasesList = Array.from(phaseNames);
+    const cols = ["Mã CN", "Tên chức năng", "Module", "Priority", ...phasesList.map(p => `${p} status`)];
+    thead.innerHTML = cols.map(c =>
+        `<th class="px-2 py-1 text-left border-b whitespace-nowrap">${escapeHtml(c)}</th>`
+    ).join("");
+
+    // Errors by row for highlighting
+    const errorsByRow = {};
+    for (const e of errors) {
+        errorsByRow[e.row_idx] = errorsByRow[e.row_idx] || [];
+        errorsByRow[e.row_idx].push(e);
+    }
+
+    tbody.innerHTML = rows.map(r => {
+        const hasError = errorsByRow[r.row_num];
+        const rowCls = hasError ? "bg-red-50" : "";
+        const cellStyle = "px-2 py-1 border-b whitespace-nowrap";
+        const cells = [
+            `<td class="${cellStyle}"><code>${escapeHtml(r.ma_cn || "")}</code></td>`,
+            `<td class="${cellStyle} truncate max-w-xs">${escapeHtml(r.ten_cn || "")}</td>`,
+            `<td class="${cellStyle}">${escapeHtml(r.module || "")}</td>`,
+            `<td class="${cellStyle}">${escapeHtml(r.priority || "")}</td>`,
+        ];
+        for (const p of phasesList) {
+            const ph = (r.phases || {})[p] || {};
+            cells.push(`<td class="${cellStyle}">${escapeHtml(ph.status || "-")}</td>`);
+        }
+        return `<tr class="${rowCls}" title="${hasError ? 'Row có lỗi parse' : ''}">${cells.join("")}</tr>`;
+    }).join("");
+}
+
 
 async function applyThreshold() {
     // Re-upload không khả thi (mất file). Chỉ đơn giản re-render duration analysis

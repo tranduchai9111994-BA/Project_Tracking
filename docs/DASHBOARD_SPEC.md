@@ -778,6 +778,24 @@ Schema: `{"presets": [{"name": str, "mapping": {ihrp: actual}, "updated_at": iso
 - `MAX_CONTENT_LENGTH = 50MB` (config Flask có sẵn).
 - Preset name/mapping trim + cap ký tự để không crash JSON store.
 
+### 🆕 Smart mapping (T34 Task 3 — A+B+C+E)
+
+Wizard nâng cấp 4 cơ chế smart, xem `docs/INTEGRATIONS_GUIDE.md` mục 8 để
+đầy đủ. Tóm tắt UI:
+
+- **A. Sample preview** — mỗi header hiển thị 3 giá trị mẫu từ 3 record
+  đầu tiên (italic monospace) ngay dưới dropdown.
+- **B. Type badge + filter** — cột "Kiểu suy đoán" hiển badge 📅 date /
+  👥 PIC / 🏷 status / 🔢 number / 📝 text. Dropdown mapping chỉ hiển
+  header có type tương thích với iHRP col — checkbox "Hiện tất cả (bỏ
+  filter kiểu)" để bypass khi cần map manual.
+- **C. Preset per source** — Excel giữ cấu trúc cũ. JSON API mới có
+  preset per integration_id (schema `{integration_id: [presets]}`),
+  CRUD endpoints `/api/projects/<slug>/integrations/<id>/mapping-presets`.
+- **E. Test parse dry-run** — nút 🔍 "Test parse 5 record đầu" chạy
+  parser thử, hiện bảng preview data iHRP + errors/warnings. Row lỗi
+  highlight nền đỏ nhạt. Không lưu → chỉ để user verify trước confirm.
+
 
 ## 🆕 17. Public API — REST + iframe + PNG snapshot (T33)
 
