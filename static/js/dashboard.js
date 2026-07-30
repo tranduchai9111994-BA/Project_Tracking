@@ -10643,12 +10643,45 @@ function _presentCollectSections() {
     Array.from(dash.children).forEach(el => {
         if (!el.id) return;
         if (el.id === "section-summary-header") return;  // header-only
+        // Sticky wrapper không phải slide — chỉ chứa summary + filter.
+        // Nếu đưa vào deck: giữ present-active + position:sticky + z-index
+        // → panel trắng đè chart slide sau (bug báo cáo Trình chiếu).
+        if (el.id === "stickyTopBlock") {
+            const summary = el.querySelector("#section-summary");
+            if (summary && !summary.classList.contains("hidden")
+                && summary.getAttribute("data-hidden") !== "true") {
+                out.push("section-summary");
+            }
+            return;
+        }
         if (el.classList.contains("hidden")) return;
         // Bỏ qua các section đang bị chart-config ẩn (data-hidden="true")
         if (el.getAttribute("data-hidden") === "true") return;
         out.push(el.id);
     });
     return out;
+}
+
+/** Modal / overlay không thuộc presentation HUD — ẩn hết khi vào trình chiếu. */
+function _presentHideExtraneousOverlays() {
+    const overlayIds = [
+        "fullscreenModal", "cmdPaletteModal", "drillDownModal",
+        "functionDetailModal", "syncProjectPickModal", "syncProgressModal",
+        "projectManagerModal", "portfolioCompareModal", "portfolioRollupModal",
+        "settingsModal", "integrationsModal", "customDashModal", "cdDrillModal",
+        "pdfExportModal", "uploadMappingModal", "picBlacklistModal",
+        "sectionHelpModal", "globalHelpModal", "pubTokNewModal", "pubTokSnipModal",
+        "ganttCalOutlierModal", "chartHelpPopover", "onboardingTourOverlay",
+    ];
+    overlayIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.classList.add("hidden");
+        el.classList.remove("flex");
+    });
+    try {
+        if (typeof closeFullscreen === "function") closeFullscreen();
+    } catch (_) { /* ignore */ }
 }
 
 // Mapping section-id → tên function lazy-load (fetch data + render). Chỉ
@@ -10673,26 +10706,56 @@ const _PRESENT_LAZY_LOADERS = {
 function _presentApplyIndex() {
     const dash = document.getElementById("dashboard");
     if (!dash || !_presentState.sections.length) return;
-    // Ẩn tất cả top-level (dùng class 'present-off'), rồi bỏ ẩn cái đang chọn
-    Array.from(dash.children).forEach(el => {
-        if (!el.id || el.id === "section-summary-header") {
-            el.classList.add("present-off");
-            return;
-        }
-        el.classList.add("present-off");
-    });
     const activeId = _presentState.sections[_presentState.index];
     const active = document.getElementById(activeId);
+
+    // QUAN TRỌNG: gỡ cả present-off VÀ present-active trước khi gắn lại.
+    // Bug cũ: chỉ add present-off, không remove present-active → element cũ
+    // mang cả 2 class; CSS .present-active { display:block !important } thắng
+    // .present-off → panel trắng (đặc biệt #stickyTopBlock sticky z-45) đè chart.
+    dash.querySelectorAll(".present-active, .present-off, .present-host").forEach(el => {
+        el.classList.remove("present-active", "present-host");
+        el.classList.add("present-off");
+    });
+    Array.from(dash.children).forEach(el => {
+        el.classList.remove("present-active", "present-host");
+        el.classList.add("present-off");
+    });
+
     if (active) {
+        // Nếu active nằm trong stickyTopBlock / grid wrapper bị present-off,
+        // phải "mở" ancestor top-level để slide hiện được.
+        let node = active;
+        while (node && node !== dash) {
+            node.classList.remove("present-off");
+            node = node.parentElement;
+        }
         active.classList.remove("present-off");
         active.classList.add("present-active");
-        // Scroll vào giữa
+        // Sticky wrapper: không gắn present-active (tránh panel trắng min-height),
+        // chỉ bỏ present-off để con hiện.
+        const sticky = document.getElementById("stickyTopBlock");
+        if (sticky && sticky.contains(active)) {
+            sticky.classList.remove("present-active", "present-off");
+            sticky.classList.add("present-host");
+            // Ẩn filter bar trong slide summary (no-print, gây nhiễu trình chiếu)
+            const gf = document.getElementById("section-globalfilter");
+            if (gf) gf.classList.add("present-off");
+            const hdr = document.getElementById("section-summary-header");
+            if (hdr) hdr.classList.remove("present-off");
+        } else if (sticky) {
+            sticky.classList.remove("present-host");
+            sticky.classList.add("present-off");
+        }
         try { active.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
     }
     // Update HUD (progress + tên section)
     const hud = document.getElementById("presentHud");
     if (hud) {
-        const titleEl = active ? active.querySelector("h3, h2") : null;
+        let titleEl = active ? active.querySelector("h3, h2") : null;
+        if (!titleEl && activeId === "section-summary") {
+            titleEl = document.querySelector("#section-summary-header h3, #section-summary-header h2");
+        }
         const label = titleEl ? titleEl.textContent.trim().slice(0, 80) : (active ? active.id : "");
         hud.innerHTML = `
             <span class="present-hud-index">${_presentState.index + 1} / ${_presentState.sections.length}</span>
@@ -10800,6 +10863,7 @@ function _presentEnter() {
     _presentState.loaded = new Set();  // reset lazy-load tracker mỗi phiên trình chiếu
     _presentState.prevBodyClass = document.body.className;
     document.body.classList.add("presentation-mode");
+    _presentHideExtraneousOverlays();
     _presentEnsureHud();
     _presentApplyIndex();
     // Register keys (arrow + esc)
@@ -10832,12 +10896,11 @@ function _presentExit() {
     _presentState.active = false;
     document.body.className = _presentState.prevBodyClass || "";
     document.body.classList.remove("presentation-mode");
-    // Restore all sections
+    // Restore all sections (kể cả nested trong sticky/grid)
     const dash = document.getElementById("dashboard");
     if (dash) {
-        Array.from(dash.children).forEach(el => {
-            el.classList.remove("present-off");
-            el.classList.remove("present-active");
+        dash.querySelectorAll(".present-off, .present-active, .present-host").forEach(el => {
+            el.classList.remove("present-off", "present-active", "present-host");
         });
     }
     if (_presentState.keyHandler) {

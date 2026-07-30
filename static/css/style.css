@@ -207,7 +207,10 @@ body.presentation-mode aside,
 body.presentation-mode .sidebar,
 body.presentation-mode #sidebar,
 body.presentation-mode #globalFilterBar,
-body.presentation-mode .sidebar-toggle-btn {
+body.presentation-mode .sidebar-toggle-btn,
+body.presentation-mode #uploadZone,
+body.presentation-mode .sticky-toggle-btn,
+body.presentation-mode .sticky-upload-btn {
     display: none !important;
 }
 body.presentation-mode #presentHud {
@@ -218,9 +221,7 @@ body.presentation-mode #dashboard {
     margin: 0 !important;
     padding: 60px 40px 40px 40px !important;
 }
-body.presentation-mode .present-off {
-    display: none !important;
-}
+/* Slide dang chieu */
 body.presentation-mode .present-active {
     display: block !important;
     background: #ffffff !important;
@@ -232,10 +233,39 @@ body.presentation-mode .present-active {
     max-width: 1400px;
     margin: 0 auto !important;
     animation: presentFadeIn 0.35s ease;
+    position: relative;
+    z-index: 1;
+}
+/* Giu layout grid (summary cards) khi present-active ep display */
+body.presentation-mode .present-active.grid {
+    display: grid !important;
 }
 html.dark body.presentation-mode .present-active {
     background: #1e293b !important;
     color: #f1f5f9 !important;
+}
+/* present-off PHAI dung sau present-active de thang khi ca 2 class
+   con sot (bug cu: panel trang sticky de chart slide sau). */
+body.presentation-mode .present-off {
+    display: none !important;
+}
+/* Host wrapper (stickyTopBlock) khi chieu section con - khong style card,
+   tat sticky/z-index de khong de slide. */
+body.presentation-mode #stickyTopBlock.present-host,
+body.presentation-mode .present-host {
+    display: block !important;
+    position: static !important;
+    z-index: auto !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    min-height: 0 !important;
+    max-width: 1400px;
+}
+body.presentation-mode #stickyTopBlock.present-off {
+    display: none !important;
 }
 @keyframes presentFadeIn {
     from { opacity: 0; transform: translateY(20px); }
