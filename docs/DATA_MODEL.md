@@ -1,4 +1,8 @@
-# Data Model — Function List Excel (V2)
+# Data Model — Function List Excel + Project Store
+
+> Schema parse Excel (ổn định từ V2) + các file JSON / snapshot mở rộng tới
+> Archive, Public API, Integrations, Mapping presets (2026-07).
+> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Cấu trúc file Excel đầu vào
 
@@ -231,22 +235,31 @@ Card summary dùng số function-unique để tránh gây hoang mang (VD: không
 }
 ```
 
-## Multi-Project Layout (V3)
+## Multi-Project Layout (V3+)
 
-Từ V3 trở đi, storage được tổ chức theo project:
+Từ V3 trở đi, storage được tổ chức theo project (chi tiết đầy đủ + sơ đồ →
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §5):
 
 ```
 uploads/
   projects/
     projects.json                       # Index tất cả project
-    <slug>/                             # Slug từ tên (VD "minh-phu-2026")
-      meta.json                         # Metadata riêng
-      current.xlsx                      # File Function List hiện tại
+    <slug>/                             # VD "minh-phu-2026"
+      meta.json
+      current.xlsx
+      integrations.json                 # Registry API (no secrets)
+      archive_settings.json
+      project_settings.json
+      bookmarks.json / function_notes.json / chart_notes.json / …
+      exports/
+      digests/
       snapshots/
-        snapshot_index.json
-        YYYY-MM-DD_functionlist.xlsx
-        YYYY-MM-DD_functionlist.parsed.pkl
+        snapshot_index.json             # + source, archived
+        YYYY-MM-DD_functionlist.xlsx|.parsed.pkl
+        archive/                        # *.gz khi đã archive
 ```
+
+Public tokens / PNG cache: `.project_store/<slug>/` (xem T33 bên dưới).
 
 ### `projects.json` format
 
@@ -282,7 +295,7 @@ Nếu có `uploads/snapshots/` và `uploads/current_functionlist.xlsx` (layout V
 
 Data cũ vẫn giữ nguyên ở vị trí gốc (để user có thể rollback thủ công nếu cần).
 
-## Snapshot format (V2)
+## Snapshot format (V2 + source + archive)
 
 `uploads/projects/<slug>/snapshots/snapshot_index.json`:
 
@@ -297,12 +310,20 @@ Data cũ vẫn giữ nguyên ở vị trí gốc (để user có thể rollback 
     "overdue_count": 44,
     "unassigned_count": 186,
     "high_risk_count": 102,
-    "upload_time": "2026-07-28T08:40:37"
+    "upload_time": "2026-07-28T08:40:37",
+    "source": "upload",
+    "archived": false
   }
 ]
 ```
 
-Cùng ngày upload nhiều lần → ghi đè bản cũ. Giới hạn tổng 30 snapshots (bản cũ nhất tự xóa).
+| Field | Ý nghĩa |
+|-------|---------|
+| `source` | `"upload"` (thủ công) hoặc `"sync:<integ_id>:<endpoint_id>"`. Entry cũ thiếu field → default `"upload"`. UI Lịch sử upload hiện cột **Nguồn** + filter. |
+| `archived` | `true` → file đã gzip vào `snapshots/archive/`. Load vẫn transparent (decompress in-memory). |
+| `archived_at` | ISO datetime khi archive (chỉ khi `archived=true`). |
+
+Cùng ngày upload nhiều lần → ghi đè bản cũ. Giới hạn tổng 30 snapshots hot (bản cũ nhất tự xóa / có thể auto-archive trước). Xem [`ARCHIVE_GUIDE.md`](ARCHIVE_GUIDE.md).
 
 ## V4 — Bookmark / Notes / Digest / Settings
 
@@ -411,6 +432,49 @@ Filter object accept 7 dimension list (T28) + 2 boolean toggle. Backend
   chuẩn hoá khi PUT).
 - Fields default nếu file thiếu — xem `analyzer/project_store.py :: DEFAULT_*`.
 
+### `module_order.json` — thứ tự Module toàn dashboard
+
+Path: `uploads/projects/<slug>/module_order.json`
+
+```json
+{
+  "order": ["TMS", "HR", "PR", "SI"]
+}
+```
+
+- **Load** cũng chấp nhận list thuần `["TMS",…]` hoặc rank map `{"TMS":1,"HR":2}`.
+- **Default** khi chưa có file: alphabetical (giống parser cũ).
+- Module mới (có trong Excel nhưng chưa trong `order`) → append cuối, alpha.
+- Helper: `analyzer/module_order.py` (`sort_modules`, `module_sort_key`,
+  `process_module_rank`) + `project_store.load/save/reset_module_order`.
+- Áp vào `ParsedData.all_modules` sau parse/upload/load; filter giữ thứ tự
+  parent (không re-alpha). Process tiles / overview-by-process / gantt
+  group process sort theo module rank rồi tên process.
+
+### `archive_settings.json` (T-AA)
+
+Path: `uploads/projects/<slug>/archive_settings.json`
+
+```json
+{
+  "enabled": true,
+  "archive_after_days": 90,
+  "auto_run_on_startup": true,
+  "purge_after_days": 365
+}
+```
+
+| Field | Default | Ý nghĩa |
+|-------|---------|---------|
+| `enabled` | `true` | Master switch auto-archive |
+| `archive_after_days` | `90` | Archive snapshot cũ hơn N ngày (`0` = không bao giờ auto) |
+| `auto_run_on_startup` | `true` | Daemon thread lúc Flask boot |
+| `purge_after_days` | `365` | Xóa vĩnh viễn archive cũ hơn N ngày (`0` = không purge) |
+
+API: `GET|PUT /api/projects/<slug>/archive-settings`,
+`POST .../archive-run`, `POST .../snapshots/<id>/archive|restore`.
+Chi tiết: [`ARCHIVE_GUIDE.md`](ARCHIVE_GUIDE.md).
+
 ### `digests/` folder (T26)
 
 ```
@@ -465,7 +529,8 @@ tương ứng `auth.method` được backend sử dụng runtime):
         "bearer_env": "",
         "apikey_env": "",
         "apikey_header": "X-API-Key",
-        "apikey_location": "header"
+        "apikey_location": "header",
+        "verify_ssl": true
       },
       "endpoints": [
         {
@@ -547,6 +612,7 @@ tương ứng `auth.method` được backend sử dụng runtime):
 | `auth.apikey_env` | (api_key) | Prefix `.env` → đọc `<PREFIX>_KEY`. |
 | `auth.apikey_header` | (api_key) | Tên header hoặc query param (VD `X-API-Key`, `api_key`). Default `X-API-Key`. |
 | `auth.apikey_location` | (api_key) | `header` (default) hoặc `query`. |
+| `auth.verify_ssl` | | `true` (default). `false` → `session.verify=False` (chỉ khi cert nội bộ thiếu CA). |
 | `endpoints[].id` | auto | Format `ep_<uuid[:10]>`. |
 | `endpoints[].name` | ✔ | Tên hiển thị. |
 | `endpoints[].path` | ✔ | Path hoặc absolute URL (bắt đầu bằng `/` sẽ prefix `base_url`). |

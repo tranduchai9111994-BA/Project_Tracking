@@ -522,6 +522,7 @@ def _group_rows(data: ParsedData, group_by: str) -> list[tuple[str, str, str, li
         return result
 
     if gb in ("process", "quy_trinh"):
+        from analyzer.module_order import module_sort_key
         by_key: dict[tuple[str, str], list[FunctionRow]] = defaultdict(list)
         for r in data.rows:
             m = r.meta.get("module") or ""
@@ -529,7 +530,11 @@ def _group_rows(data: ParsedData, group_by: str) -> list[tuple[str, str, str, li
             if not p:
                 continue
             by_key[(m, p)].append(r)
-        sorted_keys = sorted(by_key.keys(), key=lambda t: (t[0], t[1]))
+        order = data.all_modules
+        sorted_keys = sorted(
+            by_key.keys(),
+            key=lambda t: (module_sort_key(t[0], order), t[1]),
+        )
         return [(f"{m} · {p}", m, p, by_key[(m, p)]) for m, p in sorted_keys]
 
     # function

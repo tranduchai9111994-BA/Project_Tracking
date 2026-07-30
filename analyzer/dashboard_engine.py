@@ -222,7 +222,8 @@ class DashboardEngine:
         return result
 
     def _overview_by_process(self, data: ParsedData) -> list[dict]:
-        """1 row / (module, quy_trinh) — sort theo module rồi process."""
+        """1 row / (module, quy_trinh) — sort theo module_order rồi process."""
+        from analyzer.module_order import module_sort_key
         by_key: dict[tuple[str, str], list] = {}
         for r in data.rows:
             m = r.meta.get("module") or ""
@@ -230,7 +231,11 @@ class DashboardEngine:
             if not p:
                 continue  # skip row không có quy_trinh
             by_key.setdefault((m, p), []).append(r)
-        sorted_keys = sorted(by_key.keys(), key=lambda t: (t[0], t[1]))
+        order = data.all_modules
+        sorted_keys = sorted(
+            by_key.keys(),
+            key=lambda t: (module_sort_key(t[0], order), t[1]),
+        )
         result = []
         for idx, (m, p) in enumerate(sorted_keys, 1):
             rows = by_key[(m, p)]
@@ -289,7 +294,8 @@ class DashboardEngine:
         all_statuses_ordered = ["Closed", "In-progress", "Assigned", "Resolved", "Open", "Pending", "Cancelled"]
 
         if gb == "process":
-            # Group rows theo quy trình → sort theo tên (giữ prefix "PRM.BP.03…" ổn định).
+            # Group rows theo quy trình → sort theo module_order rồi tên process.
+            from analyzer.module_order import module_sort_key
             by_proc: dict[str, list[FunctionRow]] = {}
             proc_module_map: dict[str, str] = {}
             for r in data.rows:
@@ -301,7 +307,14 @@ class DashboardEngine:
                 # 1 quy trình thường chỉ nằm trong 1 module.
                 if proc not in proc_module_map:
                     proc_module_map[proc] = str(r.meta.get("module") or "")
-            row_labels = sorted(by_proc.keys())
+            order = data.all_modules
+            row_labels = sorted(
+                by_proc.keys(),
+                key=lambda p: (
+                    module_sort_key(proc_module_map.get(p, ""), order),
+                    p,
+                ),
+            )
         else:
             gb = "module"
             by_proc = {m: [r for r in data.rows if r.meta.get("module") == m] for m in data.all_modules}
@@ -901,7 +914,13 @@ class DashboardEngine:
     # ------------------------------------------------------------------
 
     def _process_analysis(self, data: ParsedData) -> list[dict]:
-        """Group function theo Quy trình → % Closed, module liên quan, PIC chính."""
+        """Group function theo Quy trình → % Closed, module liên quan, PIC chính.
+
+        Sort: theo module_order (module đại diện) rồi tên process — để tiles
+        «Phân tích theo Quy trình» group theo module rank.
+        """
+        from analyzer.module_order import process_module_rank, sort_modules
+
         process_map: dict[str, list[FunctionRow]] = defaultdict(list)
         for r in data.rows:
             qt = r.meta.get("quy_trinh")
@@ -910,10 +929,14 @@ class DashboardEngine:
 
         last_phase = data.all_phases[-1] if data.all_phases else None
         all_phases_cnt = len(data.all_phases)
+        order = data.all_modules
         results = []
         for qt, rows in process_map.items():
             total = len(rows)
-            modules = sorted({r.meta.get("module") for r in rows if r.meta.get("module")})
+            modules = sort_modules(
+                {r.meta.get("module") for r in rows if r.meta.get("module")},
+                order,
+            )
             overdue = sum(1 for r in rows if self._row_has_overdue(r))
 
             # % weighted_all: closed_records / (row × phase)
@@ -945,7 +968,10 @@ class DashboardEngine:
                 "top_pics": top_pics,
             })
 
-        results.sort(key=lambda x: (-x["total"], x["process"]))
+        results.sort(key=lambda x: (
+            process_module_rank(x["modules"], order),
+            x["process"],
+        ))
         return results
 
     # ------------------------------------------------------------------

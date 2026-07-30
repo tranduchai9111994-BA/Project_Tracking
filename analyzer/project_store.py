@@ -271,6 +271,40 @@ def reset_section_order(project_dir: str) -> None:
 
 
 # ------------------------------------------------------------------
+# Module order — thứ tự Module dùng chung toàn dashboard
+# ------------------------------------------------------------------
+# File: module_order.json = {"order": ["TMS", "HR", "PR", ...]}
+# Chấp nhận thêm (load): list thuần hoặc {"TMS": 1, "HR": 2}.
+# Không set → alphabetical (behavior cũ của parser).
+# ------------------------------------------------------------------
+
+def load_module_order(project_dir: str) -> list[str]:
+    """Trả list tên module theo thứ tự đã lưu (có thể rỗng)."""
+    from analyzer.module_order import normalize_order
+    data = _read_json(_path(project_dir, "module_order.json"), {"order": []})
+    return normalize_order(data)
+
+
+def save_module_order(project_dir: str, order: list[str]) -> list[str]:
+    """Lưu thứ tự module. Schema: {"order": [...]}."""
+    from analyzer.module_order import normalize_order
+    cleaned = normalize_order(order)
+    _write_json(_path(project_dir, "module_order.json"), {"order": cleaned})
+    return cleaned
+
+
+def reset_module_order(project_dir: str) -> None:
+    """Xoá module_order.json → fallback alphabetical."""
+    import os as _os
+    p = _path(project_dir, "module_order.json")
+    if _os.path.exists(p):
+        try:
+            _os.remove(p)
+        except OSError:
+            pass
+
+
+# ------------------------------------------------------------------
 # Chart notes (T28: comment per-chart trong PDF export)
 # ------------------------------------------------------------------
 # File: chart_notes.json = {

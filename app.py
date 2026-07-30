@@ -304,6 +304,7 @@ def _load_state_from_disk(slug: str) -> Optional[dict]:
 
     try:
         data = FunctionListParser().parse(file_to_load)
+        _apply_module_order_to_data(slug, data)
         metrics = DashboardEngine().compute_all(data)
         return {
             "data": data,
@@ -410,7 +411,10 @@ def _filter_parsed_data(
     filtered_rows = [r for r in data.rows if _match(r)]
 
     # Recompute all_* fields (nhưng giữ nguyên phases từ data gốc để chart cấu trúc không đổi)
-    all_modules = sorted({r.meta.get("module", "") for r in filtered_rows if r.meta.get("module")})
+    # Module: giữ thứ tự từ data.all_modules (đã apply module_order) — KHÔNG re-alpha.
+    from analyzer.module_order import sort_modules
+    present_modules = {r.meta.get("module", "") for r in filtered_rows if r.meta.get("module")}
+    all_modules = sort_modules(present_modules, data.all_modules)
     all_priorities = sorted({r.meta.get("priority", "") for r in filtered_rows if r.meta.get("priority")})
     all_complexities = sorted({r.meta.get("complexity", "") for r in filtered_rows if r.meta.get("complexity")})
     all_giai_doan = sorted({str(r.meta.get("giai_doan", "")) for r in filtered_rows if r.meta.get("giai_doan")})
@@ -585,6 +589,7 @@ def _upload_and_process(slug: str) -> tuple:
     try:
         parser = FunctionListParser()
         data = parser.parse(filepath)
+        _apply_module_order_to_data(slug, data)
 
         engine = DashboardEngine(long_duration_threshold=threshold)
         metrics = engine.compute_all(data)
@@ -848,6 +853,7 @@ def upload_confirm():
     try:
         parser_obj = FunctionListParser()
         data = parser_obj.parse(filepath, column_mapping=mapping or None)
+        _apply_module_order_to_data(slug, data)
         engine = DashboardEngine(long_duration_threshold=threshold)
         metrics = engine.compute_all(data)
 
@@ -2313,6 +2319,27 @@ def _project_dir_for(slug: str) -> str:
     return _project_mgr.get_project_folder(slug)
 
 
+def _apply_module_order_to_data(slug: str, data) -> None:
+    """Áp module_order.json lên ParsedData.all_modules (in-place)."""
+    from analyzer import project_store as ps
+    from analyzer.module_order import apply_module_order
+    order = ps.load_module_order(_project_dir_for(slug))
+    data.all_modules = apply_module_order(list(data.all_modules or []), order)
+
+
+def _recompute_metrics_with_module_order(slug: str) -> Optional[dict]:
+    """
+    Re-apply module order lên state đang cache + recompute metrics.
+    Gọi sau khi user lưu/reset thứ tự Module.
+    """
+    st = _get_state(slug)
+    if not st or st.get("data") is None:
+        return None
+    _apply_module_order_to_data(slug, st["data"])
+    st["metrics"] = DashboardEngine().compute_all(st["data"])
+    return st["metrics"]
+
+
 @app.route("/api/projects/<slug>/capacity", methods=["GET", "PUT"])
 def project_capacity(slug: str):
     from analyzer import project_store as ps
@@ -2379,6 +2406,74 @@ def project_section_order_reset(slug: str):
         return jsonify({"error": "Project không tồn tại"}), 404
     ps.reset_section_order(_project_dir_for(slug))
     return jsonify({"order": []})
+
+
+# ==========================================================================
+# Module order — thứ tự Module dùng chung toàn dashboard
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/module-order", methods=["GET", "POST", "PUT"])
+def project_module_order(slug: str):
+    """
+    GET  → {order: [...], detected: [...]}  (detected = modules trong data hiện tại)
+    POST/PUT → body {order: [TMS, HR, ...]} — lưu + recompute metrics in-memory.
+    """
+    from analyzer import project_store as ps
+    from analyzer.module_order import sort_modules
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    st = _get_state(slug)
+    detected: list[str] = []
+    if st and st.get("data") is not None:
+        detected = list(getattr(st["data"], "all_modules", []) or [])
+
+    if request.method == "GET":
+        saved = ps.load_module_order(folder)
+        # Trả order hiệu lực (saved + module mới alpha ở cuối) để UI hiển thị đủ
+        effective = sort_modules(detected, saved) if detected else list(saved)
+        return jsonify({
+            "order": saved,
+            "effective": effective,
+            "detected": detected,
+        })
+
+    body = request.get_json(silent=True) or {}
+    order = body.get("order") or body.get("module_order") or []
+    if not isinstance(order, list):
+        return jsonify({"error": "order phải là list"}), 400
+    saved = ps.save_module_order(folder, order)
+    metrics = _recompute_metrics_with_module_order(slug)
+    st2 = _get_state(slug)
+    detected_after: list[str] = []
+    if st2 and st2.get("data") is not None:
+        detected_after = list(getattr(st2["data"], "all_modules", []) or [])
+    return jsonify({
+        "order": saved,
+        "effective": detected_after or sort_modules(detected, saved),
+        "detected": detected_after or detected,
+        "metrics_updated": metrics is not None,
+    })
+
+
+@app.route("/api/projects/<slug>/module-order/reset", methods=["POST"])
+def project_module_order_reset(slug: str):
+    """Xoá module_order.json → alphabetical + recompute."""
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    ps.reset_module_order(_project_dir_for(slug))
+    metrics = _recompute_metrics_with_module_order(slug)
+    st = _get_state(slug)
+    detected: list[str] = []
+    if st and st.get("data") is not None:
+        detected = list(getattr(st["data"], "all_modules", []) or [])
+    return jsonify({
+        "order": [],
+        "effective": detected,
+        "detected": detected,
+        "metrics_updated": metrics is not None,
+    })
 
 
 # ==========================================================================

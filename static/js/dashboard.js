@@ -11296,6 +11296,8 @@ window.openSettingsModal = async function () {
     _lanRefresh().catch(err => console.warn("[lan load]", err));
     // T-AA — load archive settings + snapshot list
     _archRefresh().catch(err => console.warn("[archive load]", err));
+    // Thứ tự Module
+    _modOrderRefresh().catch(err => console.warn("[module-order load]", err));
     modal.classList.remove("hidden");
     modal.classList.add("flex");
 };
@@ -11305,6 +11307,7 @@ window.closeSettingsModal = function () {
     if (!modal) return;
     modal.classList.add("hidden");
     modal.classList.remove("flex");
+    _modOrderDestroySortable();
 };
 
 function _fillSettingsForm(s) {
@@ -11398,6 +11401,149 @@ window.saveSettings = async function () {
         closeSettingsModal();
     } catch (err) {
         showToast("Lưu cài đặt lỗi: " + err.message, "red");
+    }
+};
+
+
+// ========================================================================
+// Thứ tự Module — Settings drag-drop (persist module_order.json)
+// ========================================================================
+let _modOrderSortable = null;
+
+async function _modOrderRefresh() {
+    const list = document.getElementById("moduleOrderList");
+    const hint = document.getElementById("moduleOrderHint");
+    if (!list || !currentProjectSlug) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/module-order`);
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        let modules = Array.isArray(data.effective) && data.effective.length
+            ? data.effective
+            : (Array.isArray(data.detected) && data.detected.length
+                ? data.detected
+                : (structureCache?.all_modules
+                    || metricsData?.structure?.all_modules
+                    || []));
+        if (!modules.length) {
+            list.innerHTML = `<li class="text-gray-400 italic text-xs py-2 text-center">Chưa có dữ liệu Module — upload Function List trước.</li>`;
+            if (hint) hint.textContent = "";
+            _modOrderDestroySortable();
+            return;
+        }
+        const saved = Array.isArray(data.order) ? data.order : [];
+        list.innerHTML = modules.map((m, i) => `
+            <li class="mod-order-item flex items-center gap-2 px-2 py-1.5 rounded border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 cursor-grab active:cursor-grabbing"
+                data-module="${escapeAttr(m)}">
+                <span class="text-gray-400 select-none" aria-hidden="true">⠿</span>
+                <span class="mod-order-rank text-[11px] font-mono text-gray-500 w-6">${i + 1}.</span>
+                <span class="flex-1 font-medium text-gray-800 dark:text-gray-100">${escapeHtml(m)}</span>
+            </li>`).join("");
+        if (hint) {
+            hint.textContent = saved.length
+                ? `Đã cấu hình ${saved.length} module · kéo thả rồi bấm «Lưu thứ tự».`
+                : `Chưa cấu hình (đang alphabetical) · kéo thả rồi bấm «Lưu thứ tự».`;
+        }
+        _modOrderInitSortable();
+    } catch (err) {
+        console.error("[_modOrderRefresh]", err);
+        list.innerHTML = `<li class="text-red-500 text-xs py-2 text-center">Không tải được thứ tự Module</li>`;
+    }
+}
+
+function _modOrderReadDom() {
+    return Array.from(document.querySelectorAll("#moduleOrderList .mod-order-item"))
+        .map(el => el.dataset.module)
+        .filter(Boolean);
+}
+
+function _modOrderRenumber() {
+    document.querySelectorAll("#moduleOrderList .mod-order-item .mod-order-rank").forEach((el, i) => {
+        el.textContent = `${i + 1}.`;
+    });
+}
+
+function _modOrderInitSortable() {
+    _modOrderDestroySortable();
+    const list = document.getElementById("moduleOrderList");
+    if (!list || typeof Sortable === "undefined") return;
+    if (!list.querySelector(".mod-order-item")) return;
+    _modOrderSortable = Sortable.create(list, {
+        animation: 150,
+        ghostClass: "sortable-ghost",
+        handle: ".mod-order-item",
+        onEnd: () => _modOrderRenumber(),
+    });
+}
+
+function _modOrderDestroySortable() {
+    if (_modOrderSortable) {
+        try { _modOrderSortable.destroy(); } catch (e) { /* ignore */ }
+        _modOrderSortable = null;
+    }
+}
+
+window._modOrderAlphabetical = function () {
+    const list = document.getElementById("moduleOrderList");
+    if (!list) return;
+    const items = Array.from(list.querySelectorAll(".mod-order-item"));
+    items.sort((a, b) => (a.dataset.module || "").localeCompare(b.dataset.module || "", "vi"));
+    items.forEach(el => list.appendChild(el));
+    _modOrderRenumber();
+    showToast("Đã sắp A→Z trên list — bấm «Lưu thứ tự» để áp dụng", "blue");
+};
+
+window._modOrderSave = async function () {
+    if (!currentProjectSlug) return;
+    const order = _modOrderReadDom();
+    if (!order.length) {
+        showToast("Chưa có module để lưu", "red");
+        return;
+    }
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/module-order`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ order }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        if (structureCache && Array.isArray(data.effective)) {
+            structureCache.all_modules = data.effective;
+        }
+        showToast("Đã lưu thứ tự Module", "green");
+        await _modOrderRefresh();
+        await tryLoadDashboardForCurrent(true);
+        if (structureCache && Array.isArray(data.effective)) {
+            structureCache.all_modules = data.effective;
+            if (typeof populateGlobalFilters === "function") populateGlobalFilters();
+        }
+    } catch (err) {
+        showToast("Lưu thứ tự Module lỗi: " + err.message, "red");
+    }
+};
+
+window._modOrderReset = async function () {
+    if (!currentProjectSlug) return;
+    if (!confirm("Reset thứ tự Module về alphabetical?")) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/module-order/reset`, {
+            method: "POST",
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        if (structureCache && Array.isArray(data.effective)) {
+            structureCache.all_modules = data.effective;
+        }
+        showToast("Đã reset thứ tự Module (alphabetical)", "green");
+        await _modOrderRefresh();
+        await tryLoadDashboardForCurrent(true);
+        if (structureCache && Array.isArray(data.effective)) {
+            structureCache.all_modules = data.effective;
+            if (typeof populateGlobalFilters === "function") populateGlobalFilters();
+        }
+    } catch (err) {
+        showToast("Reset thứ tự Module lỗi: " + err.message, "red");
     }
 };
 

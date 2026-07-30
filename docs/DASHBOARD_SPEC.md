@@ -249,9 +249,12 @@ Xem `ARCHITECTURE.md` phần `risk_scorer.py` để hiểu công thức trọng 
 Group function theo `meta.quy_trinh`:
 - Total function per process
 - % Closed
-- Modules liên quan
+- Modules liên quan (list theo `module_order`)
 - Overdue count
 - Top 3 PIC chính
+
+**Sort:** theo module rank (`module_order` / `all_modules`) rồi tên process
+— tiles group theo module thay vì theo size.
 
 **Layout:** custom flexbox treemap-like — chiều rộng cell proportional với total function, chiều cao cố định.
 
@@ -512,9 +515,18 @@ Modal có:
 
 ### Settings modal (T29)
 - Nút "⚙️ Cài đặt" trong header sát nút Trình chiếu.
-- 6 panel: `Ngưỡng % tiến độ` · `Ngưỡng Aging WIP` · `Nhắc upload định kỳ`
-  · `Ngưỡng SLA (theo priority)` · `Lịch sinh Digest tự động` · `Hiển thị
-  section dashboard`.
+- Panel: `Ngưỡng % tiến độ` · `Ngưỡng Aging WIP` · `Nhắc upload định kỳ`
+  · `Ngưỡng SLA (theo priority)` · `Lịch sinh Digest tự động` ·
+  **`Thứ tự Module`** · Public API · LAN · `Hiển thị section dashboard` · Archive.
+- Panel **Thứ tự Module**:
+  - List module detected từ data hiện tại + số thứ tự; kéo thả SortableJS.
+  - Nút `🔤 Alphabetical` (chỉ sắp list UI), `↺ Reset` (xoá
+    `module_order.json` → alphabetical), `💾 Lưu thứ tự`.
+  - Persist: `uploads/projects/<slug>/module_order.json` = `{"order":[…]}`.
+  - Sau save/reset: recompute metrics in-memory + reload dashboard; mọi chỗ
+    list/sort theo module (filter dropdown, Module Overview, Matrix,
+    Process tiles, Gantt Calendar, export) dùng cùng comparator.
+  - Default chưa config: alphabetical.
 - Panel **Hiển thị** (Task Cấu hình ẩn/hiện, bổ sung sau T29):
   - Metadata `_VISIBILITY_GROUPS` gom section theo 5 nhóm: `📊 Tổng quan`,
     `📈 Tiến độ & Timeline`, `🔬 Phân tích chuyên sâu`, `🚨 Danh sách &
