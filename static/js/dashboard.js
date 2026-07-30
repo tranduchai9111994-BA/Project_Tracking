@@ -10776,6 +10776,8 @@ window.openSettingsModal = async function () {
     // Render panel Hiển thị dựa trên _chartConfigsCache hiện tại — cache đã
     // load sẵn khi vào dashboard (loadChartConfigs) nên không cần fetch lại.
     _renderVisibilityPanel();
+    // T33 Task 2C — load public API tokens (best-effort, không block modal)
+    _pubTokRefresh().catch(err => console.warn("[pubtok load]", err));
     modal.classList.remove("hidden");
     modal.classList.add("flex");
 };
@@ -11035,6 +11037,397 @@ function _applyVisibilityMapping(map) {
         }
     }
     if (typeof _renderHiddenSectionPills === "function") _renderHiddenSectionPills();
+}
+
+
+// ========================================================================
+// T33 Task 2C — PUBLIC API TOKEN MANAGER (Settings tab "🌐 Public API")
+// ========================================================================
+// State cục bộ:
+//   _pubTokState.scopes       — metadata multi-select scope từ BE
+//   _pubTokState.tokens       — list token đã mask
+//   _pubTokState.selected     — Set scope key user đang chọn (form create)
+//   _pubTokState.lastNewToken — plaintext token vừa tạo (chỉ trong RAM,
+//                               không lưu localStorage)
+//   _pubTokState.snipTab      — "rest" | "iframe" | "png"
+//   _pubTokState.snipChart    — chart_id đang preview cho iframe/PNG
+const _pubTokState = {
+    scopes: [],
+    tokens: [],
+    selected: new Set(),
+    lastNewToken: "",
+    snipTab: "rest",
+    snipChart: "module-overview",
+    // Tab riêng cho snippet-view modal (token cũ) — không share tab với new-token modal
+    snipViewTab: "rest",
+    snipViewChart: "module-overview",
+    viewTokenPrefix: "",  // prefix hiển thị trong snippet-view modal (label)
+    viewTokenName: "",
+};
+
+/** Load scope metadata + token list. Gọi khi mở settings modal. */
+async function _pubTokRefresh() {
+    if (!currentProjectSlug) return;
+    try {
+        // Fetch song song scope + tokens
+        const [rScopes, rTokens] = await Promise.all([
+            fetch(`/api/projects/${currentProjectSlug}/public-scopes`),
+            fetch(`/api/projects/${currentProjectSlug}/public-tokens`),
+        ]);
+        if (!rScopes.ok || !rTokens.ok) throw new Error("Load public-api settings fail");
+        const dScopes = await rScopes.json();
+        const dTokens = await rTokens.json();
+        _pubTokState.scopes = dScopes.scopes || [];
+        _pubTokState.tokens = dTokens.tokens || [];
+        _pubTokRenderList();
+        _pubTokRenderScopes();
+        _pubTokFillChartOptions();
+    } catch (err) {
+        console.error("[_pubTokRefresh]", err);
+        showToast("Không tải được Public API: " + err.message, "red");
+    }
+}
+window._pubTokRefresh = _pubTokRefresh;
+
+/** Render bảng token — mỗi row có nút Revoke + Xem snippet. */
+function _pubTokRenderList() {
+    const tbody = document.getElementById("pubTokListBody");
+    const emptyMsg = document.getElementById("pubTokListEmpty");
+    const table = document.getElementById("pubTokListTable");
+    if (!tbody) return;
+    const toks = _pubTokState.tokens || [];
+    if (toks.length === 0) {
+        tbody.innerHTML = "";
+        if (emptyMsg) emptyMsg.classList.remove("hidden");
+        if (table) table.classList.add("hidden");
+        return;
+    }
+    if (emptyMsg) emptyMsg.classList.add("hidden");
+    if (table) table.classList.remove("hidden");
+    tbody.innerHTML = toks.map(t => {
+        const scopeTxt = (t.scope || []).length > 3
+            ? `${t.scope.slice(0, 3).join(", ")} + ${t.scope.length - 3}…`
+            : (t.scope || []).join(", ");
+        const revokedBadge = t.revoked
+            ? `<span class="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded">Revoked</span>`
+            : `<span class="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded">Active</span>`;
+        const created = t.created_at ? t.created_at.slice(0, 10) : "-";
+        const lastUsed = t.last_used_at ? t.last_used_at.slice(0, 10) : "chưa dùng";
+        const actions = t.revoked
+            ? `<button type="button" onclick="_pubTokViewSnippets('${escapeAttr(t.token_prefix)}','${escapeAttr(t.name)}')" class="text-[11px] px-2 py-0.5 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500" title="Xem lại snippet">🔗</button>`
+            : `
+                <button type="button" onclick="_pubTokViewSnippets('${escapeAttr(t.token_prefix)}','${escapeAttr(t.name)}')" class="text-[11px] px-2 py-0.5 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500 mr-1" title="Xem snippet copy-ready">🔗</button>
+                <button type="button" onclick="_pubTokRevoke('${t.id}','${escapeAttr(t.name)}')" class="text-[11px] px-2 py-0.5 border border-red-300 text-red-600 rounded hover:bg-red-50 dark:hover:bg-red-900/30" title="Revoke token này">🚫</button>
+            `;
+        return `<tr class="${t.revoked ? 'opacity-60' : ''} border-t dark:border-slate-600">
+            <td class="px-2 py-1">${escapeHtml(t.name)} ${revokedBadge}</td>
+            <td class="px-2 py-1 font-mono text-[10px]">${escapeHtml(t.token_prefix || '')}…</td>
+            <td class="px-2 py-1 text-[10px] text-gray-600 dark:text-gray-400" title="${escapeAttr((t.scope || []).join(', '))}">${escapeHtml(scopeTxt)}</td>
+            <td class="px-2 py-1 text-[11px]">${created}</td>
+            <td class="px-2 py-1 text-[11px]">${lastUsed}</td>
+            <td class="px-2 py-1 text-right whitespace-nowrap">${actions}</td>
+        </tr>`;
+    }).join("");
+}
+
+/** Render grid checkbox scope cho form create. */
+function _pubTokRenderScopes() {
+    const grid = document.getElementById("pubTokScopeGrid");
+    if (!grid) return;
+    const scopes = _pubTokState.scopes || [];
+    grid.innerHTML = scopes.map(s => {
+        const checked = _pubTokState.selected.has(s.key) ? "checked" : "";
+        const special = s.key === "*" ? "font-semibold text-blue-700 dark:text-blue-400" : "";
+        return `<label class="flex items-center gap-1.5 text-xs ${special} cursor-pointer">
+            <input type="checkbox" data-scope-key="${escapeAttr(s.key)}" ${checked}
+                   onchange="_pubTokOnScopeToggle(this)" class="scale-90">
+            <span title="${escapeAttr(s.key)}">${escapeHtml(s.label || s.key)}</span>
+        </label>`;
+    }).join("");
+}
+
+/** Populate select chart_id trong 2 modal snippet (dùng chung metadata). */
+function _pubTokFillChartOptions() {
+    const CHART_KEYS = (_pubTokState.scopes || [])
+        .map(s => s.key)
+        .filter(k => k !== "*" && k !== "summary" && k !== "functions");
+    const html = CHART_KEYS.map(k => `<option value="${escapeAttr(k)}">${escapeHtml(k)}</option>`).join("");
+    ["pubTokSnipChart", "pubTokSnipViewChart"].forEach(id => {
+        const sel = document.getElementById(id);
+        if (sel && !sel.dataset.filled) {
+            sel.innerHTML = html;
+            sel.dataset.filled = "1";
+            // Set default
+            if (CHART_KEYS.includes(_pubTokState.snipChart)) sel.value = _pubTokState.snipChart;
+        }
+    });
+}
+
+window._pubTokOnScopeToggle = function (checkbox) {
+    const key = checkbox.dataset.scopeKey;
+    if (checkbox.checked) _pubTokState.selected.add(key);
+    else _pubTokState.selected.delete(key);
+};
+
+window._pubTokScopeAll = function () {
+    _pubTokState.selected = new Set(
+        (_pubTokState.scopes || []).map(s => s.key).filter(k => k !== "*")
+    );
+    _pubTokRenderScopes();
+};
+
+window._pubTokScopeNone = function () {
+    _pubTokState.selected.clear();
+    _pubTokRenderScopes();
+};
+
+window._pubTokScopeWildcard = function () {
+    _pubTokState.selected = new Set(["*"]);
+    _pubTokRenderScopes();
+};
+
+window._pubTokToggleCreate = function (show) {
+    const form = document.getElementById("pubTokCreateForm");
+    const openBtn = document.getElementById("pubTokCreateOpenBtn");
+    if (!form || !openBtn) return;
+    if (show) {
+        form.classList.remove("hidden");
+        openBtn.classList.add("hidden");
+        // Reset form
+        document.getElementById("pubTokName").value = "";
+        _pubTokState.selected.clear();
+        _pubTokRenderScopes();
+    } else {
+        form.classList.add("hidden");
+        openBtn.classList.remove("hidden");
+    }
+};
+
+window._pubTokSubmitCreate = async function () {
+    const name = (document.getElementById("pubTokName")?.value || "").trim();
+    if (!name) {
+        showToast("Nhập tên token", "red");
+        return;
+    }
+    const scope = Array.from(_pubTokState.selected);
+    if (scope.length === 0) {
+        showToast("Chọn ít nhất 1 scope (hoặc '🌟 Wildcard *')", "red");
+        return;
+    }
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/public-tokens`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, scope }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+        // Đóng form + show modal token
+        _pubTokToggleCreate(false);
+        _pubTokState.lastNewToken = d.token || "";
+        _pubTokState.viewTokenPrefix = (d.entry && d.entry.token_prefix) || "";
+        _pubTokState.viewTokenName = (d.entry && d.entry.name) || name;
+        // Refresh list
+        await _pubTokRefresh();
+        _pubTokOpenNewModal();
+    } catch (err) {
+        console.error("[_pubTokSubmitCreate]", err);
+        showToast("Tạo token lỗi: " + err.message, "red");
+    }
+};
+
+window._pubTokRevoke = async function (tokenId, name) {
+    if (!confirm(`Revoke token "${name}"?\nToken này sẽ không dùng được nữa.`)) return;
+    try {
+        const r = await fetch(
+            `/api/projects/${currentProjectSlug}/public-tokens/${encodeURIComponent(tokenId)}`,
+            { method: "DELETE" },
+        );
+        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+        showToast(`Đã revoke token "${name}"`);
+        await _pubTokRefresh();
+    } catch (err) {
+        showToast("Revoke lỗi: " + err.message, "red");
+    }
+};
+
+// --- New-token modal (hiển 1 lần plaintext + snippet) ---
+
+function _pubTokOpenNewModal() {
+    const modal = document.getElementById("pubTokNewModal");
+    if (!modal) return;
+    document.getElementById("pubTokNewValue").value = _pubTokState.lastNewToken;
+    _pubTokState.snipTab = "rest";
+    _pubTokSetTabActive("rest", false);
+    _pubTokSnipUpdate(false);
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+}
+
+window._pubTokCloseNewModal = function () {
+    const modal = document.getElementById("pubTokNewModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+    // Xoá plaintext khỏi RAM state — không lưu, không log
+    _pubTokState.lastNewToken = "";
+    const input = document.getElementById("pubTokNewValue");
+    if (input) input.value = "";
+};
+
+window._pubTokCopyValue = async function () {
+    const input = document.getElementById("pubTokNewValue");
+    if (!input) return;
+    try {
+        await navigator.clipboard.writeText(input.value);
+        showToast("Đã copy token — nhớ dán vào password manager");
+    } catch (e) {
+        input.select();
+        document.execCommand("copy");
+        showToast("Đã copy (fallback)");
+    }
+};
+
+// --- Snippet view modal (cho token cũ, không có plaintext) ---
+
+window._pubTokViewSnippets = function (tokenPrefix, name) {
+    _pubTokState.viewTokenPrefix = tokenPrefix || "";
+    _pubTokState.viewTokenName = name || "";
+    const modal = document.getElementById("pubTokSnipModal");
+    if (!modal) return;
+    const nameEl = document.getElementById("pubTokSnipTokenName");
+    if (nameEl) nameEl.textContent = name || "";
+    _pubTokState.snipViewTab = "rest";
+    _pubTokSetTabActive("rest", true);
+    _pubTokSnipUpdate(true);
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+};
+
+window._pubTokCloseSnipModal = function () {
+    const modal = document.getElementById("pubTokSnipModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+};
+
+// --- Snippet tabs + generate ---
+
+window._pubTokSnipTab = function (tab, isView) {
+    if (isView) {
+        _pubTokState.snipViewTab = tab;
+    } else {
+        _pubTokState.snipTab = tab;
+    }
+    _pubTokSetTabActive(tab, isView);
+    _pubTokSnipUpdate(isView);
+};
+
+function _pubTokSetTabActive(tab, isView) {
+    const sel = isView ? "[data-snip-view-tab]" : "[data-snip-tab]";
+    document.querySelectorAll(sel).forEach(btn => {
+        const active = btn.dataset[isView ? "snipViewTab" : "snipTab"] === tab;
+        btn.classList.toggle("border-blue-600", active);
+        btn.classList.toggle("text-blue-600", active);
+        btn.classList.toggle("font-semibold", active);
+        btn.classList.toggle("border-transparent", !active);
+        btn.classList.toggle("text-gray-500", !active);
+    });
+    // Chart selector chỉ hiện với iframe / png
+    const showChart = tab === "iframe" || tab === "png";
+    const label = document.getElementById(isView ? "pubTokSnipViewChartLabel" : "pubTokSnipChartLabel");
+    if (label) label.style.display = showChart ? "" : "none";
+}
+
+/** Build snippet dựa vào tab + chart_id + host. */
+function _pubTokBuildSnippet(tab, chartId, tokenValue) {
+    const host = window.location.origin;   // VD http://localhost:5000
+    const slug = currentProjectSlug || "<slug>";
+    const tok = tokenValue || "pub_YOUR_TOKEN";
+    if (tab === "rest") {
+        return [
+            `# Bash / curl`,
+            `curl -H "X-API-Key: ${tok}" \\`,
+            `  "${host}/public/api/v1/projects/${slug}/summary"`,
+            ``,
+            `# PowerShell`,
+            `$headers = @{"X-API-Key" = "${tok}"}`,
+            `Invoke-RestMethod -Uri "${host}/public/api/v1/projects/${slug}/summary" -Headers $headers`,
+            ``,
+            `# Chart cụ thể (thay <chart_id>)`,
+            `curl -H "X-API-Key: ${tok}" \\`,
+            `  "${host}/public/api/v1/projects/${slug}/charts/${chartId || 'module-overview'}"`,
+            ``,
+            `# Danh sách function (pagination)`,
+            `curl -H "X-API-Key: ${tok}" \\`,
+            `  "${host}/public/api/v1/projects/${slug}/functions?page=1&size=50"`,
+        ].join("\n");
+    }
+    if (tab === "iframe") {
+        return `<iframe
+  src="${host}/embed/${slug}/${chartId || 'module-overview'}?token=${tok}"
+  width="800" height="400"
+  frameborder="0"
+  title="iHRP Chart"></iframe>
+
+<!-- Tùy chọn: nền trong suốt -->
+<iframe
+  src="${host}/embed/${slug}/${chartId || 'module-overview'}?token=${tok}&bg=transparent"
+  width="800" height="400"
+  frameborder="0"
+  style="background: transparent"></iframe>`;
+    }
+    if (tab === "png") {
+        return `<!-- Ảnh PNG snapshot (Playwright cần cài trên server) -->
+<img src="${host}/public/api/v1/projects/${slug}/charts/${chartId || 'module-overview'}/image?w=800&h=400&token=${tok}"
+     alt="${chartId || 'module-overview'}"
+     width="800" height="400" />
+
+<!-- Word/email: tải xuống trực tiếp -->
+<a href="${host}/public/api/v1/projects/${slug}/charts/${chartId || 'module-overview'}/image?w=1200&h=600&token=${tok}"
+   download="${chartId || 'module-overview'}.png">Tải PNG (1200×600)</a>`;
+    }
+    return "";
+}
+
+window._pubTokSnipUpdate = function (isView) {
+    const tab = isView ? _pubTokState.snipViewTab : _pubTokState.snipTab;
+    const chartSel = document.getElementById(isView ? "pubTokSnipViewChart" : "pubTokSnipChart");
+    const chartId = chartSel?.value || "module-overview";
+    if (isView) _pubTokState.snipViewChart = chartId;
+    else _pubTokState.snipChart = chartId;
+    const tokenValue = isView ? "" : _pubTokState.lastNewToken;
+    const body = _pubTokBuildSnippet(tab, chartId, tokenValue);
+    const el = document.getElementById(isView ? "pubTokSnipViewBody" : "pubTokSnipBody");
+    if (el) el.textContent = body;
+};
+
+window._pubTokCopySnippet = async function (isView) {
+    const el = document.getElementById(isView ? "pubTokSnipViewBody" : "pubTokSnipBody");
+    if (!el) return;
+    try {
+        await navigator.clipboard.writeText(el.textContent);
+        showToast("Đã copy snippet");
+    } catch (e) {
+        const range = document.createRange();
+        range.selectNode(el);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        document.execCommand("copy");
+        showToast("Đã copy (fallback)");
+    }
+};
+
+// --- Helper escape (nếu chưa có escapeAttr trong global) ---
+if (typeof window.escapeAttr !== "function") {
+    window.escapeAttr = function (s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    };
 }
 
 

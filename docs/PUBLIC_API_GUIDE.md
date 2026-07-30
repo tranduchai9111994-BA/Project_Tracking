@@ -324,11 +324,32 @@ Sau đó restart Flask. Endpoint /image sẽ hoạt động ngay.
 
 ---
 
-## 12. Roadmap
+## 12. Settings tab "Public API" (Task 2C)
+
+Không cần dùng `curl` — mở app → nút ⚙️ **Cài đặt** → cuộn xuống section
+🌐 **Public API**:
+
+- Bảng token đã tạo (Name / Prefix / Scope / Ngày tạo / Dùng cuối).
+- Nút **➕ Tạo token mới**: nhập Name + tick scope (hoặc bấm 🌟 Wildcard `*`).
+- Sau khi tạo, modal hiện token **1 lần** với:
+  - Nút 📋 Copy token
+  - 3 tab snippet copy-ready: **REST** (curl + PowerShell), **iframe**
+    (HTML tag), **PNG** (img tag).
+  - Chart selector cho iframe/PNG snippet.
+- Nút 🔗 mỗi row: xem lại snippet cho token cũ (dùng placeholder
+  `pub_YOUR_TOKEN` — thay bằng token bạn đã lưu).
+- Nút 🚫 mỗi row: revoke token (idempotent, giữ audit trail).
+
+Toàn bộ non-tech friendly — không cần vào terminal.
+
+---
+
+## 13. Roadmap
 
 - ✅ **Task 2A** — REST API + token CRUD + rate limit.
 - ✅ **Task 2B** — iframe embed + PNG snapshot (Playwright).
-- 🚧 **Task 2C** — Settings tab "Public API" với snippet copy UI.
+- ✅ **Task 2C** — Settings tab "Public API" với snippet copy UI.
 - 💭 Redis-backed rate limit cho multi-worker.
 - 💭 IP whitelist per-token.
 - 💭 Signed URL (JWT) cho time-limited access.
+- 💭 Token expiry date (tự động revoke sau N ngày).

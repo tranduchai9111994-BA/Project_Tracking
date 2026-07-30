@@ -854,7 +854,49 @@ mà không cần login app chính. Xem đầy đủ ở `docs/PUBLIC_API_GUIDE.m
     scope xem ảnh cached giống nhau; verify vẫn chạy trước khi serve nên
     revoke token vẫn hoạt động.
 
-### Task 2C (planned) — Settings tab "🌐 Public API"
+### Task 2C — Settings tab "🌐 Public API" (đã ship)
 
-Tab mới trong `#settingsModal`: table token + form create (multi-select scope)
-+ modal show token 1 lần + snippet copy 3 tab (REST / iframe / PNG).
+Section mới trong `#settingsModal` (giữa "🎯 SLA" và "🎛️ Hiển thị section"):
+
+- **Bảng token**: cột Name | Prefix (`pub_xxxxxxxx…`) | Scope (compact
+  `a, b, c + N…`) | Ngày tạo | Dùng cuối | Actions (🔗 Xem snippet /
+  🚫 Revoke). Badge Active/Revoked ngay cạnh name. Empty state message
+  "Chưa có token nào".
+
+- **Form create** (toggle inline): input name + grid multi-select scope
+  với 3 quick-action (✔ Tất cả / ✖ Bỏ hết / 🌟 Wildcard `*`). Grid render
+  từ metadata `/api/projects/<slug>/public-scopes`.
+
+- **New-token modal (`#pubTokNewModal`)** — auto mở sau khi tạo:
+  - Warning "Token chỉ hiển thị 1 lần" (yellow banner).
+  - Input readonly + nút 📋 Copy (dùng `navigator.clipboard`, fallback
+    `document.execCommand("copy")`).
+  - 3 tab snippet: **🌐 REST** (curl + PowerShell + chart/functions),
+    **🖼 iframe** (`<iframe src=".../embed/..."`), **🖼 PNG**
+    (`<img src=".../image?w=&h=&token="`). Snippet build runtime dùng
+    `window.location.origin` + `currentProjectSlug` + token vừa tạo.
+  - Chart selector (chỉ hiện với iframe/PNG) — populate từ scope metadata
+    filter `key != '*'/summary/functions`.
+  - Nút "✔ Đã lưu — Đóng" clear plaintext khỏi RAM state.
+
+- **Snippet-view modal (`#pubTokSnipModal`)** — cho token cũ (đã revoke
+  hoặc không có plaintext):
+  - Placeholder `pub_YOUR_TOKEN` trong snippet — user tự thay bằng token
+    đã lưu.
+  - Cùng 3 tab REST/iframe/PNG.
+  - Message rõ "Token thực đã ẩn (server chỉ giữ hash)".
+
+- **State cục bộ** (`_pubTokState`):
+  - `scopes`, `tokens` — cache metadata.
+  - `selected` — Set scope key user chọn trong form.
+  - `lastNewToken` — plaintext vừa tạo (RAM only, xoá khi đóng modal).
+  - `snipTab` + `snipChart` (new-token) & `snipViewTab` + `snipViewChart`
+    (view modal) — separate state 2 modal.
+
+- **Hook**: `openSettingsModal` gọi `_pubTokRefresh()` best-effort
+  (không block modal, log warn nếu fail).
+
+- **Bảo mật FE**:
+  - Plaintext token KHÔNG được lưu vào localStorage / cookie / URL log.
+  - Modal đóng → `lastNewToken` = "" + input value = "".
+  - Snippet-view chỉ hiện placeholder — không expose token thật.

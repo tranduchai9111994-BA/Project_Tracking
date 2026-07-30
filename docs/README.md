@@ -187,8 +187,9 @@ Tình trạng roadmap:
   snapshot (`/public/api/v1/.../charts/<id>/image?w=&h=`). PNG dùng Playwright
   headless chromium (optional — cần `pip install playwright && python -m
   playwright install chromium` ~200MB; chưa cài → endpoint trả 503).
-- 🚧 **Task 2C** — Settings tab "🌐 Public API" với UI generate token +
-  snippet copy REST/iframe/PNG.
+- ✅ **Task 2C** — Settings tab "🌐 Public API" trong ⚙️ Cài đặt: bảng
+  token + form create (multi-select scope) + modal show token 1 lần với
+  3 tab snippet copy (REST/iframe/PNG) — non-tech friendly, không cần curl.
 
 Quick start (Task 2A):
 ```bash
