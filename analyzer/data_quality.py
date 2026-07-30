@@ -63,7 +63,27 @@ ISSUE_META: dict[str, dict[str, str]] = {
         "label": "Trùng Mã CN",
         "suggestion": "Đổi lại Mã CN để duy nhất — mỗi function 1 mã.",
     },
+    # U10 — phase overlap (Start/End chồng nhau giữa 2 phase cùng function)
+    "phase_overlap": {
+        "severity": "medium",
+        "label": "Phase overlap ngày",
+        "suggestion": "Điều chỉnh Start/End để 2 phase không chồng lịch (trừ khi cố ý song song).",
+    },
+    # U11 — Estimate MH lệch so với duration (ngày làm việc ≈ duration*8h)
+    "estimate_vs_duration": {
+        "severity": "low",
+        "label": "Estimate MH lệch duration",
+        "suggestion": "Đối chiếu Estimate MH với (End−Start) — lệch > 3× thường do nhập sai hoặc lệch cột.",
+    },
 }
+
+# Codes được gộp vào card «Bất thường» (đo được, dedupe ma_cn).
+ANOMALY_CODES = frozenset({
+    "phase_overlap",
+    "estimate_vs_duration",
+    "end_before_start",
+    "duplicate_ma_cn",
+})
 
 
 def _norm_status(s: Any) -> str:
@@ -257,24 +277,80 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
                         "suggestion": ISSUE_META["blank_pic"]["suggestion"],
                     })
 
+            # U11 — Estimate MH vs duration (chỉ khi có cả Start+End+Estimate)
+            if (
+                pd.start_date and pd.end_date and pd.end_date >= pd.start_date
+                and pd.estimate_mh is not None and pd.estimate_mh > 0
+            ):
+                duration_days = (pd.end_date - pd.start_date).days + 1
+                # Quy đổi thô: 1 ngày làm ≈ 8 MH
+                expected_mh = duration_days * 8.0
+                ratio = pd.estimate_mh / expected_mh if expected_mh > 0 else 0
+                # Flag khi lệch > 3× (estimate quá lớn hoặc quá nhỏ so với khoảng ngày)
+                if ratio >= 3.0 or ratio <= (1.0 / 3.0):
+                    issues.append({
+                        "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                        "module": module, "phase": phase_name,
+                        "code": "estimate_vs_duration",
+                        "severity": ISSUE_META["estimate_vs_duration"]["severity"],
+                        "label": ISSUE_META["estimate_vs_duration"]["label"],
+                        "detail": (
+                            f"Estimate={pd.estimate_mh:g} MH vs duration={duration_days}d "
+                            f"(≈{expected_mh:g} MH @8h/d), ratio={ratio:.1f}×"
+                        ),
+                        "suggestion": ISSUE_META["estimate_vs_duration"]["suggestion"],
+                    })
+
+        # ---- U10: Phase overlap trong cùng 1 function ----
+        # So sánh mọi cặp phase có đủ Start+End; báo 1 issue / cặp (dedupe ma_cn ở summary).
+        phase_items = [
+            (pname, pd) for pname, pd in row.phases.items()
+            if pd.start_date and pd.end_date and pd.end_date >= pd.start_date
+        ]
+        for i in range(len(phase_items)):
+            for j in range(i + 1, len(phase_items)):
+                n1, p1 = phase_items[i]
+                n2, p2 = phase_items[j]
+                # Overlap inclusive: start1 <= end2 AND start2 <= end1
+                if p1.start_date <= p2.end_date and p2.start_date <= p1.end_date:
+                    issues.append({
+                        "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                        "module": module,
+                        "phase": f"{n1} ∩ {n2}",
+                        "code": "phase_overlap",
+                        "severity": ISSUE_META["phase_overlap"]["severity"],
+                        "label": ISSUE_META["phase_overlap"]["label"],
+                        "detail": (
+                            f"'{n1}' [{p1.start_date.isoformat()}→{p1.end_date.isoformat()}] "
+                            f"chồng '{n2}' [{p2.start_date.isoformat()}→{p2.end_date.isoformat()}]"
+                        ),
+                        "suggestion": ISSUE_META["phase_overlap"]["suggestion"],
+                    })
+
     # === 3. Summary ===
     by_severity: Counter = Counter()
     by_code: Counter = Counter()
     affected_row_nums: set[int] = set()
-    # Dedup function cho missing_deadline (card summary đếm theo function)
+    # Dedup function cho missing_deadline / anomaly (card summary đếm theo function)
     missing_deadline_keys: set[str] = set()
+    anomaly_keys: set[str] = set()
+    anomaly_codes = ANOMALY_CODES
     for it in issues:
         by_severity[it["severity"]] += 1
         by_code[it["code"]] += 1
         affected_row_nums.add(it["row_num"])
+        key = (it.get("ma_cn") or "").strip() or f"row:{it['row_num']}"
         if it["code"] == "missing_deadline":
-            key = (it.get("ma_cn") or "").strip() or f"row:{it['row_num']}"
             missing_deadline_keys.add(key)
+        if it["code"] in anomaly_codes:
+            anomaly_keys.add(key)
 
     total_rows = len(data.rows)
     affected = len(affected_row_nums)
     clean = max(0, total_rows - affected)
     clean_pct = round(100.0 * clean / total_rows, 1) if total_rows else 100.0
+
+    anomaly_records = sum(by_code.get(c, 0) for c in anomaly_codes)
 
     return {
         "issues": issues,
@@ -293,6 +369,10 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
             # Function unique thiếu End khi đang làm (dedupe ma_cn)
             "missing_deadline_count": len(missing_deadline_keys),
             "missing_deadline_records": by_code.get("missing_deadline", 0),
+            # Bất thường đo được (overlap / estimate / end<start / duplicate) — dedupe ma_cn
+            "anomaly_count": len(anomaly_keys),
+            "anomaly_records": anomaly_records,
+            "anomaly_codes": sorted(anomaly_codes),
         },
     }
 
@@ -315,4 +395,64 @@ def count_missing_deadlines(data: ParsedData) -> tuple[int, int]:
                 func_hit = True
         if func_hit:
             func_keys.add(ma_cn or f"row:{row.row_num}")
+    return len(func_keys), records
+
+
+def count_anomalies(data: ParsedData) -> tuple[int, int]:
+    """Đếm function/record bất thường (overlap / estimate / end<start / duplicate).
+
+    Lightweight scan (không gọi full compute_data_quality) để dùng ở summary card.
+
+    Returns:
+        (function_count, issue_records) — function dedupe theo ma_cn.
+    """
+    func_keys: set[str] = set()
+    records = 0
+
+    # Duplicate Mã CN
+    ma_cn_counter: Counter = Counter()
+    for row in data.rows:
+        mc = _row_ma_cn(row)
+        if mc:
+            ma_cn_counter[mc] += 1
+    for mc, n in ma_cn_counter.items():
+        if n > 1:
+            records += n
+            func_keys.add(mc)
+
+    for row in data.rows:
+        ma_cn = _row_ma_cn(row)
+        key = ma_cn or f"row:{row.row_num}"
+        hit = False
+
+        for _pname, pd in row.phases.items():
+            if pd.start_date and pd.end_date and pd.end_date < pd.start_date:
+                records += 1
+                hit = True
+            if (
+                pd.start_date and pd.end_date and pd.end_date >= pd.start_date
+                and pd.estimate_mh is not None and pd.estimate_mh > 0
+            ):
+                duration_days = (pd.end_date - pd.start_date).days + 1
+                expected_mh = duration_days * 8.0
+                ratio = pd.estimate_mh / expected_mh if expected_mh > 0 else 0
+                if ratio >= 3.0 or ratio <= (1.0 / 3.0):
+                    records += 1
+                    hit = True
+
+        phase_items = [
+            (pname, pd) for pname, pd in row.phases.items()
+            if pd.start_date and pd.end_date and pd.end_date >= pd.start_date
+        ]
+        for i in range(len(phase_items)):
+            for j in range(i + 1, len(phase_items)):
+                _n1, p1 = phase_items[i]
+                _n2, p2 = phase_items[j]
+                if p1.start_date <= p2.end_date and p2.start_date <= p1.end_date:
+                    records += 1
+                    hit = True
+
+        if hit:
+            func_keys.add(key)
+
     return len(func_keys), records

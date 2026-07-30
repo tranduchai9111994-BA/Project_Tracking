@@ -215,3 +215,48 @@ def test_data_quality_endpoint_respects_module_filter(flask_client, sample_xlsx_
     assert (filtered.get("summary") or {}).get("total_issues", 0) <= (
         all_payload.get("summary") or {}
     ).get("total_issues", 0)
+
+
+def test_phase_overlap_detected():
+    """Hai phase chồng ngày → phase_overlap."""
+    r = _mk_row(phases={
+        "Analysis": PhaseData(
+            start_date=date(2026, 1, 1), end_date=date(2026, 1, 20),
+            status="Closed", pics=["A"],
+        ),
+        "Dev": PhaseData(
+            start_date=date(2026, 1, 10), end_date=date(2026, 2, 1),
+            status="In-progress", pics=["B"],
+        ),
+    })
+    out = compute_data_quality(_mk_data([r]))
+    assert "phase_overlap" in [i["code"] for i in out["issues"]]
+    assert out["summary"]["anomaly_count"] >= 1
+
+
+def test_phase_no_overlap_adjacent():
+    """Phase liền kề không overlap."""
+    r = _mk_row(phases={
+        "Analysis": PhaseData(
+            start_date=date(2026, 1, 1), end_date=date(2026, 1, 10),
+            status="Closed", pics=["A"],
+        ),
+        "Dev": PhaseData(
+            start_date=date(2026, 1, 11), end_date=date(2026, 1, 20),
+            status="Closed", pics=["B"],
+        ),
+    })
+    out = compute_data_quality(_mk_data([r]))
+    assert "phase_overlap" not in [i["code"] for i in out["issues"]]
+
+
+def test_estimate_vs_duration_flagged():
+    """Estimate 800 MH trên 2 ngày → ratio > 3x → flag."""
+    r = _mk_row(phases={
+        "Dev": PhaseData(
+            start_date=date(2026, 1, 1), end_date=date(2026, 1, 2),
+            status="Closed", pics=["A"], estimate_mh=800.0,
+        ),
+    })
+    out = compute_data_quality(_mk_data([r]))
+    assert "estimate_vs_duration" in [i["code"] for i in out["issues"]]

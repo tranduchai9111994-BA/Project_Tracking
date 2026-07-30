@@ -74,14 +74,15 @@
         title="Ẩn/hiện menu section" aria-expanded="true" aria-controls="sidebarNav">◀</button>
 <nav id="sidebarNav" class="sidebar-nav no-print hidden">
     <!-- Nhóm A: Cảnh báo -->
-    <a href="#section-summary">Summary</a>
-    <a href="#section-overdue">Overdue</a>
-    <a href="#section-unassigned">Chưa PIC</a>
-    <a href="#section-stalled">Đình trệ</a>
-    <a href="#section-risk">Risk Score</a>
-    <a href="#section-aging-wip">Aging WIP</a>
-    <a href="#section-sla">SLA</a>
-    <a href="#section-dataquality">Data Quality</a>
+    <a href="#section-summary" data-i18n="nav.summary">Summary</a>
+    <a href="#section-overdue" data-i18n="nav.overdue">Overdue</a>
+    <a href="#section-unassigned" data-i18n="nav.unassigned">Chưa PIC</a>
+    <a href="#section-stalled" data-i18n="nav.stalled">Đình trệ</a>
+    <a href="#section-risk" data-i18n="nav.risk">Risk Score</a>
+    <a href="#section-aging-wip" data-i18n="nav.aging">Aging WIP</a>
+    <a href="#section-sla" data-i18n="nav.sla">SLA</a>
+    <a href="#section-dataquality" data-i18n="nav.dq">Data Quality</a>
+    <a href="#section-anomaly" data-i18n="nav.anomaly">Bất thường</a>
     <!-- Nhóm B: Tổng quan tiến độ -->
     <a href="#section-module">Module</a>
     <a href="#section-tasktype">Công việc</a>
@@ -118,7 +119,7 @@
     <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
         <div>
             <h1 class="text-xl font-bold">📊 iHRP Function List Tracker <span class="text-xs bg-white/20 px-2 py-0.5 rounded ml-1">V3</span></h1>
-            <p class="text-blue-200 text-xs mt-0.5">Dashboard theo dõi tiến độ dự án triển khai (multi-project · drill-down · global filter)</p>
+            <p class="text-blue-200 text-xs mt-0.5" data-i18n="app.subtitle">Dashboard theo dõi tiến độ dự án triển khai (multi-project · drill-down · global filter)</p>
         </div>
 
         <!-- Task 1: Function Traceability — tra cứu full lifecycle 1 chức năng.
@@ -180,12 +181,14 @@
                 <!-- Task 7: Xuất PDF báo cáo tuần -->
                 <button id="btnExportPdf" onclick="openPdfExportModal()"
                         class="bg-emerald-500/80 hover:bg-emerald-500 px-3 py-1.5 rounded text-sm font-semibold"
+                        data-i18n="btn.export_pdf"
                         title="Xuất PDF báo cáo tuần (client-side)">
                     📄 Xuất PDF
                 </button>
                 <!-- T34 Task 1: Xuất toàn bộ vấn đề (Excel multi-sheet) -->
                 <button id="btnExportAllIssues" onclick="exportAllIssues()"
                         class="bg-red-500/80 hover:bg-red-500 px-3 py-1.5 rounded text-sm font-semibold"
+                        data-i18n="btn.export_issues"
                         title="Xuất Excel 1 file chứa mọi loại vấn đề (Overdue + Chưa PIC + Đình trệ + High Risk + Aging WIP + Data Quality + Bookmark)">
                     📊 Xuất vấn đề
                 </button>
@@ -228,10 +231,15 @@
                 <!-- T29: Settings modal -->
                 <button id="btnSettings" onclick="openSettingsModal()"
                         class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
+                        data-i18n="btn.settings"
                         title="Cài đặt: thứ tự Module, threshold, aging WIP, digest, reminder…">
                     ⚙️ Cài đặt
                 </button>
             </div>
+            <!-- VI/EN language toggle -->
+            <button id="btnLangToggle" type="button" onclick="I18n.toggleLang()"
+                    class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm font-semibold"
+                    title="Switch language">EN</button>
             <button id="btnTheme" onclick="toggleTheme()"
                     class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm">
                 <span id="themeIcon">🌙</span>
@@ -763,6 +771,30 @@
                         <li class="text-gray-400 italic text-xs py-2 text-center">Chưa có dữ liệu Module — upload Function List trước.</li>
                     </ol>
                     <p id="moduleOrderHint" class="text-[11px] text-gray-500 mt-2"></p>
+                </section>
+
+                <!-- Language + retention (U26/U27) -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2" data-i18n="settings.lang">🌐 Ngôn ngữ giao diện</h4>
+                    <p class="text-xs text-gray-500 mb-3" data-i18n="settings.lang_hint">Áp dụng cho UI + tên sheet/header khi xuất Excel/PDF.</p>
+                    <div class="flex items-center gap-2">
+                        <select id="setUiLang" onchange="I18n.setLang(this.value)"
+                                class="border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600">
+                            <option value="vi">Tiếng Việt</option>
+                            <option value="en">English</option>
+                        </select>
+                    </div>
+                </section>
+
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2" data-i18n="settings.retention">🗄️ Số snapshot / lịch sử giữ</h4>
+                    <p class="text-xs text-gray-500 mb-3" data-i18n="settings.retention_hint">Giữ N bản snapshot + N dòng upload history gần nhất (mặc định 10).</p>
+                    <label class="flex items-center gap-2">
+                        <input type="number" id="setRetention" min="3" max="50" step="1"
+                               class="w-20 border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600"
+                               value="10">
+                        <span class="text-xs text-gray-500">bản</span>
+                    </label>
                 </section>
 
                 <!-- Upload reminder -->
@@ -2038,9 +2070,10 @@
 
         <!-- ============ NHÓM 1: EXECUTIVE ============ -->
 
-        <!-- Task 18: Sticky top block — wrap 5 summary cards + filter bar.
-             Có 2 mode: full (scrollY<200) / compact (scrollY>=200). Toggle
-             "🔼/🔽" thủ công có thể override auto. -->
+        <!-- Task 18: Sticky top block — wrap summary cards + filter bar.
+             Mode: full (scrollY<120) / compact (scrollY>=120). Toggle
+             "🔼/🔽" thủ công có thể override auto tạm thời.
+             Sticky top = --header-h (dưới header navy); compact = 1 hàng cards + filter slim. -->
         <div id="stickyTopBlock" class="sticky-top-block">
             <button id="stickyToggleBtn" type="button" onclick="_toggleStickyCompact()"
                     class="sticky-toggle-btn no-print" title="Thu gọn / mở rộng">🔼</button>
@@ -3527,6 +3560,8 @@
 
 <!-- Task 19: Palette centralized (LOAD TRƯỚC dashboard.js) -->
 <script src="/static/js/palette.js"></script>
+<!-- VI/EN i18n (LOAD TRƯỚC dashboard.js) -->
+<script src="/static/js/i18n.js?v={{ static_ver('js/i18n.js') }}"></script>
 <!-- T34 Task 4: Help content (LOAD TRƯỚC dashboard.js) -->
 <script src="/static/js/help_content.js?v={{ static_ver('js/help_content.js') }}"></script>
 <script src="/static/js/dashboard.js?v={{ static_ver('js/dashboard.js') }}"></script>

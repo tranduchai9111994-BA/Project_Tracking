@@ -184,8 +184,9 @@ class DashboardEngine:
             high_risk_count = sum(1 for r in risk_scores if r["risk_score"] >= 50)
 
         # ==== Missing deadline: WIP (active status) thiếu End — dedupe function ====
-        from analyzer.data_quality import count_missing_deadlines
+        from analyzer.data_quality import count_missing_deadlines, count_anomalies
         missing_deadline_count, missing_deadline_records = count_missing_deadlines(data)
+        anomaly_count, anomaly_records = count_anomalies(data)
 
         return {
             "total_functions": total,
@@ -202,6 +203,8 @@ class DashboardEngine:
             "high_risk_count": high_risk_count,
             "missing_deadline_count": missing_deadline_count,
             "missing_deadline_records": missing_deadline_records,
+            "anomaly_count": anomaly_count,
+            "anomaly_records": anomaly_records,
         }
 
     # ------------------------------------------------------------------
