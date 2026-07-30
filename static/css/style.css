@@ -1930,15 +1930,17 @@ body.layout-edit #btnLayoutEdit {
 }
 
 
-/* Task 18: Sticky top block with auto-collapse */
+/* Task 18: Sticky top block with auto-collapse
+ * top = --header-h (?o b?ng JS) ?? không ch?ng header navy sticky (z-30).
+ * z-index 25 < header ? header luôn n?m trên; v?n sticky khi scroll. */
 .sticky-top-block {
     position: sticky;
-    top: 0;
-    z-index: 45;
+    top: var(--header-h, 64px);
+    z-index: 25;
     background: rgba(249, 250, 251, 0.96);
     backdrop-filter: blur(4px);
-    padding: 8px 0 0 0;
-    margin-bottom: 8px;
+    padding: 12px 0 10px 0;
+    margin-bottom: 12px;
     transition: box-shadow 0.3s, padding 0.3s;
 }
 html.dark .sticky-top-block { background: rgba(15, 23, 42, 0.94); }
@@ -1947,16 +1949,48 @@ html.dark .sticky-top-block { background: rgba(15, 23, 42, 0.94); }
     box-shadow: 0 6px 18px -8px rgba(0,0,0,0.18);
 }
 
-/* Compact mode: shrink cards + hide header, keep filter */
+/* Filter n?m trong sticky block ? t?t sticky riêng ?? tránh ??y/?è header */
+.sticky-top-block #section-globalfilter {
+    position: relative;
+    top: auto;
+    z-index: auto;
+}
+
+/* Summary grid: c?n hàng ??u, wrap ??p khi thi?u ch? */
+.sticky-top-block #section-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+    margin-bottom: 16px;
+}
+@media (min-width: 768px) {
+    .sticky-top-block #section-summary {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+@media (min-width: 1024px) {
+    .sticky-top-block #section-summary {
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+    }
+}
+.sticky-top-block #section-summary > div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+}
+
+/* Compact mode: shrink cards + hide header, keep filter ? 7 c?t = 7 cards */
 .sticky-top-block.compact #section-summary-header { display: none; }
 .sticky-top-block.compact #section-summary {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 6px;
-    margin-bottom: 6px;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 8px;
     transition: gap 0.3s;
 }
 .sticky-top-block.compact #section-summary > div {
-    padding: 4px 8px !important;
+    padding: 6px 8px !important;
     min-height: auto;
 }
 .sticky-top-block.compact #section-summary .text-2xl {
@@ -1972,16 +2006,21 @@ html.dark .sticky-top-block { background: rgba(15, 23, 42, 0.94); }
     display: inline-block;
     margin-right: 4px;
 }
+@media (max-width: 767px) {
+    .sticky-top-block.compact #section-summary {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
 .sticky-top-block.compact #section-globalfilter {
-    padding: 6px 10px;
+    padding: 8px 12px;
     margin-bottom: 0;
 }
 .sticky-top-block.compact #stickyUploadBtn { display: inline-flex !important; }
 
 .sticky-toggle-btn, .sticky-upload-btn {
     position: absolute;
-    top: 4px;
-    z-index: 46;
+    top: 10px;
+    z-index: 26;
     width: 28px;
     height: 28px;
     display: inline-flex;
