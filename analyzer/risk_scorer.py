@@ -117,7 +117,7 @@ def compute_risk_score(
             break
     if stalled:
         score += 10
-        factors.append("Bị stalled")
+        factors.append("Bị đình trệ")
         breakdown["stalled"] = 10
 
     # === Risk/Blocker note ===

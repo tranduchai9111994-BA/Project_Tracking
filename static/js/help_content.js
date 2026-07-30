@@ -383,7 +383,7 @@ const HELP_CONTENT = {
     },
     "stalled": {
         category: "Danh sách vấn đề",
-        title: "Pipeline / Task bị Đình trệ",
+        title: "Task bị đình trệ",
         purpose: "Phát hiện function bị kẹt giữa hai phase: phase trước đã Closed nhưng phase kế tiếp chưa ai bắt đầu — bottleneck chuyển giao.",
         steps: [
             "Với mỗi cặp phase liền nhau: phase trước Status = Closed, phase sau chưa có tiến triển → vào danh sách",

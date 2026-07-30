@@ -6631,7 +6631,7 @@ const CHART_HELP = {
         note: "Box plot theo phase và scatter Duration vs Estimate MH giúp nhận ra phase nào ước lượng lệch thực tế."
     },
     "section-stalled": {
-        title: "🔄 Pipeline / Task bị Đình trệ",
+        title: "🔄 Task bị đình trệ",
         meaning: "Function bị kẹt giữa hai phase: phase trước đã xong nhưng phase sau chưa ai bắt đầu.",
         logic: "Với mỗi cặp phase liền nhau: phase trước Status Closed, phase sau chưa có tiến triển → tính số ngày chờ = hôm nay − ngày End của phase trước.",
         example: "HR-045 Analysis Closed 01/07, Dev vẫn Open → chờ 27 ngày, cần escalate.",
@@ -6640,7 +6640,7 @@ const CHART_HELP = {
     "section-risk": {
         title: "⚡ Top 20 Functions rủi ro cao",
         meaning: "Xếp hạng function cần chú ý trước, gộp nhiều yếu tố rủi ro thành một điểm 0–100.",
-        logic: "Cộng điểm: Must-have +20 / Should-have +10; Complexity High +15 / Medium +5; có phase overdue +20; thêm +10 mỗi 7 ngày trễ (tối đa +30); phase active chưa có PIC +15; duration vượt ngưỡng +10; bị stalled +10; có ghi chú Risk/Blocker +5. Tổng bị chặn ở 100.",
+        logic: "Cộng điểm: Must-have +20 / Should-have +10; Complexity High +15 / Medium +5; có phase overdue +20; thêm +10 mỗi 7 ngày trễ (tối đa +30); phase active chưa có PIC +15; duration vượt ngưỡng +10; bị đình trệ +10; có ghi chú Risk/Blocker +5. Tổng bị chặn ở 100.",
         example: "Must-have (20) + High (15) + overdue 15 ngày (20+20) + chưa PIC (15) = 90 điểm.",
         note: "Card “High-risk” ở Summary đếm function từ 50 điểm trở lên."
     },
@@ -11394,7 +11394,7 @@ const _VISIBILITY_GROUPS = [
         items: [
             { id: "section-overdue",     label: "Danh sách Overdue",   desc: "Bảng function trễ theo phase" },
             { id: "section-unassigned",  label: "Chưa phân công",      desc: "Bảng task chưa gán PIC" },
-            { id: "section-stalled",     label: "Task đình trệ",       desc: "Task lâu không có cập nhật status" },
+            { id: "section-stalled",     label: "Task bị đình trệ",    desc: "Phase trước đã xong, phase sau chưa bắt đầu" },
             { id: "section-risk",        label: "High Risk",           desc: "Function rủi ro cao (Priority × Complexity × Overdue)" },
             { id: "section-aging-wip",   label: "Aging WIP",           desc: "Task In-progress quá lâu (vượt ngưỡng ngày)" },
             { id: "section-dataquality", label: "Data Quality",        desc: "Bảng dữ liệu thiếu / không hợp lệ để dọn dẹp Excel" },

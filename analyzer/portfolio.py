@@ -220,7 +220,7 @@ COMPARE_METRICS: list[tuple[str, str, bool]] = [
     ("total_overdue",        "Overdue",             False),
     ("unassigned_count",     "Chưa PIC",            False),
     ("high_risk_count",      "High risk",           False),
-    ("stalled_count",        "Stalled",             False),
+    ("stalled_count",        "Đình trệ",            False),
     ("modules_count",        "Số Module",           True),
     ("processes_count",      "Số Quy trình",        True),
     ("pics_count",           "Số PIC",              True),

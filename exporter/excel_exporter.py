@@ -296,7 +296,7 @@ def export_full_report(
     - Overdue_Report
     - Unassigned_Tasks
     - Long_Duration
-    - Stalled_Tasks
+    - Dinh_Tre
     - High_Risk
     """
     wb = openpyxl.Workbook()
@@ -424,8 +424,8 @@ def export_full_report(
         row_fill_fn=lambda ri, idx: _fill_by_days(duration_items[idx].get("duration_days", 0)),
     )
 
-    # === Sheet 5: Stalled_Tasks ===
-    ws = wb.create_sheet("Stalled_Tasks")
+    # === Sheet 5: Dinh_Tre ===
+    ws = wb.create_sheet("Dinh_Tre")
     columns = [
         ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
         ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
@@ -442,7 +442,7 @@ def export_full_report(
         for idx, i in enumerate(stalled_items)
     ]
     _write_sheet(
-        ws, "TASK BỊ STALLED (KẸT GIỮA 2 PHASE)", columns, data_rows,
+        ws, "TASK BỊ ĐÌNH TRỆ (KẸT GIỮA 2 PHASE)", columns, data_rows,
         row_fill_fn=lambda ri, idx: _fill_by_days(stalled_items[idx].get("wait_days", 0)),
     )
 
@@ -1377,7 +1377,7 @@ def export_chart(
         )
 
     elif chart == "stalled":
-        ws.title = "Stalled"
+        ws.title = "Dinh_Tre"
         items = (metrics.get("stalled_tasks") or {}).get("items") or []
         columns = [
             ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
@@ -1392,7 +1392,7 @@ def export_chart(
             ]
             for idx, i in enumerate(items)
         ]
-        _write_sheet(ws, "TASK BỊ STALLED", columns, data_rows, subtitle=sub)
+        _write_sheet(ws, "TASK BỊ ĐÌNH TRỆ", columns, data_rows, subtitle=sub)
 
     elif chart == "unassigned":
         ws.title = "Unassigned"
@@ -1460,7 +1460,7 @@ def export_audit_report(
         ("Estimate MH rejected", "estimate_rejected_count"),
         ("Unassigned", "unassigned_count"),
         ("Overdue", "overdue_count"),
-        ("Stalled", "stalled_count"),
+        ("Đình trệ", "stalled_count"),
         ("High risk (>=50)", "high_risk_count"),
         ("Discrepancy", "discrepancy_count"),
     ]
@@ -1563,11 +1563,11 @@ def export_audit_report(
         row_fill_fn=lambda ri, idx: _fill_by_days(items[idx].get("days_overdue", 0)),
     )
 
-    # 09 Stalled
+    # 09 Đình trệ
     ws = wb.create_sheet(AUDIT_SHEET_NAMES[8])
     items = issues["stalled"]
     _write_sheet(
-        ws, "STALLED",
+        ws, "ĐÌNH TRỆ",
         [("STT", 6), ("Mã CN", 14), ("Tên CN", 40), ("Module", 10),
          ("Phase xong", 16), ("Phase chờ", 16), ("Chờ (ngày)", 12), ("Priority", 12)],
         [[idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
