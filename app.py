@@ -610,6 +610,235 @@ def upload_legacy():
     return _upload_and_process(slug)
 
 
+# ==========================================================================
+# T32: Column Mapping Wizard — 2 endpoint mới (preview + confirm)
+# ==========================================================================
+# Flow:
+#   1) POST /api/upload-preview: nhận file, LƯU vào uploads/tmp/<uuid>.xlsx
+#      trả về headers + preview rows + suggestion + tmp_id.
+#   2) User điều chỉnh mapping trong modal wizard.
+#   3) POST /api/upload-confirm: nhận tmp_id + column_mapping + project_slug
+#      → parse với mapping → save như _upload_and_process → trả dashboard payload.
+#
+# Preset (per-project): GET/POST/DELETE /api/projects/<slug>/mapping-presets
+# lưu ở excel_mapping_presets.json để lần sau apply nhanh cho file cùng schema.
+
+_TMP_UPLOAD_DIR = os.path.join(app.config["UPLOAD_FOLDER"], "tmp")
+os.makedirs(_TMP_UPLOAD_DIR, exist_ok=True)
+
+
+def _prune_old_tmp_uploads(max_age_hours: int = 24) -> None:
+    """Xoá file .xlsx trong uploads/tmp/ cũ hơn N giờ để không tràn ổ."""
+    import time as _time
+    now = _time.time()
+    cutoff = now - max_age_hours * 3600
+    try:
+        for name in os.listdir(_TMP_UPLOAD_DIR):
+            fp = os.path.join(_TMP_UPLOAD_DIR, name)
+            try:
+                if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
+                    os.remove(fp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+@app.route("/api/upload-preview", methods=["POST"])
+def upload_preview():
+    """
+    T32 — Upload file, đọc header + preview + fuzzy match suggestion.
+    KHÔNG parse full data + KHÔNG save vào project — chỉ chuẩn bị cho
+    modal Column Mapping Wizard.
+
+    Response:
+        {
+          "tmp_id": "<uuid>",
+          "filename": "original.xlsx",
+          "sheet_name": "Function List",
+          "headers": ["Function Code", "Function Name", ...],
+          "preview_rows": [[...], [...], ...],
+          "ihrp_columns": ["Mã CN", "Tên chức năng", ...],
+          "auto_suggest": {"Mã CN": [{"header": "Function Code", "score": 0.87}, ...], ...},
+          "presets": [...]  // nếu có project_slug trong query
+        }
+    """
+    import uuid as _uuid
+    from parser import column_mapping as cm_mod
+
+    if "file" not in request.files:
+        return jsonify({"error": "Không tìm thấy file trong request"}), 400
+    file = request.files["file"]
+    if not file.filename:
+        return jsonify({"error": "Chưa chọn file"}), 400
+    if not file.filename.lower().endswith((".xlsx", ".xls")):
+        return jsonify({"error": "Chỉ hỗ trợ file .xlsx"}), 400
+
+    _prune_old_tmp_uploads()
+    tmp_id = _uuid.uuid4().hex[:16]
+    tmp_path = os.path.join(_TMP_UPLOAD_DIR, f"{tmp_id}.xlsx")
+    try:
+        file.save(tmp_path)
+    except OSError as e:
+        return jsonify({"error": f"Không lưu được file tạm: {e}"}), 500
+
+    headers, preview, sheet_name = cm_mod.read_headers_and_preview(tmp_path)
+    if not headers:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return jsonify({
+            "error": "Không đọc được header từ file (sheet trống hoặc format lỗi)"
+        }), 400
+
+    suggestion = cm_mod.suggest_mapping(headers, cm_mod.IHRP_STANDARD_COLUMNS)
+
+    # Nếu FE có gửi project_slug trong query → trả kèm list preset đã lưu
+    presets: list[dict] = []
+    slug = (request.args.get("project_slug") or "").strip()
+    if slug and _project_mgr.project_exists(slug):
+        from analyzer import project_store as ps
+        presets = ps.list_mapping_presets(_project_dir_for(slug))
+
+    return jsonify({
+        "success": True,
+        "tmp_id": tmp_id,
+        "filename": file.filename,
+        "sheet_name": sheet_name,
+        "headers": headers,
+        "preview_rows": preview,
+        "ihrp_columns": cm_mod.IHRP_STANDARD_COLUMNS,
+        "auto_suggest": suggestion,
+        "presets": presets,
+    })
+
+
+@app.route("/api/upload-confirm", methods=["POST"])
+def upload_confirm():
+    """
+    T32 — Xác nhận + parse file đã upload-preview với column_mapping thủ công.
+
+    Body JSON:
+        {
+          "tmp_id": "<uuid>",
+          "project_slug": "<slug>",   // bắt buộc; project phải tồn tại
+          "column_mapping": {"Mã CN": "Function Code", ...},   // optional
+          "threshold": 3    // long duration threshold, optional
+        }
+
+    Nếu `column_mapping` rỗng → parser hoạt động ở chế độ auto-detect thuần
+    (fallback tương thích cho file chuẩn iHRP).
+    """
+    from parser import column_mapping as cm_mod
+
+    body = request.get_json(silent=True) or {}
+    tmp_id = str(body.get("tmp_id") or "").strip()
+    slug = str(body.get("project_slug") or "").strip()
+    mapping = cm_mod.sanitize_column_mapping(body.get("column_mapping") or {})
+    threshold = int(body.get("threshold") or 3)
+
+    if not tmp_id:
+        return jsonify({"error": "Thiếu 'tmp_id'"}), 400
+    # Path traversal guard — tmp_id là uuid hex nên chỉ chấp nhận [a-f0-9]
+    if not all(c in "abcdef0123456789" for c in tmp_id.lower()):
+        return jsonify({"error": "tmp_id không hợp lệ"}), 400
+    tmp_path = os.path.join(_TMP_UPLOAD_DIR, f"{tmp_id}.xlsx")
+    if not os.path.isfile(tmp_path):
+        return jsonify({
+            "error": "File tạm không tồn tại (có thể đã hết hạn). Upload lại."
+        }), 404
+    if not slug or not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+
+    # Copy tmp → project current.xlsx
+    filepath = _project_mgr.get_current_file_path(slug)
+    try:
+        shutil.copy2(tmp_path, filepath)
+    except OSError as e:
+        return jsonify({"error": f"Không copy file: {e}"}), 500
+
+    try:
+        parser_obj = FunctionListParser()
+        data = parser_obj.parse(filepath, column_mapping=mapping or None)
+        engine = DashboardEngine(long_duration_threshold=threshold)
+        metrics = engine.compute_all(data)
+
+        upload_time = datetime.now()
+        original_name = str(body.get("filename") or f"synced_{tmp_id}.xlsx")
+        _state[slug] = {
+            "data": data,
+            "metrics": metrics,
+            "filename": original_name,
+            "upload_time": upload_time,
+        }
+
+        smgr = _project_mgr.get_snapshot_manager(slug)
+        smgr.save_snapshot(filepath, data, metrics)
+        _project_mgr.touch_last_upload(slug)
+
+        # Cleanup tmp file (đã copy vào project)
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+        return jsonify({
+            "success": True,
+            "project": _project_to_dict(_project_mgr.get_project(slug)),
+            "filename": original_name,
+            "rows_count": len(data.rows),
+            "upload_time": upload_time.isoformat(),
+            "metrics": _trim_payload(metrics),
+            "snapshots": smgr.list_snapshots(),
+            "pic_blacklist_count": len(getattr(data, "pic_blacklisted", []) or []),
+            "column_mapping_applied": bool(mapping),
+            "column_mapping_count": len(mapping),
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi khi parse file: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/mapping-presets",
+           methods=["GET", "POST"])
+def project_mapping_presets(slug: str):
+    """GET → list preset. POST → save preset {name, mapping}."""
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({"presets": ps.list_mapping_presets(folder)})
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    mapping = body.get("mapping") or {}
+    if not name:
+        return jsonify({"error": "Thiếu 'name'"}), 400
+    if not isinstance(mapping, dict):
+        return jsonify({"error": "'mapping' phải là object"}), 400
+    try:
+        presets = ps.save_mapping_preset(folder, name, mapping)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"presets": presets}), 201
+
+
+@app.route("/api/projects/<slug>/mapping-presets/<name>",
+           methods=["DELETE"])
+def project_mapping_preset_delete(slug: str, name: str):
+    """Xoá 1 preset theo name."""
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    deleted, presets = ps.delete_mapping_preset(folder, name)
+    if not deleted:
+        return jsonify({"error": "Không tìm thấy preset"}), 404
+    return jsonify({"success": True, "presets": presets})
+
+
 def _parse_multi_arg(name: str) -> list[str]:
     """
     Parse query param dạng multi-value. Hỗ trợ CẢ 2 pattern (tương thích ngược):

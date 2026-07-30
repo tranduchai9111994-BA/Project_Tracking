@@ -701,3 +701,109 @@ trả về payload cho FE HTML table (Excel-style 3-tier header).
   interval intersection). `span_start_col` / `span_end_col` = index của
   cell active đầu / cuối cho FE / Excel vẽ bar liên tục.
 
+## T32 — Excel Column Mapping Wizard
+
+### `excel_mapping_presets.json` (per-project)
+
+Path: `.project_store/<slug>/excel_mapping_presets.json`
+
+Schema:
+```json
+{
+  "presets": [
+    {
+      "name": "MPHG Template",
+      "mapping": {
+        "Mã CN": "Function Code",
+        "Tên chức năng": "Function Name",
+        "Module": "Phan he",
+        "Analysis - Start": "AnalysisStart",
+        "Analysis - End": "AnalysisEnd",
+        "Analysis - Status": "AnalysisStatus"
+      },
+      "updated_at": "2026-07-30T09:12:34"
+    }
+  ]
+}
+```
+
+**Constraints:**
+- Cap 30 preset / project (drop cũ nhất khi vượt).
+- Preset name tối đa 80 ký tự.
+- Mapping key/value tối đa 200 ký tự mỗi cái, cap 200 entries.
+- Save cùng name → OVERWRITE (upsert).
+
+**API:**
+- `GET /api/projects/<slug>/mapping-presets` → `{"presets": [...]}` (sort
+  desc updated_at).
+- `POST /api/projects/<slug>/mapping-presets` body `{name, mapping}`
+  → 201 với list mới.
+- `DELETE /api/projects/<slug>/mapping-presets/<name>` → 200 hoặc 404.
+
+### Upload preview response
+
+`POST /api/upload-preview` (không theo project) — nhận `multipart/form-data`
+với `file`, query `?project_slug=<slug>` (optional).
+
+**Response:**
+```json
+{
+  "success": true,
+  "tmp_id": "abc123def456",
+  "filename": "Function List MPHG.xlsx",
+  "sheet_name": "Function List",
+  "headers": ["Function Code", "Function Name", "Phan he", ...],
+  "preview_rows": [
+    ["PR.FR.01", "Tính lương cơ bản", "PR", "2026-01-01", ...],
+    ...
+  ],
+  "ihrp_columns": ["Mã CN", "Tên chức năng", "Module", ...],
+  "auto_suggest": {
+    "Mã CN": [{"header": "Function Code", "score": 0.85}, ...],
+    "Tên chức năng": [{"header": "Function Name", "score": 0.92}, ...]
+  },
+  "presets": [ /* nếu ?project_slug= có */ ]
+}
+```
+
+- `tmp_id`: hex 16 ký tự (uuid4 hex slice) → file lưu tại `uploads/tmp/<tmp_id>.xlsx`.
+- File tự động cleanup sau 24h (`_prune_old_tmp_uploads`) mỗi upload-preview.
+- Fuzzy score: 0.0-1.0. Kết hợp SequenceMatcher + alias bilingual bonus.
+- `preview_rows`: 5 dòng đầu (datetime → ISO string cho JSON-safe).
+
+### Upload confirm request
+
+`POST /api/upload-confirm` body:
+```json
+{
+  "tmp_id": "abc123def456",
+  "project_slug": "mphg",
+  "column_mapping": {"Mã CN": "Function Code", "Analysis - Start": "AnalysisStart"},
+  "threshold": 3,
+  "filename": "Function List MPHG.xlsx"
+}
+```
+
+- `column_mapping` rỗng → parser dùng auto-detect thuần (backward compat).
+- `tmp_id` MUST match `[a-f0-9]{n}` (path traversal guard) → không thì 400.
+- File tạm bị copy sang `<project_folder>/current.xlsx` rồi delete → không
+  còn ở `uploads/tmp/`.
+- Response: dashboard payload chuẩn (giống `/upload`) + 2 field mới:
+  `column_mapping_applied: bool`, `column_mapping_count: int`.
+
+### Parser behavior
+
+`FunctionListParser.parse(filepath, column_mapping: Optional[dict[str, str]] = None)`:
+
+- `column_mapping = None` → hoạt động như trước.
+- `column_mapping = {ihrp_std: actual_header}` → thêm alias iHRP standard
+  vào `headers` dict với cùng col_index:
+  ```python
+  # Trước: headers = {"Function Code": 1, "Function Name": 2, ...}
+  # Sau apply mapping {"Mã CN": "Function Code"}:
+  # headers = {"Function Code": 1, "Function Name": 2, "Mã CN": 1, ...}
+  ```
+- Header gốc GIỮ nguyên (không remove) → auto-detect keyword vẫn hoạt động
+  cho các cột không được map.
+- `actual` không tồn tại trong `headers` → skip thầm lặng.
+

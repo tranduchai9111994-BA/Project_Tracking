@@ -80,6 +80,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     input.addEventListener("change", () => { if (input.files.length) handleFile(input.files[0]); });
 
+    // T32: restore "Bỏ qua Column Mapping wizard" checkbox từ localStorage
+    if (typeof _uploadInitSkipWizardChk === "function") {
+        _uploadInitSkipWizardChk();
+    }
+
     // Overdue filter events — chỉ còn PIC là single-select native. Module/Phase
     // đã chuyển sang multi-select (createMultiSelect) → set onChange trong
     // populateFilters(). Mỗi lần đổi filter → reset pagination về trang 1.
@@ -1135,19 +1140,29 @@ function _viewIconCell(maCn, opts) {
 // ========================================================================
 // UPLOAD
 // ========================================================================
+//
+// T32: Mặc định upload đi qua Column Mapping Wizard (preview → user confirm
+// mapping → upload-confirm). Checkbox "Bỏ qua wizard" trong upload zone
+// (persist localStorage) cho user chuyên nghiệp bypass — dùng flow cũ.
+
 async function handleFile(file) {
     if (!file.name.toLowerCase().endsWith(".xlsx") && !file.name.toLowerCase().endsWith(".xls")) {
         showToast("Chỉ hỗ trợ file .xlsx", "red");
         return;
     }
-    document.getElementById("uploadProgress").classList.remove("hidden");
+    const skipWizard = _uploadReadSkipWizardPref();
+    if (skipWizard) {
+        return _uploadLegacyFlow(file);
+    }
+    return _uploadWithWizard(file);
+}
 
+async function _uploadLegacyFlow(file) {
+    document.getElementById("uploadProgress").classList.remove("hidden");
     const formData = new FormData();
     formData.append("file", file);
     const threshold = document.getElementById("durationThreshold")?.value || 3;
-
     try {
-        // Upload vào project hiện tại
         const url = `/api/projects/${currentProjectSlug}/upload?threshold=${threshold}`;
         const resp = await fetch(url, { method: "POST", body: formData });
         const data = await resp.json();
@@ -1156,7 +1171,6 @@ async function handleFile(file) {
             return;
         }
         applyDashboardResponse(data);
-        // Refresh project list để cập nhật snapshot_count + last_upload_at
         await loadProjectList();
         showToast(`Đã tải ${data.rows_count} chức năng vào project "${data.project.name}"!`);
     } catch (err) {
@@ -1165,6 +1179,312 @@ async function handleFile(file) {
         document.getElementById("uploadProgress").classList.add("hidden");
     }
 }
+
+// ------------------------------------------------------------
+// T32: Column Mapping Wizard
+// ------------------------------------------------------------
+
+const _UCM_PREF_KEY = "ihrp_upload_skip_wizard";
+
+const _ucmState = {
+    tmpId: null,
+    filename: null,
+    headers: [],
+    ihrpColumns: [],
+    autoSuggest: {},        // {ihrp_col: [{header, score}, ...]}
+    currentMapping: {},     // {ihrp_col: actual_header} — user pick
+    presets: [],
+};
+
+function _uploadReadSkipWizardPref() {
+    try {
+        return localStorage.getItem(_UCM_PREF_KEY) === "1";
+    } catch (e) { return false; }
+}
+
+function _uploadSaveSkipWizardPref() {
+    const el = document.getElementById("uploadSkipWizardChk");
+    try {
+        localStorage.setItem(_UCM_PREF_KEY, el?.checked ? "1" : "0");
+    } catch (e) { /* localStorage disabled */ }
+}
+
+/** Restore checkbox state khi trang load (được gọi trong initial setup). */
+function _uploadInitSkipWizardChk() {
+    const el = document.getElementById("uploadSkipWizardChk");
+    if (el) el.checked = _uploadReadSkipWizardPref();
+}
+
+async function _uploadWithWizard(file) {
+    document.getElementById("uploadProgress").classList.remove("hidden");
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+        const url = `/api/upload-preview?project_slug=${encodeURIComponent(currentProjectSlug || "default")}`;
+        const resp = await fetch(url, { method: "POST", body: formData });
+        const data = await resp.json();
+        if (data.error) {
+            showToast("Lỗi: " + data.error, "red");
+            return;
+        }
+        _ucmState.tmpId = data.tmp_id;
+        _ucmState.filename = data.filename;
+        _ucmState.headers = data.headers || [];
+        _ucmState.ihrpColumns = data.ihrp_columns || [];
+        _ucmState.autoSuggest = data.auto_suggest || {};
+        _ucmState.presets = data.presets || [];
+        // Pre-fill mapping bằng top suggestion (score cao) — user có thể sửa
+        _ucmState.currentMapping = {};
+        for (const ihrp of _ucmState.ihrpColumns) {
+            const cands = _ucmState.autoSuggest[ihrp] || [];
+            if (cands.length > 0 && cands[0].score >= 0.7) {
+                _ucmState.currentMapping[ihrp] = cands[0].header;
+            }
+        }
+        _ucmOpenModal(data);
+    } catch (err) {
+        showToast("Lỗi kết nối server: " + err.message, "red");
+    } finally {
+        document.getElementById("uploadProgress").classList.add("hidden");
+    }
+}
+
+function _ucmOpenModal(previewData) {
+    const modal = document.getElementById("uploadMappingModal");
+    if (!modal) return;
+    document.getElementById("ucmFilename").textContent = previewData.filename || "—";
+    document.getElementById("ucmSheetName").textContent = previewData.sheet_name || "—";
+    _ucmRenderPreviewTable(previewData.headers, previewData.preview_rows);
+    _ucmRenderPresetSelect();
+    _ucmRenderMappingTable();
+    _ucmUpdateStats();
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+}
+
+function closeUploadMappingModal() {
+    const modal = document.getElementById("uploadMappingModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+    _ucmState.tmpId = null;
+}
+window.closeUploadMappingModal = closeUploadMappingModal;
+
+function _ucmRenderPreviewTable(headers, rows) {
+    const thead = document.querySelector("#ucmPreviewTable thead");
+    const tbody = document.querySelector("#ucmPreviewTable tbody");
+    if (!thead || !tbody) return;
+    thead.innerHTML = "<tr>" + (headers || []).map(h =>
+        `<th class="px-2 py-1 text-left border-b whitespace-nowrap">${escapeHtml(h || "")}</th>`
+    ).join("") + "</tr>";
+    tbody.innerHTML = (rows || []).map(row =>
+        `<tr class="border-b hover:bg-slate-50 dark:hover:bg-slate-700/50">${
+            (row || []).map(cell =>
+                `<td class="px-2 py-1 whitespace-nowrap max-w-xs truncate">${escapeHtml(cell == null ? "" : String(cell))}</td>`
+            ).join("")
+        }</tr>`
+    ).join("");
+}
+
+function _ucmRenderPresetSelect() {
+    const sel = document.getElementById("ucmPresetSelect");
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— chọn preset —</option>';
+    for (const p of (_ucmState.presets || [])) {
+        const opt = document.createElement("option");
+        opt.value = p.name;
+        opt.textContent = `${p.name} (${Object.keys(p.mapping || {}).length} cột)`;
+        sel.appendChild(opt);
+    }
+}
+
+function _ucmRenderMappingTable() {
+    const tbody = document.getElementById("ucmMappingTbody");
+    if (!tbody) return;
+    const ihrpCols = _ucmState.ihrpColumns || [];
+    const headers = _ucmState.headers || [];
+    const rows = [];
+    for (const ihrp of ihrpCols) {
+        const cands = _ucmState.autoSuggest[ihrp] || [];
+        const top = cands[0];
+        const current = _ucmState.currentMapping[ihrp] || "";
+        const topScore = top ? top.score : 0;
+        const isMapped = !!current;
+        const rowClass = isMapped
+            ? (topScore >= 0.7 && current === top?.header
+                ? "bg-emerald-50 dark:bg-emerald-900/20"
+                : "")
+            : "bg-slate-50 dark:bg-slate-900/20 text-gray-400";
+
+        // Options: "(không có)" + tất cả header trong file
+        let optsHtml = `<option value="">— không có —</option>`;
+        for (const h of headers) {
+            if (!h) continue;
+            const selected = h === current ? "selected" : "";
+            optsHtml += `<option value="${escapeAttr(h)}" ${selected}>${escapeHtml(h)}</option>`;
+        }
+
+        const scoreLabel = current && top && current === top.header
+            ? `${Math.round(topScore * 100)}%`
+            : (isMapped ? "manual" : "—");
+
+        rows.push(`
+            <tr class="border-b ${rowClass}">
+                <td class="px-2 py-1 font-medium">${escapeHtml(ihrp)}</td>
+                <td class="px-2 py-1">
+                    <select data-ucm-ihrp="${escapeAttr(ihrp)}"
+                            onchange="_ucmOnMappingChange(this)"
+                            class="w-full border rounded p-1 text-xs dark:bg-slate-700 dark:border-slate-600">
+                        ${optsHtml}
+                    </select>
+                </td>
+                <td class="px-2 py-1 text-center text-[11px]">${scoreLabel}</td>
+            </tr>
+        `);
+    }
+    tbody.innerHTML = rows.join("");
+}
+
+function _ucmOnMappingChange(sel) {
+    const ihrp = sel.dataset.ucmIhrp;
+    const value = sel.value;
+    if (value) {
+        _ucmState.currentMapping[ihrp] = value;
+    } else {
+        delete _ucmState.currentMapping[ihrp];
+    }
+    _ucmUpdateStats();
+    // Re-render row với style mới (mapped/not)
+    _ucmRenderMappingTable();
+}
+window._ucmOnMappingChange = _ucmOnMappingChange;
+
+function _ucmUpdateStats() {
+    const total = (_ucmState.ihrpColumns || []).length;
+    const mapped = Object.keys(_ucmState.currentMapping).length;
+    const el = document.getElementById("ucmMatchStats");
+    if (el) el.textContent = `Đã map ${mapped}/${total} cột iHRP`;
+}
+
+function _ucmApplyAllSuggestions() {
+    _ucmState.currentMapping = {};
+    for (const ihrp of _ucmState.ihrpColumns) {
+        const cands = _ucmState.autoSuggest[ihrp] || [];
+        if (cands.length > 0 && cands[0].score >= 0.5) {
+            _ucmState.currentMapping[ihrp] = cands[0].header;
+        }
+    }
+    _ucmRenderMappingTable();
+    _ucmUpdateStats();
+    showToast(`Đã áp dụng ${Object.keys(_ucmState.currentMapping).length} suggestion`, "");
+}
+window._ucmApplyAllSuggestions = _ucmApplyAllSuggestions;
+
+function _ucmClearAll() {
+    _ucmState.currentMapping = {};
+    _ucmRenderMappingTable();
+    _ucmUpdateStats();
+}
+window._ucmClearAll = _ucmClearAll;
+
+function _ucmApplyPreset(presetName) {
+    if (!presetName) return;
+    const preset = (_ucmState.presets || []).find(p => p.name === presetName);
+    if (!preset) return;
+    _ucmState.currentMapping = { ...(preset.mapping || {}) };
+    _ucmRenderMappingTable();
+    _ucmUpdateStats();
+    showToast(`Đã load preset "${presetName}"`, "");
+}
+window._ucmApplyPreset = _ucmApplyPreset;
+
+async function _ucmSavePreset() {
+    const name = prompt("Tên preset (để tái sử dụng cho file cùng vendor):");
+    if (!name || !name.trim()) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/mapping-presets`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name.trim(), mapping: _ucmState.currentMapping }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        _ucmState.presets = data.presets || [];
+        _ucmRenderPresetSelect();
+        showToast(`Đã lưu preset "${name.trim()}"`);
+    } catch (err) {
+        showToast("Lỗi lưu preset: " + err.message, "red");
+    }
+}
+window._ucmSavePreset = _ucmSavePreset;
+
+async function _ucmDeletePreset() {
+    const sel = document.getElementById("ucmPresetSelect");
+    const name = sel?.value;
+    if (!name) {
+        showToast("Chọn preset cần xoá từ dropdown", "red");
+        return;
+    }
+    if (!confirm(`Xoá preset "${name}"?`)) return;
+    try {
+        const r = await fetch(
+            `/api/projects/${currentProjectSlug}/mapping-presets/${encodeURIComponent(name)}`,
+            { method: "DELETE" }
+        );
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        _ucmState.presets = data.presets || [];
+        _ucmRenderPresetSelect();
+        showToast(`Đã xoá preset "${name}"`);
+    } catch (err) {
+        showToast("Lỗi xoá preset: " + err.message, "red");
+    }
+}
+window._ucmDeletePreset = _ucmDeletePreset;
+
+/**
+ * Submit mapping → gọi /upload-confirm → apply dashboard response.
+ * @param {boolean} skipMapping - true = bỏ qua mapping (dùng auto-detect).
+ */
+async function _ucmSubmit(skipMapping) {
+    if (!_ucmState.tmpId) {
+        showToast("Không có file preview để confirm", "red");
+        return;
+    }
+    document.getElementById("uploadProgress").classList.remove("hidden");
+    const mappingToSend = skipMapping ? {} : _ucmState.currentMapping;
+    try {
+        const r = await fetch("/api/upload-confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                tmp_id: _ucmState.tmpId,
+                project_slug: currentProjectSlug,
+                filename: _ucmState.filename,
+                column_mapping: mappingToSend,
+                threshold: parseInt(document.getElementById("durationThreshold")?.value || "3", 10),
+            }),
+        });
+        const data = await r.json();
+        if (data.error) {
+            showToast("Lỗi: " + data.error, "red");
+            return;
+        }
+        closeUploadMappingModal();
+        applyDashboardResponse(data);
+        await loadProjectList();
+        const suffix = data.column_mapping_applied
+            ? ` (áp dụng mapping cho ${data.column_mapping_count} cột)`
+            : " (auto-detect)";
+        showToast(`Đã tải ${data.rows_count} chức năng${suffix}!`);
+    } catch (err) {
+        showToast("Lỗi kết nối server: " + err.message, "red");
+    } finally {
+        document.getElementById("uploadProgress").classList.add("hidden");
+    }
+}
+window._ucmSubmit = _ucmSubmit;
 
 async function applyThreshold() {
     // Re-upload không khả thi (mất file). Chỉ đơn giản re-render duration analysis

@@ -667,3 +667,113 @@ sai lệch "Ø=ÜÊ&Bào" vì Helvetica chỉ support Latin-1 basic.
     * Field không truyền trong payload → giữ nguyên trong file.
 - Modal mở → auto GET, pre-fill textarea (dùng tuần trước làm điểm khởi đầu
   → user chỉ sửa delta).
+
+
+## 🆕 16. Column Mapping Wizard (T32 — upload flow mới)
+
+### Vấn đề gốc
+Auto-detect cột trong parser dựa vào keyword match với `META_KEYWORDS` +
+pattern `Phase - Attr`. Với file có header lạ (VD "Function Code" thay vì
+"Mã CN", "AnalysisStart" thay vì "Analysis - Start") → parser miss cột
+→ phase_groups rỗng → dashboard rỗng. User cũ phải sửa Excel thủ công.
+
+### Flow mới
+
+1. User bấm **📁 Chọn file Excel** (hoặc kéo thả).
+2. Default: JS gọi `POST /api/upload-preview` — file được lưu tạm vào
+   `uploads/tmp/<uuid>.xlsx` (KHÔNG parse full). Response:
+   ```json
+   {
+     "tmp_id": "abc123...",
+     "filename": "Function List MPHG.xlsx",
+     "sheet_name": "Function List",
+     "headers": ["Function Code", "Function Name", ...],
+     "preview_rows": [["PR.01", "Tính lương", ...], ...],   // 5 dòng đầu
+     "ihrp_columns": ["Mã CN", "Tên chức năng", ...],       // list cột chuẩn
+     "auto_suggest": {
+       "Mã CN": [{"header": "Function Code", "score": 0.85}, ...],
+       ...
+     },
+     "presets": [{"name": "MPHG Template", "mapping": {...}}, ...]
+   }
+   ```
+3. FE mở modal `#uploadMappingModal` với:
+   - **Header:** filename + sheet_name + counter "Đã map X/Y cột iHRP".
+   - **Row Preset:** dropdown load preset đã lưu, nút 💾 Lưu, nút 🗑 Xoá.
+   - **Preview table:** 5 dòng đầu (scroll ngang), header sticky.
+   - **Mapping table:** mỗi row = 1 cột iHRP chuẩn + dropdown chọn header
+     thực tế + score.
+     * Auto-suggest score ≥ 0.7 → pre-fill và background emerald nhạt.
+     * User có thể manual pick từ dropdown → hiện "manual" trong ô Score.
+     * "(không có)" → row background xám (chưa map).
+   - **Footer:** "→ Parse ngay" (skip mapping) / "Huỷ" / "✓ Xác nhận & Parse".
+4. User confirm → `POST /api/upload-confirm`:
+   ```json
+   {
+     "tmp_id": "abc123...",
+     "project_slug": "mphg",
+     "column_mapping": {"Mã CN": "Function Code", ...},
+     "threshold": 3
+   }
+   ```
+5. Backend copy tmp → project's current.xlsx → `FunctionListParser.parse(
+   filepath, column_mapping=...)` → snapshot + dashboard response.
+
+### Bỏ qua wizard
+
+Checkbox trong upload zone: "Bỏ qua Column Mapping wizard (file chuẩn
+iHRP → auto-detect ngay)". Persist trong localStorage
+(`ihrp_upload_skip_wizard`). Khi tick → `handleFile` gọi thẳng
+`/api/projects/<slug>/upload` giống flow cũ, không mở wizard.
+
+Trong modal wizard cũng có nút "→ Parse ngay (bỏ qua mapping — auto-detect)"
+để user mid-flow đổi ý.
+
+### Fuzzy match
+
+`parser/column_mapping.py::_fuzzy_score(a, b)` kết hợp 4 signal:
+1. `SequenceMatcher.ratio()` trên bản normalized (lowercase, strip
+   `[\s\-_/.]`).
+2. Substring bonus (+0.15 nếu 1 chuỗi chứa toàn bộ chuỗi kia).
+3. Token overlap bonus (up to +0.1 nếu split by whitespace/`-_/.` có
+   token trùng).
+4. **Alias bilingual bonus** (+0.5 nếu match trong bảng `_ALIAS_HINTS`):
+   - `Mã CN` ↔ `Function Code`, `Module` ↔ `Phân hệ`, ...
+   - Cover case pure string matcher không giải quyết được.
+
+Suggestion trả top-3 candidate mỗi cột iHRP, filter score ≥ 0.35.
+
+### Preset
+
+File: `.project_store/<slug>/excel_mapping_presets.json`.
+Schema: `{"presets": [{"name": str, "mapping": {ihrp: actual}, "updated_at": iso}, ...]}`
+
+- Cap 30 preset per project (auto drop cũ nhất khi vượt).
+- Save cùng name → OVERWRITE (upsert).
+- API:
+  * `GET /api/projects/<slug>/mapping-presets` → list.
+  * `POST /api/projects/<slug>/mapping-presets {name, mapping}` → upsert.
+  * `DELETE /api/projects/<slug>/mapping-presets/<name>` → xoá.
+
+### Parser behavior
+
+`FunctionListParser.parse(filepath, column_mapping=None)`:
+- `column_mapping=None` → hoạt động như cũ (backward compat 100%).
+- `column_mapping={"Mã CN": "Function Code", ...}` → `_apply_column_mapping`
+  ADD alias vào `headers` dict (header gốc GIỮ nguyên, chỉ thêm alias):
+  → `headers["Mã CN"] = headers["Function Code"]` với cùng col_index.
+- Sau đó `_detect_meta_columns` và `_detect_phase_groups` chạy như thường
+  — bây giờ match được cả header gốc lẫn iHRP standard name.
+- Mapping missing actual header → skip thầm lặng.
+
+### Cleanup
+
+`_prune_old_tmp_uploads(max_age_hours=24)` xoá tự động file trong
+`uploads/tmp/` cũ hơn 24h mỗi lần có upload-preview mới. Không cần cron.
+
+### Security
+
+- Path traversal guard trong `/upload-confirm`: `tmp_id` chỉ chấp nhận
+  ký tự hex `[a-f0-9]` (uuid4 hex slice). Reject `../../../etc/passwd`.
+- `MAX_CONTENT_LENGTH = 50MB` (config Flask có sẵn).
+- Preset name/mapping trim + cap ký tự để không crash JSON store.

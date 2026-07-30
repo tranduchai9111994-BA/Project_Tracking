@@ -713,3 +713,110 @@ def save_project_settings(project_dir: str, payload: dict[str, Any]) -> dict[str
         current["aging_wip_threshold"] = max(1, int(payload["aging_wip_threshold"]))
     _write_json(_path(project_dir, "project_settings.json"), current)
     return current
+
+
+# ------------------------------------------------------------------
+# T32: Excel Column Mapping presets
+# ------------------------------------------------------------------
+# File: excel_mapping_presets.json = {"presets": [{"name": str, "mapping":
+#       {ihrp_col: actual_header}, "updated_at": iso}, ...]}
+# Presets là "template" cho phép user nhanh chóng apply lại mapping cho file
+# cùng vendor / cùng cấu trúc mà không phải map lại từ đầu.
+
+_MAPPING_PRESETS_FILE = "excel_mapping_presets.json"
+_MAX_PRESETS = 30           # đủ cho user quản lý nhiều source khác nhau
+_MAX_PRESET_NAME = 80
+
+
+def list_mapping_presets(project_dir: str) -> list[dict]:
+    """
+    Trả về list preset đã lưu (sorted theo updated_at desc). Mỗi entry:
+    {"name": str, "mapping": {...}, "updated_at": iso_string}.
+
+    File không tồn tại / lỗi format → [] (không raise).
+    """
+    data = _read_json(_path(project_dir, _MAPPING_PRESETS_FILE), {"presets": []})
+    if not isinstance(data, dict):
+        return []
+    presets = data.get("presets") or []
+    if not isinstance(presets, list):
+        return []
+    out: list[dict] = []
+    for p in presets:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or "").strip()
+        mapping = p.get("mapping")
+        if not name or not isinstance(mapping, dict):
+            continue
+        clean_mapping = {str(k).strip(): str(v).strip()
+                         for k, v in mapping.items()
+                         if str(k).strip() and str(v).strip()}
+        out.append({
+            "name": name[:_MAX_PRESET_NAME],
+            "mapping": clean_mapping,
+            "updated_at": str(p.get("updated_at") or ""),
+        })
+    # Sort desc updated_at (chuỗi ISO đủ để so sánh lexicographic)
+    out.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    return out
+
+
+def save_mapping_preset(
+    project_dir: str,
+    name: str,
+    mapping: dict[str, str],
+) -> list[dict]:
+    """
+    Upsert 1 preset theo `name` (case-sensitive). Trả list preset mới nhất.
+
+    Args:
+        name: tên preset (bắt buộc, sẽ trim + truncate 80 ký tự).
+        mapping: dict {ihrp_col: actual_header}. Entry rỗng bị drop.
+
+    Behavior:
+        - Nếu tên đã tồn tại → OVERWRITE mapping + updated_at.
+        - Nếu chưa → append.
+        - Enforce cap _MAX_PRESETS: nếu vượt → xoá preset cũ nhất
+          (updated_at nhỏ nhất) để nhường chỗ.
+
+    Raises:
+        ValueError khi name rỗng.
+    """
+    from datetime import datetime
+    clean_name = str(name or "").strip()[:_MAX_PRESET_NAME]
+    if not clean_name:
+        raise ValueError("Preset name không được rỗng")
+    clean_mapping = {str(k).strip(): str(v).strip()
+                     for k, v in (mapping or {}).items()
+                     if str(k).strip() and str(v).strip()}
+
+    presets = list_mapping_presets(project_dir)
+    # Remove existing với cùng name
+    presets = [p for p in presets if p.get("name") != clean_name]
+    presets.insert(0, {
+        "name": clean_name,
+        "mapping": clean_mapping,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    # Cap
+    if len(presets) > _MAX_PRESETS:
+        presets = presets[:_MAX_PRESETS]
+    _write_json(_path(project_dir, _MAPPING_PRESETS_FILE), {"presets": presets})
+    return presets
+
+
+def delete_mapping_preset(project_dir: str, name: str) -> tuple[bool, list[dict]]:
+    """
+    Xoá preset theo name. Trả (deleted, remaining_list).
+
+    - `deleted = True` nếu tìm thấy + xoá thành công.
+    - `deleted = False` nếu không có preset với name đó.
+    """
+    presets = list_mapping_presets(project_dir)
+    before = len(presets)
+    presets = [p for p in presets if p.get("name") != name]
+    deleted = len(presets) < before
+    if deleted:
+        _write_json(_path(project_dir, _MAPPING_PRESETS_FILE), {"presets": presets})
+    return deleted, presets

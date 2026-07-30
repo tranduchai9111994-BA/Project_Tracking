@@ -41,6 +41,7 @@ server*.log
 # đều là dữ liệu của user, KHÔNG commit.
 uploads/projects/
 uploads/snapshots/
+uploads/tmp/
 uploads/*.xlsx
 uploads/*.xls
 !uploads/sample_functionlist.xlsx

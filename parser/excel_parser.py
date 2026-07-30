@@ -143,9 +143,21 @@ class FunctionListParser:
     Không hardcode cột, hoạt động với bất kỳ file nào có cùng pattern header.
     """
 
-    def parse(self, filepath: str) -> ParsedData:
+    def parse(self, filepath: str,
+              column_mapping: Optional[dict[str, str]] = None) -> ParsedData:
         """
         Đọc file Excel, trả về ParsedData.
+
+        Args:
+            filepath: đường dẫn file .xlsx / .xls.
+            column_mapping (T32 — Column Mapping Wizard): dict {ihrp_std: actual}
+                map header chuẩn iHRP → header thực tế trong file. Nếu có →
+                RENAME header trong `headers` dict trước khi detect meta/phase
+                → cho phép user upload file có tên cột lạ mà không cần rewrite
+                Excel. VD: {"Tên chức năng": "Function Name",
+                             "Analysis - Start": "Ngày bắt đầu phân tích"}.
+                Bỏ qua entry có value rỗng (user chưa map cột đó).
+
         Tối ưu tốc độ: mở workbook ở chế độ read_only + data_only,
         đọc dữ liệu 1 lần qua iter_rows thay vì random-access ws.cell().
         """
@@ -179,6 +191,12 @@ class FunctionListParser:
         for col_idx_0, val in enumerate(header_tuple):
             if val is not None:
                 headers[str(val).strip()] = col_idx_0 + 1
+
+        # 1.5. Apply column_mapping (T32) — user map header lạ → header iHRP
+        #      chuẩn. Chỉ ADD alias, KHÔNG remove header gốc → detect
+        #      keyword-based vẫn hoạt động cho các cột auto-match được.
+        if column_mapping:
+            headers = self._apply_column_mapping(headers, column_mapping)
 
         # 2. Detect meta columns
         meta_columns = self._detect_meta_columns(headers)
@@ -230,6 +248,57 @@ class FunctionListParser:
             estimate_mh_rejected=estimate_mh_rejected,
             all_processes=all_processes,
         )
+
+    # ------------------------------------------------------------------
+    # T32: Column Mapping Wizard — apply mapping thủ công từ user
+    # ------------------------------------------------------------------
+
+    def _apply_column_mapping(
+        self,
+        headers: dict[str, int],
+        column_mapping: dict[str, str],
+    ) -> dict[str, int]:
+        """
+        Thêm alias iHRP-standard vào `headers` dict dựa vào mapping user cấu hình.
+
+        Args:
+            headers: dict {header_text_trong_file: col_index_1_based}.
+            column_mapping: dict {ihrp_std_name: actual_header_in_file}.
+                VD: {"Mã CN": "Function Code", "Analysis - Start": "AnalysisStart"}.
+                Entry có value rỗng → skip (user chưa map cột đó).
+
+        Returns:
+            Bản copy của headers với các iHRP standard name được add vào
+            cùng col_index của header thực tế. Header gốc VẪN GIỮ để không
+            phá auto-detect (nếu 1 cột được cả auto + manual match, kết
+            quả giống nhau vì cùng col_index).
+
+        Behavior:
+            - Nếu `actual` không tồn tại trong headers → skip (log warning).
+            - Nếu `ihrp_std` đã tồn tại → OVERRIDE bằng col của actual
+              (user muốn thay vì auto-detect thì tôn trọng).
+        """
+        new_headers = dict(headers)
+        for ihrp_std, actual in column_mapping.items():
+            if not ihrp_std or not actual:
+                continue
+            ihrp_std = str(ihrp_std).strip()
+            actual = str(actual).strip()
+            if not ihrp_std or not actual:
+                continue
+            # Match theo original text đầu tiên; fallback lowercase match
+            col_idx = headers.get(actual)
+            if col_idx is None:
+                for h, idx in headers.items():
+                    if h.lower() == actual.lower():
+                        col_idx = idx
+                        break
+            if col_idx is None:
+                # Header user map không tồn tại trong file — bỏ qua thầm lặng
+                # (FE đã pre-validate ở upload-preview endpoint).
+                continue
+            new_headers[ihrp_std] = col_idx
+        return new_headers
 
     # ------------------------------------------------------------------
     # Detect meta columns (bằng keyword matching)
