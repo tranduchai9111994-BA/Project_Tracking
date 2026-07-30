@@ -319,6 +319,114 @@ def test_sync_integration_full_flow(flask_client, sample_xlsx_path, env_creds):
     assert len(snaps) >= 1
     assert snaps[0]["total_functions"] == 6
 
+    # 4) Sync phải refresh current.xlsx (kể cả target_action=snapshot)
+    #    — regression: trước đây chỉ replace mới copy → dashboard giữ data cũ.
+    current_path = _project_mgr.get_current_file_path("default")
+    assert os.path.isfile(current_path)
+    assert os.path.getmtime(current_path) >= os.path.getmtime(
+        os.path.join(smgr.dir, snaps[0]["filename"])
+    ) - 2  # cùng lúc (cho phép lệch filesystem nhỏ)
+
+    # 5) Sau invalidate cache, /dashboard phải load snapshot sync (không stale)
+    import app as app_module
+    app_module._state.pop("default", None)
+    dash = flask_client.get("/api/projects/default/dashboard")
+    assert dash.status_code == 200
+    dj = dash.get_json()
+    assert dj["metrics"]["summary"]["total_functions"] == 6
+    assert dj["upload_time"]  # có timestamp từ snapshot sync
+    assert (dj.get("snapshots") or [{}])[0].get("source", "").startswith("sync:")
+
+
+def test_dashboard_prefers_latest_snapshot_over_stale_current(
+    flask_client, sample_xlsx_path, env_creds,
+):
+    """
+    Bug: sync ghi snapshot mới nhưng current.xlsx vẫn cũ →
+    _load_state_from_disk cũ ưu tiên current → UI giữ Upload timestamp cũ.
+
+    Reproduce: upload → sync → ghi đè current.xlsx bằng file cũ → invalidate →
+    dashboard vẫn phải trả metrics/timestamp từ snapshot sync.
+    """
+    import io
+    import shutil
+    import time
+    from datetime import datetime
+    import app as app_module
+    from app import _project_mgr
+
+    # 1) Upload baseline → current.xlsx cũ
+    with open(sample_xlsx_path, "rb") as f:
+        payload = {"file": (io.BytesIO(f.read()), "old_upload.xlsx")}
+    up = flask_client.post(
+        "/api/projects/default/upload",
+        data=payload,
+        content_type="multipart/form-data",
+    )
+    assert up.status_code == 200
+    old_current = _project_mgr.get_current_file_path("default")
+    stale_copy = os.path.join(os.path.dirname(old_current), "stale_backup.xlsx")
+    shutil.copy2(old_current, stale_copy)
+
+    # 2) Sync (snapshot) → snapshot mới + (sau fix) current mới
+    create_r = flask_client.post(
+        "/api/projects/default/integrations",
+        json={
+            "name": "Sync Prefer Snap",
+            "base_url": "https://prefer.example.com",
+            "auth": {"credential_env": "IHRP_TEST"},
+            "endpoints": [{
+                "name": "FL",
+                "path": "/export",
+                "response_type": "excel",
+                "target_action": "snapshot",
+            }],
+        },
+    )
+    integ = create_r.get_json()["integration"]
+    ep_id = integ["endpoints"][0]["id"]
+    with open(sample_xlsx_path, "rb") as f:
+        excel_bytes = f.read()
+
+    with requests_mock.Mocker() as m:
+        m.get("https://prefer.example.com/login", text="<html></html>")
+        m.post("https://prefer.example.com/login", text="OK", status_code=200)
+        m.get(
+            "https://prefer.example.com/export",
+            content=excel_bytes,
+            headers={"Content-Type":
+                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        )
+        sync_r = flask_client.post(
+            f"/api/projects/default/integrations/{integ['id']}/sync",
+            json={"endpoint_id": ep_id},
+        )
+    assert sync_r.get_json()["status"] == "ok"
+
+    smgr = _project_mgr.get_snapshot_manager("default")
+    snaps = smgr.list_snapshots()
+    sync_upload_time = snaps[0]["upload_time"]
+    assert str(snaps[0].get("source", "")).startswith("sync:")
+
+    # 3) Giả lập bug cũ: current.xlsx bị giữ bản upload cũ (mtime cũ hơn snap)
+    time.sleep(0.05)
+    shutil.copy2(stale_copy, old_current)
+    # Ép mtime current cũ hơn snapshot
+    old_ts = time.time() - 3600
+    os.utime(old_current, (old_ts, old_ts))
+
+    # 4) Invalidate + load dashboard → phải dùng snapshot sync
+    app_module._state.pop("default", None)
+    dash = flask_client.get("/api/projects/default/dashboard")
+    assert dash.status_code == 200
+    dj = dash.get_json()
+    assert dj["metrics"]["summary"]["total_functions"] == 6
+    # upload_time phải khớp snapshot sync, không phải mtime current.xlsx cũ
+    assert dj["upload_time"].startswith(sync_upload_time[:19]) or (
+        datetime.fromisoformat(dj["upload_time"]).isoformat(timespec="seconds")
+        == datetime.fromisoformat(sync_upload_time).isoformat(timespec="seconds")
+    )
+
 
 def test_sync_response_not_excel_returns_error(flask_client, env_creds):
     """Server trả HTML thay vì xlsx → phải error rõ ràng, không crash."""

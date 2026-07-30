@@ -356,6 +356,12 @@ function applyDashboardResponse(data) {
     _step("fileInfo.uploadTime", () => {
         const el = document.getElementById("uploadTime");
         if (el && data.upload_time) el.textContent = new Date(data.upload_time).toLocaleString("vi-VN");
+        // Label Upload vs Sync theo source của snapshot mới nhất
+        const labelEl = document.getElementById("uploadTimeLabel");
+        if (labelEl) {
+            const src = (Array.isArray(data.snapshots) && data.snapshots[0]?.source) || "";
+            labelEl.textContent = String(src).startsWith("sync:") ? "Sync" : "Upload";
+        }
     });
     _step("fileInfo.visibility", () => {
         document.getElementById("fileInfo")?.classList.remove("hidden");
@@ -13736,8 +13742,27 @@ async function _integSyncEndpoint(integrationId, endpointId) {
         _syncActiveStep("snapshot");
         if (data.status === "ok") {
             _syncShowResult(true, data, epName);
-            // Refresh dashboard để user thấy dữ liệu mới ngay
-            await tryLoadDashboardForCurrent(true);
+            // Reload dashboard project đang mở nếu nằm trong synced_slugs.
+            // Không phụ thuộc modal auto-close — await xong mới cho toast.
+            const synced = Array.isArray(data.synced_slugs) && data.synced_slugs.length
+                ? data.synced_slugs
+                : [currentProjectSlug];
+            if (synced.includes(currentProjectSlug)) {
+                await tryLoadDashboardForCurrent(true);
+                const overdue = metricsData?.summary?.total_overdue;
+                const overdueHint = (overdue != null) ? ` · overdue: ${overdue}` : "";
+                showToast(`Đã đồng bộ — dashboard đã refresh${overdueHint}`);
+            } else {
+                const labels = (Array.isArray(data.project_results) ? data.project_results : [])
+                    .filter(p => p && p.status === "ok")
+                    .map(p => p.project_code || p.slug)
+                    .filter(Boolean);
+                const dest = labels.length ? labels.join(", ") : synced.join(", ");
+                showToast(
+                    `Đã ghi vào project ${dest || "?"} — chuyển project để xem`,
+                    "orange",
+                );
+            }
         } else {
             _syncShowResult(false, data, epName);
         }

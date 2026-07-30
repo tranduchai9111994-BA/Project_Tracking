@@ -278,45 +278,75 @@ def _resolve_slug(explicit_slug: Optional[str] = None) -> str:
 def _load_state_from_disk(slug: str) -> Optional[dict]:
     """
     Load state từ snapshot mới nhất của project nếu có, hoặc current.xlsx.
-    Dùng khi server restart mà chưa upload lại.
+    Dùng khi server restart / sau sync invalidate cache.
+
+    QUAN TRỌNG: Ưu tiên snapshot mới nhất (không phải current.xlsx).
+    Sync với target_action=snapshot ghi đè pickle/index nhưng trước đây
+    không luôn update current.xlsx → nếu ưu tiên current.xlsx, dashboard
+    sau sync vẫn hiện data upload cũ (timestamp Upload cũ, overdue cũ).
     """
     proj = _project_mgr.get_project(slug)
     if not proj:
         return None
 
-    # Ưu tiên current.xlsx
-    current_path = _project_mgr.get_current_file_path(slug)
-    file_to_load = None
-    filename = "current.xlsx"
-    if os.path.isfile(current_path):
-        file_to_load = current_path
-    else:
-        # Fallback: snapshot mới nhất
-        smgr = _project_mgr.get_snapshot_manager(slug)
-        snaps = smgr.list_snapshots()
-        if snaps:
-            latest = snaps[0]
-            file_to_load = os.path.join(smgr.dir, latest["filename"])
-            filename = latest["filename"]
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    snaps = smgr.list_snapshots()
+    if snaps:
+        latest = snaps[0]
+        try:
+            loaded = smgr.load_snapshot(latest["date"])
+            if loaded and loaded.get("parsed") is not None:
+                data = loaded["parsed"]
+                _apply_module_order_to_data(slug, data)
+                metrics = DashboardEngine().compute_all(data)
+                meta = loaded.get("meta") or latest
+                upload_time = None
+                ut = meta.get("upload_time")
+                if ut:
+                    try:
+                        upload_time = datetime.fromisoformat(str(ut))
+                    except (TypeError, ValueError):
+                        upload_time = None
+                if upload_time is None:
+                    pkl_name = meta.get("pickle") or latest.get("pickle") or ""
+                    pkl_path = os.path.join(smgr.dir, pkl_name) if pkl_name else ""
+                    if pkl_path and os.path.isfile(pkl_path):
+                        upload_time = datetime.fromtimestamp(os.path.getmtime(pkl_path))
+                    else:
+                        upload_time = datetime.now()
+                return {
+                    "data": data,
+                    "metrics": metrics,
+                    "filename": meta.get("filename") or latest.get("filename") or "snapshot",
+                    "upload_time": upload_time,
+                }
+        except Exception as e:
+            import sys
+            print(
+                f"[project={slug}] Không load được snapshot '{latest.get('date')}': "
+                f"{type(e).__name__}: {e} — fallback current.xlsx",
+                file=sys.stderr,
+            )
 
-    if not file_to_load or not os.path.isfile(file_to_load):
+    # Fallback: current.xlsx (project chưa có snapshot / snapshot corrupt)
+    current_path = _project_mgr.get_current_file_path(slug)
+    if not os.path.isfile(current_path):
         return None
 
     try:
-        data = FunctionListParser().parse(file_to_load)
+        data = FunctionListParser().parse(current_path)
         _apply_module_order_to_data(slug, data)
         metrics = DashboardEngine().compute_all(data)
         return {
             "data": data,
             "metrics": metrics,
-            "filename": filename,
-            "upload_time": datetime.fromtimestamp(os.path.getmtime(file_to_load)),
+            "filename": "current.xlsx",
+            "upload_time": datetime.fromtimestamp(os.path.getmtime(current_path)),
         }
     except Exception as e:
-        # Log để user/dev thấy được lý do state không load được, tránh 404 im lặng
         import sys
         print(
-            f"[project={slug}] Không load được state từ '{file_to_load}': "
+            f"[project={slug}] Không load được state từ '{current_path}': "
             f"{type(e).__name__}: {e}",
             file=sys.stderr,
         )

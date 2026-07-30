@@ -1357,10 +1357,12 @@ def _persist_synced_xlsx(
             target_path, parsed, metrics,
             source=f"sync:{integration_id}:{endpoint_id}",
         )
-        if target_action == "replace":
-            import shutil as _sh
-            _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
-            project_manager.touch_last_upload(project_slug)
+        # Luôn refresh current.xlsx sau sync thành công (kể cả target_action=snapshot).
+        # Trước đây chỉ replace mới copy → _load_state_from_disk ưu tiên current.xlsx
+        # cũ → dashboard sau sync vẫn hiện upload cũ / overdue cũ.
+        import shutil as _sh
+        _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
+        project_manager.touch_last_upload(project_slug)
         try:
             from analyzer import project_store as _ps
             _ps.append_upload_history(
@@ -1374,6 +1376,7 @@ def _persist_synced_xlsx(
                     "integration_id": integration_id,
                     "endpoint_id": endpoint_id,
                     "project_slug": project_slug,
+                    "target_action": target_action,
                 },
             )
         except Exception:
@@ -1889,10 +1892,11 @@ def sync_integration(
                 target_path, parsed, metrics,
                 source=f"sync:{integration_id}:{endpoint_id}",
             )
-            if target_action == "replace":
-                import shutil as _sh
-                _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
-                project_manager.touch_last_upload(project_slug)
+            # Luôn refresh current.xlsx (kể cả target_action=snapshot) — xem
+            # _persist_synced_xlsx: tránh dashboard giữ data upload cũ sau sync.
+            import shutil as _sh
+            _sh.copy2(target_path, project_manager.get_current_file_path(project_slug))
+            project_manager.touch_last_upload(project_slug)
             try:
                 from analyzer import project_store as _ps
                 _ps.append_upload_history(
@@ -1905,6 +1909,7 @@ def sync_integration(
                         "phases": len(getattr(parsed, "all_phases", []) or []),
                         "integration_id": integration_id,
                         "endpoint_id": endpoint_id,
+                        "target_action": target_action,
                     },
                 )
             except Exception:
