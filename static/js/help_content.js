@@ -383,17 +383,20 @@ const HELP_CONTENT = {
     },
     "stalled": {
         category: "Danh sách vấn đề",
-        title: "Đình trệ (Stalled between phases)",
-        purpose: "Function có phase X đã Closed nhưng phase kế tiếp vẫn Open/None → kẹt giữa 2 phase.",
+        title: "Pipeline / Task bị Đình trệ",
+        purpose: "Phát hiện function bị kẹt giữa hai phase: phase trước đã Closed nhưng phase kế tiếp chưa ai bắt đầu — bottleneck chuyển giao.",
         steps: [
-            "Cột 'Chờ (ngày)' = today - end_date của phase đã Closed",
-            "Sort desc theo wait_days",
-            "Funnel chart tổng số Closed theo phase (bên trên)",
+            "Với mỗi cặp phase liền nhau: phase trước Status = Closed, phase sau chưa có tiến triển → vào danh sách",
+            "Cột 'Chờ (ngày)' = hôm nay − ngày End của phase đã Closed; sort giảm dần theo wait_days",
+            "Funnel chart (trái): tổng số function Closed theo từng phase",
+            "Transitions (phải): cặp 'từ → sang' bị kẹt nhiều nhất",
+            "Bấm Chi tiết / 📥 để drill-down hoặc xuất Excel",
         ],
-        example: "10 function đã Closed Analysis nhưng chưa vào Dev → cần assign Dev team.",
+        example: "HR-045 Analysis Closed 01/07, Dev vẫn Open → chờ 27 ngày → cần escalate Dev team. 10 function Closed Analysis chưa vào Dev = bottleneck lớn.",
         tips: [
-            "Wait_days càng cao = càng cần escalate",
-            "Có transition heatmap show bottleneck giữa 2 phase nào",
+            "Wait_days > 7 tô cam, > 14 tô đỏ — ưu tiên escalate dòng đỏ trước",
+            "Transitions cho biết chặng chuyển giao nào tắc nhiều nhất",
+            "Thường thiếu PIC phase sau hoặc chờ handover — xem thêm section Chưa PIC",
         ],
     },
     "risk": {

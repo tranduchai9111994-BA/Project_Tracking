@@ -6684,14 +6684,19 @@ const CHART_HELP = {
 let _chartHelpOpenKey = null;
 
 /**
- * Inject nút "?" vào mọi tiêu đề có data-help (chạy được nhiều lần, idempotent).
- * Section-summary dùng header nhỏ riêng vì grid card không có h2/h3.
+ * Inject nút "?" (chart-help popover cũ) vào tiêu đề có data-help.
+ * Idempotent. Bỏ qua nếu unified help (HELP_CONTENT) đã cover topic đó
+ * — tránh 2 nút "?" liền kề cùng section (VD: Đình trệ / Overdue / Summary…).
  */
 function attachSectionHelp() {
     document.querySelectorAll("[data-help]").forEach(el => {
         const key = el.getAttribute("data-help");
         if (!CHART_HELP[key]) return;
-        if (el.querySelector(".chart-help-btn")) return;   // đã inject rồi
+        if (el.querySelector(".chart-help-btn") || el.querySelector(".unified-help-btn")) return;
+
+        // Ưu tiên unified help: nếu HELP_CONTENT có key tương ứng → không inject chart-help
+        const unifiedKey = key.startsWith("section-") ? key.slice("section-".length) : key;
+        if (window.HELP_CONTENT && window.HELP_CONTENT[unifiedKey]) return;
 
         const btn = document.createElement("button");
         btn.type = "button";
@@ -13815,7 +13820,8 @@ window.exportGanttCalendar = function () {
 // ========================================================================
 // T34 Task 4 — UNIFIED HELP SYSTEM
 //   1. Section-level help button (?) → modal có structure {purpose, steps,
-//      example, tips, learn_more}. Coexist với chart-help popover cũ.
+//      example, tips, learn_more}. Ưu tiên hơn chart-help popover cũ
+//      (mỗi section chỉ 1 nút "?" — unified thắng nếu HELP_CONTENT có key).
 //   2. Global Help menu (Ctrl+/) — search + list toàn bộ topic.
 //   3. Onboarding tour cho project mới.
 //   4. Command Palette entries "❓ Trợ giúp: <topic>".
@@ -13827,6 +13833,7 @@ window.exportGanttCalendar = function () {
  * Idempotent (chạy nhiều lần vẫn OK — bỏ qua nếu đã inject).
  * Map key: `section-X` (data-help) → `X` (HELP_CONTENT key), hoặc `X` trực tiếp
  * qua data-help-id.
+ * Ưu tiên unified: gỡ chart-help-btn cũ cùng title để mỗi section chỉ còn 1 nút "?".
  */
 function attachUnifiedSectionHelp() {
     if (!window.HELP_CONTENT) return;
@@ -13839,6 +13846,10 @@ function attachUnifiedSectionHelp() {
             key = rawHelp.startsWith("section-") ? rawHelp.slice("section-".length) : rawHelp;
         }
         if (!key || !window.HELP_CONTENT[key]) return;
+
+        // Unified thay thế chart-help cũ trên cùng tiêu đề
+        el.querySelectorAll(".chart-help-btn").forEach(b => b.remove());
+
         // Đã có unified-help-btn rồi thì skip
         if (el.querySelector(".unified-help-btn")) return;
 
