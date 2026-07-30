@@ -3366,6 +3366,298 @@ def export_function_diff(slug: str):
 
 
 # ==========================================================================
+# T33 — Public API (REST + iframe + PNG snapshot)
+# ==========================================================================
+#
+# Admin CRUD (yêu cầu là "chủ project" — hiện app chỉ có 1 user local nên
+# không có auth layer riêng; production sẽ cần thêm session/JWT):
+#     GET    /api/projects/<slug>/public-tokens             — list
+#     POST   /api/projects/<slug>/public-tokens             — create
+#     DELETE /api/projects/<slug>/public-tokens/<token_id>  — revoke
+#     GET    /api/projects/<slug>/public-scopes             — metadata cho FE
+#
+# Public read (header X-API-Key hoặc ?token=pub_xxx):
+#     GET    /public/api/v1/projects/<slug>/summary
+#     GET    /public/api/v1/projects/<slug>/charts/<chart_id>
+#     GET    /public/api/v1/projects/<slug>/functions?page=&size=
+#
+# Rate limit: 60 req / 60s / token — vượt trả 429 + Retry-After.
+# CORS: allow-all (mission: embed vào Confluence/Word/email public), method GET
+#       only, header X-API-Key allowed. Không credentials/cookie.
+# ==========================================================================
+
+from functools import wraps
+from analyzer import public_api as _pubapi
+
+
+def _add_cors_headers(resp):
+    """Add CORS headers cho public API — allow all origin, method GET/OPTIONS."""
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "X-API-Key, Content-Type"
+    resp.headers["Access-Control-Max-Age"] = "3600"
+    return resp
+
+
+def _extract_public_token() -> str:
+    """
+    Thứ tự ưu tiên: header X-API-Key → query ?token=.
+    Trả string (rỗng nếu không có).
+    """
+    tok = (request.headers.get("X-API-Key") or "").strip()
+    if not tok:
+        tok = (request.args.get("token") or "").strip()
+    return tok
+
+
+def require_public_token(scope: Optional[str] = None):
+    """
+    Decorator xác thực token cho public API.
+
+    Args:
+        scope: scope key cần thiết (VD "summary", "module-overview"). Nếu
+               token có scope "*" → cho phép. Nếu None → chỉ verify token
+               hợp lệ, không check scope.
+    """
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(slug, *args, **kwargs):
+            # Preflight OPTIONS → return 204 với CORS headers (không auth)
+            if request.method == "OPTIONS":
+                return _add_cors_headers(app.response_class(status=204))
+            if not _project_mgr.project_exists(slug):
+                return _add_cors_headers(jsonify({"error": "Project không tồn tại"})), 404
+            project_dir = _project_dir_for(slug)
+            token = _extract_public_token()
+            try:
+                entry = _pubapi.verify_token(project_dir, token, required_scope=scope)
+                _pubapi.check_rate_limit(entry["id"])
+            except _pubapi.RateLimitError as e:
+                resp = jsonify({"error": str(e), "retry_after": e.retry_after})
+                resp = _add_cors_headers(resp)
+                resp.headers["Retry-After"] = str(e.retry_after)
+                return resp, 429
+            except _pubapi.PublicApiError as e:
+                return _add_cors_headers(jsonify({"error": str(e)})), e.status_code
+
+            # Update last_used_at best-effort (silent-fail)
+            _pubapi.touch_last_used(project_dir, entry["id"])
+            resp = fn(slug, *args, **kwargs)
+            # Nếu view trả tuple (resp, code) → apply CORS lên resp
+            if isinstance(resp, tuple):
+                r0 = resp[0]
+                _add_cors_headers(r0)
+                return resp
+            return _add_cors_headers(resp)
+
+        return wrapper
+    return deco
+
+
+# --- Admin CRUD (không cần token, chỉ cần project tồn tại) ---
+
+@app.route("/api/projects/<slug>/public-tokens", methods=["GET", "POST"])
+def public_tokens_collection(slug: str):
+    """List tokens hoặc create token mới."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    project_dir = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({"tokens": _pubapi.list_tokens(project_dir)})
+    body = request.get_json(silent=True) or {}
+    try:
+        plaintext, entry = _pubapi.create_token(
+            project_dir,
+            name=body.get("name"),
+            scope=body.get("scope"),
+        )
+    except _pubapi.PublicApiError as e:
+        return jsonify({"error": str(e)}), e.status_code
+    # Trả plaintext token CHÍNH XÁC 1 LẦN — FE phải cảnh báo user copy ngay.
+    return jsonify({
+        "token": plaintext,
+        "entry": entry,
+        "warning": "Token này chỉ hiển thị 1 lần — copy ngay và lưu chỗ an toàn.",
+    })
+
+
+@app.route("/api/projects/<slug>/public-tokens/<token_id>", methods=["DELETE"])
+def public_tokens_delete(slug: str, token_id: str):
+    """Revoke token — không xoá entry (giữ audit trail)."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    ok = _pubapi.revoke_token(_project_dir_for(slug), token_id)
+    if not ok:
+        return jsonify({"error": "Không tìm thấy token"}), 404
+    return jsonify({"ok": True, "revoked": token_id})
+
+
+@app.route("/api/projects/<slug>/public-scopes")
+def public_scopes(slug: str):
+    """
+    Metadata cho FE build multi-select scope. Trả danh sách scope + label
+    tiếng Việt. Endpoint này không cần project exist (metadata static) nhưng
+    giữ URL pattern để nhất quán.
+    """
+    return jsonify({"scopes": _pubapi.PUBLIC_SCOPES})
+
+
+# --- Public read API (yêu cầu token) ---
+
+def _public_metrics_or_error(slug: str):
+    """Load metrics hiện tại; nếu chưa upload → trả JSON error + status."""
+    st = _get_state(slug)
+    if not st or not st.get("metrics"):
+        return None, (jsonify({"error": "Project chưa có data (chưa upload)"}), 404)
+    return st, None
+
+
+@app.route("/public/api/v1/projects/<slug>/summary", methods=["GET", "OPTIONS"])
+@require_public_token(scope="summary")
+def public_summary(slug: str):
+    st, err = _public_metrics_or_error(slug)
+    if err:
+        return err
+    m = st["metrics"]
+    summary = m.get("summary") or {}
+    project = _project_mgr.get_project(slug)
+    return jsonify({
+        "project": {
+            "slug": slug,
+            "name": project.name if project else slug,
+        },
+        "summary": summary,
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    })
+
+
+# Map chart_id (public API) → key trong metrics dict.
+# Định nghĩa tường minh để user copy snippet đúng, tránh nhầm với chart_id nội bộ.
+_PUBLIC_CHART_MAP: dict[str, str] = {
+    "module-overview": "module_overview",
+    "phase-matrix": "phase_status_matrix",
+    "phase-stacked": "phase_progress_stacked",
+    "progress-task-type": "progress_by_task_type",
+    "pic-workload": "pic_workload",
+    "priority": "priority_breakdown",
+    "complexity": "complexity_breakdown",
+    "fit-gap": "fit_gap_analysis",
+    "giai-doan": "giai_doan_progress",
+    "overdue": "overdue_list",
+    "unassigned": "unassigned_tasks",
+    "stalled": "stalled_tasks",
+    "risk": "risk_scores",
+    "effort-heatmap": "effort_analysis",
+    "process": "process_analysis",
+}
+
+
+@app.route("/public/api/v1/projects/<slug>/charts/<chart_id>", methods=["GET", "OPTIONS"])
+def public_chart(slug: str, chart_id: str):
+    """
+    Public chart endpoint — scope check dynamic theo `chart_id`.
+
+    Không dùng decorator require_public_token cố định vì scope phụ thuộc
+    chart_id. Verify inline.
+    """
+    if request.method == "OPTIONS":
+        return _add_cors_headers(app.response_class(status=204))
+    if not _project_mgr.project_exists(slug):
+        return _add_cors_headers(jsonify({"error": "Project không tồn tại"})), 404
+    if chart_id not in _PUBLIC_CHART_MAP:
+        return _add_cors_headers(jsonify({
+            "error": f"Chart không hỗ trợ: {chart_id}",
+            "supported": sorted(_PUBLIC_CHART_MAP.keys()),
+        })), 400
+
+    project_dir = _project_dir_for(slug)
+    token = _extract_public_token()
+    try:
+        entry = _pubapi.verify_token(project_dir, token, required_scope=chart_id)
+        _pubapi.check_rate_limit(entry["id"])
+    except _pubapi.RateLimitError as e:
+        resp = jsonify({"error": str(e), "retry_after": e.retry_after})
+        resp = _add_cors_headers(resp)
+        resp.headers["Retry-After"] = str(e.retry_after)
+        return resp, 429
+    except _pubapi.PublicApiError as e:
+        return _add_cors_headers(jsonify({"error": str(e)})), e.status_code
+
+    _pubapi.touch_last_used(project_dir, entry["id"])
+
+    st, err = _public_metrics_or_error(slug)
+    if err:
+        # Tuple → phải wrap CORS thủ công
+        r0, code = err
+        _add_cors_headers(r0)
+        return r0, code
+
+    metrics_key = _PUBLIC_CHART_MAP[chart_id]
+    data = st["metrics"].get(metrics_key)
+    resp = jsonify({
+        "chart_id": chart_id,
+        "data": data if data is not None else {},
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    })
+    return _add_cors_headers(resp)
+
+
+@app.route("/public/api/v1/projects/<slug>/functions", methods=["GET", "OPTIONS"])
+@require_public_token(scope="functions")
+def public_functions(slug: str):
+    """
+    List danh sách function (paginated). Trả subset field an toàn — không
+    expose PIC email/phone chi tiết. Query: ?page=1&size=50 (max size=200).
+    """
+    st, err = _public_metrics_or_error(slug)
+    if err:
+        return err
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except ValueError:
+        page = 1
+    try:
+        size = min(200, max(1, int(request.args.get("size") or 50)))
+    except ValueError:
+        size = 50
+
+    rows = st["data"].rows if st.get("data") else []
+    total = len(rows)
+    start = (page - 1) * size
+    end = start + size
+    page_rows = rows[start:end]
+    items: list[dict] = []
+    for r in page_rows:
+        # Progress % của function — reuse public metric nếu có
+        # Compute nhanh: tổng phase có status Closed / total phase
+        phase_stats = {"total": 0, "closed": 0, "open": 0}
+        for pd in (r.phases or {}).values():
+            phase_stats["total"] += 1
+            if pd.status == "Closed":
+                phase_stats["closed"] += 1
+            elif pd.status in ("Open", None, ""):
+                phase_stats["open"] += 1
+        items.append({
+            "ma_cn": r.meta.get("ma_cn") or "",
+            "ten_cn": r.meta.get("ten_cn") or "",
+            "module": r.meta.get("module") or "",
+            "process": r.meta.get("quy_trinh") or "",
+            "priority": r.meta.get("priority") or "",
+            "complexity": r.meta.get("complexity") or "",
+            "fit_gap": r.meta.get("fit_gap") or "",
+            "giai_doan": r.meta.get("giai_doan") or "",
+            "phase_stats": phase_stats,
+        })
+    return jsonify({
+        "items": items,
+        "page": page,
+        "size": size,
+        "total": total,
+        "total_pages": (total + size - 1) // size if size else 1,
+    })
+
+
+# ==========================================================================
 # Main
 # ==========================================================================
 

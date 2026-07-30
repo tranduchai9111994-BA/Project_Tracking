@@ -777,3 +777,64 @@ Schema: `{"presets": [{"name": str, "mapping": {ihrp: actual}, "updated_at": iso
   ký tự hex `[a-f0-9]` (uuid4 hex slice). Reject `../../../etc/passwd`.
 - `MAX_CONTENT_LENGTH = 50MB` (config Flask có sẵn).
 - Preset name/mapping trim + cap ký tự để không crash JSON store.
+
+
+## 🆕 17. Public API — REST + iframe + PNG snapshot (T33)
+
+Cho phép bên thứ 3 (partner/khách/Confluence/Word) truy cập dữ liệu dashboard
+mà không cần login app chính. Xem đầy đủ ở `docs/PUBLIC_API_GUIDE.md`.
+
+### Task 2A (bản này) — REST + Token CRUD
+
+- **Storage**: `.project_store/<slug>/public_tokens.json` — lưu SHA-256 hash
+  (không plaintext). Token format `pub_<40 hex>`. Xem schema chi tiết ở
+  `docs/DATA_MODEL.md::T33`.
+
+- **Admin endpoints** (chưa auth layer riêng — local single-user, dùng luôn
+  session Flask):
+  - `GET  /api/projects/<slug>/public-tokens` — list masked entries.
+  - `POST /api/projects/<slug>/public-tokens` — create, trả plaintext **1
+    lần duy nhất** (`{token, entry, warning}`).
+  - `DELETE /api/projects/<slug>/public-tokens/<id>` — revoke (idempotent,
+    giữ entry để audit).
+  - `GET  /api/projects/<slug>/public-scopes` — metadata multi-select FE.
+
+- **Public read endpoints** (header `X-API-Key` hoặc `?token=`):
+  - `GET /public/api/v1/projects/<slug>/summary` (scope `summary`).
+  - `GET /public/api/v1/projects/<slug>/charts/<chart_id>` (scope
+    `<chart_id>` dynamic; wildcard `*` bypass).
+  - `GET /public/api/v1/projects/<slug>/functions?page=&size=` (scope
+    `functions`, max size 200).
+
+- **Scope key**: 15 scope + wildcard `*` — xem `PUBLIC_SCOPES` trong
+  `analyzer/public_api.py`. Normalize `_` → `-` để user copy từ code Python
+  không lo case.
+
+- **Rate limit**: 60 req / 60s / token — sliding window in-memory (deque).
+  Vượt → HTTP 429 + `Retry-After: <s>` + body `{"retry_after": <s>}`.
+
+- **CORS**: allow-all origin, method GET/OPTIONS, header `X-API-Key`.
+  Preflight OPTIONS trả 204 no-content, không cần token.
+
+- **Security**:
+  - Plaintext token chỉ trả 1 lần (POST create response). Sau đó server chỉ
+    còn hash.
+  - Verify: `secrets.compare_digest(hash(input), stored_hash)` — constant-time
+    compare chống timing attack.
+  - Revoke = mark flag; verify luôn fail. Không xoá entry (audit trail).
+  - Cap 50 token active/project (chống abuse).
+
+- **Backward compat**: 100% additive — dashboard nội bộ (localhost) không
+  đụng gì. Route `/api/...` cũ giữ nguyên hành vi. Public route ở prefix
+  riêng `/public/api/v1/...`.
+
+### Task 2B (planned) — iframe + PNG
+
+Route `/embed/<slug>/<chart_id>?token=` render template mini chỉ chart, +
+route `/public/api/v1/.../image?w=&h=&token=` Playwright screenshot →
+PNG cached 5 phút.
+
+### Task 2C (planned) — Settings tab "🌐 Public API"
+
+Tab mới trong `#settingsModal`: table token + form create (multi-select scope)
++ modal show token 1 lần + snippet copy 3 tab (REST / iframe / PNG).

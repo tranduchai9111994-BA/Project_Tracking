@@ -807,3 +807,84 @@ với `file`, query `?project_slug=<slug>` (optional).
   cho các cột không được map.
 - `actual` không tồn tại trong `headers` → skip thầm lặng.
 
+
+---
+
+## T33 — Public API (REST + token storage)
+
+Xem chi tiết ở `docs/PUBLIC_API_GUIDE.md`. Ở đây chỉ liệt kê schema storage
+và các endpoint được thêm.
+
+### Storage `public_tokens.json`
+
+File: `.project_store/<slug>/public_tokens.json`
+
+```json
+{
+  "tokens": [
+    {
+      "id": "abc123def4567890...",
+      "name": "Confluence embed",
+      "token_prefix": "pub_a1b2c3d4",
+      "token_hash": "sha256_hex_64_chars...",
+      "scope": ["module-overview", "summary"],
+      "created_at": "2026-07-30T03:15:22Z",
+      "last_used_at": null,
+      "revoked": false
+    }
+  ]
+}
+```
+
+**Field detail**
+- `id` — uuid4 hex 32 ký tự. Public identifier — user có thể thấy trong list.
+- `name` — human-readable (VD "Partner Company X", "Confluence FIS team").
+  Max 100 ký tự.
+- `token_prefix` — 12 ký tự đầu của plaintext token (`pub_` + 8 hex). Dùng
+  cho UI hint ("Token nào đang chạy?") — không thể revert về full token.
+- `token_hash` — SHA-256 hex của full plaintext token. Verify bằng cách
+  hash input rồi `secrets.compare_digest`. **Không lưu plaintext**.
+- `scope` — list[str] scope key (`summary`, `overdue`, `module-overview`, ...
+  hoặc `*` = wildcard). Sync với `analyzer/public_api.py::PUBLIC_SCOPES`.
+- `created_at` / `last_used_at` — ISO 8601 UTC (kết thúc `Z`).
+- `revoked` — bool. True → verify always fail; giữ entry cho audit.
+
+**Cap**
+- Tối đa 50 token active / project (revoke để reset). Tránh abuse (VD script
+  lỡ generate liên tục).
+
+### Endpoints admin (yêu cầu là owner project — hiện chưa có auth layer
+riêng, tận dụng single-user local)
+
+| Method | Path | Body / Response |
+|--------|------|-----------------|
+| GET    | `/api/projects/<slug>/public-tokens` | `{"tokens": [masked_entry, ...]}` |
+| POST   | `/api/projects/<slug>/public-tokens` | Body `{"name":"","scope":[]}` → `{"token": "pub_...", "entry": masked_entry, "warning": "..."}` |
+| DELETE | `/api/projects/<slug>/public-tokens/<token_id>` | `{"ok": true, "revoked": "<id>"}` |
+| GET    | `/api/projects/<slug>/public-scopes` | `{"scopes": [{"key":"","label":""}, ...]}` — metadata multi-select FE |
+
+### Endpoints public (yêu cầu header `X-API-Key` hoặc `?token=`)
+
+| Method | Path | Scope required |
+|--------|------|----------------|
+| GET | `/public/api/v1/projects/<slug>/summary` | `summary` |
+| GET | `/public/api/v1/projects/<slug>/charts/<chart_id>` | `<chart_id>` (dynamic) |
+| GET | `/public/api/v1/projects/<slug>/functions?page=&size=` | `functions` |
+
+`<chart_id>` hợp lệ: xem `analyzer/public_api.py::PUBLIC_SCOPES` (bỏ 3 key
+`*`, `summary`, `functions`).
+
+### Rate limit
+- In-memory dict `{token_id: deque[timestamp]}` — sliding window 60s, cap
+  60 req.
+- Vượt → HTTP 429 + header `Retry-After: <seconds>` + body
+  `{"error": "...", "retry_after": <s>}`.
+- Reset khi restart process. Prod đa worker cần Redis (chưa impl).
+
+### CORS
+- `Access-Control-Allow-Origin: *`
+- `Access-Control-Allow-Methods: GET, OPTIONS`
+- `Access-Control-Allow-Headers: X-API-Key, Content-Type`
+- `Access-Control-Max-Age: 3600` (preflight cache 1h)
+- OPTIONS preflight trả 204 no-content, không cần token.
+

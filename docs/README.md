@@ -174,6 +174,32 @@ Xem `docs/INTEGRATIONS_GUIDE.md` để biết:
 - Cách config `data_path` + `field_mapping` cho JSON API response.
 - Cách dùng "Auto-suggest field mapping" từ 1 sample record.
 
+## Public API (T33 — REST + iframe + PNG)
+
+Cho phép bên thứ 3 (partner, khách hàng, Confluence, Word, email) truy cập
+dashboard mà không cần đăng nhập app chính. Xem `docs/PUBLIC_API_GUIDE.md`.
+
+Tình trạng roadmap:
+- ✅ **Task 2A** — REST + token CRUD + rate limit (60 req/60s/token) —
+  endpoint `/public/api/v1/projects/<slug>/{summary,charts/<id>,functions}`.
+  Token: `pub_<40 hex>`, SHA-256 hash storage, scope-based ACL, revoke idempotent.
+- 🚧 **Task 2B** — iframe embed + PNG snapshot (Playwright headless — cần
+  `python -m playwright install chromium` ~200MB nếu dùng).
+- 🚧 **Task 2C** — Settings tab "🌐 Public API" với UI generate token +
+  snippet copy REST/iframe/PNG.
+
+Quick start (Task 2A):
+```bash
+# Tạo token
+curl -X POST http://localhost:5000/api/projects/mphg/public-tokens \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Confluence embed","scope":["summary","module-overview"]}'
+# → {"token": "pub_...", ...} — LƯU NGAY vì chỉ trả 1 lần.
+
+# Gọi API
+curl -H "X-API-Key: pub_..." http://localhost:5000/public/api/v1/projects/mphg/summary
+```
+
 ## Cấu trúc
 Xem `docs/ARCHITECTURE.md` để biết chi tiết.
 
