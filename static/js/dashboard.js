@@ -3174,6 +3174,42 @@ function renderDurationTable() {
 // ========================================================================
 // V2: STALLED
 // ========================================================================
+function populateStalledFilters() {
+    // Module options từ stalled items hiện tại (sau global filter);
+    // fallback all_modules nếu chưa có item.
+    const items = metricsData?.stalled_tasks?.items || [];
+    const fromItems = [...new Set(items.map(i => i.module).filter(Boolean))].sort();
+    const options = fromItems.length
+        ? fromItems
+        : (metricsData?.structure?.all_modules || structureCache?.all_modules || []);
+
+    const onFilterChange = () => {
+        pageState.stalled.page = 1;
+        renderStalledTable();
+    };
+    if (!_msInstances.stalledModule) {
+        createMultiSelect({
+            el: "#stalledModuleMS",
+            key: "stalledModule",
+            label: "Module",
+            options,
+            selected: [],
+            allText: "Tất cả Module",
+            onChange: onFilterChange,
+        });
+    } else {
+        _msInstances.stalledModule.setOptions(options, /*dropInvalid=*/false);
+    }
+}
+
+/** Lọc stalled items theo local Module multi-select (client-side, giống Overdue). */
+function _stalledFilteredItems() {
+    let items = metricsData?.stalled_tasks?.items || [];
+    const fmArr = _msInstances.stalledModule?.getSelected?.() || [];
+    if (fmArr.length) items = items.filter(i => fmArr.includes(i.module));
+    return items;
+}
+
 function renderStalledSection() {
     const data = metricsData.stalled_tasks || {};
     const funnel = data.funnel || [];
@@ -3204,12 +3240,12 @@ function renderStalledSection() {
             </div>`).join("");
     }
 
+    populateStalledFilters();
     renderStalledTable();
 }
 
 function renderStalledTable() {
-    const data = metricsData?.stalled_tasks || {};
-    const items = data.items || [];
+    const items = _stalledFilteredItems();
     const tbody = document.getElementById("stalledTable");
     if (!tbody) return;
     const { start, end, pageItems } = _pageSlice("stalled", items);
@@ -3238,6 +3274,30 @@ function renderStalledTable() {
             : `Đang xem ${start + 1}–${end}/${items.length} task bị đình trệ`;
     }
 }
+
+/**
+ * Xuất Excel Đình trệ — respect local Module filter + global filter (g_*).
+ * Pattern giống exportOverdue.
+ */
+async function exportStalled() {
+    if (!currentProjectSlug) {
+        showToast("⚠️ Chưa chọn project");
+        return;
+    }
+    const fmArr = _msInstances.stalledModule?.getSelected?.() || [];
+    const params = new URLSearchParams();
+    // Local widget filter
+    if (fmArr.length) params.set("module", fmArr.join(","));
+    // Global filter (header) — key g_* để không đè local
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+    await downloadFile(
+        `/api/projects/${currentProjectSlug}/export-stalled?` + params.toString(),
+        "Dinh_Tre_Report.xlsx"
+    );
+}
+window.exportStalled = exportStalled;
 
 // ========================================================================
 // V2: RISK SCORE

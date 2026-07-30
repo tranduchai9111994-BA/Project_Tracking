@@ -233,7 +233,17 @@ def upsert_saved_view(project_dir: str, view: dict) -> list[dict]:
 # Section order (Task 4b) — drag-drop layout, global cho project
 # ------------------------------------------------------------------
 # File: section_order.json = ["id1", "id2", ...] (thứ tự các section id trong dashboard).
-# Không set → FE dùng thứ tự HTML mặc định.
+# Không set / rỗng → FE dùng thứ tự HTML mặc định (cảnh báo trước, quản trị cuối).
+# Đã save → giữ nguyên order cũ (không migrate phá layout user).
+# Reset API xoá file → FE reload về HTML default mới.
+#
+# DEFAULT (HTML templates/index.html, sau sticky summary+filter):
+#   A cảnh báo: overdue, unassigned, stalled, risk, aging-wip, sla, dataquality
+#   B tiến độ:   module+tasktype, matrix, phase, giaidoan, process,
+#                burndown, capacity, baseline, effort, duration, slow, deps
+#   C chi tiết:  gantt, gantt-calendar, kanban, pic, priority, fitgap,
+#                function-diff, my-bookmarks
+#   D quản trị:  compare, digest, my-digests, custom-dashboards, history
 # ------------------------------------------------------------------
 
 def load_section_order(project_dir: str) -> list[str]:

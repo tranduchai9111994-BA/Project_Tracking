@@ -73,36 +73,43 @@
 <button type="button" id="btnToggleSidebar" class="sidebar-toggle-btn no-print hidden"
         title="Ẩn/hiện menu section" aria-expanded="true" aria-controls="sidebarNav">◀</button>
 <nav id="sidebarNav" class="sidebar-nav no-print hidden">
+    <!-- Nhóm A: Cảnh báo -->
     <a href="#section-summary">Summary</a>
-    <a href="#section-compare">So sánh</a>
+    <a href="#section-overdue">Overdue</a>
+    <a href="#section-unassigned">Chưa PIC</a>
+    <a href="#section-stalled">Đình trệ</a>
+    <a href="#section-risk">Risk Score</a>
+    <a href="#section-aging-wip">Aging WIP</a>
+    <a href="#section-sla">SLA</a>
+    <a href="#section-dataquality">Data Quality</a>
+    <!-- Nhóm B: Tổng quan tiến độ -->
     <a href="#section-module">Module</a>
     <a href="#section-tasktype">Công việc</a>
     <a href="#section-matrix">Phase Matrix</a>
     <a href="#section-phase">Phase Stack</a>
+    <a href="#section-giaidoan">Giai đoạn</a>
+    <a href="#section-process">Quy trình</a>
+    <a href="#section-burndown">Burndown</a>
+    <a href="#section-capacity">Capacity</a>
+    <a href="#section-baseline">Baseline</a>
+    <a href="#section-effort">Effort MH</a>
+    <a href="#section-duration">Duration</a>
+    <a href="#section-slow">PIC chậm</a>
+    <a href="#section-deps">Dependency</a>
+    <!-- Nhóm C: Timeline & chi tiết -->
+    <a href="#section-gantt">Timeline</a>
+    <a href="#section-gantt-calendar">Gantt Calendar</a>
+    <a href="#section-kanban">Kanban</a>
     <a href="#section-pic">PIC</a>
     <a href="#section-priority">Priority</a>
     <a href="#section-fitgap-dashboard">FIT/GAP</a>
     <a href="#section-function-diff">Diff</a>
-    <a href="#section-giaidoan">Giai đoạn</a>
-    <a href="#section-unassigned">Chưa PIC</a>
-    <a href="#section-duration">Duration</a>
-    <a href="#section-stalled">Đình trệ</a>
-    <a href="#section-risk">Risk Score</a>
-    <a href="#section-effort">Effort MH</a>
-    <a href="#section-process">Quy trình</a>
-    <a href="#section-gantt">Timeline</a>
-    <a href="#section-burndown">Burndown</a>
-    <a href="#section-sla">SLA</a>
-    <a href="#section-capacity">Capacity</a>
-    <a href="#section-slow">PIC chậm</a>
-    <a href="#section-deps">Dependency</a>
-    <a href="#section-baseline">Baseline</a>
-    <a href="#section-overdue">Overdue</a>
-    <a href="#section-digest">Weekly Digest</a>
-    <a href="#section-dataquality">Data Quality</a>
-    <a href="#section-aging-wip">Aging WIP</a>
     <a href="#section-my-bookmarks">Bookmarks</a>
+    <!-- Nhóm D: Quản trị -->
+    <a href="#section-compare">So sánh</a>
+    <a href="#section-digest">Weekly Digest</a>
     <a href="#section-my-digests">Digest lưu trữ</a>
+    <a href="#section-custom-dashboards">Dashboard tuỳ chỉnh</a>
     <a href="#section-history">Upload history</a>
 </nav>
 
@@ -161,8 +168,8 @@
                 </button>
                 <button id="btnLayoutReset" onclick="resetSectionOrder()"
                         class="hidden bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
-                        title="Reset về thứ tự mặc định">
-                    ↺ Reset
+                        title="Khôi phục thứ tự mặc định (cảnh báo trước, quản trị cuối)">
+                    ↺ Mặc định
                 </button>
                 <!-- Task 9: Dashboard builder -->
                 <button id="btnCustomDash" onclick="openCustomDashModal()"
@@ -729,6 +736,39 @@
                         </label>
                     </div>
                     <div id="setDigestLast" class="text-[11px] text-gray-500 mt-2"></div>
+                </section>
+
+                <!-- Thứ tự Module — dùng chung toàn dashboard -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40" id="setModuleOrderSection">
+                    <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+                        <h4 class="font-semibold text-gray-800 dark:text-gray-100">📦 Thứ tự Module</h4>
+                        <div class="flex gap-1 flex-wrap text-xs">
+                            <button type="button" onclick="_modOrderAlphabetical()"
+                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500"
+                                    title="Sắp xếp A→Z trên list (chưa lưu)">
+                                🔤 Alphabetical
+                            </button>
+                            <button type="button" onclick="_modOrderReset()"
+                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500"
+                                    title="Xoá cấu hình → mặc định alphabetical">
+                                ↺ Reset
+                            </button>
+                            <button type="button" onclick="_modOrderSave()"
+                                    class="px-2 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded font-semibold">
+                                💾 Lưu thứ tự
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-500 mb-3">
+                        Kéo thả để xếp thứ tự Module. Áp dụng cho: filter dropdown, Module Overview,
+                        Matrix, Process tiles, Gantt Calendar, export. Module mới (chưa có trong config)
+                        tự append cuối theo alphabetical. Chưa cấu hình → alphabetical.
+                    </p>
+                    <ol id="moduleOrderList"
+                        class="space-y-1 max-h-64 overflow-y-auto bg-white dark:bg-slate-800 border dark:border-slate-600 rounded p-2 text-sm">
+                        <li class="text-gray-400 italic text-xs py-2 text-center">Chưa có dữ liệu Module — upload Function List trước.</li>
+                    </ol>
+                    <p id="moduleOrderHint" class="text-[11px] text-gray-500 mt-2"></p>
                 </section>
 
                 <!-- ================================================
@@ -1991,66 +2031,9 @@
         </section>
         </div><!-- /#stickyTopBlock -->
 
-        <section id="section-compare" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex items-center justify-between flex-wrap gap-3 mb-2">
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-compare">📊 So sánh với snapshot trước</h3>
-                    <!-- Wave 3: Task 2 audit — section này INTENTIONALLY dùng snapshot full,
-                         không áp global filter. Badge cảnh báo giúp user không confuse "sao
-                         số overdue ở đây khác card summary?". -->
-                    <span class="inline-block bg-slate-100 text-slate-600 text-[11px] px-2 py-0.5 rounded border border-slate-200 mt-1"
-                          title="So sánh luôn dùng full snapshot để đo velocity chuẩn — không lọc theo Module/PIC hiện tại">
-                        🔒 So sánh KHÔNG áp dụng global filter (luôn dùng full snapshot)
-                    </span>
-                </div>
-                <div class="flex items-center gap-2 flex-wrap">
-                    <select id="compareOld" class="text-sm border rounded px-2 py-1"></select>
-                    <span class="text-gray-500">→</span>
-                    <select id="compareNew" class="text-sm border rounded px-2 py-1"></select>
-                    <button onclick="doCompare()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">
-                        So sánh
-                    </button>
-                    <button onclick="downloadCompareReport()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm">
-                        📥 Xuất Excel
-                    </button>
-                    <label class="cursor-pointer bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1.5 rounded text-sm">
-                        Upload file cũ
-                        <input type="file" id="compareUpload" accept=".xlsx" class="hidden">
-                    </label>
-                </div>
-            </div>
-            <div id="compareContent" class="hidden">
-                <div id="deltaCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
-                    <div>
-                        <h4 class="text-sm font-semibold text-gray-700 mb-2">Module Delta (% Closed)</h4>
-                        <div class="chart-box h-64"><canvas id="chartModuleDelta"></canvas></div>
-                    </div>
-                    <div>
-                        <h4 class="text-sm font-semibold text-gray-700 mb-2">Status Transitions</h4>
-                        <div id="statusFlow" class="text-sm"></div>
-                    </div>
-                </div>
-                <div id="newFunctionsWrap" class="mt-4"></div>
-            </div>
-            <div id="compareEmpty" class="text-center py-6 text-gray-500 text-sm">
-                Chưa có snapshot nào để so sánh. Snapshot được tạo tự động mỗi lần upload.
-            </div>
-        </section>
+        <!-- ============ NHÓM A: CẢNH BÁO / HÀNH ĐỘNG NGAY ============ -->
 
-        <section id="section-digest" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex items-center justify-between mb-4 no-print">
-                <h3 class="text-lg font-semibold text-gray-800" data-help="section-digest">📈 Weekly Digest (Báo cáo tuần)</h3>
-                <button onclick="window.print()" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-sm">
-                    🖨️ In / Xuất PDF
-                </button>
-            </div>
-            <div id="weeklyDigest" class="text-sm"></div>
-        </section>
-
-        <!-- ============ NHÓM: 2: CẦN HÀNH ĐỘNG NGAY ============ -->
-
-        <section id="section-overdue" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+<section id="section-overdue" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <h3 class="text-lg font-semibold text-red-700" data-help="section-overdue">⚠️ Danh sách trễ deadline</h3>
                 <div class="flex flex-wrap gap-2 items-center no-print">
@@ -2090,7 +2073,9 @@
             <div id="overdueCount" class="text-sm text-gray-500 mt-3"></div>
         </section>
 
-        <section id="section-unassigned" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+        
+
+<section id="section-unassigned" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
                 <h3 class="text-lg font-semibold text-orange-700" data-help="section-unassigned">🚨 Task chưa có PIC phụ trách</h3>
                 <div class="flex items-center gap-2">
@@ -2121,36 +2106,9 @@
             <div id="unassignedCount" class="text-sm text-gray-500 mt-3"></div>
         </section>
 
-        <section id="section-risk" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
-            <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
-                <h3 class="text-lg font-semibold text-gray-800" data-help="section-risk">⚡ Top Functions Có Điểm Rủi Ro Cao</h3>
-                <div class="flex items-center gap-2">
-                    <button onclick="openDrillDown('risk', {level:'high'})" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded px-2 py-1 no-print">Chi tiết</button>
-                    <button onclick="exportChartData('risk')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
-                </div>
-            </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="bg-rose-700 text-white">
-                            <th class="px-2 py-2">#</th>
-                            <th class="px-2 py-2 text-left">Mã CN</th>
-                            <th class="px-2 py-2 text-left">Tên CN</th>
-                            <th class="px-2 py-2">Module</th>
-                            <th class="px-2 py-2">Priority</th>
-                            <th class="px-2 py-2">Risk Score</th>
-                            <th class="px-2 py-2 text-left">Yếu tố rủi ro</th>
-                            <th class="px-2 py-2" title="Xem chi tiết">👁</th>
-                        </tr>
-                    </thead>
-                    <tbody id="riskTable"></tbody>
-                    </table>
-                </div>
-            <div id="riskShowMoreWrap"></div>
-            <div id="riskCount" class="text-sm text-gray-500 mt-3"></div>
-            </section>
+        
 
-        <section id="section-stalled" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+<section id="section-stalled" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
                 <h3 class="text-lg font-semibold text-gray-800" data-help="section-stalled">🔄 Task bị đình trệ</h3>
                 <div class="flex items-center gap-2 flex-wrap no-print">
@@ -2197,9 +2155,180 @@
                 <div id="stalledCount" class="text-sm text-gray-500 mt-3"></div>
             </section>
 
-        <!-- ============ NHÓM: 3: PROGRESS OVERVIEW ============ -->
+        
 
-        <section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+<section id="section-risk" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-risk">⚡ Top Functions Có Điểm Rủi Ro Cao</h3>
+                <div class="flex items-center gap-2">
+                    <button onclick="openDrillDown('risk', {level:'high'})" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded px-2 py-1 no-print">Chi tiết</button>
+                    <button onclick="exportChartData('risk')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-rose-700 text-white">
+                            <th class="px-2 py-2">#</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên CN</th>
+                            <th class="px-2 py-2">Module</th>
+                            <th class="px-2 py-2">Priority</th>
+                            <th class="px-2 py-2">Risk Score</th>
+                            <th class="px-2 py-2 text-left">Yếu tố rủi ro</th>
+                            <th class="px-2 py-2" title="Xem chi tiết">👁</th>
+                        </tr>
+                    </thead>
+                    <tbody id="riskTable"></tbody>
+                    </table>
+                </div>
+            <div id="riskShowMoreWrap"></div>
+            <div id="riskCount" class="text-sm text-gray-500 mt-3"></div>
+            </section>
+
+        
+
+<!-- ========================================================================
+             T22 — AGING WIP tracking
+             Danh sách phase In-progress vượt ngưỡng N ngày → đánh dấu cần push.
+             Slider threshold live-update. Ẩn mặc định (JS load khi có data).
+             ======================================================================== -->
+        <section id="section-aging-wip" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="aging-wip">⏳ Aging WIP</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Task In-progress quá lâu (kể từ Start date) → cần push</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <label class="text-sm text-gray-700 flex items-center gap-2">
+                        Ngưỡng:
+                        <input id="agingThreshold" type="range" min="1" max="90"
+                               value="14" step="1" class="w-32">
+                        <span id="agingThresholdVal" class="font-semibold text-blue-700 min-w-[3rem]">14 ngày</span>
+                    </label>
+                    <button onclick="exportAgingWip()"
+                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
+                        📥 Xuất Excel
+                    </button>
+                </div>
+            </div>
+
+            <!-- Summary strip -->
+            <div id="agingSummary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-100 text-gray-700">
+                        <tr>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên chức năng</th>
+                            <th class="px-2 py-2 text-left">Module</th>
+                            <th class="px-2 py-2 text-left">Phase</th>
+                            <th class="px-2 py-2 text-left">PIC</th>
+                            <th class="px-2 py-2 text-left">Start</th>
+                            <th class="px-2 py-2 text-right cursor-pointer" onclick="_agingSort('aging_days')">
+                                Aging (ngày) ⇅
+                            </th>
+                            <th class="px-2 py-2 text-right">Over</th>
+                            <th class="px-2 py-2 text-left">Priority</th>
+                            <th class="px-2 py-2 text-center" title="Xem chi tiết">👁</th>
+                        </tr>
+                    </thead>
+                    <tbody id="agingTable"></tbody>
+                </table>
+            </div>
+            <div id="agingPagerWrap" class="mt-2"></div>
+        </section>
+
+        
+
+<section id="section-sla" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="sla">
+                        🚨 SLA — vi phạm deadline theo Priority
+                        <span class="help-tip"
+                              title="ĐỊNH NGHĨA vi phạm SLA:&#10;&#10;Một phase-record được coi là vi phạm SLA khi thỏa MỌI điều kiện:&#10;  1. Có End (hoặc To) date&#10;  2. End &lt; ngày hôm nay (đã trễ)&#10;  3. Status ≠ Closed VÀ ≠ Cancelled (chưa đóng)&#10;&#10;→ Nghĩa là: 'đã qua hạn nhưng vẫn chưa xong / chưa hủy'.&#10;&#10;PHÂN LOẠI severity theo Priority:&#10;  • Must-have + trễ ≥ N ngày (default 3) → CRITICAL&#10;  • Should-have + trễ ≥ M ngày (default 7) → CRITICAL&#10;  • Còn lại → WARNING&#10;&#10;⚙️ Có thể chỉnh N, M ở Cài đặt project (banner cấu hình).">?</span>
+                        <button onclick="exportSection('sla')"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel — áp bộ lọc hiện tại, xuất TẤT CẢ record (không phân trang)">📥 Xuất Excel</button>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Định nghĩa: End date đã qua &amp; status chưa Closed/Cancelled.
+                        Must-have quá <span id="slaMustDays">3</span>d · Should-have quá <span id="slaShouldDays">7</span>d → nâng lên "critical"
+                    </p>
+                </div>
+                <div class="flex items-center gap-3 text-xs">
+                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Critical: <b id="slaCritical">0</b></span>
+                    <span class="bg-amber-50 text-amber-800 px-3 py-1.5 rounded border border-amber-200">Warning: <b id="slaWarning">0</b></span>
+                </div>
+            </div>
+            <div id="slaTableWrap" class="overflow-x-auto"></div>
+            <div id="slaPagerWrap" class="mt-2"></div>
+        </section>
+
+        
+
+<!-- ========================================================================
+             T21 — DATA QUALITY panel
+             Phát hiện các ô data bị lỗi/thiếu (invalid status, blank PIC, End<Start,
+             Closed thiếu End, duplicate Mã CN, thiếu Priority/Complexity/FIT-GAP).
+             Ẩn mặc định; JS gọi endpoint /data-quality khi renderDashboard.
+             ======================================================================== -->
+        <section id="section-dataquality" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="dataquality">🩺 Data Quality</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Phát hiện dữ liệu lỗi/thiếu để clean trước khi báo cáo</p>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <!-- T35 Task 3 — Local Module filter (bổ sung global filter) -->
+                    <div id="dqModuleFilter" class="text-sm" style="min-width:140px"></div>
+                    <select id="dqSeverityFilter" class="text-sm border rounded px-2 py-1">
+                        <option value="all">Tất cả severity</option>
+                        <option value="high">🔴 High</option>
+                        <option value="medium">🟠 Medium</option>
+                        <option value="low">🟡 Low</option>
+                    </select>
+                    <select id="dqCodeFilter" class="text-sm border rounded px-2 py-1">
+                        <option value="all">Tất cả loại</option>
+                    </select>
+                    <button onclick="exportDataQuality()"
+                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
+                        📥 Xuất Excel
+                    </button>
+                </div>
+            </div>
+
+            <!-- Summary cards -->
+            <div id="dqSummaryCards" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
+
+            <!-- Chi tiết bảng issue -->
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-100 text-gray-700">
+                        <tr>
+                            <th class="px-2 py-2 text-left">Row</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên chức năng</th>
+                            <th class="px-2 py-2 text-left">Module</th>
+                            <th class="px-2 py-2 text-left">Phase</th>
+                            <th class="px-2 py-2 text-left">Issue</th>
+                            <th class="px-2 py-2 text-left">Chi tiết</th>
+                            <th class="px-2 py-2 text-left">Gợi ý</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dqTable"></tbody>
+                </table>
+            </div>
+            <div id="dqPagerWrap" class="mt-2"></div>
+        </section>
+
+        
+
+        <!-- ============ NHÓM B: TỔNG QUAN TIẾN ĐỘ ============ -->
+
+<section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <div id="section-module" class="bg-white dashboard-card rounded-xl shadow-md p-5">
                 <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-module">📊 Tổng quan theo Module</h3>
@@ -2256,7 +2385,9 @@
             </div>
         </section>
 
-        <section id="section-matrix" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+        
+
+<section id="section-matrix" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
                 <h3 class="text-lg font-semibold text-gray-800" data-help="section-matrix">🔥 Chi tiết Phase × <span id="matrixModeLabel">Module</span> (% Closed)</h3>
                 <div class="flex items-center gap-1 no-print">
@@ -2276,7 +2407,9 @@
             </div>
         </section>
 
-        <section class="mb-6">
+        
+
+<section class="mb-6">
             <div id="section-phase" class="bg-white dashboard-card rounded-xl shadow-md p-5 relative">
                 <button class="fs-btn no-print" onclick="fullscreenChart('chartPhaseStacked')">⛶</button>
                 <div class="flex items-center justify-between gap-2 pr-8">
@@ -2289,7 +2422,9 @@
             </div>
         </section>
 
-        <section id="section-giaidoan" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+        
+
+<section id="section-giaidoan" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-1">
                 <h3 class="text-lg font-semibold text-gray-800" data-help="section-giaidoan">📅 Tiến độ theo Giai đoạn</h3>
                 <button onclick="exportChartData('giai_doan')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
@@ -2298,7 +2433,9 @@
             <div class="chart-box h-72"><canvas id="chartGiaiDoan"></canvas></div>
         </section>
 
-        <section id="section-process" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+        
+
+<section id="section-process" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-1">
                 <div class="flex items-center gap-2 flex-wrap">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-process">🏷️ Phân tích theo Quy trình</h3>
@@ -2310,34 +2447,83 @@
             <div id="processTreemap" style="min-height:300px;" class="mt-3"></div>
         </section>
 
-        <!-- ============ NHÓM: 4: RESOURCE & WORKLOAD ============ -->
+        
 
-        <!-- Task 16: section-pic đứng riêng full-width; section-effort tách
-             thành standalone full-width để heatmap không bị squeeze. -->
-        <section id="section-pic" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 relative">
-            <button class="fs-btn no-print" onclick="fullscreenChart('chartPIC')">⛶</button>
-            <div class="flex items-start justify-between gap-2 flex-wrap">
-                <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                        <h3 class="text-lg font-semibold text-gray-800" data-help="section-pic">👥 Workload theo PIC (Top 15)</h3>
-                        <button onclick="exportChartData('pic_workload')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
-                    </div>
-                    <p class="chart-subtitle">Số phase-record được giao cho mỗi PIC, phân theo status</p>
-                    <p class="chart-scope"></p>
+<section id="section-burndown" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="burndown">
+                        📉 Burndown &amp; Velocity
+                        <span class="help-tip"
+                              title="Cách đọc biểu đồ này:&#10;&#10;• TRỤC X: Tuần (mỗi cột = 1 tuần dương lịch, T2 → CN).&#10;• TRỤC Y (thanh xanh): Số function-phase Closed trong tuần đó (đếm theo cột End khi status = Closed).&#10;• TRỤC Y (đường vàng): Cumulative — tổng dồn số Closed từ đầu dự án.&#10;&#10;Ý nghĩa các số:&#10;• Velocity = trung bình số Closed / tuần trong 4 tuần gần nhất → dự báo tốc độ team.&#10;• Tổng Closed = tổng phase-record đã đóng trong scope filter hiện tại.&#10;&#10;⚠️ Nếu số tuần quá lớn (VD > 200) là do có date lỗi rất xưa/rất xa trong file — hãy filter Module/Process để thu hẹp phạm vi.">?</span>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Closed count theo tuần (End khi Closed / Last Updated) — velocity = trung bình 4 tuần gần nhất</p>
                 </div>
-                <div class="flex items-center gap-1 no-print shrink-0">
-                    <label for="picChartPhaseSelector" class="text-xs text-gray-500">Xem theo phase:</label>
-                    <select id="picChartPhaseSelector"
-                            onchange="renderPICChart()"
-                            class="text-xs border rounded px-2 py-1 min-w-[130px]">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <label class="text-xs text-gray-600">Phạm vi theo phase:</label>
+                    <select id="burndownPhaseSelector" onchange="onBurndownPhaseChange(this.value)"
+                            class="text-xs border border-gray-300 rounded px-2 py-1 bg-white">
                         <option value="">Tất cả phase</option>
                     </select>
+                    <div class="text-xs bg-blue-50 text-blue-800 px-3 py-1.5 rounded border border-blue-200">
+                        Velocity: <b id="burndownVelocity">—</b> function/tuần
+                    </div>
+                    <div class="text-xs bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded border border-emerald-200">
+                        Tổng Closed: <b id="burndownTotal">—</b>
+                    </div>
                 </div>
             </div>
-            <div class="chart-box h-80"><canvas id="chartPIC"></canvas></div>
+            <p class="chart-scope"></p>
+            <div class="chart-box mt-2" style="height:280px"><canvas id="chartBurndown"></canvas></div>
         </section>
 
-        <section id="section-effort" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+        
+
+<section id="section-capacity" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="capacity">
+                        👥 Capacity PIC — remaining MH vs công suất
+                        <button onclick="exportSection('capacity')"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel — áp bộ lọc hiện tại, xuất TẤT CẢ record">📥 Xuất Excel</button>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Default <b id="capDefaultMD">5</b> MD/tuần · Overload nếu remaining > 4 tuần công việc</p>
+            </div>
+                <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200 text-xs">
+                    Overload: <b id="capOverload">0</b>
+                </span>
+            </div>
+            <div id="capacityTableWrap" class="overflow-x-auto"></div>
+            <div id="capacityPagerWrap" class="mt-2"></div>
+        </section>
+
+        
+
+<section id="section-baseline" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="baseline">
+                        📐 Baseline vs Actual — variance ngày
+                        <button onclick="exportSection('baseline')"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel — áp bộ lọc, xuất TẤT CẢ record (FE chỉ hiện top 200 nhưng Excel xuất đầy đủ)">📥 Xuất Excel</button>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Auto-detect <code>Planned</code>/<code>Actual</code> trong phase; fallback End vs Last Updated khi Closed</p>
+                </div>
+                <div class="flex items-center gap-3 text-xs">
+                    <span class="bg-gray-50 text-gray-700 px-3 py-1.5 rounded border">So sánh được: <b id="bslTotal">0</b></span>
+                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Trễ: <b id="bslLate">0</b></span>
+                    <span class="bg-blue-50 text-blue-700 px-3 py-1.5 rounded border border-blue-200">Avg: <b id="bslAvg">0</b>d</span>
+                </div>
+            </div>
+            <div id="baselineTableWrap" class="overflow-x-auto"></div>
+            <div id="baselinePagerWrap" class="mt-2"></div>
+        </section>
+
+        
+
+<section id="section-effort" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
                 <h3 class="text-lg font-semibold text-gray-800" data-help="section-effort">📊 Phân tích Effort</h3>
                 <div class="flex flex-wrap items-center gap-2 no-print">
@@ -2402,28 +2588,115 @@
             </div>
         </section>
 
-        <section id="section-capacity" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+        
+
+<section id="section-duration" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-duration">⏱️ Phân tích Duration</h3>
+                <div class="flex items-center gap-2">
+                    <button onclick="openDrillDown('duration', {})" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded px-2 py-1 no-print">Chi tiết</button>
+                    <button onclick="exportChartData('duration')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">TB duration</div>
+                    <div id="durAvg" class="text-xl font-bold text-gray-800">0</div>
+                    <div class="text-xs">ngày</div>
+                </div>
+                <div class="delta-card delta-warning">
+                    <div class="text-xs text-gray-500">Task > 3 ngày</div>
+                    <div id="durOver3" class="text-xl font-bold text-orange-600">0</div>
+                </div>
+                <div class="delta-card delta-negative">
+                    <div class="text-xs text-gray-500">Task > 7 ngày</div>
+                    <div id="durOver7" class="text-xl font-bold text-red-600">0</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Ngưỡng cảnh báo</div>
+                    <div id="durThresholdView" class="text-xl font-bold">3 ngày</div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
+                <div class="relative">
+                    <button class="fs-btn no-print" onclick="fullscreenChart('chartDurationBox')">⛶</button>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Distribution theo Phase (min–max)</h4>
+                    <div class="chart-box h-72"><canvas id="chartDurationBox"></canvas></div>
+                </div>
+                <div class="relative">
+                    <button class="fs-btn no-print" onclick="fullscreenChart('chartDurationScatter')">⛶</button>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Duration vs Estimate MH</h4>
+                    <div class="chart-box h-72"><canvas id="chartDurationScatter"></canvas></div>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-slate-700 text-white">
+                            <th class="px-2 py-2">#</th>
+                            <th class="px-2 py-2 text-left">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên CN</th>
+                            <th class="px-2 py-2">Module</th>
+                            <th class="px-2 py-2">Phase</th>
+                            <th class="px-2 py-2">Start</th>
+                            <th class="px-2 py-2">End</th>
+                            <th class="px-2 py-2">Duration</th>
+                            <th class="px-2 py-2">Loại</th>
+                            <th class="px-2 py-2">Status</th>
+                            <th class="px-2 py-2 text-left">PIC</th>
+                            <th class="px-2 py-2" title="Xem chi tiết">👁</th>
+                        </tr>
+                    </thead>
+                        <tbody id="durationTable"></tbody>
+                </table>
+            </div>
+                <div id="durationShowMoreWrap"></div>
+                <div id="durationCount" class="text-sm text-gray-500 mt-3"></div>
+            </section>
+
+        
+
+<section id="section-slow" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="capacity">
-                        👥 Capacity PIC — remaining MH vs công suất
-                        <button onclick="exportSection('capacity')"
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="slow">
+                        🐌 Ai đang chậm — Heatmap PIC × Phase
+                        <button onclick="exportSection('slow')"
                                 class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
-                                title="Xuất Excel — áp bộ lọc hiện tại, xuất TẤT CẢ record">📥 Xuất Excel</button>
+                                title="Xuất Excel — 2 sheet: matrix + flat list. Xuất TẤT CẢ PIC/Phase.">📥 Xuất Excel</button>
                     </h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Default <b id="capDefaultMD">5</b> MD/tuần · Overload nếu remaining > 4 tuần công việc</p>
-            </div>
-                <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200 text-xs">
-                    Overload: <b id="capOverload">0</b>
+                    <p class="text-xs text-gray-500 mt-0.5">Số phase-record trễ (End &lt; today, chưa Closed) của mỗi PIC ở mỗi phase</p>
+                </div>
+                <span class="text-xs bg-orange-50 text-orange-700 px-3 py-1.5 rounded border border-orange-200">
+                    Tổng slow: <b id="slowTotal">0</b>
                 </span>
             </div>
-            <div id="capacityTableWrap" class="overflow-x-auto"></div>
-            <div id="capacityPagerWrap" class="mt-2"></div>
+            <div id="slowHeatmapWrap" class="overflow-x-auto"></div>
+            <div id="slowPagerWrap" class="mt-2"></div>
         </section>
 
-        <!-- ============ NHÓM: 5: TIMELINE & DEEP DIVE ============ -->
+        
 
-        <section id="section-gantt" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+<section id="section-deps" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="deps">🔗 Dependency — Must-have đang bị block</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Parse cột <code>function_lq</code>; function Must-have bị block khi related chưa Closed phase cuối</p>
+                </div>
+                <div class="flex items-center gap-3 text-xs">
+                    <span class="bg-gray-50 text-gray-700 px-3 py-1.5 rounded border">Cạnh: <b id="depsEdges">0</b></span>
+                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Blockers: <b id="depsBlockers">0</b></span>
+                </div>
+            </div>
+            <div id="depsTableWrap" class="overflow-x-auto"></div>
+            <div id="depsPagerWrap" class="mt-2"></div>
+        </section>
+
+        
+
+        <!-- ============ NHÓM C: TIMELINE & CHI TIẾT ============ -->
+
+<section id="section-gantt" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
                     <div class="flex items-center gap-2">
@@ -2488,7 +2761,9 @@
             <div id="ganttContainer" class="gantt-container-v2"></div>
         </section>
 
-        <!-- ============ SECTION: GANTT CALENDAR (Excel-style, 3-tier header) ==========
+        
+
+<!-- ============ SECTION: GANTT CALENDAR (Excel-style, 3-tier header) ==========
              Timeline dạng lịch: header Month/Week/Day, mỗi row 1 aggregate
              (Module/Quy trình/Function), bar tô màu theo phase category, text %
              ở giữa bar, marker "Today" cột hồng. Xuất Excel giữ nguyên style. -->
@@ -2546,7 +2821,9 @@
             <div id="ganttCalendarLegend" class="flex flex-wrap items-center gap-3 text-[11px] text-gray-600 mt-3"></div>
         </section>
 
-        <!-- Modal: chi tiết outlier date (T35 Task 2) -->
+        
+
+<!-- Modal: chi tiết outlier date (T35 Task 2) -->
         <div id="ganttCalOutlierModal"
              class="fixed inset-0 bg-black/50 hidden z-[65] items-center justify-center"
              onclick="if(event.target===this) closeGanttCalOutlierModal()">
@@ -2586,120 +2863,71 @@
             </div>
         </div>
 
-        <section id="section-duration" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
-            <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
-                <h3 class="text-lg font-semibold text-gray-800" data-help="section-duration">⏱️ Phân tích Duration</h3>
-                <div class="flex items-center gap-2">
-                    <button onclick="openDrillDown('duration', {})" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded px-2 py-1 no-print">Chi tiết</button>
-                    <button onclick="exportChartData('duration')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
-                </div>
-            </div>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                <div class="delta-card delta-neutral">
-                    <div class="text-xs text-gray-500">TB duration</div>
-                    <div id="durAvg" class="text-xl font-bold text-gray-800">0</div>
-                    <div class="text-xs">ngày</div>
-                </div>
-                <div class="delta-card delta-warning">
-                    <div class="text-xs text-gray-500">Task > 3 ngày</div>
-                    <div id="durOver3" class="text-xl font-bold text-orange-600">0</div>
-                </div>
-                <div class="delta-card delta-negative">
-                    <div class="text-xs text-gray-500">Task > 7 ngày</div>
-                    <div id="durOver7" class="text-xl font-bold text-red-600">0</div>
-                </div>
-                <div class="delta-card delta-neutral">
-                    <div class="text-xs text-gray-500">Ngưỡng cảnh báo</div>
-                    <div id="durThresholdView" class="text-xl font-bold">3 ngày</div>
-                </div>
-            </div>
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
-                <div class="relative">
-                    <button class="fs-btn no-print" onclick="fullscreenChart('chartDurationBox')">⛶</button>
-                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Distribution theo Phase (min–max)</h4>
-                    <div class="chart-box h-72"><canvas id="chartDurationBox"></canvas></div>
-                </div>
-                <div class="relative">
-                    <button class="fs-btn no-print" onclick="fullscreenChart('chartDurationScatter')">⛶</button>
-                    <h4 class="text-sm font-semibold text-gray-700 mb-2">Duration vs Estimate MH</h4>
-                    <div class="chart-box h-72"><canvas id="chartDurationScatter"></canvas></div>
-                </div>
-            </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="bg-slate-700 text-white">
-                            <th class="px-2 py-2">#</th>
-                            <th class="px-2 py-2 text-left">Mã CN</th>
-                            <th class="px-2 py-2 text-left">Tên CN</th>
-                            <th class="px-2 py-2">Module</th>
-                            <th class="px-2 py-2">Phase</th>
-                            <th class="px-2 py-2">Start</th>
-                            <th class="px-2 py-2">End</th>
-                            <th class="px-2 py-2">Duration</th>
-                            <th class="px-2 py-2">Loại</th>
-                            <th class="px-2 py-2">Status</th>
-                            <th class="px-2 py-2 text-left">PIC</th>
-                            <th class="px-2 py-2" title="Xem chi tiết">👁</th>
-                        </tr>
-                    </thead>
-                        <tbody id="durationTable"></tbody>
-                </table>
-            </div>
-                <div id="durationShowMoreWrap"></div>
-                <div id="durationCount" class="text-sm text-gray-500 mt-3"></div>
-            </section>
+        
 
-        <section id="section-burndown" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
+<!-- Task 10: Kanban theo tuần -->
+        <section id="section-kanban" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="burndown">
-                        📉 Burndown &amp; Velocity
-                        <span class="help-tip"
-                              title="Cách đọc biểu đồ này:&#10;&#10;• TRỤC X: Tuần (mỗi cột = 1 tuần dương lịch, T2 → CN).&#10;• TRỤC Y (thanh xanh): Số function-phase Closed trong tuần đó (đếm theo cột End khi status = Closed).&#10;• TRỤC Y (đường vàng): Cumulative — tổng dồn số Closed từ đầu dự án.&#10;&#10;Ý nghĩa các số:&#10;• Velocity = trung bình số Closed / tuần trong 4 tuần gần nhất → dự báo tốc độ team.&#10;• Tổng Closed = tổng phase-record đã đóng trong scope filter hiện tại.&#10;&#10;⚠️ Nếu số tuần quá lớn (VD > 200) là do có date lỗi rất xưa/rất xa trong file — hãy filter Module/Process để thu hẹp phạm vi.">?</span>
-                    </h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Closed count theo tuần (End khi Closed / Last Updated) — velocity = trung bình 4 tuần gần nhất</p>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="kanban">📋 Kanban theo tuần</h3>
+                    <p class="chart-subtitle" id="kanbanSubtitle">Cần upload file để hiển thị kanban.</p>
                 </div>
                 <div class="flex items-center gap-2 flex-wrap">
-                    <label class="text-xs text-gray-600">Phạm vi theo phase:</label>
-                    <select id="burndownPhaseSelector" onchange="onBurndownPhaseChange(this.value)"
-                            class="text-xs border border-gray-300 rounded px-2 py-1 bg-white">
+                    <button onclick="_kanbanShiftWeek(-1)" class="text-xs bg-gray-200 hover:bg-gray-300 dark:bg-slate-700 px-2 py-1 rounded" title="Tuần trước">◀</button>
+                    <span id="kanbanWeekLabel" class="text-xs font-semibold">Tuần này</span>
+                    <button onclick="_kanbanShiftWeek(1)" class="text-xs bg-gray-200 hover:bg-gray-300 dark:bg-slate-700 px-2 py-1 rounded" title="Tuần sau">▶</button>
+                    <button onclick="_kanbanShiftWeek(0)" class="text-xs bg-blue-100 hover:bg-blue-200 text-blue-800 px-2 py-1 rounded">Hôm nay</button>
+                    <!-- Task 14: Role auto-detect từ phase → bỏ nút map tay -->
+                </div>
+            </div>
+            <!-- Filter mini bar -->
+            <div class="flex items-center gap-2 flex-wrap mb-3 text-xs">
+                <input type="text" id="kanbanSearch" oninput="_kanbanScheduleReload()" placeholder="🔍 Tìm nhanh mã/tên/module…" class="border rounded px-2 py-1 flex-1 min-w-[200px]">
+                <!-- Task 15: multi-select Module + Quy trình cho Kanban -->
+                <div id="kanbanFilterModuleMS" class="min-w-[140px]"></div>
+                <div id="kanbanFilterProcessMS" class="min-w-[160px]"></div>
+                <select id="kanbanFilterPic" onchange="_kanbanScheduleReload()" class="border rounded px-2 py-1 dark:bg-slate-700"><option value="">PIC</option></select>
+                <select id="kanbanFilterRole" onchange="_kanbanScheduleReload()" class="border rounded px-2 py-1 dark:bg-slate-700">
+                    <option value="">Role (tất cả)</option>
+                    <option value="BA">BA</option>
+                    <option value="Dev">Dev</option>
+                </select>
+            </div>
+            <div id="kanbanBoard" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3 overflow-x-auto">
+                <!-- Columns populated by JS -->
+            </div>
+        </section>
+
+        
+
+<!-- Task 16: section-pic đứng riêng full-width; section-effort tách
+             thành standalone full-width để heatmap không bị squeeze. -->
+        <section id="section-pic" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 relative">
+            <button class="fs-btn no-print" onclick="fullscreenChart('chartPIC')">⛶</button>
+            <div class="flex items-start justify-between gap-2 flex-wrap">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                        <h3 class="text-lg font-semibold text-gray-800" data-help="section-pic">👥 Workload theo PIC (Top 15)</h3>
+                        <button onclick="exportChartData('pic_workload')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    </div>
+                    <p class="chart-subtitle">Số phase-record được giao cho mỗi PIC, phân theo status</p>
+                    <p class="chart-scope"></p>
+                </div>
+                <div class="flex items-center gap-1 no-print shrink-0">
+                    <label for="picChartPhaseSelector" class="text-xs text-gray-500">Xem theo phase:</label>
+                    <select id="picChartPhaseSelector"
+                            onchange="renderPICChart()"
+                            class="text-xs border rounded px-2 py-1 min-w-[130px]">
                         <option value="">Tất cả phase</option>
                     </select>
-                    <div class="text-xs bg-blue-50 text-blue-800 px-3 py-1.5 rounded border border-blue-200">
-                        Velocity: <b id="burndownVelocity">—</b> function/tuần
-                    </div>
-                    <div class="text-xs bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded border border-emerald-200">
-                        Tổng Closed: <b id="burndownTotal">—</b>
-                    </div>
                 </div>
             </div>
-            <p class="chart-scope"></p>
-            <div class="chart-box mt-2" style="height:280px"><canvas id="chartBurndown"></canvas></div>
+            <div class="chart-box h-80"><canvas id="chartPIC"></canvas></div>
         </section>
 
-        <section id="section-slow" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="slow">
-                        🐌 Ai đang chậm — Heatmap PIC × Phase
-                        <button onclick="exportSection('slow')"
-                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
-                                title="Xuất Excel — 2 sheet: matrix + flat list. Xuất TẤT CẢ PIC/Phase.">📥 Xuất Excel</button>
-                    </h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Số phase-record trễ (End &lt; today, chưa Closed) của mỗi PIC ở mỗi phase</p>
-                </div>
-                <span class="text-xs bg-orange-50 text-orange-700 px-3 py-1.5 rounded border border-orange-200">
-                    Tổng slow: <b id="slowTotal">0</b>
-                </span>
-            </div>
-            <div id="slowHeatmapWrap" class="overflow-x-auto"></div>
-            <div id="slowPagerWrap" class="mt-2"></div>
-        </section>
+        
 
-        <!-- ============ NHÓM: 6: DISTRIBUTION / COVERAGE ============ -->
-
-        <section id="section-priority" class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+<section id="section-priority" class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             <div class="bg-white dashboard-card rounded-xl shadow-md p-5">
                 <div class="flex items-center justify-between gap-2">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-priority">🎯 Priority</h3>
@@ -2726,7 +2954,9 @@
             </div>
         </section>
 
-        <section id="section-fitgap-dashboard" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+        
+
+<section id="section-fitgap-dashboard" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap"
@@ -2798,7 +3028,9 @@
             </div>
         </section>
 
-        <section id="section-function-diff" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+        
+
+<section id="section-function-diff" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap"
@@ -2850,176 +3082,9 @@
             <div id="fdiffPagerWrap" class="mt-2"></div>
         </section>
 
-        <!-- Task 10: Kanban theo tuần -->
-        <section id="section-kanban" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="kanban">📋 Kanban theo tuần</h3>
-                    <p class="chart-subtitle" id="kanbanSubtitle">Cần upload file để hiển thị kanban.</p>
-                </div>
-                <div class="flex items-center gap-2 flex-wrap">
-                    <button onclick="_kanbanShiftWeek(-1)" class="text-xs bg-gray-200 hover:bg-gray-300 dark:bg-slate-700 px-2 py-1 rounded" title="Tuần trước">◀</button>
-                    <span id="kanbanWeekLabel" class="text-xs font-semibold">Tuần này</span>
-                    <button onclick="_kanbanShiftWeek(1)" class="text-xs bg-gray-200 hover:bg-gray-300 dark:bg-slate-700 px-2 py-1 rounded" title="Tuần sau">▶</button>
-                    <button onclick="_kanbanShiftWeek(0)" class="text-xs bg-blue-100 hover:bg-blue-200 text-blue-800 px-2 py-1 rounded">Hôm nay</button>
-                    <!-- Task 14: Role auto-detect từ phase → bỏ nút map tay -->
-                </div>
-            </div>
-            <!-- Filter mini bar -->
-            <div class="flex items-center gap-2 flex-wrap mb-3 text-xs">
-                <input type="text" id="kanbanSearch" oninput="_kanbanScheduleReload()" placeholder="🔍 Tìm nhanh mã/tên/module…" class="border rounded px-2 py-1 flex-1 min-w-[200px]">
-                <!-- Task 15: multi-select Module + Quy trình cho Kanban -->
-                <div id="kanbanFilterModuleMS" class="min-w-[140px]"></div>
-                <div id="kanbanFilterProcessMS" class="min-w-[160px]"></div>
-                <select id="kanbanFilterPic" onchange="_kanbanScheduleReload()" class="border rounded px-2 py-1 dark:bg-slate-700"><option value="">PIC</option></select>
-                <select id="kanbanFilterRole" onchange="_kanbanScheduleReload()" class="border rounded px-2 py-1 dark:bg-slate-700">
-                    <option value="">Role (tất cả)</option>
-                    <option value="BA">BA</option>
-                    <option value="Dev">Dev</option>
-                </select>
-            </div>
-            <div id="kanbanBoard" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3 overflow-x-auto">
-                <!-- Columns populated by JS -->
-            </div>
-        </section>
+        
 
-        <!-- Task 9: Custom dashboards (Dynamic Dashboard Builder) -->
-        <section id="section-custom-dashboards" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="custom-dashboards">🎨 Dashboard tuỳ chỉnh</h3>
-                    <p class="chart-subtitle">Các chart do bạn tự tạo qua Wizard/Chat. Bấm ➕ Dashboard ở header để tạo thêm.</p>
-                </div>
-                <button onclick="openCustomDashModal()" class="text-xs bg-purple-100 hover:bg-purple-200 text-purple-800 px-3 py-1.5 rounded font-medium">
-                    ➕ Thêm chart
-                </button>
-            </div>
-            <div id="customDashList" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <!-- Populated by JS -->
-            </div>
-        </section>
-
-        <!-- ============ NHÓM: 7: ADVANCED ANALYTICS (hidden mặc định) ============ -->
-
-        <section id="section-sla" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="sla">
-                        🚨 SLA — vi phạm deadline theo Priority
-                        <span class="help-tip"
-                              title="ĐỊNH NGHĨA vi phạm SLA:&#10;&#10;Một phase-record được coi là vi phạm SLA khi thỏa MỌI điều kiện:&#10;  1. Có End (hoặc To) date&#10;  2. End &lt; ngày hôm nay (đã trễ)&#10;  3. Status ≠ Closed VÀ ≠ Cancelled (chưa đóng)&#10;&#10;→ Nghĩa là: 'đã qua hạn nhưng vẫn chưa xong / chưa hủy'.&#10;&#10;PHÂN LOẠI severity theo Priority:&#10;  • Must-have + trễ ≥ N ngày (default 3) → CRITICAL&#10;  • Should-have + trễ ≥ M ngày (default 7) → CRITICAL&#10;  • Còn lại → WARNING&#10;&#10;⚙️ Có thể chỉnh N, M ở Cài đặt project (banner cấu hình).">?</span>
-                        <button onclick="exportSection('sla')"
-                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
-                                title="Xuất Excel — áp bộ lọc hiện tại, xuất TẤT CẢ record (không phân trang)">📥 Xuất Excel</button>
-                    </h3>
-                    <p class="text-xs text-gray-500 mt-0.5">
-                        Định nghĩa: End date đã qua &amp; status chưa Closed/Cancelled.
-                        Must-have quá <span id="slaMustDays">3</span>d · Should-have quá <span id="slaShouldDays">7</span>d → nâng lên "critical"
-                    </p>
-                </div>
-                <div class="flex items-center gap-3 text-xs">
-                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Critical: <b id="slaCritical">0</b></span>
-                    <span class="bg-amber-50 text-amber-800 px-3 py-1.5 rounded border border-amber-200">Warning: <b id="slaWarning">0</b></span>
-                </div>
-            </div>
-            <div id="slaTableWrap" class="overflow-x-auto"></div>
-            <div id="slaPagerWrap" class="mt-2"></div>
-        </section>
-
-        <section id="section-deps" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="deps">🔗 Dependency — Must-have đang bị block</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Parse cột <code>function_lq</code>; function Must-have bị block khi related chưa Closed phase cuối</p>
-                </div>
-                <div class="flex items-center gap-3 text-xs">
-                    <span class="bg-gray-50 text-gray-700 px-3 py-1.5 rounded border">Cạnh: <b id="depsEdges">0</b></span>
-                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Blockers: <b id="depsBlockers">0</b></span>
-                </div>
-            </div>
-            <div id="depsTableWrap" class="overflow-x-auto"></div>
-            <div id="depsPagerWrap" class="mt-2"></div>
-        </section>
-
-        <section id="section-baseline" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="baseline">
-                        📐 Baseline vs Actual — variance ngày
-                        <button onclick="exportSection('baseline')"
-                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
-                                title="Xuất Excel — áp bộ lọc, xuất TẤT CẢ record (FE chỉ hiện top 200 nhưng Excel xuất đầy đủ)">📥 Xuất Excel</button>
-                    </h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Auto-detect <code>Planned</code>/<code>Actual</code> trong phase; fallback End vs Last Updated khi Closed</p>
-                </div>
-                <div class="flex items-center gap-3 text-xs">
-                    <span class="bg-gray-50 text-gray-700 px-3 py-1.5 rounded border">So sánh được: <b id="bslTotal">0</b></span>
-                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Trễ: <b id="bslLate">0</b></span>
-                    <span class="bg-blue-50 text-blue-700 px-3 py-1.5 rounded border border-blue-200">Avg: <b id="bslAvg">0</b>d</span>
-                </div>
-            </div>
-            <div id="baselineTableWrap" class="overflow-x-auto"></div>
-            <div id="baselinePagerWrap" class="mt-2"></div>
-        </section>
-
-        <!-- ============ NHÓM: 8: OPERATIONAL ============ -->
-
-        <!-- ========================================================================
-             T21 — DATA QUALITY panel
-             Phát hiện các ô data bị lỗi/thiếu (invalid status, blank PIC, End<Start,
-             Closed thiếu End, duplicate Mã CN, thiếu Priority/Complexity/FIT-GAP).
-             Ẩn mặc định; JS gọi endpoint /data-quality khi renderDashboard.
-             ======================================================================== -->
-        <section id="section-dataquality" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="dataquality">🩺 Data Quality</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Phát hiện dữ liệu lỗi/thiếu để clean trước khi báo cáo</p>
-                </div>
-                <div class="flex items-center gap-2 flex-wrap">
-                    <!-- T35 Task 3 — Local Module filter (bổ sung global filter) -->
-                    <div id="dqModuleFilter" class="text-sm" style="min-width:140px"></div>
-                    <select id="dqSeverityFilter" class="text-sm border rounded px-2 py-1">
-                        <option value="all">Tất cả severity</option>
-                        <option value="high">🔴 High</option>
-                        <option value="medium">🟠 Medium</option>
-                        <option value="low">🟡 Low</option>
-                    </select>
-                    <select id="dqCodeFilter" class="text-sm border rounded px-2 py-1">
-                        <option value="all">Tất cả loại</option>
-                    </select>
-                    <button onclick="exportDataQuality()"
-                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
-                        📥 Xuất Excel
-                    </button>
-                </div>
-            </div>
-
-            <!-- Summary cards -->
-            <div id="dqSummaryCards" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
-
-            <!-- Chi tiết bảng issue -->
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead class="bg-gray-100 text-gray-700">
-                        <tr>
-                            <th class="px-2 py-2 text-left">Row</th>
-                            <th class="px-2 py-2 text-left">Mã CN</th>
-                            <th class="px-2 py-2 text-left">Tên chức năng</th>
-                            <th class="px-2 py-2 text-left">Module</th>
-                            <th class="px-2 py-2 text-left">Phase</th>
-                            <th class="px-2 py-2 text-left">Issue</th>
-                            <th class="px-2 py-2 text-left">Chi tiết</th>
-                            <th class="px-2 py-2 text-left">Gợi ý</th>
-                        </tr>
-                    </thead>
-                    <tbody id="dqTable"></tbody>
-                </table>
-            </div>
-            <div id="dqPagerWrap" class="mt-2"></div>
-        </section>
-
-        <!-- ========================================================================
+<!-- ========================================================================
              T24 — MY BOOKMARKS
              Danh sách chức năng user đã bookmark ⭐ + preview note.
              Ẩn nếu chưa có bookmark nào.
@@ -3037,7 +3102,72 @@
             <div id="bmList" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
         </section>
 
-        <!-- ========================================================================
+        
+
+        <!-- ============ NHÓM D: QUẢN TRỊ / VẬN HÀNH ============ -->
+
+        <section id="section-compare" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex items-center justify-between flex-wrap gap-3 mb-2">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-compare">📊 So sánh với snapshot trước</h3>
+                    <!-- Wave 3: Task 2 audit — section này INTENTIONALLY dùng snapshot full,
+                         không áp global filter. Badge cảnh báo giúp user không confuse "sao
+                         số overdue ở đây khác card summary?". -->
+                    <span class="inline-block bg-slate-100 text-slate-600 text-[11px] px-2 py-0.5 rounded border border-slate-200 mt-1"
+                          title="So sánh luôn dùng full snapshot để đo velocity chuẩn — không lọc theo Module/PIC hiện tại">
+                        🔒 So sánh KHÔNG áp dụng global filter (luôn dùng full snapshot)
+                    </span>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <select id="compareOld" class="text-sm border rounded px-2 py-1"></select>
+                    <span class="text-gray-500">→</span>
+                    <select id="compareNew" class="text-sm border rounded px-2 py-1"></select>
+                    <button onclick="doCompare()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">
+                        So sánh
+                    </button>
+                    <button onclick="downloadCompareReport()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm">
+                        📥 Xuất Excel
+                    </button>
+                    <label class="cursor-pointer bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1.5 rounded text-sm">
+                        Upload file cũ
+                        <input type="file" id="compareUpload" accept=".xlsx" class="hidden">
+                    </label>
+                </div>
+            </div>
+            <div id="compareContent" class="hidden">
+                <div id="deltaCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
+                    <div>
+                        <h4 class="text-sm font-semibold text-gray-700 mb-2">Module Delta (% Closed)</h4>
+                        <div class="chart-box h-64"><canvas id="chartModuleDelta"></canvas></div>
+                    </div>
+                    <div>
+                        <h4 class="text-sm font-semibold text-gray-700 mb-2">Status Transitions</h4>
+                        <div id="statusFlow" class="text-sm"></div>
+                    </div>
+                </div>
+                <div id="newFunctionsWrap" class="mt-4"></div>
+            </div>
+            <div id="compareEmpty" class="text-center py-6 text-gray-500 text-sm">
+                Chưa có snapshot nào để so sánh. Snapshot được tạo tự động mỗi lần upload.
+            </div>
+        </section>
+
+        
+
+<section id="section-digest" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex items-center justify-between mb-4 no-print">
+                <h3 class="text-lg font-semibold text-gray-800" data-help="section-digest">📈 Weekly Digest (Báo cáo tuần)</h3>
+                <button onclick="window.print()" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-sm">
+                    🖨️ In / Xuất PDF
+                </button>
+            </div>
+            <div id="weeklyDigest" class="text-sm"></div>
+        </section>
+
+        
+
+<!-- ========================================================================
              T26 — WEEKLY DIGEST ARCHIVE (Excel file lưu offline)
              Danh sách file digest đã sinh (auto hoặc manual). Section này ẩn mặc
              định — JS bỏ 'hidden' khi có file trong digests/ folder hoặc user
@@ -3062,59 +3192,27 @@
             <div id="digestList" class="text-sm"></div>
         </section>
 
-        <!-- ========================================================================
-             T22 — AGING WIP tracking
-             Danh sách phase In-progress vượt ngưỡng N ngày → đánh dấu cần push.
-             Slider threshold live-update. Ẩn mặc định (JS load khi có data).
-             ======================================================================== -->
-        <section id="section-aging-wip" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+        
+
+<!-- Task 9: Custom dashboards (Dynamic Dashboard Builder) -->
+        <section id="section-custom-dashboards" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="aging-wip">⏳ Aging WIP</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Task In-progress quá lâu (kể từ Start date) → cần push</p>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="custom-dashboards">🎨 Dashboard tuỳ chỉnh</h3>
+                    <p class="chart-subtitle">Các chart do bạn tự tạo qua Wizard/Chat. Bấm ➕ Dashboard ở header để tạo thêm.</p>
                 </div>
-                <div class="flex items-center gap-3">
-                    <label class="text-sm text-gray-700 flex items-center gap-2">
-                        Ngưỡng:
-                        <input id="agingThreshold" type="range" min="1" max="90"
-                               value="14" step="1" class="w-32">
-                        <span id="agingThresholdVal" class="font-semibold text-blue-700 min-w-[3rem]">14 ngày</span>
-                    </label>
-                    <button onclick="exportAgingWip()"
-                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
-                        📥 Xuất Excel
-                    </button>
-                </div>
+                <button onclick="openCustomDashModal()" class="text-xs bg-purple-100 hover:bg-purple-200 text-purple-800 px-3 py-1.5 rounded font-medium">
+                    ➕ Thêm chart
+                </button>
             </div>
-
-            <!-- Summary strip -->
-            <div id="agingSummary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
-
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead class="bg-gray-100 text-gray-700">
-                        <tr>
-                            <th class="px-2 py-2 text-left">Mã CN</th>
-                            <th class="px-2 py-2 text-left">Tên chức năng</th>
-                            <th class="px-2 py-2 text-left">Module</th>
-                            <th class="px-2 py-2 text-left">Phase</th>
-                            <th class="px-2 py-2 text-left">PIC</th>
-                            <th class="px-2 py-2 text-left">Start</th>
-                            <th class="px-2 py-2 text-right cursor-pointer" onclick="_agingSort('aging_days')">
-                                Aging (ngày) ⇅
-                            </th>
-                            <th class="px-2 py-2 text-right">Over</th>
-                            <th class="px-2 py-2 text-left">Priority</th>
-                            <th class="px-2 py-2 text-center" title="Xem chi tiết">👁</th>
-                        </tr>
-                    </thead>
-                    <tbody id="agingTable"></tbody>
-                </table>
+            <div id="customDashList" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <!-- Populated by JS -->
             </div>
-            <div id="agingPagerWrap" class="mt-2"></div>
         </section>
 
-        <section id="section-history" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+        
+
+<section id="section-history" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800" data-help-id="history">📜 Lịch sử upload</h3>
@@ -3138,7 +3236,9 @@
             <div id="historyPagerWrap" class="mt-2"></div>
         </section>
 
-    </div> <!-- end dashboard -->
+    
+
+</div> <!-- end dashboard -->
 </main>
 
 <!-- ========================================================================
