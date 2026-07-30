@@ -1407,6 +1407,140 @@ def export_full(slug=None):
         return jsonify({"error": f"Lỗi khi xuất file: {str(e)}"}), 500
 
 
+# ==========================================================================
+# T34 Task 1 — Xuất "Toàn bộ vấn đề" ra 1 Excel workbook (8 sheet)
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/export-all-issues", methods=["GET", "POST"])
+def project_export_all_issues(slug: str):
+    """
+    Xuất 1 workbook Excel duy nhất chứa mọi loại vấn đề, mỗi loại 1 sheet.
+
+    Cover + Overdue + Chưa PIC + Đình trệ + High Risk + Aging WIP +
+    Data Quality + Bookmark.
+
+    Query params (đồng nhất với các endpoint export khác):
+      g_module / g_process / g_pic  → global filter (comma-separated
+        hoặc lặp nhiều lần).
+      threshold                     → ngưỡng aging WIP (default 14).
+
+    POST body: JSON { g_module: [...], g_process: [...], g_pic: [...],
+      threshold: int }.
+
+    Áp filter global 1 lần (tại _filter_parsed_data), sau đó compute mọi
+    loại vấn đề trên filtered data. Tránh recompute nhiều lần.
+    """
+    from analyzer.data_quality import compute_data_quality
+    from analyzer.advanced_metrics import compute_aging_wip
+    from analyzer.risk_scorer import compute_all_risk_scores
+    from analyzer import project_store as ps
+    from exporter.export_all_issues import export_all_issues
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+
+    # Parse global filter — hỗ trợ cả POST body và GET query string
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        fmodules = body.get("g_module") or body.get("modules") or []
+        fprocesses = body.get("g_process") or body.get("processes") or []
+        fpics = body.get("g_pic") or body.get("pics") or []
+        threshold = body.get("threshold") or 14
+        if isinstance(fmodules, str):
+            fmodules = [x.strip() for x in fmodules.split(",") if x.strip()]
+        if isinstance(fprocesses, str):
+            fprocesses = [x.strip() for x in fprocesses.split(",") if x.strip()]
+        if isinstance(fpics, str):
+            fpics = [x.strip() for x in fpics.split(",") if x.strip()]
+    else:
+        fmodules = _parse_multi_arg("g_module") or _parse_multi_arg("module")
+        fprocesses = _parse_multi_arg("g_process") or _parse_multi_arg("process")
+        fpics = _parse_multi_arg("g_pic") or _parse_multi_arg("pic")
+        threshold = request.args.get("threshold") or 14
+
+    try:
+        threshold = int(threshold)
+        threshold = max(1, min(365, threshold))
+    except (ValueError, TypeError):
+        threshold = 14
+
+    # Apply filter global 1 lần cho toàn bộ compute
+    if fmodules or fprocesses or fpics:
+        filtered = _filter_parsed_data(
+            state["data"],
+            modules=fmodules, processes=fprocesses, pics=fpics,
+        )
+    else:
+        filtered = state["data"]
+
+    # Compute 7 loại vấn đề — reuse các function đã có
+    engine = DashboardEngine()
+    metrics = engine.compute_all(filtered)
+
+    overdue_list = metrics.get("overdue_list", []) or []
+    unassigned_list = metrics.get("unassigned_tasks", []) or []
+    stalled_list = (metrics.get("stalled_tasks", {}) or {}).get("items", []) or []
+
+    risk_scores = compute_all_risk_scores(filtered, date.today(), 3)
+    risk_list = [r for r in risk_scores if r.get("risk_score", 0) >= 30]
+
+    aging_payload = compute_aging_wip(filtered, threshold_days=threshold)
+    aging_items = aging_payload.get("items", []) or []
+
+    dq_payload = compute_data_quality(filtered)
+    dq_issues = dq_payload.get("issues", []) or []
+
+    # Bookmark — dùng list ma_cn từ store rồi map sang FunctionRow của filtered.
+    # Nếu function bị filter loại → không đưa vào bookmark sheet (nhất quán
+    # với các sheet khác).
+    project_dir = _project_dir_for(slug)
+    bookmarked_codes = set(ps.load_bookmarks(project_dir) or [])
+    bookmark_functions = []
+    if bookmarked_codes:
+        for r in filtered.rows:
+            mc = str(r.meta.get("ma_cn") or "").strip()
+            if mc and mc in bookmarked_codes:
+                bookmark_functions.append({
+                    "ma_cn": mc,
+                    "ten_cn": r.meta.get("ten_cn", ""),
+                    "module": r.meta.get("module", ""),
+                    "quy_trinh": r.meta.get("quy_trinh") or r.meta.get("process", ""),
+                    "priority": r.meta.get("priority", ""),
+                    "complexity": r.meta.get("complexity", ""),
+                    "giai_doan": r.meta.get("giai_doan", ""),
+                    "fit_gap": r.meta.get("fit_gap", ""),
+                })
+
+    project = _project_mgr.get_project(slug)
+    project_name = project.name if project else slug
+
+    try:
+        filepath = export_all_issues(
+            project_name=project_name,
+            slug=slug,
+            overdue_list=overdue_list,
+            unassigned_list=unassigned_list,
+            stalled_list=stalled_list,
+            risk_list=risk_list,
+            aging_wip_items=aging_items,
+            data_quality_issues=dq_issues,
+            bookmark_functions=bookmark_functions,
+            filter_info={
+                "modules": fmodules,
+                "processes": fprocesses,
+                "pics": fpics,
+            },
+            output_dir=_project_mgr.get_export_dir(slug),
+        )
+        return send_file(filepath, as_attachment=True,
+                         download_name=os.path.basename(filepath))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi khi xuất file: {str(e)}"}), 500
+
+
 @app.route("/api/projects/<slug>/export-chart", methods=["GET", "POST"])
 def export_chart_endpoint(slug):
     """

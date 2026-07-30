@@ -900,3 +900,83 @@ Section mới trong `#settingsModal` (giữa "🎯 SLA" và "🎛️ Hiển th�
   - Plaintext token KHÔNG được lưu vào localStorage / cookie / URL log.
   - Modal đóng → `lastNewToken` = "" + input value = "".
   - Snippet-view chỉ hiện placeholder — không expose token thật.
+
+---
+
+## 18. Xuất "Toàn bộ vấn đề" — Excel multi-sheet (T34 — Task 1)
+
+### Mục đích
+1 nút xuất Excel workbook duy nhất chứa mọi loại vấn đề gộp lại, mỗi loại 1
+sheet. Tiện cho tuần báo cáo / họp escalation — thay vì bấm 7 nút "Xuất
+Excel" ở 7 section, chỉ cần 1 click.
+
+### Nút truy cập
+
+- **Header dashboard**: nút đỏ `📊 Xuất vấn đề` cạnh `📄 Xuất PDF` và
+  `🎬 Trình chiếu`.
+- **Command Palette** (`Ctrl+K`): entry `📊 Xuất toàn bộ vấn đề (Excel
+  multi-sheet)`.
+
+### File output
+
+Tên: `iHRP_Van_De_Tong_Hop_<slug>_YYYYMMDD.xlsx` → 8 sheet:
+
+| # | Sheet | Nội dung | Banner màu |
+|---|-------|----------|------------|
+| 0 | Cover | Project name, filter info (module/process/pic), timestamp, count mỗi loại + hyperlink đến sheet | Xanh navy `1F4E79` |
+| 1 | Overdue | Function trễ deadline (**dedup theo Mã CN, phase merged**) | Đỏ `C00000` |
+| 2 | Chua_Co_PIC | Function chưa assign PIC | Cam `ED7D31` |
+| 3 | Dinh_Tre | Function stalled giữa 2 phase | Vàng đậm `BF8F00` |
+| 4 | High_Risk | Risk score ≥30 | Đỏ tươi `E60000` |
+| 5 | Aging_WIP | In-progress quá threshold (default 14 ngày) | Vàng nhạt `FFC000` |
+| 6 | Data_Quality | Row có lỗi data (dup, missing, invalid) | Xám `595959` |
+| 7 | Bookmark | Function đã star (fetch từ `bookmarks.json` — cross-check với filtered data) | Tím `7030A0` |
+
+### Layout chuẩn mỗi sheet
+
+- **Row 1**: banner merge A1:...1 với fill màu category + text trắng đậm,
+  format `<icon> <TÊN SHEET> — Tổng: N record`.
+- **Row 2**: header bold + fill xanh nhạt `DEEBF7`.
+- **Row 3+**: data rows. Fill màu theo mức trễ / risk (RED ≥30d/≥80,
+  ORANGE ≥14d/≥50, YELLOW ≥7d/≥30).
+- **Freeze pane**: `A3` — luôn thấy banner + header khi scroll.
+- **Auto-filter**: enable ở row 2.
+- **Empty state**: nếu 0 record → row 3 merge cell với message "✓ Không có
+  record nào trong nhóm này (đã áp dụng filter global)."
+
+### Dedup Overdue
+
+Sheet Overdue: gom nhiều phase-record của cùng 1 Mã CN thành 1 row:
+- Cột **Phase trễ (gộp)**: `"Analysis, UAT"` — giữ order first-seen.
+- Cột **Số ngày trễ (max)**: `MAX(days_overdue của các phase)`.
+- Cột **PIC**: dedup + giữ order first-seen (union tất cả PIC của các phase).
+- Sort DESC theo `days_overdue`.
+
+### Global filter
+
+**Query params** (`GET /api/projects/<slug>/export-all-issues`):
+- `g_module=HR,SI,PR` (comma-sep, hoặc lặp nhiều lần)
+- `g_process=BP.01,BP.02`
+- `g_pic=SonHN6`
+- `threshold=14` (aging WIP ngưỡng — default 14).
+
+**POST body** (JSON): `{ "g_module": [...], "g_process": [...],
+"g_pic": [...], "threshold": 14 }`.
+
+Filter apply **1 lần** tại `_filter_parsed_data(state["data"], ...)`, sau
+đó recompute mọi loại vấn đề trên filtered data. Tránh tính lại 8 lần.
+
+### Cover sheet — hyperlink
+
+Cột **Link** dùng `openpyxl.Hyperlink(location=f"'<sheet>'!A1")` — click
+→ nhảy trực tiếp đến sheet tương ứng trong Excel.
+
+### File chính
+
+- `exporter/export_all_issues.py` (~500 LOC) — main entry
+  `export_all_issues(project_name, slug, overdue_list, ...)` + 7 per-sheet
+  writer + helper `_dedup_by_ma_cn`.
+- `app.py::project_export_all_issues` — endpoint (GET/POST hỗ trợ).
+- `templates/index.html` — nút `📊 Xuất vấn đề` ở header (red-500).
+- `static/js/dashboard.js` — `exportAllIssues()` + Command Palette entry
+  `act.export-all-issues`.

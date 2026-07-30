@@ -2591,6 +2591,36 @@ async function exportOverdue() {
     await downloadFile(`/api/projects/${currentProjectSlug}/export-overdue?` + params.toString(), "Overdue_Report.xlsx");
 }
 
+
+// ========================================================================
+// T34 Task 1 — Xuất "Toàn bộ vấn đề" ra 1 Excel workbook (8 sheet)
+// ========================================================================
+// 1 nút header duy nhất → xuất Cover + 7 loại vấn đề với global filter apply.
+async function exportAllIssues() {
+    if (!currentProjectSlug) {
+        showToast("⚠️ Chưa chọn project");
+        return;
+    }
+    const params = new URLSearchParams();
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+    // Threshold aging WIP — dùng theo current slider nếu có, không thì default 14
+    const thr = document.getElementById("agingWipThreshold")?.value;
+    if (thr) params.set("threshold", thr);
+
+    showToast("📊 Đang tạo file Excel tổng hợp vấn đề…");
+    try {
+        const url = `/api/projects/${currentProjectSlug}/export-all-issues?` + params.toString();
+        await downloadFile(url, `iHRP_Van_De_Tong_Hop_${currentProjectSlug}.xlsx`);
+    } catch (err) {
+        console.error("[exportAllIssues]", err);
+        showToast("❌ Lỗi khi xuất báo cáo tổng hợp");
+    }
+}
+window.exportAllIssues = exportAllIssues;
+
+
 // ========================================================================
 // V2: UNASSIGNED
 // ========================================================================
@@ -10543,6 +10573,9 @@ const _CMD_ACTIONS = [
                    showToast("Đã reset filter"); } },
     { id: "act.export-pdf", label: "📄 Xuất PDF báo cáo tuần", kind: "action",
       run: () => { if (typeof openPdfExportModal === "function") openPdfExportModal();
+                   else showToast("Chưa sẵn sàng"); } },
+    { id: "act.export-all-issues", label: "📊 Xuất toàn bộ vấn đề (Excel multi-sheet)", kind: "action",
+      run: () => { if (typeof exportAllIssues === "function") exportAllIssues();
                    else showToast("Chưa sẵn sàng"); } },
     { id: "act.export-overdue", label: "📥 Xuất Excel Overdue", kind: "action",
       run: () => { if (typeof exportOverdue === "function") exportOverdue();
