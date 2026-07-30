@@ -2438,10 +2438,23 @@
                         <button data-gcg="month" onclick="setGanttCalGranularity('month')"
                                 class="gantt-cal-gran-btn px-2 py-1 border-l hover:bg-blue-50">Month</button>
                     </div>
+                    <button onclick="scrollGanttCalToToday()"
+                            class="text-xs bg-pink-600 hover:bg-pink-700 text-white rounded px-3 py-1"
+                            title="Cuộn ngang đến cột Today (đường hồng)">🎯 Today</button>
                     <button onclick="exportGanttCalendar()"
                             class="text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded px-3 py-1"
                             title="Xuất Excel dạng lịch (merge cell Month/Week + fill màu)">📥 Xuất Excel</button>
                 </div>
+            </div>
+            <!-- T35 Task 2 — Banner cảnh báo outlier date -->
+            <div id="ganttCalOutlierBanner"
+                 class="hidden mb-2 bg-amber-50 border-l-4 border-amber-500 text-amber-900 px-3 py-2 rounded text-xs dark:bg-amber-900/20 dark:text-amber-200">
+                <b>⚠️ Phát hiện date bất thường</b> —
+                <span id="ganttCalOutlierMsg"></span>
+                <button onclick="openGanttCalOutlierModal()"
+                        class="ml-2 underline font-semibold text-amber-800 hover:text-amber-950">
+                    Xem chi tiết →
+                </button>
             </div>
             <div id="ganttCalendarInfo" class="text-[11px] text-gray-500 mb-2"></div>
             <div id="ganttCalendarContainer" class="gantt-calendar-container overflow-auto border rounded max-h-[70vh]">
@@ -2450,6 +2463,46 @@
             <!-- Legend -->
             <div id="ganttCalendarLegend" class="flex flex-wrap items-center gap-3 text-[11px] text-gray-600 mt-3"></div>
         </section>
+
+        <!-- Modal: chi tiết outlier date (T35 Task 2) -->
+        <div id="ganttCalOutlierModal"
+             class="fixed inset-0 bg-black/50 hidden z-[65] items-center justify-center"
+             onclick="if(event.target===this) closeGanttCalOutlierModal()">
+            <div class="bg-white dark:bg-slate-800 dark:text-gray-100 rounded-xl shadow-2xl max-w-3xl w-full mx-4 max-h-[80vh] flex flex-col">
+                <div class="flex items-center justify-between px-5 py-3 border-b dark:border-slate-700">
+                    <h3 class="text-lg font-bold text-amber-700 dark:text-amber-300">
+                        ⚠️ Date bất thường trong Gantt Calendar
+                    </h3>
+                    <button onclick="closeGanttCalOutlierModal()"
+                            class="w-8 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-slate-700 flex items-center justify-center text-gray-500">✕</button>
+                </div>
+                <div class="px-5 py-3 border-b bg-amber-50 dark:bg-amber-900/10 dark:border-slate-700 text-xs text-amber-800 dark:text-amber-200">
+                    Các record dưới đây có date &lt; 2000 hoặc &gt; (năm hiện tại + 10) — đã bị loại khỏi tính toán timeline để tránh Gantt phủ 90 năm.
+                    Kiểm tra + fix ở file gốc / API source, sau đó upload/sync lại.
+                </div>
+                <div class="px-5 py-3 overflow-y-auto flex-1">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="bg-gray-100 dark:bg-slate-700 text-left">
+                                <th class="px-2 py-1">Mã CN</th>
+                                <th class="px-2 py-1">Tên chức năng</th>
+                                <th class="px-2 py-1">Module</th>
+                                <th class="px-2 py-1">Phase</th>
+                                <th class="px-2 py-1">Field</th>
+                                <th class="px-2 py-1">Giá trị</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ganttCalOutlierTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="px-5 py-3 border-t dark:border-slate-700 flex justify-end">
+                    <button onclick="closeGanttCalOutlierModal()"
+                            class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold">
+                        Đã hiểu
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <section id="section-duration" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">

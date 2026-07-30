@@ -13369,6 +13369,10 @@ function _renderGanttCalendar(data) {
     const info = document.getElementById("ganttCalendarInfo");
     if (!container) return;
 
+    // T35 Task 2 — Render banner cảnh báo outlier dates (nếu có).
+    // Lưu skipped_dates vào window scope để modal chi tiết đọc lại.
+    _renderGanttCalOutlierBanner(data.skipped_dates || [], data.skipped_count || 0);
+
     if (data.empty || !(data.rows || []).length || !(data.columns || []).length) {
         container.innerHTML = `<div class="text-gray-400 text-center py-10 text-sm">
             Không có dữ liệu để vẽ Gantt Calendar.<br>
@@ -13485,7 +13489,101 @@ function _renderGanttCalendar(data) {
             ? `<span class="gantt-cal-legend-chip ml-auto"><span class="swatch" style="background:#ec4899"></span><span>Today</span></span>`
             : "");
     }
+
+    // T35 Task 2 — Auto-scroll to today cột khi load lần đầu (chỉ scroll
+    // ngang trong container, không scroll vertical page). Delay 100ms để
+    // DOM table đã layout xong.
+    if (todayCol !== null && todayCol !== undefined) {
+        setTimeout(() => _scrollGanttCalToTodayCol(todayCol), 100);
+    }
 }
+
+/**
+ * T35 Task 2 — Render banner cảnh báo outlier + lưu state cho modal chi tiết.
+ * Ẩn banner nếu không có outlier.
+ */
+function _renderGanttCalOutlierBanner(skippedDates, count) {
+    const banner = document.getElementById("ganttCalOutlierBanner");
+    const msg = document.getElementById("ganttCalOutlierMsg");
+    if (!banner) return;
+    // Lưu vào window scope để modal đọc lại
+    window._ganttCalSkippedDates = skippedDates || [];
+    if (!count || count === 0) {
+        banner.classList.add("hidden");
+        return;
+    }
+    if (msg) {
+        // Đếm distinct function bị ảnh hưởng (theo Mã CN)
+        const distinctMaCn = new Set((skippedDates || []).map(d => d.ma_cn || d.row_num));
+        msg.textContent = `${count} phase-record có date < 2000 hoặc > ${new Date().getFullYear() + 10} (${distinctMaCn.size} function bị ảnh hưởng) — đã loại khỏi timeline.`;
+    }
+    banner.classList.remove("hidden");
+}
+
+function openGanttCalOutlierModal() {
+    const modal = document.getElementById("ganttCalOutlierModal");
+    const tbody = document.getElementById("ganttCalOutlierTableBody");
+    if (!modal || !tbody) return;
+    const rows = window._ganttCalSkippedDates || [];
+    if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-gray-400">Không có outlier</td></tr>`;
+    } else {
+        tbody.innerHTML = rows.map(r => `
+            <tr class="border-b dark:border-slate-700 hover:bg-amber-50 dark:hover:bg-amber-900/10">
+                <td class="px-2 py-1 font-mono text-xs">${escapeHtml(r.ma_cn || "?")}</td>
+                <td class="px-2 py-1">${escapeHtml(r.ten_cn || "")}</td>
+                <td class="px-2 py-1">${escapeHtml(r.module || "")}</td>
+                <td class="px-2 py-1">${escapeHtml(r.phase || "")}</td>
+                <td class="px-2 py-1 text-xs text-gray-600">${escapeHtml(r.attr || "")}</td>
+                <td class="px-2 py-1 font-mono text-red-600 font-semibold">${escapeHtml(r.value || "")}</td>
+            </tr>
+        `).join("");
+    }
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+}
+window.openGanttCalOutlierModal = openGanttCalOutlierModal;
+
+function closeGanttCalOutlierModal() {
+    const modal = document.getElementById("ganttCalOutlierModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+}
+window.closeGanttCalOutlierModal = closeGanttCalOutlierModal;
+
+/**
+ * T35 Task 2 — Scroll ngang container Gantt Calendar tới cột Today.
+ * Auto-called sau khi render + có nút "🎯 Today" ở toolbar.
+ */
+function _scrollGanttCalToTodayCol(todayCol) {
+    const container = document.getElementById("ganttCalendarContainer");
+    if (!container) return;
+    // Tìm td.today-col trong tbody — reliable hơn tính offset theo colspan
+    const todayCell = container.querySelector("td.today-col");
+    if (!todayCell) return;
+    // Chỉ scroll ngang container, KHÔNG scroll page (giữ user ở vị trí đọc).
+    const containerRect = container.getBoundingClientRect();
+    const cellRect = todayCell.getBoundingClientRect();
+    // Vị trí cell tương đối với container + container.scrollLeft hiện tại
+    const cellLeftInScroll = cellRect.left - containerRect.left + container.scrollLeft;
+    // Center cell trong viewport container
+    const targetScroll = cellLeftInScroll - containerRect.width / 2 + cellRect.width / 2;
+    container.scrollTo({ left: Math.max(0, targetScroll), behavior: "smooth" });
+}
+
+function scrollGanttCalToToday() {
+    const container = document.getElementById("ganttCalendarContainer");
+    if (!container) return;
+    const todayCell = container.querySelector("td.today-col");
+    if (!todayCell) {
+        showToast("Không có cột Today trong timeline hiện tại");
+        return;
+    }
+    _scrollGanttCalToTodayCol();
+    showToast("🎯 Đã cuộn đến cột Today");
+}
+window.scrollGanttCalToToday = scrollGanttCalToToday;
 
 /** Lighten hex color bằng cách trộn với trắng theo factor (0..1). */
 function _hexLighten(hex, factor = 0.4) {

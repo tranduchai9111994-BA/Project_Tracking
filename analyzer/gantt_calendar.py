@@ -43,13 +43,34 @@ CATEGORY_COLORS: dict[str, str] = {
 _VALID_GROUP_BY = ("module", "phan_he", "process", "quy_trinh", "function")
 _VALID_GRANULARITY = ("day", "week", "month", "auto")
 
+# T35 Task 2 — Outlier date detection.
+# Range hợp lệ: [2000-01-01, current_year+10]. Ngoài range → coi là data
+# error (VD API trả '1936-03-26' do source system parse sai Excel serial
+# cell hoặc rounding rỗng thành 1899-12-30 → +delta = 1936).
+#
+# LƯU Ý: ngưỡng 2000 phù hợp với domain iHRP (dự án IT — không có phase
+# bắt đầu trước 2000). Nếu cần track legacy data, chỉnh `_MIN_VALID_YEAR`.
+_MIN_VALID_YEAR = 2000
+_MAX_YEAR_LOOKAHEAD = 10  # cho phép plan tối đa 10 năm tương lai
+
+
+def _is_outlier_date(d: date, today: Optional[date] = None) -> bool:
+    """
+    True nếu date năm < _MIN_VALID_YEAR hoặc > (current_year + _MAX_YEAR_LOOKAHEAD).
+    Guard trước khi tính min/max range để tránh timeline kéo dài 90 năm.
+    """
+    if d is None or not hasattr(d, "year"):
+        return False
+    ref_year = (today or date.today()).year
+    return d.year < _MIN_VALID_YEAR or d.year > ref_year + _MAX_YEAR_LOOKAHEAD
+
 
 # ==========================================================================
 # Helpers — date range / column building
 # ==========================================================================
 
 def _collect_all_dates(rows: list[FunctionRow]) -> list[date]:
-    """Gom mọi Start/End date từ mọi phase của mọi row."""
+    """Gom mọi Start/End date từ mọi phase của mọi row (bao gồm outlier)."""
     out: list[date] = []
     for r in rows:
         for pd in r.phases.values():
@@ -58,6 +79,45 @@ def _collect_all_dates(rows: list[FunctionRow]) -> list[date]:
             if pd.end_date:
                 out.append(pd.end_date)
     return out
+
+
+def _collect_dates_with_outliers(
+    rows: list[FunctionRow],
+    today: Optional[date] = None,
+) -> tuple[list[date], list[dict]]:
+    """
+    Gom date + phát hiện outlier.
+
+    Return: (valid_dates, skipped_list)
+      - valid_dates: chỉ chứa date trong range hợp lệ.
+      - skipped_list: entry {ma_cn, ten_cn, module, phase, attr, value_iso}
+        cho FE hiện banner cảnh báo + drill list.
+
+    Không mutate row.phases — chỉ report. Nếu cần EXCLUDE outlier khỏi
+    computation → caller tự filter bằng `_is_outlier_date`.
+    """
+    valid: list[date] = []
+    skipped: list[dict] = []
+    for r in rows:
+        for phase_name, pd in r.phases.items():
+            for attr in ("start_date", "end_date"):
+                v = getattr(pd, attr, None)
+                if v is None:
+                    continue
+                if _is_outlier_date(v, today):
+                    # meta keys đã chuẩn hóa lowercase bởi parser (ma_cn/ten_cn/module)
+                    skipped.append({
+                        "ma_cn": r.meta.get("ma_cn") or r.meta.get("Mã CN") or "",
+                        "ten_cn": r.meta.get("ten_cn") or r.meta.get("Tên chức năng") or "",
+                        "module": r.meta.get("module") or r.meta.get("Module") or r.meta.get("Phân hệ") or "",
+                        "phase": phase_name,
+                        "attr": attr,
+                        "value": v.isoformat() if hasattr(v, "isoformat") else str(v),
+                        "row_num": r.row_num,
+                    })
+                else:
+                    valid.append(v)
+    return valid, skipped
 
 
 def _choose_granularity(min_d: date, max_d: date) -> str:
@@ -275,15 +335,19 @@ def _aggregate_rows(
         row_has_overdue = False
         for ph in all_phases:
             pd = r.phases.get(ph, PhaseData())
-            if pd.start_date:
+            # T35 Task 2 — skip outlier khi tính range aggregate row.
+            # Nếu không skip → agg.start/end sẽ bị kéo về 1936 (hoặc năm bất
+            # thường khác) và span bar phủ 90 năm timeline.
+            if pd.start_date and not _is_outlier_date(pd.start_date, today):
                 starts.append(pd.start_date)
-            if pd.end_date:
+            if pd.end_date and not _is_outlier_date(pd.end_date, today):
                 ends.append(pd.end_date)
             if pd.status == "Closed":
                 closed += 1
             # Overdue = end < today, status != Closed/Cancelled
             if (
                 pd.end_date is not None
+                and not _is_outlier_date(pd.end_date, today)
                 and pd.end_date < today
                 and pd.status not in ("Closed", "Cancelled")
             ):
@@ -405,7 +469,11 @@ def compute_gantt_calendar(
     # Task type map: phase_name → task_type tiếng Việt
     task_type_map = {pg.name: pg.task_type for pg in data.phase_groups}
 
-    all_dates = _collect_all_dates(data.rows)
+    # T35 Task 2 — Detect outlier dates trước khi tính min/max range.
+    # Bug: 1 số record API iHRP Task Daily trả date '1936-03-26' làm range
+    # kéo dài 90 năm → timeline không đọc nổi. Filter outlier ra khỏi
+    # tính min/max nhưng vẫn report để FE hiện banner cảnh báo.
+    all_dates, skipped_dates = _collect_dates_with_outliers(data.rows, today=today)
     if not all_dates:
         # Empty state — trả về skeleton để FE hiện thông báo
         return {
@@ -420,6 +488,8 @@ def compute_gantt_calendar(
             "rows": [],
             "legend": _legend_dict(),
             "empty": True,
+            "skipped_dates": skipped_dates,
+            "skipped_count": len(skipped_dates),
         }
 
     min_d = min(all_dates)
@@ -491,6 +561,9 @@ def compute_gantt_calendar(
         "rows": rows_out,
         "legend": _legend_dict(),
         "empty": False,
+        # T35 Task 2 — Outlier data-quality report cho FE.
+        "skipped_dates": skipped_dates,
+        "skipped_count": len(skipped_dates),
     }
 
 

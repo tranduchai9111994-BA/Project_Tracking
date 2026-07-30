@@ -328,6 +328,12 @@ def test_gantt_calendar_auto_granularity_long_range():
     assert payload["granularity"] == "month"
 
 
+# ==========================================================================
+# T35 Task 2 — Outlier date detection (year 1936 bug)
+# ==========================================================================
+# (covered by TestOutlierDateDetection bên dưới)
+
+
 def test_gantt_calendar_export_writes_valid_xlsx(tmp_path):
     """Smoke test: export_gantt_calendar_report tạo file .xlsx hợp lệ."""
     import io
@@ -395,3 +401,211 @@ def test_gantt_calendar_export_endpoint_returns_xlsx(flask_client, sample_xlsx_p
     assert r.status_code == 200
     ctype = r.headers.get("Content-Type", "")
     assert "spreadsheet" in ctype or "octet-stream" in ctype
+
+
+# ==========================================================================
+# 4. T35 Task 2 — Outlier date detection
+# ==========================================================================
+
+
+class TestOutlierDateDetection:
+    """
+    Verify range Gantt Calendar không bị kéo dài 90 năm khi data có date
+    năm < 2000 hoặc > (current_year + 10).
+
+    Bug thực tế: API iHRP Task Daily trả record có Config UAT.Start='1936-03-26'
+    (do source system rounding empty date thành 1899-12-30 + delta) → khi ko
+    filter, min_date=1936 max_date=2027 → 90 năm timeline không đọc được.
+    """
+
+    def test_is_outlier_helper(self):
+        from analyzer.gantt_calendar import _is_outlier_date
+        today = date(2026, 7, 30)
+        # Year quá cũ
+        assert _is_outlier_date(date(1936, 3, 26), today) is True
+        assert _is_outlier_date(date(1999, 12, 31), today) is True
+        # Year quá xa tương lai
+        assert _is_outlier_date(date(2050, 1, 1), today) is True
+        # Trong range hợp lệ [2000, 2036]
+        assert _is_outlier_date(date(2000, 1, 1), today) is False
+        assert _is_outlier_date(date(2026, 7, 30), today) is False
+        assert _is_outlier_date(date(2035, 12, 31), today) is False
+        assert _is_outlier_date(date(2036, 1, 1), today) is False  # đúng ranh giới
+        # None → False (không throw)
+        assert _is_outlier_date(None, today) is False
+
+    def test_outlier_excluded_from_range(self):
+        """
+        Function có 2 phase: 1 phase date 2026 (bình thường), 1 phase date 1936
+        (outlier) → range chỉ tính 2026, KHÔNG kéo dài về 1936.
+        """
+        # Custom function with 1936 date — build tay không dùng _make_data
+        # (helper dùng timedelta relative to today).
+        # LƯU Ý: _group_rows dùng meta.get("module") lowercase → phải set
+        # meta lowercase, không viết "Module" (capitalized).
+        row = FunctionRow(row_num=2, meta={
+            "ma_cn": "F1", "module": "HR",
+        }, phases={
+            "Analysis": PhaseData(
+                start_date=date(2026, 5, 1),
+                end_date=date(2026, 6, 1),
+                status="Closed",
+            ),
+            "Config UAT": PhaseData(
+                start_date=date(1936, 3, 26),   # outlier
+                end_date=date(1936, 3, 26),     # outlier
+                status="Closed",
+            ),
+        })
+        data = ParsedData(
+            headers={}, meta_columns={},
+            phase_groups=[
+                PhaseGroup(name="Analysis", attributes={}),
+                PhaseGroup(name="Config UAT", attributes={}),
+            ],
+            rows=[row],
+            all_modules=["HR"],
+            all_phases=["Analysis", "Config UAT"],
+            all_pics=[], all_statuses=[], all_priorities=[],
+            all_complexities=[], all_giai_doan=[], all_processes=[],
+        )
+        payload = compute_gantt_calendar(
+            data, group_by="module", granularity="month",
+            today=date(2026, 7, 30),
+        )
+        # Range max KHÔNG được lùi về 1936 → phải trong 2020-2040
+        min_year = int(payload["min_date"].split("-")[0])
+        max_year = int(payload["max_date"].split("-")[0])
+        assert min_year >= 2020, f"min_date {payload['min_date']} bị kéo về outlier"
+        assert max_year <= 2040, f"max_date {payload['max_date']} bị kéo về outlier"
+
+    def test_outlier_reported_in_skipped_dates(self):
+        row = FunctionRow(row_num=2, meta={
+            "ma_cn": "F999", "ten_cn": "Test outlier",
+            "module": "HR",
+            # Tương thích thêm với _collect_dates_with_outliers (đọc cả Mã CN)
+            "Mã CN": "F999", "Tên chức năng": "Test outlier",
+            "Module": "HR",
+        }, phases={
+            "Config UAT": PhaseData(
+                start_date=date(1936, 3, 26),
+                end_date=date(1936, 3, 26),
+                status="Closed",
+            ),
+            "Analysis": PhaseData(
+                start_date=date(2026, 5, 1),
+                end_date=date(2026, 6, 1),
+                status="Closed",
+            ),
+        })
+        data = ParsedData(
+            headers={}, meta_columns={},
+            phase_groups=[
+                PhaseGroup(name="Analysis", attributes={}),
+                PhaseGroup(name="Config UAT", attributes={}),
+            ],
+            rows=[row],
+            all_modules=["HR"], all_phases=["Analysis", "Config UAT"],
+            all_pics=[], all_statuses=[], all_priorities=[],
+            all_complexities=[], all_giai_doan=[], all_processes=[],
+        )
+        payload = compute_gantt_calendar(
+            data, group_by="module", today=date(2026, 7, 30),
+        )
+        # skipped_dates + skipped_count present
+        assert "skipped_dates" in payload
+        assert "skipped_count" in payload
+        assert payload["skipped_count"] == 2  # 2 field (start + end) outlier
+        # Mỗi entry có field cần thiết
+        for entry in payload["skipped_dates"]:
+            assert "ma_cn" in entry
+            assert "phase" in entry
+            assert "attr" in entry
+            assert "value" in entry
+            assert entry["ma_cn"] == "F999"
+            assert entry["phase"] == "Config UAT"
+            assert entry["value"].startswith("1936")
+
+    def test_no_outlier_empty_skipped_list(self):
+        """Data sạch → skipped_dates = [] và skipped_count = 0."""
+        data = _make_data(date(2026, 7, 30), [
+            {"ma_cn": "F1", "module": "HR", "phases": {
+                "Analysis": {"start": -30, "end": -20, "status": "Closed"},
+                "Dev":      {"start": -10, "end":  5,  "status": "In-progress"},
+            }},
+        ])
+        payload = compute_gantt_calendar(
+            data, group_by="module", today=date(2026, 7, 30),
+        )
+        assert payload["skipped_count"] == 0
+        assert payload["skipped_dates"] == []
+
+    def test_row_aggregate_ignores_outlier_dates(self):
+        """
+        Aggregate row start/end phải bỏ qua outlier — nếu 1 function có
+        Analysis 2026 + Config UAT 1936 → agg.start = 2026 (NOT 1936).
+        """
+        row = FunctionRow(row_num=2, meta={
+            "ma_cn": "F1", "module": "HR",
+        }, phases={
+            "Analysis": PhaseData(
+                start_date=date(2026, 5, 1),
+                end_date=date(2026, 6, 1),
+                status="Closed",
+            ),
+            "Config UAT": PhaseData(
+                start_date=date(1936, 3, 26),   # outlier
+                end_date=date(1936, 3, 26),
+                status="Closed",
+            ),
+        })
+        data = ParsedData(
+            headers={}, meta_columns={},
+            phase_groups=[
+                PhaseGroup(name="Analysis", attributes={}),
+                PhaseGroup(name="Config UAT", attributes={}),
+            ],
+            rows=[row],
+            all_modules=["HR"], all_phases=["Analysis", "Config UAT"],
+            all_pics=[], all_statuses=[], all_priorities=[],
+            all_complexities=[], all_giai_doan=[], all_processes=[],
+        )
+        payload = compute_gantt_calendar(
+            data, group_by="module", today=date(2026, 7, 30),
+        )
+        # Có 1 row aggregate cho module HR — start/end phải là 2026, không 1936
+        assert len(payload["rows"]) == 1
+        agg_start = payload["rows"][0]["start"]
+        agg_end = payload["rows"][0]["end"]
+        assert agg_start is not None and agg_start.startswith("2026"), (
+            f"Aggregate row start={agg_start} — không được là 1936"
+        )
+        assert agg_end is not None and agg_end.startswith("2026"), (
+            f"Aggregate row end={agg_end} — không được là 1936"
+        )
+
+    def test_all_outliers_treated_as_empty(self):
+        """
+        Function chỉ có outlier date → coi như không có date → empty=True
+        (giống case function không có phase nào).
+        """
+        row = FunctionRow(row_num=2, meta={"ma_cn": "F1", "module": "HR"}, phases={
+            "Analysis": PhaseData(
+                start_date=date(1936, 3, 26),
+                end_date=date(1936, 3, 26),
+                status="Closed",
+            ),
+        })
+        data = ParsedData(
+            headers={}, meta_columns={},
+            phase_groups=[PhaseGroup(name="Analysis", attributes={})],
+            rows=[row],
+            all_modules=["HR"], all_phases=["Analysis"],
+            all_pics=[], all_statuses=[], all_priorities=[],
+            all_complexities=[], all_giai_doan=[], all_processes=[],
+        )
+        payload = compute_gantt_calendar(
+            data, group_by="module", today=date(2026, 7, 30),
+        )
+        assert payload["empty"] is True
+        assert payload["skipped_count"] == 2  # start + end đều outlier
