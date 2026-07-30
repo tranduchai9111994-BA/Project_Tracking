@@ -140,6 +140,24 @@
                         title="Chế độ trình chiếu (1 section/lần, ← → điều hướng, Esc thoát)">
                     🎬 Trình chiếu
                 </button>
+                <!-- T30: Registry API + Đồng bộ dữ liệu -->
+                <button id="btnIntegrations" onclick="openIntegrationsModal()"
+                        class="bg-cyan-500/80 hover:bg-cyan-500 px-3 py-1.5 rounded text-sm font-semibold"
+                        title="Registry API: cấu hình + đồng bộ dữ liệu từ ứng dụng nguồn (iHRP, workload report…)">
+                    🔌 API Registry
+                </button>
+                <!-- T30: Dropdown Đồng bộ nhanh (list integrations, click 1 endpoint để sync) -->
+                <div class="relative">
+                    <button id="btnSyncQuick" type="button" onclick="toggleSyncQuickMenu(event)"
+                            class="bg-cyan-600 hover:bg-cyan-700 px-3 py-1.5 rounded text-sm font-semibold"
+                            title="Đồng bộ nhanh từ 1 endpoint đã cấu hình">
+                        🔄 Đồng bộ ▾
+                    </button>
+                    <div id="syncQuickMenu"
+                         class="hidden absolute right-0 mt-1 z-40 bg-white dark:bg-slate-800 text-gray-800 dark:text-gray-100 border dark:border-slate-600 rounded-lg shadow-xl w-72 max-h-96 overflow-y-auto text-sm">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
                 <!-- T29: Settings modal -->
                 <button id="btnSettings" onclick="openSettingsModal()"
                         class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
@@ -655,6 +673,174 @@
             </div>
         </div>
     </div>
+
+    <!-- ============ T30: REGISTRY API MODAL (integrations manager) ============ -->
+    <div id="integrationsModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"
+         onclick="if(event.target===this)closeIntegrationsModal()">
+        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-4xl flex flex-col max-h-[92vh]">
+            <div class="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between">
+                <div>
+                    <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100">🔌 Registry API — Đồng bộ dữ liệu</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Cấu hình endpoint từ ứng dụng nguồn (iHRP, workload report…). Credential lưu ở <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">.env</code>, KHÔNG lưu trong JSON.</p>
+                </div>
+                <button onclick="closeIntegrationsModal()" class="text-gray-500 hover:text-red-500 text-xl">✕</button>
+            </div>
+
+            <!-- Tabs -->
+            <div class="border-b border-gray-200 dark:border-slate-700 flex">
+                <button id="integTab-list" onclick="_integSetTab('list')"
+                        class="px-4 py-2 border-b-2 border-cyan-500 font-semibold text-cyan-600 text-sm">
+                    📋 Danh sách
+                </button>
+                <button id="integTab-edit" onclick="_integSetTab('edit')"
+                        class="px-4 py-2 border-b-2 border-transparent text-gray-500 text-sm hover:text-cyan-600">
+                    ✏️ Thêm mới / Chỉnh sửa
+                </button>
+            </div>
+
+            <div class="p-5 flex-1 overflow-y-auto space-y-4 text-sm">
+                <!-- ================ TAB: LIST ================ -->
+                <div id="integPane-list">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="text-xs text-gray-500">Nhấn <b>➕ Thêm mới</b> để tạo integration. <b>Test</b> để verify login, <b>Sync</b> để tải Excel về snapshot.</div>
+                        <button onclick="_integOpenEditor(null)"
+                                class="bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-1.5 rounded text-sm font-semibold">
+                            ➕ Thêm mới
+                        </button>
+                    </div>
+                    <div id="integListEmpty" class="hidden text-center py-8 text-gray-500 italic">
+                        Chưa có integration nào. Nhấn "➕ Thêm mới" để tạo.
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-slate-100 dark:bg-slate-700 text-gray-700 dark:text-gray-200">
+                                <tr>
+                                    <th class="px-2 py-2 text-left">Tên</th>
+                                    <th class="px-2 py-2 text-left">Base URL</th>
+                                    <th class="px-2 py-2 text-center">#Endpoint</th>
+                                    <th class="px-2 py-2 text-left">Sync gần nhất</th>
+                                    <th class="px-2 py-2 text-left">Trạng thái</th>
+                                    <th class="px-2 py-2 text-center">Hành động</th>
+                                </tr>
+                            </thead>
+                            <tbody id="integListTbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ================ TAB: EDITOR ================ -->
+                <div id="integPane-edit" class="hidden space-y-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <label class="block">
+                            <span class="text-xs font-semibold">Tên integration *</span>
+                            <input id="integName" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                   placeholder="VD: iHRP Production">
+                        </label>
+                        <label class="block">
+                            <span class="text-xs font-semibold">Base URL *</span>
+                            <input id="integBaseUrl" type="url" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                   placeholder="https://ihrp.company.com">
+                        </label>
+                    </div>
+
+                    <fieldset class="border rounded-lg p-3 dark:border-slate-600">
+                        <legend class="text-xs font-semibold px-2">🔐 Cấu hình đăng nhập</legend>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <label class="block">
+                                <span class="text-xs">Auth method</span>
+                                <select id="integAuthMethod" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600">
+                                    <!-- Populated by JS từ capabilities -->
+                                </select>
+                            </label>
+                            <label class="block">
+                                <span class="text-xs">Login path</span>
+                                <input id="integLoginPath" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                       placeholder="/login" value="/login">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs">Username field name</span>
+                                <input id="integUsernameField" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                       placeholder="username" value="username">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs">Password field name</span>
+                                <input id="integPasswordField" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                       placeholder="password" value="password">
+                            </label>
+                            <label class="block md:col-span-2">
+                                <span class="text-xs">Prefix biến môi trường (credential_env)</span>
+                                <input id="integCredEnv" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600 uppercase"
+                                       placeholder="VD: IHRP_PROD (hệ thống đọc IHRP_PROD_USERNAME + IHRP_PROD_PASSWORD)">
+                                <p class="text-[11px] text-gray-500 mt-1">
+                                    Thêm vào file <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">.env</code> ở gốc project:
+                                    <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">IHRP_PROD_USERNAME=abc</code> và
+                                    <code class="bg-slate-100 dark:bg-slate-700 px-1 rounded">IHRP_PROD_PASSWORD=xyz</code>
+                                </p>
+                            </label>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="border rounded-lg p-3 dark:border-slate-600">
+                        <legend class="text-xs font-semibold px-2">📡 Danh sách Endpoint</legend>
+                        <div id="integEndpointsWrap" class="space-y-2"></div>
+                        <button type="button" onclick="_integAddEndpoint()"
+                                class="mt-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 px-3 py-1.5 rounded text-xs">
+                            ➕ Thêm endpoint
+                        </button>
+                    </fieldset>
+
+                    <div id="integEditorMsg" class="hidden text-xs px-3 py-2 rounded"></div>
+
+                    <div class="flex items-center justify-between gap-2 flex-wrap">
+                        <button onclick="_integTestLogin()"
+                                class="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded text-sm">
+                            🔍 Test login
+                        </button>
+                        <div class="flex items-center gap-2">
+                            <button onclick="_integSetTab('list')"
+                                    class="px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-slate-700 text-sm">
+                                Huỷ
+                            </button>
+                            <button onclick="_integSaveEditor()"
+                                    class="bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2 rounded text-sm font-semibold">
+                                💾 Lưu
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Template 1 endpoint row cho editor (dùng trong JS clone) -->
+    <template id="integEndpointTemplate">
+        <div class="border dark:border-slate-600 rounded p-3 bg-slate-50 dark:bg-slate-700/40 space-y-2" data-endpoint-row>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <input data-field="name" type="text" class="border rounded p-1.5 text-xs dark:bg-slate-700 dark:border-slate-600"
+                       placeholder="Tên (VD: Function List Export) *">
+                <input data-field="path" type="text" class="border rounded p-1.5 text-xs md:col-span-2 dark:bg-slate-700 dark:border-slate-600"
+                       placeholder="Path (VD: /api/functions/export) *">
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <select data-field="http_method" class="border rounded p-1.5 text-xs dark:bg-slate-700 dark:border-slate-600">
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                </select>
+                <select data-field="response_type" class="border rounded p-1.5 text-xs dark:bg-slate-700 dark:border-slate-600"
+                        data-populate="response_types"></select>
+                <select data-field="target_action" class="border rounded p-1.5 text-xs dark:bg-slate-700 dark:border-slate-600"
+                        data-populate="target_actions"></select>
+                <button type="button" data-remove class="text-red-600 hover:text-red-800 text-xs border border-red-200 rounded">
+                    🗑 Xoá
+                </button>
+            </div>
+            <label class="block">
+                <span class="text-[11px] text-gray-500">Params (JSON, tuỳ chọn) — VD: <code>{"module":"all"}</code></span>
+                <textarea data-field="params" rows="2" class="w-full border rounded p-1.5 text-xs mt-0.5 font-mono dark:bg-slate-700 dark:border-slate-600"
+                          placeholder='{"module":"all"}'></textarea>
+            </label>
+        </div>
+    </template>
 
     <!-- ============ T27: DRILL-DOWN MODAL cho custom dashboard ============ -->
     <div id="cdDrillModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"

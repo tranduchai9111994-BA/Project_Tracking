@@ -10737,3 +10737,531 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 });
+
+// ============================================================================
+// T30 — REGISTRY API + ĐỒNG BỘ DỮ LIỆU
+// ----------------------------------------------------------------------------
+// State: cache list integrations + capabilities (dropdown enum) từ backend.
+// Cấu trúc UI: 1 modal 2 tab (Danh sách / Editor) + 1 dropdown Sync nhanh
+// bên cạnh header.
+// ============================================================================
+
+let _integState = {
+    integrations: [],
+    capabilities: null,
+    editing: null,   // integration đang edit; null = tạo mới
+};
+
+/** Mở modal → luôn refresh list từ backend. */
+async function openIntegrationsModal() {
+    const modal = document.getElementById("integrationsModal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    _integSetTab("list");
+    await _integReloadList();
+}
+
+function closeIntegrationsModal() {
+    const modal = document.getElementById("integrationsModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+}
+
+/** Chuyển tab list ↔ editor. */
+function _integSetTab(name) {
+    for (const t of ["list", "edit"]) {
+        const tab = document.getElementById(`integTab-${t}`);
+        const pane = document.getElementById(`integPane-${t}`);
+        if (!tab || !pane) continue;
+        if (t === name) {
+            tab.classList.add("border-cyan-500", "text-cyan-600", "font-semibold");
+            tab.classList.remove("border-transparent", "text-gray-500");
+            pane.classList.remove("hidden");
+        } else {
+            tab.classList.remove("border-cyan-500", "text-cyan-600", "font-semibold");
+            tab.classList.add("border-transparent", "text-gray-500");
+            pane.classList.add("hidden");
+        }
+    }
+}
+
+async function _integReloadList() {
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/integrations`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        _integState.integrations = data.integrations || [];
+        _integState.capabilities = data.capabilities || null;
+        _integRenderList();
+        _integRefreshSyncQuickMenu();   // đồng bộ dropdown header
+    } catch (err) {
+        showToast("Không load được danh sách integration: " + err.message, "red");
+    }
+}
+
+function _integRenderList() {
+    const tbody = document.getElementById("integListTbody");
+    const empty = document.getElementById("integListEmpty");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    const items = _integState.integrations || [];
+    if (!items.length) {
+        empty?.classList.remove("hidden");
+        return;
+    }
+    empty?.classList.add("hidden");
+    for (const it of items) {
+        const tr = document.createElement("tr");
+        tr.className = "border-b dark:border-slate-700";
+        const statusBadge = _integStatusBadge(it.last_sync_status, it.last_sync_message);
+        const lastAt = it.last_synced_at
+            ? new Date(it.last_synced_at).toLocaleString("vi-VN")
+            : "<span class='text-gray-400 italic'>chưa sync</span>";
+        const endpointsOpts = (it.endpoints || [])
+            .map(ep => `<option value="${_escapeHtml(ep.id)}">${_escapeHtml(ep.name)}</option>`)
+            .join("");
+        tr.innerHTML = `
+            <td class="px-2 py-2 font-medium">${_escapeHtml(it.name)}</td>
+            <td class="px-2 py-2 text-xs text-gray-500 break-all">${_escapeHtml(it.base_url)}</td>
+            <td class="px-2 py-2 text-center">${(it.endpoints || []).length}</td>
+            <td class="px-2 py-2 text-xs">${lastAt}</td>
+            <td class="px-2 py-2">${statusBadge}</td>
+            <td class="px-2 py-2 text-center">
+                <div class="flex flex-wrap gap-1 justify-center items-center">
+                    <button onclick="_integTestFromList('${_escapeAttr(it.id)}')"
+                            class="bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 rounded text-xs" title="Test login">🔍</button>
+                    ${endpointsOpts
+                        ? `<select id="syncEp-${_escapeAttr(it.id)}" class="border rounded px-1 py-1 text-xs dark:bg-slate-700 dark:border-slate-600">${endpointsOpts}</select>
+                           <button onclick="_integSyncFromList('${_escapeAttr(it.id)}')"
+                                   class="bg-cyan-600 hover:bg-cyan-700 text-white px-2 py-1 rounded text-xs" title="Sync endpoint đã chọn">🔄</button>`
+                        : `<span class="text-xs text-gray-400 italic">chưa có endpoint</span>`}
+                    <button onclick="_integOpenEditor('${_escapeAttr(it.id)}')"
+                            class="bg-slate-500 hover:bg-slate-600 text-white px-2 py-1 rounded text-xs" title="Chỉnh sửa">✏️</button>
+                    <button onclick="_integDeleteConfirm('${_escapeAttr(it.id)}')"
+                            class="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded text-xs" title="Xoá">🗑</button>
+                </div>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    }
+}
+
+function _integStatusBadge(status, message) {
+    if (!status) return `<span class="text-xs text-gray-400">—</span>`;
+    const msg = _escapeAttr((message || "").slice(0, 200));
+    if (status === "ok") {
+        return `<span title="${msg}" class="inline-block bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded">✔ ok</span>`;
+    }
+    return `<span title="${msg}" class="inline-block bg-red-100 text-red-800 text-xs px-2 py-0.5 rounded">✕ lỗi</span>`;
+}
+
+/** Escape HTML để chống XSS khi in name/base_url do user nhập. */
+function _escapeHtml(s) {
+    return String(s ?? "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+}
+function _escapeAttr(s) {
+    // Cho id chỉ chứa ký tự safe — vẫn escape để chống inject
+    return String(s ?? "").replace(/['"\\<>]/g, "");
+}
+
+// ---------------------------------------------------------------------------
+// Editor: mở form thêm mới hoặc chỉnh sửa
+// ---------------------------------------------------------------------------
+
+function _integOpenEditor(integrationId) {
+    _integState.editing = integrationId
+        ? (_integState.integrations.find(i => i.id === integrationId) || null)
+        : null;
+
+    // Populate auth method dropdown từ capabilities
+    _integPopulateAuthMethods();
+
+    const it = _integState.editing;
+    document.getElementById("integName").value = it?.name || "";
+    document.getElementById("integBaseUrl").value = it?.base_url || "";
+    const auth = it?.auth || {};
+    document.getElementById("integAuthMethod").value = auth.method || "form_login";
+    document.getElementById("integLoginPath").value = auth.login_path || "/login";
+    document.getElementById("integUsernameField").value = auth.username_field || "username";
+    document.getElementById("integPasswordField").value = auth.password_field || "password";
+    document.getElementById("integCredEnv").value = auth.credential_env || "";
+
+    _integRenderEndpoints(it?.endpoints || []);
+    _integShowEditorMsg("", "");
+    _integSetTab("edit");
+}
+
+function _integPopulateAuthMethods() {
+    const sel = document.getElementById("integAuthMethod");
+    if (!sel) return;
+    sel.innerHTML = "";
+    const methods = _integState.capabilities?.auth_methods || [{ value: "form_login", supported: true }];
+    for (const m of methods) {
+        const opt = document.createElement("option");
+        opt.value = m.value;
+        opt.textContent = m.value + (m.supported ? "" : " (đang phát triển)");
+        opt.disabled = !m.supported;
+        sel.appendChild(opt);
+    }
+}
+
+function _integRenderEndpoints(endpoints) {
+    const wrap = document.getElementById("integEndpointsWrap");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!endpoints.length) {
+        _integAddEndpoint();
+        return;
+    }
+    for (const ep of endpoints) _integAddEndpoint(ep);
+}
+
+function _integAddEndpoint(ep) {
+    const wrap = document.getElementById("integEndpointsWrap");
+    const tpl = document.getElementById("integEndpointTemplate");
+    if (!wrap || !tpl) return;
+    const node = tpl.content.firstElementChild.cloneNode(true);
+
+    // Populate select response_type + target_action từ capabilities (nếu có)
+    const caps = _integState.capabilities || {};
+    const respSel = node.querySelector('[data-field="response_type"]');
+    const targetSel = node.querySelector('[data-field="target_action"]');
+    if (respSel) {
+        respSel.innerHTML = "";
+        for (const r of (caps.response_types || [{ value: "excel", supported: true }])) {
+            const opt = document.createElement("option");
+            opt.value = r.value;
+            opt.textContent = r.value + (r.supported ? "" : " (đang phát triển)");
+            opt.disabled = !r.supported;
+            respSel.appendChild(opt);
+        }
+    }
+    if (targetSel) {
+        targetSel.innerHTML = "";
+        for (const t of (caps.target_actions || ["snapshot", "append", "replace"])) {
+            const opt = document.createElement("option");
+            opt.value = t;
+            opt.textContent = t;
+            targetSel.appendChild(opt);
+        }
+    }
+
+    // Set values (nếu ep có sẵn) — hoặc default
+    if (ep) {
+        node.querySelector('[data-field="name"]').value = ep.name || "";
+        node.querySelector('[data-field="path"]').value = ep.path || "";
+        node.querySelector('[data-field="http_method"]').value = ep.http_method || "GET";
+        if (respSel) respSel.value = ep.response_type || "excel";
+        if (targetSel) targetSel.value = ep.target_action || "snapshot";
+        node.querySelector('[data-field="params"]').value =
+            ep.params && Object.keys(ep.params).length ? JSON.stringify(ep.params, null, 2) : "";
+        node.dataset.endpointId = ep.id || "";
+    }
+    node.querySelector("[data-remove]").addEventListener("click", () => {
+        node.remove();
+    });
+    wrap.appendChild(node);
+}
+
+/** Đọc data từ editor DOM → payload để POST/PUT. */
+function _integReadEditorPayload() {
+    const rows = document.querySelectorAll("#integEndpointsWrap [data-endpoint-row]");
+    const endpoints = [];
+    for (const row of rows) {
+        const name = row.querySelector('[data-field="name"]').value.trim();
+        const path = row.querySelector('[data-field="path"]').value.trim();
+        if (!name || !path) continue;   // skip row rỗng
+        let params = {};
+        const paramsRaw = row.querySelector('[data-field="params"]').value.trim();
+        if (paramsRaw) {
+            try {
+                const parsed = JSON.parse(paramsRaw);
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    params = parsed;
+                } else {
+                    throw new Error("params phải là JSON object");
+                }
+            } catch (err) {
+                throw new Error(`Endpoint "${name}": params không phải JSON object hợp lệ — ${err.message}`);
+            }
+        }
+        endpoints.push({
+            id: row.dataset.endpointId || undefined,
+            name,
+            path,
+            http_method: row.querySelector('[data-field="http_method"]').value,
+            response_type: row.querySelector('[data-field="response_type"]').value,
+            target_action: row.querySelector('[data-field="target_action"]').value,
+            params,
+        });
+    }
+    return {
+        name: document.getElementById("integName").value.trim(),
+        base_url: document.getElementById("integBaseUrl").value.trim(),
+        auth: {
+            method: document.getElementById("integAuthMethod").value,
+            login_path: document.getElementById("integLoginPath").value.trim() || "/login",
+            username_field: document.getElementById("integUsernameField").value.trim() || "username",
+            password_field: document.getElementById("integPasswordField").value.trim() || "password",
+            credential_env: document.getElementById("integCredEnv").value.trim().toUpperCase(),
+        },
+        endpoints,
+    };
+}
+
+function _integShowEditorMsg(text, kind) {
+    const el = document.getElementById("integEditorMsg");
+    if (!el) return;
+    if (!text) {
+        el.classList.add("hidden");
+        el.textContent = "";
+        return;
+    }
+    el.classList.remove("hidden");
+    el.textContent = text;
+    el.className = "text-xs px-3 py-2 rounded " + (kind === "ok"
+        ? "bg-green-100 text-green-800"
+        : kind === "warn"
+            ? "bg-amber-100 text-amber-800"
+            : "bg-red-100 text-red-800");
+}
+
+async function _integSaveEditor() {
+    let payload;
+    try {
+        payload = _integReadEditorPayload();
+    } catch (err) {
+        _integShowEditorMsg(err.message, "err");
+        return;
+    }
+    if (!payload.name || !payload.base_url) {
+        _integShowEditorMsg("Thiếu 'Tên' hoặc 'Base URL'", "err");
+        return;
+    }
+    if (!payload.auth.credential_env) {
+        _integShowEditorMsg("Thiếu 'Prefix biến môi trường' — sẽ không sync được", "warn");
+    }
+
+    const editing = _integState.editing;
+    const url = editing
+        ? `/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(editing.id)}`
+        : `/api/projects/${currentProjectSlug}/integrations`;
+    const method = editing ? "PUT" : "POST";
+    try {
+        const r = await fetch(url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+            _integShowEditorMsg(data.error || `HTTP ${r.status}`, "err");
+            return;
+        }
+        showToast(editing ? "Đã cập nhật integration" : "Đã tạo integration");
+        await _integReloadList();
+        _integSetTab("list");
+    } catch (err) {
+        _integShowEditorMsg("Lỗi mạng: " + err.message, "err");
+    }
+}
+
+async function _integDeleteConfirm(integrationId) {
+    const it = _integState.integrations.find(i => i.id === integrationId);
+    if (!it) return;
+    if (!confirm(`Xoá integration "${it.name}"?`)) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}`, {
+            method: "DELETE",
+        });
+        if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            throw new Error(data.error || `HTTP ${r.status}`);
+        }
+        showToast("Đã xoá integration");
+        await _integReloadList();
+    } catch (err) {
+        showToast("Xoá lỗi: " + err.message, "red");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test login / Sync — từ list hoặc từ editor
+// ---------------------------------------------------------------------------
+
+async function _integTestLogin() {
+    // Nếu đang tạo mới → phải lưu trước để có id
+    let integrationId = _integState.editing?.id;
+    if (!integrationId) {
+        _integShowEditorMsg("Bấm 💾 Lưu trước để tạo integration, rồi mới test được", "warn");
+        return;
+    }
+    _integShowEditorMsg("Đang test login…", "warn");
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}/test`, {
+            method: "POST",
+        });
+        const data = await r.json();
+        if (data.status === "ok") {
+            _integShowEditorMsg("✅ " + (data.message || "Login OK"), "ok");
+            showToast("Test login thành công");
+        } else {
+            _integShowEditorMsg("❌ " + (data.message || "Login fail"), "err");
+        }
+        // Refresh cache để status badge cập nhật
+        await _integReloadList();
+    } catch (err) {
+        _integShowEditorMsg("Lỗi mạng: " + err.message, "err");
+    }
+}
+
+async function _integTestFromList(integrationId) {
+    showToast("Đang test login…");
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}/test`, {
+            method: "POST",
+        });
+        const data = await r.json();
+        showToast((data.status === "ok" ? "✔ " : "✕ ") + (data.message || "").slice(0, 200),
+                  data.status === "ok" ? "green" : "red");
+        await _integReloadList();
+    } catch (err) {
+        showToast("Test lỗi: " + err.message, "red");
+    }
+}
+
+async function _integSyncFromList(integrationId) {
+    const sel = document.getElementById(`syncEp-${integrationId}`);
+    const endpointId = sel?.value;
+    if (!endpointId) {
+        showToast("Chưa chọn endpoint để sync", "red");
+        return;
+    }
+    await _integSyncEndpoint(integrationId, endpointId);
+}
+
+/** Sync 1 endpoint — dùng chung cho list & quick menu. */
+async function _integSyncEndpoint(integrationId, endpointId) {
+    const it = _integState.integrations.find(i => i.id === integrationId);
+    const ep = it?.endpoints?.find(e => e.id === endpointId);
+    showToast(`Đang sync "${ep?.name || "endpoint"}"… có thể mất vài giây`);
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/integrations/${encodeURIComponent(integrationId)}/sync`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ endpoint_id: endpointId }),
+        });
+        const data = await r.json();
+        if (data.status === "ok") {
+            showToast(`✅ Sync OK · ${data.rows_imported} dòng · snapshot ${data.snapshot_id || "?"}`);
+            // Refresh dashboard để user thấy dữ liệu mới ngay
+            await tryLoadDashboardForCurrent(true);
+        } else {
+            showToast("Sync lỗi: " + (data.message || "unknown"), "red");
+        }
+        await _integReloadList();
+    } catch (err) {
+        showToast("Sync lỗi mạng: " + err.message, "red");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quick sync dropdown (nút "🔄 Đồng bộ" ở header)
+// ---------------------------------------------------------------------------
+
+function toggleSyncQuickMenu(event) {
+    event?.stopPropagation();
+    const menu = document.getElementById("syncQuickMenu");
+    if (!menu) return;
+    const hidden = menu.classList.contains("hidden");
+    // Đóng menu khác bất kỳ đang mở (drill status, project selector…) — để đơn giản chỉ toggle menu này
+    if (hidden) {
+        _integRefreshSyncQuickMenu();
+        menu.classList.remove("hidden");
+        // Click ngoài → đóng
+        setTimeout(() => {
+            document.addEventListener("click", _integCloseSyncMenuOnce, { once: true });
+        }, 0);
+    } else {
+        menu.classList.add("hidden");
+    }
+}
+function _integCloseSyncMenuOnce(e) {
+    const menu = document.getElementById("syncQuickMenu");
+    const btn = document.getElementById("btnSyncQuick");
+    if (!menu) return;
+    if (menu.contains(e.target) || btn?.contains(e.target)) {
+        // Không đóng nếu click bên trong menu / trên nút
+        document.addEventListener("click", _integCloseSyncMenuOnce, { once: true });
+        return;
+    }
+    menu.classList.add("hidden");
+}
+
+async function _integRefreshSyncQuickMenu() {
+    const menu = document.getElementById("syncQuickMenu");
+    if (!menu) return;
+    if (!_integState.integrations.length && !_integState.capabilities) {
+        // Chưa fetch → fetch nền
+        try {
+            const r = await fetch(`/api/projects/${currentProjectSlug}/integrations`);
+            if (r.ok) {
+                const data = await r.json();
+                _integState.integrations = data.integrations || [];
+                _integState.capabilities = data.capabilities || null;
+            }
+        } catch {}
+    }
+    _integRenderSyncQuickMenu();
+}
+
+function _integRenderSyncQuickMenu() {
+    const menu = document.getElementById("syncQuickMenu");
+    if (!menu) return;
+    menu.innerHTML = "";
+    const items = _integState.integrations || [];
+    if (!items.length) {
+        menu.innerHTML = `
+            <div class="p-4 text-xs text-gray-500">
+                Chưa có integration nào.
+                <button onclick="openIntegrationsModal(); toggleSyncQuickMenu(event)"
+                        class="mt-2 block w-full bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-1.5 rounded">
+                    ➕ Tạo integration đầu tiên
+                </button>
+            </div>`;
+        return;
+    }
+    const parts = [];
+    for (const it of items) {
+        if (!(it.endpoints || []).length) continue;
+        parts.push(`<div class="px-3 py-2 border-b dark:border-slate-700">
+            <div class="text-xs font-semibold text-gray-700 dark:text-gray-200">${_escapeHtml(it.name)}</div>
+            <div class="text-[10px] text-gray-500 mb-1 truncate">${_escapeHtml(it.base_url)}</div>
+            ${(it.endpoints || []).map(ep => `
+                <button onclick="_integSyncEndpoint('${_escapeAttr(it.id)}','${_escapeAttr(ep.id)}'); toggleSyncQuickMenu(event)"
+                        class="w-full text-left px-2 py-1 rounded hover:bg-cyan-50 dark:hover:bg-slate-700 text-xs">
+                    🔄 ${_escapeHtml(ep.name)}
+                </button>
+            `).join("")}
+        </div>`);
+    }
+    parts.push(`<div class="px-3 py-2">
+        <button onclick="openIntegrationsModal(); toggleSyncQuickMenu(event)"
+                class="w-full text-xs text-cyan-700 hover:underline">⚙️ Quản lý integrations…</button>
+    </div>`);
+    menu.innerHTML = parts.join("");
+}
+
+// Auto-fetch integrations sau khi loadProjectList (không block init) — cho dropdown Sync hiển thị ngay
+document.addEventListener("DOMContentLoaded", () => {
+    setTimeout(() => {
+        if (typeof currentProjectSlug === "string" && currentProjectSlug) {
+            _integRefreshSyncQuickMenu();
+        }
+    }, 1200);
+});
+
