@@ -1,8 +1,8 @@
-"""Test analyzer/data_quality.py — 7 loại issue detection."""
+"""Test analyzer/data_quality.py — issue detection (gồm missing_deadline)."""
 from datetime import date
 import pytest
 from parser.excel_parser import ParsedData, FunctionRow, PhaseData, PhaseGroup
-from analyzer.data_quality import compute_data_quality
+from analyzer.data_quality import compute_data_quality, count_missing_deadlines
 
 
 def _mk_row(row_num=2, ma_cn="F1", ten_cn="Func 1", module="M1",
@@ -63,15 +63,61 @@ def test_closed_no_end():
     out = compute_data_quality(_mk_data([r]))
     codes = [i["code"] for i in out["issues"]]
     assert "closed_no_end" in codes
+    assert "missing_deadline" not in codes
+
+
+def test_missing_deadline_in_progress_no_end():
+    """In-progress + End trống → missing_deadline (không nhầm closed_no_end)."""
+    r = _mk_row(phases={"Dev": PhaseData(
+        start_date=date(2026, 1, 1), end_date=None,
+        status="In-progress", pics=["A"],
+    )})
+    out = compute_data_quality(_mk_data([r]))
+    codes = [i["code"] for i in out["issues"]]
+    assert "missing_deadline" in codes
+    assert "closed_no_end" not in codes
+    assert out["summary"]["missing_deadline_count"] == 1
+    assert out["summary"]["missing_deadline_records"] == 1
+    issue = next(i for i in out["issues"] if i["code"] == "missing_deadline")
+    assert "Thiếu End" in issue["label"] or "đang làm" in issue["label"]
+
+
+def test_missing_deadline_all_active_statuses():
+    """Open / Assigned / Resolved / Pending thiếu End đều flag."""
+    for st in ("Open", "Assigned", "Resolved", "Pending"):
+        r = _mk_row(phases={"Dev": PhaseData(status=st, end_date=None, pics=["A"])})
+        out = compute_data_quality(_mk_data([r]))
+        assert "missing_deadline" in [i["code"] for i in out["issues"]], st
+
+
+def test_missing_deadline_blank_status_skipped():
+    """Status blank + End trống → không báo missing_deadline."""
+    r = _mk_row(phases={"Dev": PhaseData(status="", end_date=None, pics=["A"])})
+    out = compute_data_quality(_mk_data([r]))
+    assert "missing_deadline" not in [i["code"] for i in out["issues"]]
+
+
+def test_missing_deadline_dedupe_functions():
+    """2 phase cùng function thiếu End → count function=1, records=2."""
+    r = _mk_row(ma_cn="F99", phases={
+        "Analysis": PhaseData(status="Open", end_date=None, pics=["A"]),
+        "Dev": PhaseData(status="In-progress", end_date=None, pics=["B"]),
+    })
+    out = compute_data_quality(_mk_data([r]))
+    assert out["summary"]["missing_deadline_count"] == 1
+    assert out["summary"]["missing_deadline_records"] == 2
+    funcs, recs = count_missing_deadlines(_mk_data([r]))
+    assert (funcs, recs) == (1, 2)
 
 
 def test_blank_pic_when_active():
     r = _mk_row(phases={"Dev": PhaseData(
-        status="In-progress", pics=[],
+        status="In-progress", pics=[], end_date=date(2026, 2, 1),
     )})
     out = compute_data_quality(_mk_data([r]))
     codes = [i["code"] for i in out["issues"]]
     assert "blank_pic" in codes
+    assert "missing_deadline" not in codes  # có End → không flag deadline
 
 
 def test_blank_pic_not_when_closed():
@@ -119,6 +165,22 @@ def test_row_empty_ma_cn_skipped_for_blank_meta():
     codes = [i["code"] for i in out["issues"]]
     assert "blank_priority" not in codes
     assert "blank_complexity" not in codes
+
+
+def test_export_includes_missing_deadline_label(tmp_path):
+    """Export Excel Data Quality chứa label loại mới."""
+    from exporter.excel_exporter import export_data_quality_report
+    r = _mk_row(phases={"Dev": PhaseData(
+        status="In-progress", end_date=None, pics=["A"],
+    )})
+    payload = compute_data_quality(_mk_data([r]))
+    path = export_data_quality_report(payload, output_dir=str(tmp_path))
+    import openpyxl
+    wb = openpyxl.load_workbook(path)
+    ws = wb["Issues"]
+    labels = [cell.value for row in ws.iter_rows(min_row=1, max_col=10) for cell in row]
+    assert any(v and "Thiếu End khi đang làm" in str(v) for v in labels)
+    wb.close()
 
 
 # ==========================================================================

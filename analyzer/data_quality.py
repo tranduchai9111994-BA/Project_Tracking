@@ -2,7 +2,7 @@
 Data Quality Analyzer — phát hiện các vấn đề chất lượng dữ liệu trong Function List.
 
 Mục đích: giúp PM/BA nhận ra các ô data bị lỗi/thiếu (invalid status, blank
-PIC/Priority, End < Start, Closed nhưng thiếu End date, duplicate Mã CN...)
+PIC/Priority, End < Start, Closed thiếu End, WIP thiếu End/deadline, duplicate Mã CN...)
 để clean data trước khi báo cáo cấp trên.
 
 Không có dependency ngoài Python stdlib + parser.excel_parser.
@@ -32,6 +32,11 @@ ISSUE_META: dict[str, dict[str, str]] = {
         "severity": "medium",
         "label": "Status Closed nhưng thiếu End date",
         "suggestion": "Bổ sung End date thực tế để tính overdue/aging chính xác.",
+    },
+    "missing_deadline": {
+        "severity": "medium",
+        "label": "Thiếu End khi đang làm",
+        "suggestion": "Bổ sung End/Deadline cho phase đang Open/Assigned/In-progress/Resolved/Pending.",
     },
     "blank_pic": {
         "severity": "medium",
@@ -227,6 +232,18 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
                     "suggestion": ISSUE_META["closed_no_end"]["suggestion"],
                 })
 
+            # Đang làm (WIP) nhưng thiếu End/Deadline — tách riêng closed_no_end
+            if _is_active_status(status) and not pd.end_date:
+                issues.append({
+                    "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                    "module": module, "phase": phase_name,
+                    "code": "missing_deadline",
+                    "severity": ISSUE_META["missing_deadline"]["severity"],
+                    "label": ISSUE_META["missing_deadline"]["label"],
+                    "detail": f"Status={status} nhưng ô End trống (chưa cập nhật deadline)",
+                    "suggestion": ISSUE_META["missing_deadline"]["suggestion"],
+                })
+
             # Blank PIC nhưng phase đang active hoặc có kế hoạch
             if (_is_active_status(status) or _has_planned_dates(pd)) and not _is_closed_status(status):
                 if not pd.pics:
@@ -244,10 +261,15 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
     by_severity: Counter = Counter()
     by_code: Counter = Counter()
     affected_row_nums: set[int] = set()
+    # Dedup function cho missing_deadline (card summary đếm theo function)
+    missing_deadline_keys: set[str] = set()
     for it in issues:
         by_severity[it["severity"]] += 1
         by_code[it["code"]] += 1
         affected_row_nums.add(it["row_num"])
+        if it["code"] == "missing_deadline":
+            key = (it.get("ma_cn") or "").strip() or f"row:{it['row_num']}"
+            missing_deadline_keys.add(key)
 
     total_rows = len(data.rows)
     affected = len(affected_row_nums)
@@ -268,5 +290,29 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
             "clean_rows": clean,
             "total_rows": total_rows,
             "clean_pct": clean_pct,
+            # Function unique thiếu End khi đang làm (dedupe ma_cn)
+            "missing_deadline_count": len(missing_deadline_keys),
+            "missing_deadline_records": by_code.get("missing_deadline", 0),
         },
     }
+
+
+def count_missing_deadlines(data: ParsedData) -> tuple[int, int]:
+    """Đếm function/phase thiếu End khi đang làm — dùng cho summary card.
+
+    Returns:
+        (function_count, phase_records) — function dedupe theo ma_cn (fallback row_num).
+    """
+    func_keys: set[str] = set()
+    records = 0
+    for row in data.rows:
+        ma_cn = _row_ma_cn(row)
+        func_hit = False
+        for _phase_name, pd in row.phases.items():
+            status = _norm_status(pd.status)
+            if _is_active_status(status) and not pd.end_date:
+                records += 1
+                func_hit = True
+        if func_hit:
+            func_keys.add(ma_cn or f"row:{row.row_num}")
+    return len(func_keys), records

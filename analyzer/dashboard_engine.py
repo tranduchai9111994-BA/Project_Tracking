@@ -183,6 +183,10 @@ class DashboardEngine:
         if risk_scores:
             high_risk_count = sum(1 for r in risk_scores if r["risk_score"] >= 50)
 
+        # ==== Missing deadline: WIP (active status) thiếu End — dedupe function ====
+        from analyzer.data_quality import count_missing_deadlines
+        missing_deadline_count, missing_deadline_records = count_missing_deadlines(data)
+
         return {
             "total_functions": total,
             "total_overdue": overdue_functions,          # legacy: dùng cho card
@@ -196,6 +200,8 @@ class DashboardEngine:
             "unassigned_count": unassigned_functions,    # đổi ngữ nghĩa: giờ là số function unique
             "unassigned_records": unassigned_records,    # phase-level
             "high_risk_count": high_risk_count,
+            "missing_deadline_count": missing_deadline_count,
+            "missing_deadline_records": missing_deadline_records,
         }
 
     # ------------------------------------------------------------------

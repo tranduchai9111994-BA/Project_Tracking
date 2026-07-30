@@ -56,6 +56,14 @@ def test_summary_high_risk_count(metrics):
     assert metrics["summary"]["high_risk_count"] >= 2
 
 
+def test_summary_missing_deadline_keys(metrics):
+    """Summary expose missing_deadline_count/records (int ≥ 0)."""
+    assert "missing_deadline_count" in metrics["summary"]
+    assert "missing_deadline_records" in metrics["summary"]
+    assert metrics["summary"]["missing_deadline_count"] >= 0
+    assert metrics["summary"]["missing_deadline_records"] >= metrics["summary"]["missing_deadline_count"]
+
+
 def test_module_overview_progress_calculation(metrics):
     """
     TMS module có 2 function × 3 phase (Analysis/Dev/UAT) = 6 records.

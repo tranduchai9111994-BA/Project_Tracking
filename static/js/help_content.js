@@ -430,16 +430,17 @@ const HELP_CONTENT = {
     "dataquality": {
         category: "Danh sách vấn đề",
         title: "Data Quality (lỗi dữ liệu)",
-        purpose: "Detect lỗi dữ liệu trong file: Mã CN trùng, missing field bắt buộc, status invalid, date parse fail, ...",
+        purpose: "Detect lỗi dữ liệu trong file: Mã CN trùng, missing field, status invalid, Closed thiếu End, và «Thiếu End khi đang làm» (chưa cập nhật deadline).",
         steps: [
             "Bảng issues + severity (High/Medium/Low)",
-            "Cột 'Gợi ý' cho biết cách fix",
-            "Filter theo severity/code",
+            "Filter loại «Thiếu End khi đang làm» / card «Chưa cập nhật deadline» để xem WIP thiếu End",
+            "Cột 'Gợi ý' cho biết cách fix — Closed thiếu End là rule riêng, không gộp với WIP",
         ],
-        example: "5 Mã CN trùng + 12 phase thiếu PIC + 3 date sai format → cần fix ở Excel gốc.",
+        example: "Phase Dev status=In-progress nhưng End trống → issue missing_deadline. Phase Closed thiếu End → closed_no_end.",
         tips: [
             "Fix ở file gốc → upload lại, không sửa trên dashboard",
             "Score 'Clean %' = (total - affected) / total",
+            "Card tổng quan «Chưa cập nhật deadline» click → lọc đúng loại issue này",
         ],
     },
     "my-bookmarks": {
