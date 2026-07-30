@@ -162,3 +162,55 @@ def test_structure_includes_all_project_codes(tmp_path):
     parsed = FunctionListParser().parse(str(path))
     metrics = DashboardEngine().compute_all(parsed)
     assert metrics["structure"]["all_project_codes"] == ["CODE_A"]
+
+
+def test_dashboard_g_project_and_alias(flask_client, tmp_path):
+    """Dashboard nhận g_project / g_ma_du_an; clear → full dataset."""
+    import io
+    import openpyxl
+
+    path = tmp_path / "upload.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Function List"
+    ws.append(["Mã CN", "Tên chức năng", "Module", "Mã dự án", "Analysis - Status"])
+    ws.append(["A.01", "A", "TMS", "CODE_A", "Closed"])
+    ws.append(["A.02", "B", "HR", "CODE_B", "Open"])
+    wb.save(path)
+
+    with open(path, "rb") as f:
+        up = flask_client.post(
+            "/api/projects/default/upload",
+            data={"file": (io.BytesIO(f.read()), "upload.xlsx")},
+            content_type="multipart/form-data",
+        )
+    assert up.status_code == 200
+
+    r_a = flask_client.get("/api/projects/default/dashboard?g_project=CODE_A")
+    assert r_a.status_code == 200
+    body = r_a.get_json()
+    assert body["applied_filter"]["project_codes"] == ["CODE_A"]
+    assert body["applied_filter"]["row_count"] == 1
+    assert body["metrics"]["summary"]["total_functions"] == 1
+
+    r_clear = flask_client.get("/api/projects/default/dashboard")
+    assert r_clear.get_json()["applied_filter"] is None
+    assert r_clear.get_json()["metrics"]["summary"]["total_functions"] == 2
+
+    r_alias = flask_client.get("/api/projects/default/dashboard?g_ma_du_an=CODE_B")
+    assert r_alias.get_json()["applied_filter"]["row_count"] == 1
+
+
+def test_saved_view_persists_project_codes(tmp_path):
+    from analyzer.project_store import load_saved_views, upsert_saved_view
+
+    d = str(tmp_path)
+    upsert_saved_view(d, {
+        "name": "Ma A",
+        "modules": [],
+        "processes": [],
+        "pics": [],
+        "project_codes": ["CODE_A"],
+    })
+    views = load_saved_views(d)
+    assert views[0]["project_codes"] == ["CODE_A"]
