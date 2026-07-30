@@ -228,7 +228,7 @@
                 <!-- T29: Settings modal -->
                 <button id="btnSettings" onclick="openSettingsModal()"
                         class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm"
-                        title="Cài đặt: threshold progress, aging WIP, digest schedule, refresh reminder">
+                        title="Cài đặt: thứ tự Module, threshold, aging WIP, digest, reminder…">
                     ⚙️ Cài đặt
                 </button>
             </div>
@@ -731,6 +731,40 @@
                     </label>
                 </section>
 
+                <!-- Thứ tự Module — đặt gần đầu Settings (dễ tìm); shortcut từ filter Module -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40 ring-1 ring-blue-200 dark:ring-blue-800" id="setModuleOrderSection">
+                    <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+                        <h4 class="font-semibold text-gray-800 dark:text-gray-100">📦 Thứ tự Module</h4>
+                        <div class="flex gap-1 flex-wrap text-xs">
+                            <button type="button" onclick="_modOrderAlphabetical()"
+                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500"
+                                    title="Sắp xếp A→Z trên list (chưa lưu)">
+                                🔤 Alphabetical
+                            </button>
+                            <button type="button" onclick="_modOrderReset()"
+                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500"
+                                    title="Xoá cấu hình → mặc định alphabetical">
+                                ↺ Reset
+                            </button>
+                            <button type="button" onclick="_modOrderSave()"
+                                    class="px-2 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded font-semibold">
+                                💾 Lưu thứ tự
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-500 mb-3">
+                        Kéo thả để xếp số thứ tự Module hiển thị trên dashboard. Áp dụng cho: filter dropdown,
+                        Module Overview, Matrix, Process tiles, Gantt Calendar, export.
+                        Module mới (chưa có trong config) tự append cuối theo alphabetical.
+                        Chưa cấu hình → alphabetical.
+                    </p>
+                    <ol id="moduleOrderList"
+                        class="space-y-1 max-h-64 overflow-y-auto bg-white dark:bg-slate-800 border dark:border-slate-600 rounded p-2 text-sm">
+                        <li class="text-gray-400 italic text-xs py-2 text-center">Chưa có dữ liệu Module — upload Function List trước.</li>
+                    </ol>
+                    <p id="moduleOrderHint" class="text-[11px] text-gray-500 mt-2"></p>
+                </section>
+
                 <!-- Upload reminder -->
                 <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
                     <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">🔔 Nhắc upload định kỳ</h4>
@@ -787,39 +821,6 @@
                         </label>
                     </div>
                     <div id="setDigestLast" class="text-[11px] text-gray-500 mt-2"></div>
-                </section>
-
-                <!-- Thứ tự Module — dùng chung toàn dashboard -->
-                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40" id="setModuleOrderSection">
-                    <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
-                        <h4 class="font-semibold text-gray-800 dark:text-gray-100">📦 Thứ tự Module</h4>
-                        <div class="flex gap-1 flex-wrap text-xs">
-                            <button type="button" onclick="_modOrderAlphabetical()"
-                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500"
-                                    title="Sắp xếp A→Z trên list (chưa lưu)">
-                                🔤 Alphabetical
-                            </button>
-                            <button type="button" onclick="_modOrderReset()"
-                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500"
-                                    title="Xoá cấu hình → mặc định alphabetical">
-                                ↺ Reset
-                            </button>
-                            <button type="button" onclick="_modOrderSave()"
-                                    class="px-2 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded font-semibold">
-                                💾 Lưu thứ tự
-                            </button>
-                        </div>
-                    </div>
-                    <p class="text-xs text-gray-500 mb-3">
-                        Kéo thả để xếp thứ tự Module. Áp dụng cho: filter dropdown, Module Overview,
-                        Matrix, Process tiles, Gantt Calendar, export. Module mới (chưa có trong config)
-                        tự append cuối theo alphabetical. Chưa cấu hình → alphabetical.
-                    </p>
-                    <ol id="moduleOrderList"
-                        class="space-y-1 max-h-64 overflow-y-auto bg-white dark:bg-slate-800 border dark:border-slate-600 rounded p-2 text-sm">
-                        <li class="text-gray-400 italic text-xs py-2 text-center">Chưa có dữ liệu Module — upload Function List trước.</li>
-                    </ol>
-                    <p id="moduleOrderHint" class="text-[11px] text-gray-500 mt-2"></p>
                 </section>
 
                 <!-- ================================================
@@ -2115,9 +2116,16 @@
                 <span class="text-sm font-semibold text-gray-700 shrink-0">🎯 Phân tích theo:</span>
                 <div id="globalFilterProjectCode" class="ms-container" data-label="Mã dự án"></div>
                 <div id="globalFilterModule" class="ms-container" data-label="Module"></div>
+                <button type="button" id="btnModuleOrder"
+                        onclick="openModuleOrderSettings()"
+                        class="shrink-0 px-2 py-1 rounded text-xs border border-slate-300 dark:border-slate-500
+                               bg-slate-50 hover:bg-blue-50 dark:bg-slate-700 dark:hover:bg-slate-600
+                               text-slate-700 dark:text-slate-100"
+                        title="Cấu hình số thứ tự Module hiển thị trên toàn dashboard (Settings → Thứ tự Module)">
+                    ⚙ Thứ tự
+                </button>
                 <div id="globalFilterProcess" class="ms-container" data-label="Quy trình"></div>
                 <div id="globalFilterPIC" class="ms-container" data-label="PIC"></div>
-                <div id="globalFilterProjectCode" class="ms-container" data-label="Mã dự án"></div>
                 <!-- Saved views (Phase 3): ẩn cho đến khi wire xong FE để tránh
                      ReferenceError khi click. Bỏ hidden khi implement xong. -->
                 <div id="savedViewsWrap" class="hidden flex items-center gap-2">

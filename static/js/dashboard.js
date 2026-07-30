@@ -11569,10 +11569,11 @@ document.addEventListener("DOMContentLoaded", () => {
 // ========================================================================
 // T29 — SETTINGS MODAL (thresholds / aging WIP / reminder / digest schedule)
 // ========================================================================
-window.openSettingsModal = async function () {
+window.openSettingsModal = async function (opts) {
     if (!currentProjectSlug) return;
     const modal = document.getElementById("settingsModal");
     if (!modal) return;
+    const scrollToId = (opts && opts.scrollTo) || null;
     try {
         const r = await fetch(`/api/projects/${currentProjectSlug}/settings`);
         if (!r.ok) throw new Error(await r.text());
@@ -11595,6 +11596,21 @@ window.openSettingsModal = async function () {
     _modOrderRefresh().catch(err => console.warn("[module-order load]", err));
     modal.classList.remove("hidden");
     modal.classList.add("flex");
+    if (scrollToId) {
+        requestAnimationFrame(() => {
+            const target = document.getElementById(scrollToId);
+            if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+    }
+};
+
+/** Shortcut từ filter Module → Settings, scroll tới «Thứ tự Module». */
+window.openModuleOrderSettings = function () {
+    if (!currentProjectSlug) {
+        showToast("Chọn project trước", "red");
+        return;
+    }
+    openSettingsModal({ scrollTo: "setModuleOrderSection" });
 };
 
 window.closeSettingsModal = function () {
