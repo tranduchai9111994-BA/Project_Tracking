@@ -600,6 +600,8 @@ function applyDashboardResponse(data) {
 function createMultiSelect(opts) {
     const container = typeof opts.el === "string" ? document.querySelector(opts.el) : opts.el;
     if (!container) return null;
+    const _tt = (key, fallback) =>
+        (typeof window.I18n !== "undefined" && I18n.t) ? I18n.t(key) : fallback;
     const state = {
         label: opts.label || "",
         options: Array.isArray(opts.options) ? opts.options.slice() : [],
@@ -608,6 +610,7 @@ function createMultiSelect(opts) {
         onChange: typeof opts.onChange === "function" ? opts.onChange : () => {},
         keyword: "",
         isOpen: false,
+        i18n: opts.i18n || null,  // { label, allText, nSelected? }
     };
 
     // Xây skeleton DOM 1 lần rồi update in-place mỗi lần state đổi (tránh mất focus search)
@@ -635,11 +638,11 @@ function createMultiSelect(opts) {
     const panel = document.createElement("div");
     panel.className = "ms-panel";
     panel.innerHTML = `
-        <input type="text" class="ms-search" placeholder="🔍 Tìm..." />
+        <input type="text" class="ms-search" placeholder="${_tt("filter.search", "🔍 Tìm...")}" />
         <div class="ms-toolbar">
             <div>
-                <button type="button" class="ms-select-all">☑ Chọn tất cả</button>
-                <button type="button" class="ms-clear-all">☐ Bỏ chọn</button>
+                <button type="button" class="ms-select-all">${_tt("filter.select_all", "☑ Chọn tất cả")}</button>
+                <button type="button" class="ms-clear-all">${_tt("filter.deselect_all", "☐ Bỏ chọn")}</button>
             </div>
             <span class="ms-count"></span>
         </div>
@@ -653,6 +656,17 @@ function createMultiSelect(opts) {
     const countEl = $(".ms-count");
     const btnAll = $(".ms-select-all");
     const btnNone = $(".ms-clear-all");
+
+    function _applyI18nChrome() {
+        if (state.i18n) {
+            if (state.i18n.label) state.label = _tt(state.i18n.label, state.label);
+            if (state.i18n.allText) state.allText = _tt(state.i18n.allText, state.allText);
+        }
+        clearBtn.title = `Xóa filter ${state.label}`;
+        if (searchInput) searchInput.placeholder = _tt("filter.search", "🔍 Tìm...");
+        if (btnAll) btnAll.textContent = _tt("filter.select_all", "☑ Chọn tất cả");
+        if (btnNone) btnNone.textContent = _tt("filter.deselect_all", "☐ Bỏ chọn");
+    }
 
     // ---- Renderers ----
     function renderTrigger() {
@@ -671,7 +685,9 @@ function createMultiSelect(opts) {
             trigger.classList.add("ms-active");
             clearBtn.style.display = "";
         } else {
-            sum.textContent = `${n} đã chọn`;
+            sum.textContent = (typeof window.I18n !== "undefined" && I18n.t)
+                ? I18n.t("filter.n_selected", { n })
+                : `${n} đã chọn`;
             sum.title = [...state.selected].join(", ");
             trigger.classList.add("ms-active");
             clearBtn.style.display = "";
@@ -828,8 +844,21 @@ function createMultiSelect(opts) {
         getSelected() { return [...state.selected]; },
         close: closePanel,
         refresh() { renderTrigger(); renderList(); },
+        applyLang() {
+            _applyI18nChrome();
+            renderTrigger();
+            renderList();
+        },
+        setLabels(label, allText) {
+            if (label != null) state.label = label;
+            if (allText != null) state.allText = allText;
+            clearBtn.title = `Xóa filter ${state.label}`;
+            renderTrigger();
+        },
     };
     if (opts.key) _msInstances[opts.key] = api;
+    _applyI18nChrome();
+    renderTrigger();
     return api;
 }
 
@@ -862,6 +891,7 @@ function populateGlobalFilters(appliedFilter) {
             options: s.all_modules,
             selected: globalFilters.modules,
             allText: "Tất cả module",
+            i18n: { label: "filter.module", allText: "filter.all_module" },
             onChange: (arr) => {
                 globalFilters.modules = arr;
                 // Wave 3: cascade CẢ Quy trình VÀ PIC theo module vừa chọn.
@@ -885,6 +915,7 @@ function populateGlobalFilters(appliedFilter) {
             options: _computeCascadedProcesses(s),
             selected: globalFilters.processes,
             allText: "Tất cả quy trình",
+            i18n: { label: "filter.process", allText: "filter.all_process" },
             onChange: (arr) => {
                 globalFilters.processes = arr;
                 onGlobalFilterChange();
@@ -903,6 +934,7 @@ function populateGlobalFilters(appliedFilter) {
             options: _computeCascadedPics(s),
             selected: globalFilters.pics,
             allText: "Tất cả PIC",
+            i18n: { label: "filter.pic", allText: "filter.all_pic" },
             onChange: (arr) => {
                 globalFilters.pics = arr;
                 onGlobalFilterChange();
@@ -920,6 +952,7 @@ function populateGlobalFilters(appliedFilter) {
             options: s.all_project_codes || [],
             selected: globalFilters.projectCodes,
             allText: "Tất cả mã dự án",
+            i18n: { label: "filter.project_code", allText: "filter.all_project_code" },
             onChange: (arr) => {
                 globalFilters.projectCodes = arr;
                 onGlobalFilterChange();
@@ -10708,7 +10741,10 @@ function _updateStickyHeaderVar() {
     if (header) {
         const h = header.offsetHeight;
         if (h > 0) {
-            document.documentElement.style.setProperty("--header-h", `${h}px`);
+            const next = `${h}px`;
+            if (document.documentElement.style.getPropertyValue("--header-h") !== next) {
+                document.documentElement.style.setProperty("--header-h", next);
+            }
         }
     }
     // Chiều cao stack sticky (cards + filter) → scroll-margin để không che Overdue
@@ -10716,7 +10752,10 @@ function _updateStickyHeaderVar() {
     if (block && block.offsetParent !== null) {
         const bh = block.offsetHeight;
         if (bh > 0) {
-            document.documentElement.style.setProperty("--sticky-block-h", `${bh}px`);
+            const next = `${bh}px`;
+            if (document.documentElement.style.getPropertyValue("--sticky-block-h") !== next) {
+                document.documentElement.style.setProperty("--sticky-block-h", next);
+            }
         }
     }
 }
@@ -10734,43 +10773,72 @@ window.addEventListener("DOMContentLoaded", () => {
     _updateFilterScrolledClass();
 });
 window.addEventListener("resize", _updateStickyHeaderVar);
-window.addEventListener("scroll", _updateFilterScrolledClass, { passive: true });
 
 
 // ========================================================================
 // TASK 18 — Sticky top block với auto-collapse compact mode khi scroll
 // ========================================================================
-// Threshold: 120px (sớm hơn → stack gọn trước khi tới bảng Overdue).
+// Hysteresis: vào compact khi Y≥ENTER, thoát compact khi Y≤LEAVE.
+// Tránh thrashing: compact giảm height → scrollY tụt → full → height tăng → Y↑ → loop.
 // Manual toggle (nút 🔼/🔽) override auto tạm thời.
 
 let _stickyManualState = null;   // null = auto; "compact" | "full" = manual
-const STICKY_COMPACT_Y = 120;
+let _stickyCurrentMode = null;   // mode đã apply lần cuối
+let _stickyScrollRaf = null;
+const STICKY_COMPACT_ENTER_Y = 120;
+const STICKY_COMPACT_LEAVE_Y = 48;
 
 function _stickyApplyMode(mode) {
     const block = document.getElementById("stickyTopBlock");
     if (!block) return;
+
+    // Mode không đổi → chỉ sync shadow, KHÔNG đọc/ghi layout (--sticky-block-h)
+    if (_stickyCurrentMode === mode) {
+        block.classList.toggle("scrolled", mode === "compact" || window.scrollY > 40);
+        return;
+    }
+    _stickyCurrentMode = mode;
+
     const uploadBtn = document.getElementById("stickyUploadBtn");
     if (mode === "compact") {
         block.classList.add("compact", "scrolled");
         if (uploadBtn) uploadBtn.classList.remove("hidden");
     } else {
         block.classList.remove("compact");
-        // Chỉ giữ shadow nếu đã scroll xuống thật (auto-detect)
         block.classList.toggle("scrolled", window.scrollY > 40);
         if (uploadBtn) uploadBtn.classList.add("hidden");
     }
     const btn = document.getElementById("stickyToggleBtn");
     if (btn) btn.textContent = mode === "compact" ? "🔽" : "🔼";
-    // Đo lại --header-h + --sticky-block-h sau khi layout đổi (compact/full)
+
+    // Đo height SAU khi paint xong (tránh đọc layout rồi ghi trong cùng frame)
     requestAnimationFrame(() => {
-        if (typeof _updateStickyHeaderVar === "function") _updateStickyHeaderVar();
+        requestAnimationFrame(() => {
+            if (typeof _updateStickyHeaderVar === "function") _updateStickyHeaderVar();
+        });
     });
+}
+
+function _stickyResolveAutoMode() {
+    const y = window.scrollY || 0;
+    if (_stickyCurrentMode === "compact") {
+        return y <= STICKY_COMPACT_LEAVE_Y ? "full" : "compact";
+    }
+    return y >= STICKY_COMPACT_ENTER_Y ? "compact" : "full";
 }
 
 function _stickyAutoUpdate() {
     if (_stickyManualState) return;  // manual override
-    const mode = window.scrollY >= STICKY_COMPACT_Y ? "compact" : "full";
-    _stickyApplyMode(mode);
+    _stickyApplyMode(_stickyResolveAutoMode());
+}
+
+function _stickyOnScroll() {
+    if (_stickyScrollRaf != null) return;
+    _stickyScrollRaf = requestAnimationFrame(() => {
+        _stickyScrollRaf = null;
+        _stickyAutoUpdate();
+        _updateFilterScrolledClass();
+    });
 }
 
 window._toggleStickyCompact = function () {
@@ -10800,8 +10868,18 @@ window._scrollToUpload = function () {
     uz.scrollIntoView({ behavior: "smooth", block: "start" });
 };
 
-window.addEventListener("scroll", _stickyAutoUpdate, { passive: true });
+window.addEventListener("scroll", _stickyOnScroll, { passive: true });
 window.addEventListener("DOMContentLoaded", _stickyAutoUpdate);
+
+
+// ========================================================================
+// i18n — refresh multi-select labels khi đổi VI/EN
+// ========================================================================
+window.onLangChanged = function (_lang) {
+    Object.values(_msInstances).forEach((inst) => {
+        if (inst && typeof inst.applyLang === "function") inst.applyLang();
+    });
+};
 
 
 // ========================================================================

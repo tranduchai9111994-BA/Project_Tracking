@@ -1959,7 +1959,10 @@ body.layout-edit #btnLayoutEdit {
     -webkit-backdrop-filter: blur(6px);
     padding: 10px 0 8px 0;
     margin-bottom: 12px;
-    transition: box-shadow 0.25s ease, padding 0.25s ease;
+    /* Only shadow transition - avoid padding thrash */
+    transition: box-shadow 0.2s ease;
+    min-height: var(--sticky-block-min-h, 0px);
+    box-sizing: border-box;
 }
 html.dark .sticky-top-block { background: rgba(15, 23, 42, 0.96); }
 
@@ -2003,6 +2006,8 @@ html.dark .sticky-top-block { background: rgba(15, 23, 42, 0.96); }
 .sticky-top-block.compact {
     padding: 6px 0 6px 0;
     margin-bottom: 8px;
+    /* Stable compact footprint - reduce scrollY jump */
+    min-height: 88px;
 }
 .sticky-top-block.compact #section-summary-header { display: none; }
 .sticky-top-block.compact #section-summary {
