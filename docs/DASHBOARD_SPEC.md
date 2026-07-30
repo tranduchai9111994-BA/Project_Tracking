@@ -264,6 +264,58 @@ Với mỗi Module × Phase có ít nhất 1 function có start/end:
 
 ---
 
+## 🆕 17b. Gantt Calendar — Excel-style timeline (V4)
+
+Section `section-gantt-calendar` — HTML table cuộn ngang, header 3 tầng
+(Month/Week/Day) khớp format Excel Project Plan mà user đang dùng. Không
+thay thế Timeline Gantt cũ, cung cấp view lịch dễ đọc hơn cho họp PM.
+
+**Toolbar:**
+- Group by: **Module** · **Quy trình** · **Function** (persist trong
+  localStorage per project).
+- Granularity: **Day** · **Week** · **Month** (auto lựa chọn theo range
+  nếu không set: <60d=day, ≤400d=week, >400d=month).
+- Nút **📥 Xuất Excel**.
+
+**Header 3 tầng:**
+- Row 1: **Month** (colspan theo số week/day trong tháng — VD "Jun-26").
+- Row 2 (chỉ hiện khi granularity=day hoặc week): **Week** — số tuần ISO,
+  VD "W22" (day mode: colspan=7, week mode: colspan=1 kèm "01-Jun").
+- Row 3 (chỉ granularity=day): **Day** — "01-Jun".
+
+**Data row:**
+- Cột đầu: tên row + suffix `(N func · ⚠ K trễ)` + active phase `[Dev]`.
+- Cell active: overlap `[row.start, row.end]` → tô màu nhạt của category
+  phase, text `pct%` in đậm màu đậm ở cell giữa bar.
+- Cell inactive: trống, background trắng (hoặc hồng nhạt nếu là cột Today).
+
+**Marker "Today":** cột hôm nay tô hồng nhạt (#fce7f3); nếu row active
+overlap ngày hôm nay → thêm inset box-shadow hồng đậm.
+
+**Legend cuối section:**
+- **Phân tích / Config** (xanh #3b82f6) — task_type "Phân tích".
+- **Lập trình / Test** (cam #f59e0b) — task_type "Lập trình" / "Config+Test".
+- **UAT** (tím #a855f7).
+- **Golive / Milestone** (xanh lá #22c55e).
+- **Tổng hợp (aggregate)** (đen #1f2937) — row group by module/process.
+- **Chưa có ngày** (xám #94a3b8) — không có phase Start/End.
+- **Today** (hồng #ec4899).
+
+**Row category:**
+- Function mode: category = category của phase đang active nhất
+  (mapping từ `PhaseGroup.task_type`).
+- Module/Process mode: category = "summary" (đen) vì gộp nhiều phase.
+
+**Backend:** `GET /api/projects/<slug>/gantt-calendar` — trả JSON
+`{columns, month_spans, week_spans, rows, today_col, legend}`. Áp
+`_filtered_data_from_request()` để tôn trọng global filter.
+
+**Export Excel:** `GET /api/projects/<slug>/export-gantt-calendar` —
+openpyxl workbook: merge cell Month/Week, fill màu theo category, text
+% ở cell giữa bar, cột Today fill hồng nhẹ, freeze pane ở cột đầu.
+
+---
+
 ## 🆕 18. Compare Snapshot + Weekly Digest (V2 P2)
 
 ### Compare section (auto-show nếu ≥ 2 snapshots)

@@ -2511,3 +2511,264 @@ def export_data_quality_report(
     wb.save(filepath)
     wb.close()
     return filepath
+
+
+# ==========================================================================
+# Gantt Calendar — Excel-style export
+# ==========================================================================
+
+def _hex_to_argb(hex_color: str) -> str:
+    """VD '#3b82f6' → '003b82f6' (openpyxl PatternFill dùng ARGB 8-char)."""
+    h = (hex_color or "").lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    if len(h) != 6:
+        h = "000000"
+    return "00" + h.upper()
+
+
+# Nhạt hơn cho fill (background) — pha trắng để text vẫn đọc được.
+def _lighten_hex(hex_color: str, factor: float = 0.55) -> str:
+    """Trộn màu với trắng theo factor (0..1) — 1 = trắng, 0 = giữ nguyên."""
+    h = (hex_color or "").lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    if len(h) != 6:
+        return "#FFFFFF"
+    r = int(h[0:2], 16)
+    g = int(h[2:4], 16)
+    b = int(h[4:6], 16)
+    r = int(r + (255 - r) * factor)
+    g = int(g + (255 - g) * factor)
+    b = int(b + (255 - b) * factor)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def export_gantt_calendar_report(
+    payload: dict[str, Any],
+    output_dir: str = "uploads",
+    subtitle: str = "",
+) -> str:
+    """
+    Xuất Gantt Calendar Excel-style: header 2-3 tầng (Month/Week/Day), rows
+    aggregate theo group_by, cell tô màu theo phase category, marker Today.
+
+    payload = compute_gantt_calendar(...) shape.
+    """
+    from analyzer.gantt_calendar import CATEGORY_COLORS
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "GanttCalendar"
+
+    columns = payload.get("columns") or []
+    rows = payload.get("rows") or []
+    month_spans = payload.get("month_spans") or []
+    week_spans = payload.get("week_spans") or []
+    granularity = payload.get("granularity") or "week"
+    today_col = payload.get("today_col")
+    group_by = payload.get("group_by") or "module"
+
+    # Số cột: 1 cột label + N cột timeline
+    n_time_cols = len(columns)
+    total_cols = 1 + n_time_cols
+    last_letter = get_column_letter(total_cols)
+
+    # ===== Row 1: Title =====
+    ws.merge_cells(f"A1:{last_letter}1")
+    tc = ws["A1"]
+    tc.value = f"GANTT CALENDAR — Group: {group_by} · Granularity: {granularity}"
+    tc.font = Font(name="Arial", bold=True, size=14, color="1F4E79")
+    tc.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 26
+
+    # ===== Row 2: Subtitle =====
+    ws.merge_cells(f"A2:{last_letter}2")
+    sc = ws["A2"]
+    sc.value = subtitle or f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+    sc.font = Font(name="Arial", size=10, italic=True, color="666666")
+    sc.alignment = Alignment(horizontal="center")
+
+    # ===== Header block =====
+    # Layout header:
+    #   granularity=day   → 3 tầng: Month / Week / Day     (rows 4, 5, 6)
+    #   granularity=week  → 2 tầng: Month / Week           (rows 4, 5)
+    #   granularity=month → 1 tầng: Month                  (row 4)
+    header_start_row = 4
+    if granularity == "day":
+        n_header_rows = 3
+    elif granularity == "week":
+        n_header_rows = 2
+    else:
+        n_header_rows = 1
+    header_end_row = header_start_row + n_header_rows - 1
+
+    # Cột A: label "Row" (merge cả n_header_rows)
+    label_cell_range = f"A{header_start_row}:A{header_end_row}"
+    if header_start_row != header_end_row:
+        ws.merge_cells(label_cell_range)
+    lc = ws.cell(row=header_start_row, column=1)
+    lc.value = "Module / Quy trình / Function"
+    lc.font = HEADER_FONT
+    lc.fill = HEADER_FILL
+    lc.alignment = HEADER_ALIGN
+    lc.border = THIN_BORDER
+
+    # === Row header Month (row 4) — merge theo month_spans ===
+    col_cursor = 2  # cột B là start timeline
+    for span in month_spans:
+        colspan = span["colspan"]
+        start_col = col_cursor
+        end_col = col_cursor + colspan - 1
+        cell = ws.cell(row=header_start_row, column=start_col, value=span["label"])
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = HEADER_ALIGN
+        cell.border = THIN_BORDER
+        if colspan > 1:
+            ws.merge_cells(
+                start_row=header_start_row,
+                start_column=start_col,
+                end_row=header_start_row,
+                end_column=end_col,
+            )
+        col_cursor += colspan
+
+    # === Row 2 (row 5) — Week header ===
+    if n_header_rows >= 2:
+        col_cursor = 2
+        if granularity == "day":
+            # week_spans dùng cho gr=day
+            for wsp in week_spans:
+                colspan = wsp["colspan"]
+                start_col = col_cursor
+                end_col = col_cursor + colspan - 1
+                cell = ws.cell(row=header_start_row + 1, column=start_col, value=wsp["label"])
+                cell.font = Font(name="Arial", bold=True, color="1F4E79", size=10)
+                cell.fill = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
+                cell.alignment = HEADER_ALIGN
+                cell.border = THIN_BORDER
+                if colspan > 1:
+                    ws.merge_cells(
+                        start_row=header_start_row + 1,
+                        start_column=start_col,
+                        end_row=header_start_row + 1,
+                        end_column=end_col,
+                    )
+                col_cursor += colspan
+        else:  # week
+            # granularity=week: hàng 2 = "Week + start day", VD "W22 · 01-Jun"
+            for i, c in enumerate(columns):
+                col = 2 + i
+                cell = ws.cell(row=header_start_row + 1, column=col)
+                lbl_extra = c.get("week_date_label") or ""
+                cell.value = f"{c['label']} · {lbl_extra}" if lbl_extra else c["label"]
+                cell.font = Font(name="Arial", bold=True, color="1F4E79", size=10)
+                cell.fill = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
+                cell.alignment = HEADER_ALIGN
+                cell.border = THIN_BORDER
+
+    # === Row 3 (row 6) — Day header (chỉ granularity=day) ===
+    if n_header_rows == 3:
+        for i, c in enumerate(columns):
+            col = 2 + i
+            cell = ws.cell(row=header_start_row + 2, column=col, value=c["label"])
+            cell.font = Font(name="Arial", size=9)
+            cell.fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+            cell.alignment = HEADER_ALIGN
+            cell.border = THIN_BORDER
+
+    ws.row_dimensions[header_start_row].height = 22
+    if n_header_rows >= 2:
+        ws.row_dimensions[header_start_row + 1].height = 18
+    if n_header_rows == 3:
+        ws.row_dimensions[header_start_row + 2].height = 18
+
+    # ===== Data rows =====
+    data_start_row = header_end_row + 1
+    ws.column_dimensions["A"].width = 40
+    # Cột timeline: rộng cố định để cell "đủ vuông" cho bar bên trong
+    time_col_width = 6 if granularity == "day" else 9 if granularity == "week" else 12
+    for i in range(n_time_cols):
+        ws.column_dimensions[get_column_letter(2 + i)].width = time_col_width
+
+    # Fill nhạt cho cột today (nếu có) — làm nền cả cột từ header_end_row+1 xuống
+    today_fill = PatternFill(start_color="FBCFE8", end_color="FBCFE8", fill_type="solid")
+
+    for r_idx, row in enumerate(rows):
+        excel_row = data_start_row + r_idx
+        # Cột A: tên row + kèm thông tin phụ (func_count, active_phase, %)
+        name = row.get("name") or ""
+        extra_parts = []
+        if row.get("func_count"):
+            extra_parts.append(f"{row['func_count']} func")
+        if row.get("overdue_count"):
+            extra_parts.append(f"⚠ {row['overdue_count']} trễ")
+        suffix = f" ({' · '.join(extra_parts)})" if extra_parts else ""
+        cell = ws.cell(row=excel_row, column=1, value=f"{name}{suffix}")
+        cell.font = Font(name="Arial", bold=(row.get("category") == "summary"), size=10)
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+
+        # Timeline cells
+        cells_flags = row.get("cells") or []
+        span_start = row.get("span_start_col")
+        span_end = row.get("span_end_col")
+        cat = row.get("category") or "summary"
+        color_hex = CATEGORY_COLORS.get(cat, CATEGORY_COLORS["summary"])
+        # Bar fill = màu nhạt để text pct dễ đọc; text pct bold màu đậm.
+        bar_argb = _hex_to_argb(_lighten_hex(color_hex, 0.35))
+        text_argb = _hex_to_argb(color_hex).replace("00", "FF", 1)  # ARGB alpha=FF
+
+        for i, active in enumerate(cells_flags):
+            col = 2 + i
+            excel_cell = ws.cell(row=excel_row, column=col)
+            excel_cell.border = THIN_BORDER
+            # Today column: nền hồng nhẹ cho mọi cell (kể cả row không active)
+            if today_col is not None and i == today_col and not active:
+                excel_cell.fill = today_fill
+            if not active:
+                continue
+            # Cell active → tô màu bar; ghi text pct ở cell giữa
+            excel_cell.fill = PatternFill(
+                start_color=bar_argb[2:], end_color=bar_argb[2:], fill_type="solid",
+            )
+            mid = None
+            if span_start is not None and span_end is not None:
+                mid = (span_start + span_end) // 2
+            if mid == i:
+                excel_cell.value = f"{row.get('pct', 0)}%"
+                excel_cell.font = Font(name="Arial", bold=True, size=10, color=text_argb[2:])
+                excel_cell.alignment = Alignment(horizontal="center", vertical="center")
+        # Đảm bảo cột today vẫn có fill hồng nếu span không cover today
+        if today_col is not None and 0 <= today_col < n_time_cols:
+            tcell = ws.cell(row=excel_row, column=2 + today_col)
+            # Nếu cell chưa có fill (không active) → set today_fill
+            if not cells_flags[today_col]:
+                tcell.fill = today_fill
+
+    # ===== Legend cuối sheet =====
+    legend_row = data_start_row + len(rows) + 2
+    legend_labels = payload.get("legend") or {}
+    ws.cell(row=legend_row, column=1, value="LEGEND:").font = Font(name="Arial", bold=True, size=10)
+    for i, (key, meta) in enumerate(legend_labels.items()):
+        c = ws.cell(row=legend_row, column=2 + i * 2)
+        c.value = meta.get("label", key)
+        c.font = Font(name="Arial", bold=True, size=9, color="FFFFFF")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.fill = PatternFill(
+            start_color=_hex_to_argb(meta.get("color", "#94a3b8"))[2:],
+            end_color=_hex_to_argb(meta.get("color", "#94a3b8"))[2:],
+            fill_type="solid",
+        )
+
+    # Freeze pane ở cột đầu + header
+    ws.freeze_panes = f"B{data_start_row}"
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(
+        output_dir, f"Gantt_Calendar_{group_by}_{granularity}_{date.today().strftime('%Y%m%d')}.xlsx",
+    )
+    wb.save(filepath)
+    wb.close()
+    return filepath

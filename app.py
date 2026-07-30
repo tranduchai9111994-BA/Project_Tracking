@@ -2276,6 +2276,60 @@ def project_export_aging_wip(slug: str):
 
 
 # ==========================================================================
+# Gantt Calendar — Excel-style timeline (Month/Week/Day header 3 tầng)
+# ==========================================================================
+
+def _parse_gantt_params():
+    """Parse group_by + granularity từ query string (default: module/week)."""
+    group_by = (request.args.get("group_by") or "module").strip().lower()
+    granularity = (request.args.get("granularity") or "auto").strip().lower()
+    return group_by, granularity
+
+
+@app.route("/api/projects/<slug>/gantt-calendar")
+def project_gantt_calendar(slug: str):
+    """
+    Gantt Calendar — dashboard timeline Excel-style.
+
+    Query params:
+      group_by: "module" | "phan_he" | "process" | "quy_trinh" | "function"
+      granularity: "day" | "week" | "month" | "auto"
+      + module/process/pic để filter (global filter — reuse contract chung).
+    """
+    from analyzer.gantt_calendar import compute_gantt_calendar
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    group_by, granularity = _parse_gantt_params()
+    payload = compute_gantt_calendar(data, group_by=group_by, granularity=granularity)
+    return jsonify(payload)
+
+
+@app.route("/api/projects/<slug>/export-gantt-calendar")
+def project_export_gantt_calendar(slug: str):
+    """Xuất Gantt Calendar sang Excel (merge cell Month/Week + fill màu category)."""
+    from analyzer.gantt_calendar import compute_gantt_calendar
+    from exporter.excel_exporter import export_gantt_calendar_report
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    group_by, granularity = _parse_gantt_params()
+    payload = compute_gantt_calendar(data, group_by=group_by, granularity=granularity)
+    project = _project_mgr.get_project(slug)
+    subtitle = (
+        f"Project: {project.name if project else slug} | "
+        f"Group={group_by} | Granularity={payload.get('granularity','')} | "
+        f"Ngày: {date.today().strftime('%d/%m/%Y')}"
+    )
+    filepath = export_gantt_calendar_report(
+        payload, output_dir=_project_mgr.get_export_dir(slug), subtitle=subtitle,
+    )
+    return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+
+
+# ==========================================================================
 # T21 — Data Quality Panel
 # ==========================================================================
 

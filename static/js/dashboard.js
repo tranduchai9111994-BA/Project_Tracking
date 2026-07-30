@@ -1219,6 +1219,8 @@ function renderDashboard() {
     _safe("effort", renderEffortSection);
     _safe("process", renderProcessTreemap);
     _safe("gantt", renderGanttTimeline);
+    // Gantt Calendar (Excel-style, 3-tier header) — fetch riêng qua API
+    _safe("ganttCalendar", loadGanttCalendar);
 
     // Compare section (chỉ hiện nếu có >= 2 snapshots)
     _safe("compare", renderCompareSection);
@@ -10246,11 +10248,12 @@ const _VISIBILITY_GROUPS = [
     {
         name: "📈 Tiến độ & Timeline",
         items: [
-            { id: "section-gantt",     label: "Gantt",              desc: "Sơ đồ Gantt lộ trình phase theo function" },
-            { id: "section-burndown",  label: "Burndown & Velocity", desc: "Đường burndown + velocity theo tuần" },
-            { id: "section-sla",       label: "SLA vi phạm",        desc: "Danh sách task vượt SLA theo priority" },
-            { id: "section-duration",  label: "Duration",            desc: "Bảng thời lượng thực tế theo function" },
-            { id: "section-giaidoan",  label: "Giai đoạn dự án",    desc: "Gộp phase theo giai đoạn (Phân tích/Phát triển/UAT/Golive)" },
+            { id: "section-gantt",          label: "Gantt",              desc: "Sơ đồ Gantt lộ trình phase theo function" },
+            { id: "section-gantt-calendar", label: "Gantt Calendar",     desc: "Timeline Excel-style: header Month/Week/Day, bar tô màu theo phase, marker Today" },
+            { id: "section-burndown",       label: "Burndown & Velocity", desc: "Đường burndown + velocity theo tuần" },
+            { id: "section-sla",            label: "SLA vi phạm",        desc: "Danh sách task vượt SLA theo priority" },
+            { id: "section-duration",       label: "Duration",            desc: "Bảng thời lượng thực tế theo function" },
+            { id: "section-giaidoan",       label: "Giai đoạn dự án",    desc: "Gộp phase theo giai đoạn (Phân tích/Phát triển/UAT/Golive)" },
         ],
     },
     {
@@ -11495,4 +11498,233 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }, 1200);
 });
+
+
+// ==========================================================================
+// GANTT CALENDAR — Excel-style timeline (3-tier header + Today marker)
+// Bar tô màu theo phase category, text % completion trong cell giữa bar,
+// dùng chung state global filter. Rebuild bằng /api/.../gantt-calendar.
+// ==========================================================================
+const _ganttCalState = {
+    group_by: "module",
+    granularity: "week",
+};
+
+function _gcKey() { return `ganttCal:${currentProjectSlug || "default"}`; }
+function _loadGanttCalState() {
+    try {
+        const raw = localStorage.getItem(_gcKey());
+        if (raw) {
+            const j = JSON.parse(raw);
+            if (j.group_by) _ganttCalState.group_by = j.group_by;
+            if (j.granularity) _ganttCalState.granularity = j.granularity;
+        }
+    } catch (e) { /* ignore */ }
+}
+function _saveGanttCalState() {
+    try { localStorage.setItem(_gcKey(), JSON.stringify(_ganttCalState)); } catch (e) {}
+}
+function _syncGanttCalButtons() {
+    document.querySelectorAll(".gantt-cal-groupby-btn").forEach(b => {
+        const active = b.dataset.gcb === _ganttCalState.group_by;
+        b.classList.toggle("bg-blue-600", active);
+        b.classList.toggle("text-white", active);
+        b.classList.toggle("hover:bg-blue-50", !active);
+    });
+    document.querySelectorAll(".gantt-cal-gran-btn").forEach(b => {
+        const active = b.dataset.gcg === _ganttCalState.granularity;
+        b.classList.toggle("bg-blue-600", active);
+        b.classList.toggle("text-white", active);
+        b.classList.toggle("hover:bg-blue-50", !active);
+    });
+}
+window.setGanttCalGroupBy = function (mode) {
+    if (!["module", "process", "function"].includes(mode)) return;
+    _ganttCalState.group_by = mode;
+    _saveGanttCalState();
+    _syncGanttCalButtons();
+    loadGanttCalendar();
+};
+window.setGanttCalGranularity = function (gr) {
+    if (!["day", "week", "month"].includes(gr)) return;
+    _ganttCalState.granularity = gr;
+    _saveGanttCalState();
+    _syncGanttCalButtons();
+    loadGanttCalendar();
+};
+
+async function loadGanttCalendar() {
+    if (!currentProjectSlug) return;
+    const sec = document.getElementById("section-gantt-calendar");
+    if (!sec) return;
+    _loadGanttCalState();
+    _syncGanttCalButtons();
+    const container = document.getElementById("ganttCalendarContainer");
+    if (!container) return;
+    container.innerHTML = `<div class="text-gray-400 text-center py-10 text-sm">⏳ Đang tải…</div>`;
+
+    const qsFilter = (typeof _buildFilterQuery === "function") ? _buildFilterQuery() : "";
+    const qs = new URLSearchParams();
+    qs.set("group_by", _ganttCalState.group_by);
+    qs.set("granularity", _ganttCalState.granularity);
+    const url = `/api/projects/${currentProjectSlug}/gantt-calendar?${qs.toString()}${qsFilter ? "&" + qsFilter : ""}`;
+    try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        _renderGanttCalendar(data);
+    } catch (err) {
+        container.innerHTML = `<div class="text-red-600 text-center py-10 text-sm">Lỗi tải Gantt Calendar: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function _renderGanttCalendar(data) {
+    const container = document.getElementById("ganttCalendarContainer");
+    const legend = document.getElementById("ganttCalendarLegend");
+    const info = document.getElementById("ganttCalendarInfo");
+    if (!container) return;
+
+    if (data.empty || !(data.rows || []).length || !(data.columns || []).length) {
+        container.innerHTML = `<div class="text-gray-400 text-center py-10 text-sm">
+            Không có dữ liệu để vẽ Gantt Calendar.<br>
+            <span class="text-xs">Function cần có Start/End date ở ít nhất 1 phase.</span>
+        </div>`;
+        if (legend) legend.innerHTML = "";
+        if (info) info.textContent = "";
+        return;
+    }
+
+    if (info) {
+        info.textContent =
+            `Range: ${data.min_date} → ${data.max_date} · ${data.columns.length} cột (${data.granularity})`
+            + ` · ${data.rows.length} row (${data.group_by})`
+            + (data.today_col !== null ? ` · Today ở cột #${data.today_col + 1}` : "");
+    }
+
+    const cats = data.legend || {};
+    const catColor = (k) => (cats[k] && cats[k].color) || "#94a3b8";
+
+    // ==== Build header ====
+    // Số tầng header: day=3, week=2, month=1
+    const gr = data.granularity;
+    const monthSpans = data.month_spans || [];
+    const weekSpans = data.week_spans || [];
+    let theadHtml = "";
+
+    // Row 1: Month
+    theadHtml += `<tr><th class="gantt-cal-label-th" rowspan="${gr === "day" ? 3 : gr === "week" ? 2 : 1}">Module / Quy trình / Function</th>`;
+    monthSpans.forEach(sp => {
+        theadHtml += `<th colspan="${sp.colspan}">${escapeHtml(sp.label)}</th>`;
+    });
+    theadHtml += `</tr>`;
+
+    // Row 2: Week
+    if (gr === "day") {
+        theadHtml += `<tr>`;
+        weekSpans.forEach(sp => {
+            theadHtml += `<th colspan="${sp.colspan}">${escapeHtml(sp.label)}</th>`;
+        });
+        theadHtml += `</tr>`;
+    } else if (gr === "week") {
+        theadHtml += `<tr>`;
+        data.columns.forEach(c => {
+            const extra = c.week_date_label ? `<br><span class="text-[9px] text-gray-500">${escapeHtml(c.week_date_label)}</span>` : "";
+            theadHtml += `<th>${escapeHtml(c.label)}${extra}</th>`;
+        });
+        theadHtml += `</tr>`;
+    }
+
+    // Row 3: Day (chỉ granularity=day)
+    if (gr === "day") {
+        theadHtml += `<tr>`;
+        data.columns.forEach(c => {
+            theadHtml += `<th>${escapeHtml(c.label)}</th>`;
+        });
+        theadHtml += `</tr>`;
+    }
+
+    // ==== Build body ====
+    const todayCol = data.today_col;
+    let tbodyHtml = "";
+    data.rows.forEach(row => {
+        const catHex = catColor(row.category || "summary");
+        // Bar nhạt (dùng cho fill) + text đậm cho pct
+        const barLight = _hexLighten(catHex, 0.4);
+        const barText = catHex;
+        const isSummary = row.category === "summary";
+        const rowCls = isSummary ? "summary-row" : "";
+        const labelExtras = [];
+        if (row.func_count) labelExtras.push(`${row.func_count} func`);
+        if (row.overdue_count) labelExtras.push(`<span class="text-red-600">⚠ ${row.overdue_count} trễ</span>`);
+        const labelSuffix = labelExtras.length ? `<span class="text-[10px] text-gray-500 ml-1">(${labelExtras.join(" · ")})</span>` : "";
+        const activePhaseTag = row.active_phase ? `<span class="text-[9px] text-gray-500 ml-1">[${escapeHtml(row.active_phase)}]</span>` : "";
+        tbodyHtml += `<tr class="${rowCls}">
+            <td class="gantt-cal-label" title="Start: ${row.start || "-"} · End: ${row.end || "-"} · ${row.pct}%">
+                ${escapeHtml(row.name)}${activePhaseTag}${labelSuffix}
+            </td>`;
+        const cells = row.cells || [];
+        const midIdx = (row.span_start_col !== null && row.span_end_col !== null)
+            ? Math.floor((row.span_start_col + row.span_end_col) / 2) : null;
+        cells.forEach((active, i) => {
+            const isToday = (todayCol !== null && i === todayCol);
+            const classes = ["gantt-cal-cell"];
+            if (active) classes.push("active");
+            if (isToday) classes.push("today-col");
+            let style = "";
+            let inner = "";
+            if (active) {
+                style = `background:${barLight};`;
+                if (midIdx === i) {
+                    inner = `<span class="gantt-cal-pct" style="color:${barText}">${row.pct}%</span>`;
+                }
+            }
+            tbodyHtml += `<td class="${classes.join(" ")}" style="${style}">${inner}</td>`;
+        });
+        tbodyHtml += `</tr>`;
+    });
+
+    container.innerHTML = `<table class="gantt-cal-table">
+        <thead>${theadHtml}</thead>
+        <tbody>${tbodyHtml}</tbody>
+    </table>`;
+
+    // ==== Legend ====
+    if (legend) {
+        const items = Object.entries(cats).map(([k, m]) => `
+            <span class="gantt-cal-legend-chip">
+                <span class="swatch" style="background:${m.color}"></span>
+                <span>${escapeHtml(m.label)}</span>
+            </span>
+        `).join("");
+        legend.innerHTML = items + (todayCol !== null
+            ? `<span class="gantt-cal-legend-chip ml-auto"><span class="swatch" style="background:#ec4899"></span><span>Today</span></span>`
+            : "");
+    }
+}
+
+/** Lighten hex color bằng cách trộn với trắng theo factor (0..1). */
+function _hexLighten(hex, factor = 0.4) {
+    if (!hex || hex[0] !== "#") return hex;
+    let h = hex.slice(1);
+    if (h.length === 3) h = h.split("").map(c => c + c).join("");
+    if (h.length !== 6) return hex;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    const nr = Math.round(r + (255 - r) * factor);
+    const ng = Math.round(g + (255 - g) * factor);
+    const nb = Math.round(b + (255 - b) * factor);
+    return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
+}
+
+/** Trigger download Excel export cho Gantt Calendar hiện tại. */
+window.exportGanttCalendar = function () {
+    if (!currentProjectSlug) return;
+    const qsFilter = (typeof _buildFilterQuery === "function") ? _buildFilterQuery() : "";
+    const qs = new URLSearchParams();
+    qs.set("group_by", _ganttCalState.group_by);
+    qs.set("granularity", _ganttCalState.granularity);
+    const url = `/api/projects/${currentProjectSlug}/export-gantt-calendar?${qs.toString()}${qsFilter ? "&" + qsFilter : ""}`;
+    window.location.href = url;
+};
 

@@ -587,3 +587,91 @@ cho các field mới (`bearer_env=""`, `apikey_env=""`, `apikey_location="header
 - Bearer token / API key được inject vào headers của session; session bị
   destroy sau mỗi call → không leak sang request khác.
 
+## V4 — Gantt Calendar payload
+
+Endpoint `GET /api/projects/<slug>/gantt-calendar?group_by=<>&granularity=<>`
+trả về payload cho FE HTML table (Excel-style 3-tier header).
+
+**Query params:**
+- `group_by`: `module` | `phan_he` | `process` | `quy_trinh` | `function`.
+  (`phan_he` alias `module` — theo `.cursorrules` chú thích module/phân hệ
+  là 1 khái niệm.)
+- `granularity`: `day` | `week` | `month` | `auto` (mặc định `auto`).
+  Auto lựa chọn: <60 ngày → day, ≤400 ngày → week, khác → month.
+- Global filter chung: `module` / `process` / `pic` (multi, comma hoặc
+  repeat) — apply qua `_filtered_data_from_request`.
+
+**Response JSON shape:**
+
+```jsonc
+{
+  "group_by": "module",
+  "granularity": "week",
+  "min_date": "2026-05-25",     // đã snap về đầu tuần/tháng
+  "max_date": "2026-08-30",
+  "today": "2026-07-30",
+  "today_col": 9,                // index cột chứa ngày hôm nay (null nếu ngoài range)
+  "columns": [
+    {
+      "idx": 0,
+      "label": "W22",            // day: "01-Jun", month: "Jun-26"
+      "start": "2026-05-25",     // ISO inclusive
+      "end":   "2026-05-31",
+      "month_label": "May-26",
+      "week_num": 22,
+      "week_date_label": "25-May"  // chỉ có khi granularity=week
+    }
+    // ...
+  ],
+  "month_spans": [
+    {"label": "May-26", "colspan": 1},
+    {"label": "Jun-26", "colspan": 4},
+    {"label": "Jul-26", "colspan": 5},
+    {"label": "Aug-26", "colspan": 5}
+  ],
+  "week_spans": [                 // chỉ có khi granularity=day
+    {"label": "W22", "week_num": 22, "colspan": 7}
+  ],
+  "rows": [
+    {
+      "name": "TMS",              // "M1 · P1" cho process, "F1 · Tên..." cho function
+      "module": "TMS",
+      "process": "",
+      "func_count": 15,
+      "start": "2026-06-01",
+      "end":   "2026-08-15",
+      "pct":   72,                // weighted_all: closed_records / (rows × phases)
+      "category": "summary",      // phase1|phase2|phase3|milestone|summary|idle
+      "active_phase": "",         // chỉ set khi group_by=function
+      "overdue_count": 3,
+      "span_start_col": 1,
+      "span_end_col":   11,
+      "cells": [false, true, true, true, ..., false]  // len = columns.length
+    }
+  ],
+  "legend": {
+    "phase1":    {"label": "Phân tích / Config",  "color": "#3b82f6"},
+    "phase2":    {"label": "Lập trình / Test",    "color": "#f59e0b"},
+    "phase3":    {"label": "UAT",                 "color": "#a855f7"},
+    "milestone": {"label": "Golive / Milestone",  "color": "#22c55e"},
+    "summary":   {"label": "Tổng hợp (aggregate)", "color": "#1f2937"},
+    "idle":      {"label": "Chưa có ngày",         "color": "#94a3b8"}
+  },
+  "empty": false                  // true khi không có phase Start/End nào
+}
+```
+
+**Ghi chú compute:**
+- Row `start` = min của tất cả `PhaseData.start_date` (mọi phase, mọi
+  function trong nhóm); row `end` = max end. Nếu không có → cả 2 = None
+  và cells rỗng.
+- `pct` = weighted_all (giống module_overview) — coi phase blank là
+  "chưa làm" (đếm vào mẫu số) để không đẩy % giả tạo lên 100%.
+- `category` cho aggregate mode (module/process) = `summary`. Cho function
+  mode = category của phase active nhất — map từ `PhaseGroup.task_type`
+  ("Phân tích" → `phase1`, "Lập trình" → `phase2`, "UAT" → `phase3`,
+  "Golive" → `milestone`).
+- `cells[i]` = True nếu cột i overlap `[row.start, row.end]` (inclusive
+  interval intersection). `span_start_col` / `span_end_col` = index của
+  cell active đầu / cuối cho FE / Excel vẽ bar liên tục.
+

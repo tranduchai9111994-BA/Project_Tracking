@@ -23,6 +23,48 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_ver('css/style.css') }}">
+    <style>
+        /* ============ GANTT CALENDAR (Excel-style, 3-tier header) ============ */
+        .gantt-cal-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 11px; }
+        .gantt-cal-table th, .gantt-cal-table td {
+            border: 1px solid #e2e8f0; padding: 2px 4px; text-align: center;
+            box-sizing: border-box; white-space: nowrap;
+        }
+        .gantt-cal-table thead th {
+            background: #eef2ff; font-weight: 600; color: #1e3a8a;
+            position: sticky; top: 0; z-index: 4;
+        }
+        .gantt-cal-table thead tr:nth-child(2) th { top: 22px; z-index: 3; }
+        .gantt-cal-table thead tr:nth-child(3) th { top: 42px; z-index: 3; }
+        .gantt-cal-table td.gantt-cal-label {
+            text-align: left; font-weight: 500; color: #1e293b;
+            min-width: 220px; max-width: 320px; white-space: normal;
+            position: sticky; left: 0; z-index: 2; background: #ffffff;
+        }
+        .gantt-cal-table th.gantt-cal-label-th {
+            text-align: left; padding-left: 8px;
+            position: sticky; left: 0; z-index: 5; background: #eef2ff;
+        }
+        .gantt-cal-table td.gantt-cal-cell { min-width: 24px; height: 26px; padding: 0; position: relative; }
+        .gantt-cal-table td.gantt-cal-cell.active {
+            /* Nền màu bar được set inline theo category từ JS */
+        }
+        .gantt-cal-table td.gantt-cal-cell.today-col { background: #fce7f3 !important; }
+        .gantt-cal-table td.gantt-cal-cell.today-col.active {
+            box-shadow: inset 0 0 0 2px #ec4899;
+        }
+        .gantt-cal-table td.gantt-cal-cell .gantt-cal-pct {
+            display: inline-block; font-weight: 700; font-size: 10px; color: #0f172a;
+            padding: 0 4px; line-height: 24px;
+        }
+        .gantt-cal-table tr.summary-row td.gantt-cal-label { font-weight: 700; background: #f8fafc; }
+        .gantt-cal-table tbody tr:hover td.gantt-cal-label { background: #fef9c3; }
+        .gantt-cal-legend-chip { display: inline-flex; align-items: center; gap: 4px; }
+        .gantt-cal-legend-chip .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+        html.dark .gantt-cal-table td.gantt-cal-label { background: #0f172a; color: #f1f5f9; }
+        html.dark .gantt-cal-table thead th { background: #1e293b; color: #93c5fd; }
+        html.dark .gantt-cal-table th.gantt-cal-label-th { background: #1e293b; }
+    </style>
 </head>
 <body class="bg-slate-50 min-h-screen">
 
@@ -1780,6 +1822,51 @@
                 để chọn 1-2 module xem chi tiết.
             </div>
             <div id="ganttContainer" class="gantt-container-v2"></div>
+        </section>
+
+        <!-- ============ SECTION: GANTT CALENDAR (Excel-style, 3-tier header) ==========
+             Timeline dạng lịch: header Month/Week/Day, mỗi row 1 aggregate
+             (Module/Quy trình/Function), bar tô màu theo phase category, text %
+             ở giữa bar, marker "Today" cột hồng. Xuất Excel giữ nguyên style. -->
+        <section id="section-gantt-calendar" data-section-id="ganttCalendar"
+                 class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h3 class="text-lg font-semibold text-gray-800" data-help="section-gantt-calendar">🗓️ Gantt Calendar (Excel-style)</h3>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-0.5">Header 3 tầng Month/Week/Day · bar tô màu theo phase, text % completion · marker Today hồng</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 no-print">
+                    <!-- Group by -->
+                    <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+                        <button data-gcb="module" onclick="setGanttCalGroupBy('module')"
+                                class="gantt-cal-groupby-btn px-2 py-1 hover:bg-blue-50 bg-blue-600 text-white">Module</button>
+                        <button data-gcb="process" onclick="setGanttCalGroupBy('process')"
+                                class="gantt-cal-groupby-btn px-2 py-1 border-l hover:bg-blue-50">Quy trình</button>
+                        <button data-gcb="function" onclick="setGanttCalGroupBy('function')"
+                                class="gantt-cal-groupby-btn px-2 py-1 border-l hover:bg-blue-50">Function</button>
+                    </div>
+                    <!-- Granularity -->
+                    <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+                        <button data-gcg="day" onclick="setGanttCalGranularity('day')"
+                                class="gantt-cal-gran-btn px-2 py-1 hover:bg-blue-50">Day</button>
+                        <button data-gcg="week" onclick="setGanttCalGranularity('week')"
+                                class="gantt-cal-gran-btn px-2 py-1 border-l hover:bg-blue-50 bg-blue-600 text-white">Week</button>
+                        <button data-gcg="month" onclick="setGanttCalGranularity('month')"
+                                class="gantt-cal-gran-btn px-2 py-1 border-l hover:bg-blue-50">Month</button>
+                    </div>
+                    <button onclick="exportGanttCalendar()"
+                            class="text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded px-3 py-1"
+                            title="Xuất Excel dạng lịch (merge cell Month/Week + fill màu)">📥 Xuất Excel</button>
+                </div>
+            </div>
+            <div id="ganttCalendarInfo" class="text-[11px] text-gray-500 mb-2"></div>
+            <div id="ganttCalendarContainer" class="gantt-calendar-container overflow-auto border rounded max-h-[70vh]">
+                <div class="text-gray-400 text-center py-10 text-sm">Đang tải…</div>
+            </div>
+            <!-- Legend -->
+            <div id="ganttCalendarLegend" class="flex flex-wrap items-center gap-3 text-[11px] text-gray-600 mt-3"></div>
         </section>
 
         <section id="section-duration" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
