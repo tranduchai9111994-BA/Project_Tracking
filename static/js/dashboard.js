@@ -12308,7 +12308,15 @@ function _integOpenEditor(integrationId) {
     // trong UI để không mất giá trị khi switch method qua lại.
     if (dbCredEnv) dbCredEnv.value = auth.credential_env || "";
 
+    // T35 Task 1 — verify_ssl (default true). Chỉ áp dụng cho HTTP method.
+    const verifySslEl = document.getElementById("integVerifySsl");
+    if (verifySslEl) {
+        // Nếu auth chưa có field (backward compat) → default true (BẬT)
+        verifySslEl.checked = auth.verify_ssl !== false;
+    }
+
     _integOnAuthMethodChange();  // show đúng block field
+    _integOnVerifySslChange();    // update warning banner
     _integOnDbDriverChange();     // hint driver (nếu database)
     _integRenderEndpoints(it?.endpoints || []);
     _integShowEditorMsg("", "");
@@ -12361,7 +12369,36 @@ function _integOnAuthMethodChange() {
     if (firstFilled) {
         credInputs.forEach(el => { if (!el.value?.trim()) el.value = firstFilled.value; });
     }
+    // T35 Task 1 — SSL verify checkbox chỉ áp dụng cho HTTP method (form_login,
+    // basic_auth, bearer_token, api_key). Với database → ẩn (SSL cho DB config
+    // ở connection string / driver, không qua requests.Session).
+    const sslWrap = document.getElementById("integSslVerifyWrap");
+    if (sslWrap) {
+        if (method === "database") {
+            sslWrap.classList.add("hidden");
+        } else {
+            sslWrap.classList.remove("hidden");
+        }
+    }
 }
+
+/**
+ * T35 Task 1 — Hiện/ẩn warning banner khi user bỏ tick verify SSL.
+ * Chỉ là hint UX — không auto-block, user phải chủ động chấp nhận.
+ */
+function _integOnVerifySslChange() {
+    const checkbox = document.getElementById("integVerifySsl");
+    const warn = document.getElementById("integSslWarning");
+    if (!checkbox || !warn) return;
+    // checked = TRUE (verify) → an toàn → ẩn warning
+    // checked = FALSE (bypass) → hiển warning đỏ
+    if (checkbox.checked) {
+        warn.classList.add("hidden");
+    } else {
+        warn.classList.remove("hidden");
+    }
+}
+window._integOnVerifySslChange = _integOnVerifySslChange;
 
 /**
  * Hint driver hiện tại (VD SQL Server → cảnh báo cần ODBC Driver 17/18).
@@ -12785,6 +12822,12 @@ function _integReadEditorPayload() {
             db_host: document.getElementById("integDbHost")?.value.trim() || "",
             db_port: parseInt(document.getElementById("integDbPort")?.value || "0", 10) || 0,
             db_database: document.getElementById("integDbDatabase")?.value.trim() || "",
+            // T35 Task 1 — SSL verify (default true nếu checkbox không tồn tại).
+            // Sanitize backend cũng default true — nên field này chỉ cần set khi user
+            // tắt tick.
+            verify_ssl: document.getElementById("integVerifySsl")
+                ? !!document.getElementById("integVerifySsl").checked
+                : true,
         },
         endpoints,
     };

@@ -545,6 +545,133 @@ def test_prepare_session_basic_auth(env_creds):
         session.close()
 
 
+# ---------------------------------------------------------------------------
+# T35 Task 1 — SSL verify tests
+# ---------------------------------------------------------------------------
+
+
+class TestSslVerifyField:
+    """
+    Verify field `auth.verify_ssl`:
+      - Default True (BẬT) khi không set.
+      - Sanitize giữ nguyên bool True/False, cast truthy khác về bool.
+      - `_prepare_authenticated_session` set `session.verify` đúng.
+      - Ghi vào `info["verify_ssl"]` để observability.
+    """
+
+    def test_sanitize_default_true(self):
+        # Không có field → mặc định True (an toàn)
+        auth = integ_mod._sanitize_auth({"method": "api_key", "apikey_env": "X"})
+        assert auth["verify_ssl"] is True
+
+    def test_sanitize_explicit_false(self):
+        auth = integ_mod._sanitize_auth({
+            "method": "api_key", "apikey_env": "X",
+            "verify_ssl": False,
+        })
+        assert auth["verify_ssl"] is False
+
+    def test_sanitize_explicit_true(self):
+        auth = integ_mod._sanitize_auth({
+            "method": "api_key", "apikey_env": "X",
+            "verify_ssl": True,
+        })
+        assert auth["verify_ssl"] is True
+
+    def test_sanitize_truthy_cast_to_bool(self):
+        # Legacy config có thể truyền string "true" hoặc 1 → phải cast bool
+        auth = integ_mod._sanitize_auth({
+            "method": "api_key", "apikey_env": "X",
+            "verify_ssl": 1,
+        })
+        assert auth["verify_ssl"] is True
+        assert isinstance(auth["verify_ssl"], bool)
+
+    def test_sanitize_falsy_cast_to_bool(self):
+        auth = integ_mod._sanitize_auth({
+            "method": "api_key", "apikey_env": "X",
+            "verify_ssl": 0,
+        })
+        assert auth["verify_ssl"] is False
+        assert isinstance(auth["verify_ssl"], bool)
+
+    def test_session_verify_default_true(self, env_apikey):
+        # Không set verify_ssl → session.verify = True (default)
+        session, _extra, info = integ_mod._prepare_authenticated_session(
+            base_url="https://fis.example.com",
+            auth={"method": "api_key", "apikey_env": "FIS_API",
+                  "apikey_header": "X-API-Key", "apikey_location": "header"},
+        )
+        try:
+            assert session.verify is True
+            assert info["verify_ssl"] is True
+        finally:
+            session.close()
+
+    def test_session_verify_false(self, env_apikey):
+        # verify_ssl=False → session.verify = False + info reflect
+        session, _extra, info = integ_mod._prepare_authenticated_session(
+            base_url="https://fis.example.com",
+            auth={"method": "api_key", "apikey_env": "FIS_API",
+                  "apikey_header": "X-API-Key", "apikey_location": "header",
+                  "verify_ssl": False},
+        )
+        try:
+            assert session.verify is False
+            assert info["verify_ssl"] is False
+        finally:
+            session.close()
+
+    def test_session_verify_false_bearer(self, env_bearer):
+        # verify_ssl=False cho bearer_token method → session.verify=False
+        session, _extra, info = integ_mod._prepare_authenticated_session(
+            base_url="https://fis.example.com",
+            auth={"method": "bearer_token", "bearer_env": "FIS_API",
+                  "verify_ssl": False},
+        )
+        try:
+            assert session.verify is False
+            assert info["verify_ssl"] is False
+        finally:
+            session.close()
+
+    def test_roundtrip_via_create_update(self, project_dir, env_apikey):
+        """CRUD full: tạo với verify_ssl=False → get → update giữ nguyên."""
+        integ = integ_mod.create_integration(project_dir, {
+            "name": "Internal API",
+            "base_url": "https://internal.fis.vn",
+            "auth": {"method": "api_key", "apikey_env": "FIS_API",
+                     "apikey_header": "X-API-Key",
+                     "verify_ssl": False},
+            "endpoints": [],
+        })
+        # After create — vẫn False
+        assert integ["auth"]["verify_ssl"] is False
+        # After re-fetch
+        got = integ_mod.get_integration(project_dir, integ["id"])
+        assert got["auth"]["verify_ssl"] is False
+        # Update partial (không đổi verify_ssl) — vẫn False
+        updated = integ_mod.update_integration(project_dir, integ["id"], {
+            "name": "Internal API v2",
+        })
+        assert updated["auth"]["verify_ssl"] is False
+
+    def test_default_true_when_not_specified_on_create(self, project_dir, env_apikey):
+        """Legacy config không có verify_ssl → default True (backward compat)."""
+        integ = integ_mod.create_integration(project_dir, {
+            "name": "Public API",
+            "base_url": "https://api.example.com",
+            "auth": {"method": "api_key", "apikey_env": "FIS_API",
+                     "apikey_header": "X-API-Key"},
+            "endpoints": [],
+        })
+        assert integ["auth"]["verify_ssl"] is True
+
+    def test_placeholder_close_session(self):
+        # Sanity — placeholder to keep block structure similar to legacy tests
+        pass
+
+
 def test_bearer_sync_headers_sent(project_dir, env_bearer):
     """Verify bearer token thực sự đi kèm mỗi request tới endpoint."""
     integ = integ_mod.create_integration(project_dir, {

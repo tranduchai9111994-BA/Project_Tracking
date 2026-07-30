@@ -719,6 +719,77 @@ Detect error: nếu cell raw non-empty nhưng iHRP expect date và không parse
 
 ---
 
+## 🆕 8bis. SSL certificate verification (T35 — Task 1)
+
+Field `auth.verify_ssl` (boolean, default **true**) áp dụng cho tất cả HTTP
+auth method (`form_login`, `basic_auth`, `bearer_token`, `api_key`).
+
+### Khi nào cần bỏ tick?
+
+Chỉ khi server target dùng:
+- **Self-signed cert** — server nội bộ không có cert từ CA public.
+- **Enterprise CA không được máy tin** — VD FIS CA chưa được add vào Windows
+  trust store.
+- **Legacy server** với cert đã expire nhưng chưa kịp renew.
+
+### Rủi ro khi disable
+
+- **MITM attack** — attacker trên network có thể inject cert giả, decrypt
+  toàn bộ traffic (kể cả credential + data).
+- **Không detect được compromised server** — server bị hack, cert đổi →
+  client vẫn kết nối bình thường.
+- **Compliance** — nhiều standard (PCI-DSS, ISO 27001) YÊU CẦU verify SSL.
+
+### Cách bypass an toàn
+
+1. **Ưu tiên đưa CA vào trust store** thay vì bypass:
+   - Windows: `certmgr.msc` → import CA cert vào "Trusted Root".
+   - Python: dùng env var `REQUESTS_CA_BUNDLE=path/to/ca.pem`.
+
+2. **Nếu buộc phải bypass**:
+   - Chỉ dùng cho URL cụ thể (VD `https://ihotel.fis.vn` internal), không
+     dùng cho vendor bên ngoài.
+   - Config self-hosted app **chạy trong LAN nội bộ** (không expose ra
+     internet) — kết hợp T34 Task 2 LAN mode.
+   - Rotate credential định kỳ (mỗi 3 tháng).
+   - Không lưu credential nhạy cảm (VD DB admin) qua API bypass SSL.
+
+### Cấu hình
+
+**Trong UI**:
+1. Mở API Registry modal → chọn integration → tab "Chỉnh sửa".
+2. Bên dưới dropdown "Auth method" — tick/bỏ tick checkbox
+   **"Verify SSL certificate"**.
+3. Bỏ tick → hiện warning đỏ:
+   `⚠️ CHỈ dùng cho server nội bộ tin cậy — không dùng cho internet public (nguy cơ MITM).`
+
+**Trong `integrations.json`**:
+```json
+{
+  "auth": {
+    "method": "api_key",
+    "apikey_env": "IHRPTASKDAILY",
+    "apikey_header": "X-API-Key",
+    "verify_ssl": false
+  }
+}
+```
+
+**Backend behavior** (`analyzer/integrations.py::_prepare_authenticated_session`):
+- `session.verify = auth.get("verify_ssl", True)`.
+- Nếu False → `urllib3.disable_warnings(InsecureRequestWarning)` để không
+  spam log mỗi request.
+
+### Test verify
+
+```powershell
+# BƯỚC 1: bỏ tick trong UI → save integration
+# BƯỚC 2: bấm ▶️ Đồng bộ → nếu thành công (không có SSL error) → OK
+# BƯỚC 3: check log app — nên KHÔNG có `InsecureRequestWarning: Unverified HTTPS request...`
+```
+
+---
+
 ## 9. Roadmap (còn lại chưa support)
 
 - `response_type = csv` — Parse CSV (reserve, priority thấp).

@@ -1111,6 +1111,26 @@
                             </label>
                         </div>
 
+                        <!-- ==== SSL verify toggle (áp dụng cho tất cả HTTP method, ẩn cho database) ==== -->
+                        <div id="integSslVerifyWrap" class="mb-2 p-2 border border-orange-200 bg-orange-50 dark:bg-orange-900/10 dark:border-orange-700 rounded">
+                            <label class="flex items-start gap-2 cursor-pointer">
+                                <input id="integVerifySsl" type="checkbox" checked
+                                       onchange="_integOnVerifySslChange()"
+                                       class="mt-0.5">
+                                <div class="flex-1 text-xs">
+                                    <div class="font-semibold text-gray-800 dark:text-gray-100">
+                                        Verify SSL certificate
+                                    </div>
+                                    <div class="text-gray-500 dark:text-gray-400 mt-0.5">
+                                        Mặc định BẬT. Bỏ tick nếu server dùng self-signed cert hoặc CA không được máy tin (VD server nội bộ FIS).
+                                    </div>
+                                    <div id="integSslWarning" class="hidden mt-1 text-orange-700 dark:text-orange-300 font-semibold">
+                                        ⚠️ CHỈ dùng cho server nội bộ tin cậy — không dùng cho internet public (nguy cơ MITM).
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+
                         <!-- ==== form_login fields ==== -->
                         <div id="integAuth-form_login" data-auth-fields class="hidden space-y-2 border-l-2 border-cyan-400 pl-3">
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">

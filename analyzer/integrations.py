@@ -262,6 +262,10 @@ def _sanitize_auth(auth: Any) -> dict:
         db_port = DEFAULT_DB_PORTS.get(db_driver, 0)
     db_database = str(auth.get("db_database") or "").strip()[:200]
 
+    verify_ssl = auth.get("verify_ssl", True)
+    if not isinstance(verify_ssl, bool):
+        verify_ssl = bool(verify_ssl)
+
     return {
         "method": method[:32],
         "login_path": login_path,
@@ -273,6 +277,7 @@ def _sanitize_auth(auth: Any) -> dict:
         "apikey_env": apikey_env,
         "apikey_header": apikey_header,
         "apikey_location": apikey_location,
+        "verify_ssl": verify_ssl,
         # database
         "db_driver": db_driver,
         "db_host": db_host,
@@ -646,8 +651,16 @@ def _prepare_authenticated_session(
         raise ValueError(f"Auth method '{method}' chưa được hỗ trợ.")
 
     session = requests.Session()
+    verify_ssl = bool(auth.get("verify_ssl", True))
+    session.verify = verify_ssl
+    if not verify_ssl:
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:
+            pass
     extra_query: dict[str, str] = {}
-    info: dict[str, Any] = {"method": method}
+    info: dict[str, Any] = {"method": method, "verify_ssl": verify_ssl}
 
     if method == "form_login":
         username, password = resolve_credentials(auth.get("credential_env", ""))
