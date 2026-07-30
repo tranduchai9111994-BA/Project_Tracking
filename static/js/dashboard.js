@@ -9402,6 +9402,25 @@ function _presentCollectSections() {
     return out;
 }
 
+// Mapping section-id → tên function lazy-load (fetch data + render). Chỉ
+// trigger 1 lần / section / phiên trình chiếu (đã ghi vào
+// _presentState.loaded set). Bug T25: section lazy-load không auto-fetch
+// khi enter presentation nếu chưa từng scroll đến → body trắng vì chưa
+// có data render.
+const _PRESENT_LAZY_LOADERS = {
+    "section-gantt-calendar": "loadGanttCalendar",
+    "section-dataquality":    "loadDataQuality",
+    "section-aging-wip":      "loadAgingWip",
+    "section-my-bookmarks":   "loadBookmarks",
+    "section-my-digests":     "loadDigests",
+    "section-kanban":         "loadKanban",
+    "section-burndown":       "loadBurndownAndSLA",
+    "section-sla":            "loadBurndownAndSLA",
+    "section-fitgap-dashboard": "loadFitgapDashboard",
+    "section-function-diff":  "loadFunctionDiff",
+    "section-custom-dashboards": "loadCustomDashboards",
+};
+
 function _presentApplyIndex() {
     const dash = document.getElementById("dashboard");
     if (!dash || !_presentState.sections.length) return;
@@ -9413,7 +9432,8 @@ function _presentApplyIndex() {
         }
         el.classList.add("present-off");
     });
-    const active = document.getElementById(_presentState.sections[_presentState.index]);
+    const activeId = _presentState.sections[_presentState.index];
+    const active = document.getElementById(activeId);
     if (active) {
         active.classList.remove("present-off");
         active.classList.add("present-active");
@@ -9431,6 +9451,65 @@ function _presentApplyIndex() {
             <span class="present-hud-hint">← → điều hướng · Esc thoát</span>
         `;
     }
+    // FIX regression T25 (body trắng):
+    // - Chart.js canvas cần resize() sau khi container display đổi
+    //   (canvas render 0×0 nếu parent lúc init bị 'display:none').
+    // - Section lazy-load (Kanban/Burndown/DQ/Aging/Gantt Calendar/...)
+    //   phải trigger loader ngay khi first shown trong presentation mode.
+    // Dùng 2-tier delay để DOM layout xong trước khi resize (60ms → 200ms).
+    _presentLazyLoad(activeId);
+    setTimeout(() => _presentResizeActive(activeId), 60);
+    setTimeout(() => _presentResizeActive(activeId), 250);
+}
+
+/**
+ * Trigger lazy loader cho 1 section — mỗi section chỉ chạy 1 lần / phiên
+ * trình chiếu (tracked qua Set để tránh re-fetch mỗi lần Next/Prev quay lại).
+ */
+function _presentLazyLoad(sectionId) {
+    if (!sectionId) return;
+    _presentState.loaded = _presentState.loaded || new Set();
+    if (_presentState.loaded.has(sectionId)) return;
+    const fnName = _PRESENT_LAZY_LOADERS[sectionId];
+    if (!fnName) {
+        _presentState.loaded.add(sectionId);
+        return;
+    }
+    const fn = window[fnName];
+    if (typeof fn === "function") {
+        try {
+            const ret = fn();
+            if (ret && typeof ret.then === "function") {
+                ret.then(() => _presentResizeActive(sectionId)).catch(() => {});
+            }
+        } catch (e) {
+            console.warn(`[presentLazyLoad] ${fnName} failed:`, e);
+        }
+    }
+    _presentState.loaded.add(sectionId);
+}
+
+/**
+ * Resize mọi Chart.js instance nằm trong section active. Dùng Chart.getChart()
+ * (Chart.js v3+) để lookup instance từ canvas element — không phụ thuộc
+ * vào registry `chartInstances` (nhiều chart config custom không lưu vào
+ * registry đó).
+ */
+function _presentResizeActive(sectionId) {
+    const active = document.getElementById(sectionId || _presentState.sections[_presentState.index]);
+    if (!active) return;
+    // Resize từng canvas trong section
+    active.querySelectorAll("canvas").forEach(canvas => {
+        try {
+            if (typeof Chart !== "undefined" && Chart.getChart) {
+                const chart = Chart.getChart(canvas);
+                if (chart) chart.resize();
+            }
+        } catch (e) { /* ignore */ }
+    });
+    // Bell fallback: dispatch window resize để catch chart dùng ResizeObserver
+    // hoặc listener riêng (VD Kanban board tính lại column width).
+    try { window.dispatchEvent(new Event("resize")); } catch (_) {}
 }
 
 function _presentGo(delta) {
@@ -9469,6 +9548,7 @@ function _presentEnter() {
     _presentState.active = true;
     _presentState.sections = sections;
     _presentState.index = 0;
+    _presentState.loaded = new Set();  // reset lazy-load tracker mỗi phiên trình chiếu
     _presentState.prevBodyClass = document.body.className;
     document.body.classList.add("presentation-mode");
     _presentEnsureHud();
