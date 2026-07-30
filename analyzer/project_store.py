@@ -187,6 +187,7 @@ def save_saved_views(project_dir: str, views: list[dict]) -> list[dict]:
             "modules": list(v.get("modules") or []),
             "processes": list(v.get("processes") or []),
             "pics": list(v.get("pics") or []),
+            "project_codes": list(v.get("project_codes") or []),
         }
         # Task 4b: optional per-view section_order (nếu view chỉ định layout riêng)
         so = v.get("section_order")
@@ -218,6 +219,7 @@ def upsert_saved_view(project_dir: str, view: dict) -> list[dict]:
         "modules": list(view.get("modules") or []),
         "processes": list(view.get("processes") or []),
         "pics": list(view.get("pics") or []),
+        "project_codes": list(view.get("project_codes") or []),
     }
     so = view.get("section_order")
     if isinstance(so, list):

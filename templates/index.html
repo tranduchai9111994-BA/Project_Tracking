@@ -2022,9 +2022,11 @@
         <section id="section-globalfilter" class="bg-white dashboard-card rounded-xl shadow-md p-4 mb-6 no-print">
             <div class="flex items-center flex-wrap gap-3">
                 <span class="text-sm font-semibold text-gray-700 shrink-0">🎯 Phân tích theo:</span>
+                <div id="globalFilterProjectCode" class="ms-container" data-label="Mã dự án"></div>
                 <div id="globalFilterModule" class="ms-container" data-label="Module"></div>
                 <div id="globalFilterProcess" class="ms-container" data-label="Quy trình"></div>
                 <div id="globalFilterPIC" class="ms-container" data-label="PIC"></div>
+                <div id="globalFilterProjectCode" class="ms-container" data-label="Mã dự án"></div>
                 <!-- Saved views (Phase 3): ẩn cho đến khi wire xong FE để tránh
                      ReferenceError khi click. Bỏ hidden khi implement xong. -->
                 <div id="savedViewsWrap" class="hidden flex items-center gap-2">
@@ -2059,7 +2061,7 @@
                  class="hidden mt-3 bg-amber-50 border-l-4 border-amber-500 text-amber-900 px-4 py-3 rounded">
                 <div class="font-semibold">⚠️ Không có function nào khớp bộ lọc này</div>
                 <div class="text-xs mt-1">
-                    Combination Module + Quy trình + PIC có thể không tồn tại trong dữ liệu.
+                    Combination Mã dự án + Module + Quy trình + PIC có thể không tồn tại trong dữ liệu.
                     Thử bỏ bớt điều kiện hoặc
                     <a href="#" class="underline font-semibold" onclick="clearGlobalFilters(); return false;">bỏ tất cả bộ lọc</a>.
                 </div>

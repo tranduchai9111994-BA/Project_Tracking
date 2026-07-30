@@ -10,6 +10,15 @@ from parser.excel_parser import ParsedData, FunctionRow, PhaseData
 from analyzer.overdue import is_phase_overdue, row_has_overdue
 
 
+def _project_codes_from_rows(data: ParsedData) -> list[str]:
+    """Unique Mã dự án từ rows — fallback khi pickle cũ chưa có all_project_codes."""
+    return sorted({
+        str(r.meta.get("ma_du_an", "")).strip()
+        for r in data.rows
+        if r.meta.get("ma_du_an") and str(r.meta.get("ma_du_an")).strip()
+    })
+
+
 class DashboardEngine:
     """Tính toán các dashboard metrics."""
 
@@ -104,6 +113,7 @@ class DashboardEngine:
             "all_complexities": data.all_complexities,
             "all_giai_doan": data.all_giai_doan,
             "all_processes": data.all_processes,
+            "all_project_codes": list(getattr(data, "all_project_codes", None) or _project_codes_from_rows(data)),
             "all_fit_gap": sorted(all_fit_gap),
             "processes_by_module": processes_by_module_sorted,
             "pics_by_module": pics_by_module_sorted,

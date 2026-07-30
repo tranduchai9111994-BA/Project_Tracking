@@ -133,6 +133,7 @@ class ParsedData:
     all_complexities: list[str] = field(default_factory=list)
     all_giai_doan: list[str] = field(default_factory=list)
     all_processes: list[str] = field(default_factory=list)  # danh sách Quy trình
+    all_project_codes: list[str] = field(default_factory=list)  # Mã dự án (meta.ma_du_an)
 
     # Data-quality log: các token PIC bị blacklist khi parse.
     # Mỗi entry: {row_index, phase_name, header_text, raw_value, matched_keyword,
@@ -191,6 +192,7 @@ class FunctionListParser:
                 headers={}, meta_columns={}, phase_groups=[], rows=[],
                 all_modules=[], all_phases=[], all_pics=[], all_statuses=[],
                 all_priorities=[], all_complexities=[], all_giai_doan=[],
+                all_processes=[], all_project_codes=[],
             )
 
         # 1. Row 1 = headers → dict {header_text: col_index 1-based}
@@ -230,6 +232,11 @@ class FunctionListParser:
         all_complexities = sorted({r.meta.get("complexity", "") for r in rows if r.meta.get("complexity")})
         all_giai_doan = sorted({str(r.meta.get("giai_doan", "")) for r in rows if r.meta.get("giai_doan")})
         all_processes = sorted({r.meta.get("quy_trinh", "") for r in rows if r.meta.get("quy_trinh")})
+        all_project_codes = sorted({
+            str(r.meta.get("ma_du_an", "")).strip()
+            for r in rows
+            if r.meta.get("ma_du_an") and str(r.meta.get("ma_du_an")).strip()
+        })
 
         pics_set = set()
         statuses_set = set()
@@ -255,6 +262,7 @@ class FunctionListParser:
             pic_blacklisted=pic_blacklisted,
             estimate_mh_rejected=estimate_mh_rejected,
             all_processes=all_processes,
+            all_project_codes=all_project_codes,
         )
 
     # ------------------------------------------------------------------

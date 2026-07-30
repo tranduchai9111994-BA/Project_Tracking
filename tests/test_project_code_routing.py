@@ -115,8 +115,50 @@ def test_ma_du_an_meta_detect(tmp_path):
     ws.title = "Function List"
     ws.append(["Mã CN", "Tên chức năng", "Module", "Mã dự án", "Analysis - Status"])
     ws.append(["X.01", "Test", "TMS", "MPHG_IHRP_2025_PM", "Closed"])
+    ws.append(["X.02", "Test2", "HR", "OTHER_CODE", "Open"])
     wb.save(path)
 
     parsed = FunctionListParser().parse(str(path))
     assert parsed.meta_columns.get("ma_du_an") is not None
     assert parsed.rows[0].meta.get("ma_du_an") == "MPHG_IHRP_2025_PM"
+    assert parsed.all_project_codes == ["MPHG_IHRP_2025_PM", "OTHER_CODE"]
+
+
+def test_filter_by_project_codes(tmp_path):
+    """_filter_parsed_data cắt rows theo meta.ma_du_an."""
+    import openpyxl
+    from app import _filter_parsed_data
+    from parser.excel_parser import FunctionListParser
+
+    path = tmp_path / "fl2.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Function List"
+    ws.append(["Mã CN", "Tên chức năng", "Module", "Mã dự án", "Analysis - Status"])
+    ws.append(["A.01", "A", "TMS", "MPHG_IHRP_2025_PM", "Closed"])
+    ws.append(["B.01", "B", "HR", "OTHER_CODE", "Open"])
+    ws.append(["C.01", "C", "PR", "MPHG_IHRP_2025_PM", "Open"])
+    wb.save(path)
+
+    parsed = FunctionListParser().parse(str(path))
+    filtered = _filter_parsed_data(parsed, project_codes=["MPHG_IHRP_2025_PM"])
+    assert len(filtered.rows) == 2
+    assert filtered.all_project_codes == ["MPHG_IHRP_2025_PM"]
+    assert all(r.meta.get("ma_du_an") == "MPHG_IHRP_2025_PM" for r in filtered.rows)
+
+
+def test_structure_includes_all_project_codes(tmp_path):
+    import openpyxl
+    from analyzer.dashboard_engine import DashboardEngine
+    from parser.excel_parser import FunctionListParser
+
+    path = tmp_path / "fl3.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Function List"
+    ws.append(["Mã CN", "Tên chức năng", "Module", "Mã dự án", "Analysis - Status"])
+    ws.append(["A.01", "A", "TMS", "CODE_A", "Closed"])
+    wb.save(path)
+    parsed = FunctionListParser().parse(str(path))
+    metrics = DashboardEngine().compute_all(parsed)
+    assert metrics["structure"]["all_project_codes"] == ["CODE_A"]

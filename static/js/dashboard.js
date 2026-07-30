@@ -24,7 +24,7 @@ let allProjects = [];
 // V3.1 → Wave 2: Global filter multi-select (Module / Quy trình / PIC)
 // Áp cho toàn bộ dashboard — khi user chọn, gọi lại /dashboard?module=A,B&process=X&pic=Y
 // Semantics: OR trong 1 chiều, AND giữa các chiều (backend xử lý).
-let globalFilters = { modules: [], processes: [], pics: [] };
+let globalFilters = { modules: [], processes: [], pics: [], projectCodes: [] };
 let structureCache = null;  // cache all_modules, all_processes, all_pics từ lần load không filter đầu tiên
 // Registry của multi-select instance để có thể set/refresh options từ bên ngoài
 const _msInstances = {};
@@ -278,7 +278,7 @@ async function tryLoadDashboardForCurrent(preserveFilters = false) {
     try {
         // Reset filters khi switch project (trừ trường hợp refresh cùng project)
         if (!preserveFilters) {
-            globalFilters = { modules: [], processes: [], pics: [] };
+            globalFilters = { modules: [], processes: [], pics: [], projectCodes: [] };
         }
         const url = _buildDashboardUrl();
         let data;
@@ -305,6 +305,7 @@ function _buildDashboardUrl() {
     if (globalFilters.modules.length) params.set("module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) params.set("process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) params.set("pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
     const qs = params.toString();
     return `/api/projects/${currentProjectSlug}/dashboard${qs ? "?" + qs : ""}`;
 }
@@ -383,6 +384,7 @@ function applyDashboardResponse(data) {
                 all_modules: data.metrics.structure.all_modules || [],
                 all_processes: data.metrics.structure.all_processes || [],
                 all_pics: data.metrics.structure.all_pics || [],
+                all_project_codes: data.metrics.structure.all_project_codes || [],
                 processes_by_module: data.metrics.structure.processes_by_module || {},
                 pics_by_module: data.metrics.structure.pics_by_module || {},
             };
@@ -715,6 +717,7 @@ function populateGlobalFilters(appliedFilter) {
         all_modules: metricsData.structure.all_modules || [],
         all_processes: metricsData.structure.all_processes || [],
         all_pics: metricsData.structure.all_pics || [],
+        all_project_codes: metricsData.structure.all_project_codes || [],
         processes_by_module: metricsData.structure.processes_by_module || {},
     };
 
@@ -777,6 +780,24 @@ function populateGlobalFilters(appliedFilter) {
         _refreshPicOptions();
     }
 
+    if (!_msInstances.projectCodes) {
+        createMultiSelect({
+            el: "#globalFilterProjectCode",
+            key: "projectCodes",
+            label: "Mã dự án",
+            options: s.all_project_codes || [],
+            selected: globalFilters.projectCodes,
+            allText: "Tất cả mã dự án",
+            onChange: (arr) => {
+                globalFilters.projectCodes = arr;
+                onGlobalFilterChange();
+            },
+        });
+    } else {
+        _msInstances.projectCodes.setOptions(s.all_project_codes || [], /*dropInvalid=*/false);
+        _msInstances.projectCodes.setSelected(globalFilters.projectCodes, /*silent=*/true);
+    }
+
     // Update banner status
     const status = document.getElementById("globalFilterStatus");
     const clearBtn = document.getElementById("globalFilterClear");
@@ -790,6 +811,9 @@ function populateGlobalFilters(appliedFilter) {
         }
         if (appliedFilter.pics && appliedFilter.pics.length) {
             parts.push(`PIC: <b>${appliedFilter.pics.map(escapeHtml).join(", ")}</b>`);
+        }
+        if (appliedFilter.project_codes && appliedFilter.project_codes.length) {
+            parts.push(`Mã dự án: <b>${appliedFilter.project_codes.map(escapeHtml).join(", ")}</b>`);
         }
         status.innerHTML = `🎯 Đang lọc → ${parts.join(" · ")} · <b>${appliedFilter.row_count}</b> function`;
         clearBtn.classList.remove("hidden");
@@ -895,11 +919,12 @@ async function _doGlobalFilterFetch() {
 }
 
 function clearGlobalFilters() {
-    globalFilters = { modules: [], processes: [], pics: [] };
-    // Reset UI + trigger 1 lần fetch (setSelected silent để tránh 3 lần fetch)
+    globalFilters = { modules: [], processes: [], pics: [], projectCodes: [] };
+    // Reset UI + trigger 1 lần fetch (setSelected silent để tránh nhiều lần fetch)
     if (_msInstances.modules) _msInstances.modules.setSelected([], /*silent=*/true);
     if (_msInstances.processes) _msInstances.processes.setSelected([], /*silent=*/true);
     if (_msInstances.pics) _msInstances.pics.setSelected([], /*silent=*/true);
+    if (_msInstances.projectCodes) _msInstances.projectCodes.setSelected([], /*silent=*/true);
     // Rebuild lại full options cho Quy trình + PIC (không còn module lọc)
     _refreshProcessOptions();
     _refreshPicOptions();
@@ -966,6 +991,9 @@ function _buildScopeLabel(appliedFilter) {
     if (appliedFilter.pics && appliedFilter.pics.length) {
         parts.push(`PIC = [${fmt(appliedFilter.pics)}]`);
     }
+    if (appliedFilter.project_codes && appliedFilter.project_codes.length) {
+        parts.push(`Mã dự án = [${fmt(appliedFilter.project_codes)}]`);
+    }
     if (parts.length === 0) return "📂 Toàn bộ dữ liệu (chưa lọc)";
     return `🔍 Đang lọc: ${parts.join(" · ")} → <b>${appliedFilter.row_count}</b> function`;
 }
@@ -983,6 +1011,9 @@ function _buildScopeTitleFull(appliedFilter) {
     }
     if (appliedFilter.pics && appliedFilter.pics.length) {
         parts.push(`PIC = [${fmt(appliedFilter.pics)}]`);
+    }
+    if (appliedFilter.project_codes && appliedFilter.project_codes.length) {
+        parts.push(`Mã dự án = [${fmt(appliedFilter.project_codes)}]`);
     }
     if (parts.length === 0) return "Toàn bộ dữ liệu (chưa lọc)";
     return `Đang lọc: ${parts.join(" · ")} → ${appliedFilter.row_count} function`;
@@ -2232,6 +2263,7 @@ window.setMatrixGroupBy = async function (gb, force = false) {
         (globalFilters.modules || []).forEach(v => url.searchParams.append("module", v));
         (globalFilters.processes || []).forEach(v => url.searchParams.append("process", v));
         (globalFilters.pics || []).forEach(v => url.searchParams.append("pic", v));
+        (globalFilters.projectCodes || []).forEach(v => url.searchParams.append("g_project", v));
         const r = await fetch(url.toString());
         if (!r.ok) throw new Error(await r.text());
         _matrixCache = await r.json();
@@ -2852,6 +2884,7 @@ async function exportOverdue() {
     if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
     await downloadFile(`/api/projects/${currentProjectSlug}/export-overdue?` + params.toString(), "Overdue_Report.xlsx");
 }
 
@@ -2869,6 +2902,7 @@ async function exportAllIssues() {
     if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
     // Threshold aging WIP — dùng theo current slider nếu có, không thì default 14
     const thr = document.getElementById("agingWipThreshold")?.value;
     if (thr) params.set("threshold", thr);
@@ -3292,6 +3326,7 @@ async function exportStalled() {
     if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
     await downloadFile(
         `/api/projects/${currentProjectSlug}/export-stalled?` + params.toString(),
         "Dinh_Tre_Report.xlsx"
@@ -3790,7 +3825,8 @@ function renderGanttTimeline() {
     const hasActiveFilter = !!(
         globalFilters.modules.length ||
         globalFilters.processes.length ||
-        globalFilters.pics.length
+        globalFilters.pics.length ||
+        globalFilters.projectCodes.length
     );
     // Label header: theo mode
     const groupLabel = _ganttState.groupBy === "process" ? "Quy trình"
@@ -4473,6 +4509,7 @@ async function exportChartData(chartKey) {
     if (globalFilters.modules.length) params.set("module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) params.set("process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) params.set("pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
     await downloadFile(
         `/api/projects/${currentProjectSlug}/export-chart?${params.toString()}`,
         `Chart_${chartKey}.xlsx`
@@ -4494,6 +4531,7 @@ async function exportAuditReport() {
         if (globalFilters.modules.length) params.set("module", globalFilters.modules.join(","));
         if (globalFilters.processes.length) params.set("process", globalFilters.processes.join(","));
         if (globalFilters.pics.length) params.set("pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
     }
     await downloadFile(
         `/api/projects/${currentProjectSlug}/audit-report?${params.toString()}`,
@@ -4525,6 +4563,7 @@ async function exportSection(section) {
         module: globalFilters.modules,
         process: globalFilters.processes,
         pic: globalFilters.pics,
+        g_project: globalFilters.projectCodes,
     };
     try {
         const url = `/api/projects/${currentProjectSlug}/export-${section}`;
@@ -5384,6 +5423,9 @@ async function openDrillDown(chart, filters, titleOverride) {
     if (globalFilters.pics.length) {
         globalFilters.pics.forEach(p => params.append("_g_pic", p));
     }
+    if (globalFilters.projectCodes.length) {
+        globalFilters.projectCodes.forEach(c => params.append("_g_project", c));
+    }
     const qs = params.toString();
     try {
         const res = await fetch(`/api/projects/${currentProjectSlug}/drill-down?${qs}`);
@@ -5404,6 +5446,7 @@ async function openDrillDown(chart, filters, titleOverride) {
         if (globalFilters.modules.length) gfParts.push(`Module=[${globalFilters.modules.join(",")}]`);
         if (globalFilters.processes.length) gfParts.push(`Quy trình=[${globalFilters.processes.map(p => p.split(/[-–]/)[0].trim()).join(",")}]`);
         if (globalFilters.pics.length) gfParts.push(`PIC=[${globalFilters.pics.join(",")}]`);
+        if (globalFilters.projectCodes.length) gfParts.push(`MãDA=[${globalFilters.projectCodes.join(",")}]`);
         const gfStr = gfParts.length ? ` · 🌐 Global: ${gfParts.join(" · ")}` : "";
         document.getElementById("drillSubtitle").textContent =
             `Chart: ${chart} · Project: ${currentProjectSlug} · Chart filter: ${JSON.stringify(filters)}${gfStr}`;
@@ -5704,6 +5747,7 @@ async function exportDrillDown() {
                     modules: globalFilters.modules,
                     processes: globalFilters.processes,
                     pics: globalFilters.pics,
+        project_codes: globalFilters.projectCodes,
                 },
             }),
         });
@@ -6912,6 +6956,7 @@ function _buildFilterQuery() {
     if (globalFilters.modules.length) p.set("module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) p.set("process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) p.set("pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) p.set("g_project", globalFilters.projectCodes.join(","));
     return p.toString();
 }
 
@@ -7044,6 +7089,7 @@ async function loadFitgapDashboard() {
     if (globalFilters.modules.length) qs.set("module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) qs.set("process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) qs.set("pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) qs.set("g_project", globalFilters.projectCodes.join(","));
 
     try {
         const url = `/api/projects/${currentProjectSlug}/fitgap-analytics?${qs.toString()}`;
@@ -7509,6 +7555,7 @@ async function exportFitgapReport() {
                 module: globalFilters.modules,
                 process: globalFilters.processes,
                 pic: globalFilters.pics,
+        g_project: globalFilters.projectCodes,
             }),
         });
         if (!r.ok) {
@@ -7965,10 +8012,12 @@ window.applySavedView = function (viewId) {
         modules: [...(v.modules || [])],
         processes: [...(v.processes || [])],
         pics: [...(v.pics || [])],
+        projectCodes: [...(v.project_codes || v.projectCodes || [])],
     };
     if (_msInstances.modules) _msInstances.modules.setSelected(globalFilters.modules, true);
     if (_msInstances.processes) _msInstances.processes.setSelected(globalFilters.processes, true);
     if (_msInstances.pics) _msInstances.pics.setSelected(globalFilters.pics, true);
+    if (_msInstances.projectCodes) _msInstances.projectCodes.setSelected(globalFilters.projectCodes, true);
     _refreshProcessOptions();
     _refreshPicOptions();
     onGlobalFilterChange();
@@ -8000,6 +8049,7 @@ window.saveCurrentView = async function () {
         modules: globalFilters.modules,
         processes: globalFilters.processes,
         pics: globalFilters.pics,
+        project_codes: globalFilters.projectCodes,
         // Task 4b: kèm section_order hiện tại vào view (nếu user đã customize)
         section_order: _readCurrentSectionOrderFromDom(),
         // Task 6: kèm chart_configs hiện tại vào view — cho phép mỗi view có
@@ -8059,6 +8109,7 @@ function _readDeepLinkFromUrl() {
     out.modules = list("modules");
     out.processes = list("processes");
     out.pics = list("pics");
+    out.projectCodes = list("project_codes");
     out.view = p.get("view");
     return out;
 }
@@ -8073,6 +8124,7 @@ function _updateDeepLink() {
     setOrDel("modules", globalFilters.modules);
     setOrDel("processes", globalFilters.processes);
     setOrDel("pics", globalFilters.pics);
+    setOrDel("project_codes", globalFilters.projectCodes);
     const qs = p.toString();
     const newUrl = location.pathname + (qs ? "?" + qs : "");
     history.replaceState(null, "", newUrl);
@@ -8083,22 +8135,25 @@ function _updateDeepLink() {
 // Apply deep-link filters sau khi load xong dashboard đầu tiên
 document.addEventListener("DOMContentLoaded", () => {
     const dl = _readDeepLinkFromUrl();
-    if (!dl.modules.length && !dl.processes.length && !dl.pics.length && !dl.view) return;
+    if (!dl.modules.length && !dl.processes.length && !dl.pics.length
+            && !dl.projectCodes.length && !dl.view) return;
     // Delay để chờ switchProject + populateGlobalFilters chạy xong
     setTimeout(() => {
         if (dl.view && _savedViewsCache.length) {
             window.applySavedView(dl.view);
             return;
         }
-        if (dl.modules.length || dl.processes.length || dl.pics.length) {
+        if (dl.modules.length || dl.processes.length || dl.pics.length || dl.projectCodes.length) {
             globalFilters = {
                 modules: dl.modules,
                 processes: dl.processes,
                 pics: dl.pics,
+                projectCodes: dl.projectCodes,
             };
             if (_msInstances.modules) _msInstances.modules.setSelected(dl.modules, true);
             if (_msInstances.processes) _msInstances.processes.setSelected(dl.processes, true);
             if (_msInstances.pics) _msInstances.pics.setSelected(dl.pics, true);
+            if (_msInstances.projectCodes) _msInstances.projectCodes.setSelected(dl.projectCodes, true);
             onGlobalFilterChange();
         }
     }, 800);
@@ -8136,6 +8191,7 @@ async function loadKanban() {
     mergeArray(globalFilters?.processes, _msInstances.kanbanProcess?.getSelected?.() || [], "process");
     const localPic = document.getElementById("kanbanFilterPic")?.value?.trim();
     mergeArray(globalFilters?.pics, localPic ? [localPic] : [], "pic");
+    mergeArray(globalFilters?.projectCodes, [], "g_project");
 
     const role = document.getElementById("kanbanFilterRole")?.value;
     if (role) params.set("role", role);
@@ -9221,6 +9277,7 @@ function _pdfPresetSuffix() {
  */
 function _pdfFilterSubtitle() {
     const parts = [];
+    if (globalFilters.projectCodes?.length) parts.push(`Mã dự án: ${globalFilters.projectCodes.join(", ")}`);
     if (globalFilters.modules?.length) parts.push(`Module: ${globalFilters.modules.join(", ")}`);
     if (globalFilters.processes?.length) parts.push(`Quy trình: ${globalFilters.processes.slice(0, 3).join(", ")}` +
         (globalFilters.processes.length > 3 ? ` +${globalFilters.processes.length - 3}` : ""));
@@ -10865,6 +10922,9 @@ window.exportDataQuality = function () {
         if (globalFilters.pics && globalFilters.pics.length) {
             p.set("pic", globalFilters.pics.join(","));
         }
+        if (globalFilters.projectCodes && globalFilters.projectCodes.length) {
+            p.set("g_project", globalFilters.projectCodes.join(","));
+        }
     }
     const qs = p.toString();
     const url = `/api/projects/${currentProjectSlug}/export-data-quality${qs ? "?" + qs : ""}`;
@@ -11049,7 +11109,7 @@ const _cmdState = {
 
 const _CMD_ACTIONS = [
     { id: "act.reset-filter", label: "🔄 Reset tất cả filter global", kind: "action",
-      run: () => { globalFilters = { modules: [], processes: [], pics: [] };
+      run: () => { globalFilters = { modules: [], processes: [], pics: [], projectCodes: [] };
                    tryLoadDashboardForCurrent(true);
                    showToast("Đã reset filter"); } },
     { id: "act.export-pdf", label: "📄 Xuất PDF báo cáo tuần", kind: "action",

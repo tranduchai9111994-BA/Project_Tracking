@@ -352,23 +352,26 @@ def _filter_parsed_data(
     modules: Optional[list[str]] = None,
     processes: Optional[list[str]] = None,
     pics: Optional[list[str]] = None,
+    project_codes: Optional[list[str]] = None,
     # Backward compat: 2 kwargs cũ (single string) — Wave 1 API + tests cũ
     module: str = "",
     process: str = "",
 ):
     """
-    Tạo bản sao ParsedData chỉ chứa rows match module/process/pic filter.
+    Tạo bản sao ParsedData chỉ chứa rows match module/process/pic/project_code filter.
 
     Semantics:
     - OR trong 1 chiều filter (VD: modules=[A,B] → module ∈ {A,B})
-    - AND giữa các chiều (modules AND processes AND pics)
+    - AND giữa các chiều (modules AND processes AND pics AND project_codes)
     - PIC match: row match nếu BẤT KỲ phase nào của row có PIC ∈ pics
+    - project_codes: match meta.ma_du_an
 
     Args:
         data: ParsedData gốc
         modules: list module cần lọc (None/empty = không lọc chiều này)
         processes: list quy trình cần lọc
         pics: list PIC cần lọc
+        project_codes: list Mã dự án cần lọc
         module, process: legacy single-value (Wave 1) — auto convert sang list
 
     Returns:
@@ -384,13 +387,15 @@ def _filter_parsed_data(
     if process:
         proc_list.append(process)
     pic_list = list(pics) if pics else []
+    pc_list = list(project_codes) if project_codes else []
 
     # Dedupe + loại rỗng
     mod_set = {m for m in mod_list if m}
     proc_set = {p for p in proc_list if p}
     pic_set = {p for p in pic_list if p}
+    pc_set = {p for p in pc_list if p}
 
-    if not mod_set and not proc_set and not pic_set:
+    if not mod_set and not proc_set and not pic_set and not pc_set:
         return data  # short-circuit — không lọc
 
     def _match(row) -> bool:
@@ -399,6 +404,10 @@ def _filter_parsed_data(
             return False
         if proc_set and row.meta.get("quy_trinh", "") not in proc_set:
             return False
+        if pc_set:
+            code = str(row.meta.get("ma_du_an") or "").strip()
+            if code not in pc_set:
+                return False
         if pic_set:
             # Row match nếu có ÍT NHẤT 1 phase chứa ÍT NHẤT 1 PIC thuộc pic_set
             row_pics = set()
@@ -419,6 +428,11 @@ def _filter_parsed_data(
     all_complexities = sorted({r.meta.get("complexity", "") for r in filtered_rows if r.meta.get("complexity")})
     all_giai_doan = sorted({str(r.meta.get("giai_doan", "")) for r in filtered_rows if r.meta.get("giai_doan")})
     all_processes = sorted({r.meta.get("quy_trinh", "") for r in filtered_rows if r.meta.get("quy_trinh")})
+    all_project_codes = sorted({
+        str(r.meta.get("ma_du_an", "")).strip()
+        for r in filtered_rows
+        if r.meta.get("ma_du_an") and str(r.meta.get("ma_du_an")).strip()
+    })
 
     pics_out = set()
     statuses_set = set()
@@ -441,6 +455,7 @@ def _filter_parsed_data(
         all_complexities=all_complexities,
         all_giai_doan=all_giai_doan,
         all_processes=all_processes,
+        all_project_codes=all_project_codes,
         # Giữ data-quality log nhưng chỉ entry thuộc rows còn lại sau filter
         pic_blacklisted=_filter_dq_log(
             getattr(data, "pic_blacklisted", []) or [], filtered_rows
@@ -1084,23 +1099,75 @@ def _parse_multi_arg(name: str) -> list[str]:
     return result
 
 
+def _parse_project_code_args() -> list[str]:
+    """
+    Đọc Mã dự án từ query — alias theo thứ tự ưu tiên:
+    g_project / g_ma_du_an / g_project_code / project_code / ma_du_an / project.
+    """
+    for key in (
+        "g_project",
+        "g_ma_du_an",
+        "g_project_code",
+        "project_code",
+        "ma_du_an",
+        "project",
+    ):
+        vals = _parse_multi_arg(key)
+        if vals:
+            return vals
+    return []
+
+
+def _project_codes_from_body(body: dict) -> list[str]:
+    """Đọc Mã dự án từ POST JSON body (nhiều alias)."""
+    if not body:
+        return []
+
+    def _as_list(val) -> list[str]:
+        if not val:
+            return []
+        if isinstance(val, list):
+            out: list[str] = []
+            for it in val:
+                out.extend(_as_list(it))
+            return out
+        return [x.strip() for x in str(val).split(",") if x.strip()]
+
+    for key in (
+        "g_project",
+        "g_ma_du_an",
+        "g_project_code",
+        "g_project_codes",
+        "project_codes",
+        "project_code",
+        "ma_du_an",
+        "project",
+    ):
+        vals = _as_list(body.get(key))
+        if vals:
+            return vals
+    return []
+
+
 @app.route("/api/projects/<slug>/dashboard")
 def dashboard_of_project(slug):
     st, err = _need_state(slug)
     if err:
         return err
 
-    # Global filter (module / quy trình / pic) — multi-value, comma-separated hoặc repeated
+    # Global filter (module / quy trình / pic / mã dự án) — multi-value
     fmodules = _parse_multi_arg("module")
     fprocesses = _parse_multi_arg("process")
     fpics = _parse_multi_arg("pic")
+    fproject_codes = _parse_project_code_args()
 
-    if fmodules or fprocesses or fpics:
+    if fmodules or fprocesses or fpics or fproject_codes:
         filtered_data = _filter_parsed_data(
             st["data"],
             modules=fmodules,
             processes=fprocesses,
             pics=fpics,
+            project_codes=fproject_codes,
         )
         engine = DashboardEngine()
         metrics = engine.compute_all(filtered_data)
@@ -1108,6 +1175,7 @@ def dashboard_of_project(slug):
             "modules": fmodules,
             "processes": fprocesses,
             "pics": fpics,
+            "project_codes": fproject_codes,
             "row_count": len(filtered_data.rows),
         }
     else:
@@ -1318,7 +1386,7 @@ def drill_down_endpoint(slug=None):
 
 
 def _apply_global_filter_from_request(data, source):
-    """Đọc _g_module / _g_process / _g_pic từ query string hoặc dict → apply _filter_parsed_data."""
+    """Đọc _g_module / _g_process / _g_pic / _g_project* → apply _filter_parsed_data."""
     def _mv(key: str) -> list[str]:
         # Hỗ trợ cả query args (getlist) lẫn plain dict (comma-split)
         if hasattr(source, "getlist"):
@@ -1337,13 +1405,19 @@ def _apply_global_filter_from_request(data, source):
     g_modules = _mv("_g_module")
     g_processes = _mv("_g_process")
     g_pics = _mv("_g_pic")
-    if not (g_modules or g_processes or g_pics):
+    g_project_codes = (
+        _mv("_g_project")
+        or _mv("_g_ma_du_an")
+        or _mv("_g_project_code")
+    )
+    if not (g_modules or g_processes or g_pics or g_project_codes):
         return data
     return _filter_parsed_data(
         data,
         modules=g_modules,
         processes=g_processes,
         pics=g_pics,
+        project_codes=g_project_codes,
     )
 
 
@@ -1376,6 +1450,7 @@ def drill_down_export(slug=None):
         "_g_module": gf.get("modules", []),
         "_g_process": gf.get("processes", []),
         "_g_pic": gf.get("pics", []),
+        "_g_project": gf.get("project_codes", []) or gf.get("projectCodes", []) or gf.get("g_project", []),
     })
     try:
         items = drill_down_fn(data_scoped, chart, filters)
@@ -1575,6 +1650,7 @@ def export_overdue(slug=None):
         g_modules = _as_list(body.get("g_module") or body.get("g_modules"))
         g_processes = _as_list(body.get("g_process") or body.get("g_processes"))
         g_pics = _as_list(body.get("g_pic") or body.get("g_pics"))
+        g_project_codes = _project_codes_from_body(body)
     else:
         filters = {
             "module": request.args.get("module"),
@@ -1584,17 +1660,19 @@ def export_overdue(slug=None):
         g_modules = _parse_multi_arg("g_module")
         g_processes = _parse_multi_arg("g_process")
         g_pics = _parse_multi_arg("g_pic")
+        g_project_codes = _parse_project_code_args()
 
     filters = {k: v for k, v in filters.items() if v}
 
     try:
         # Bước 1: apply global filter → recompute overdue_list nếu có
-        if g_modules or g_processes or g_pics:
+        if g_modules or g_processes or g_pics or g_project_codes:
             filtered_data = _filter_parsed_data(
                 st["data"],
                 modules=g_modules,
                 processes=g_processes,
                 pics=g_pics,
+                project_codes=g_project_codes,
             )
             overdue_list = DashboardEngine().compute_all(filtered_data).get(
                 "overdue_list", []
@@ -1648,21 +1726,24 @@ def export_stalled(slug=None):
         g_modules = _as_list(body.get("g_module") or body.get("g_modules"))
         g_processes = _as_list(body.get("g_process") or body.get("g_processes"))
         g_pics = _as_list(body.get("g_pic") or body.get("g_pics"))
+        g_project_codes = _project_codes_from_body(body)
     else:
         filters = {"module": request.args.get("module")}
         g_modules = _parse_multi_arg("g_module")
         g_processes = _parse_multi_arg("g_process")
         g_pics = _parse_multi_arg("g_pic")
+        g_project_codes = _parse_project_code_args()
 
     filters = {k: v for k, v in filters.items() if v}
 
     try:
-        if g_modules or g_processes or g_pics:
+        if g_modules or g_processes or g_pics or g_project_codes:
             filtered_data = _filter_parsed_data(
                 st["data"],
                 modules=g_modules,
                 processes=g_processes,
                 pics=g_pics,
+                project_codes=g_project_codes,
             )
             stalled_items = (
                 DashboardEngine().compute_all(filtered_data)
@@ -1744,6 +1825,7 @@ def project_export_all_issues(slug: str):
         fmodules = body.get("g_module") or body.get("modules") or []
         fprocesses = body.get("g_process") or body.get("processes") or []
         fpics = body.get("g_pic") or body.get("pics") or []
+        fproject_codes = _project_codes_from_body(body)
         threshold = body.get("threshold") or 14
         if isinstance(fmodules, str):
             fmodules = [x.strip() for x in fmodules.split(",") if x.strip()]
@@ -1755,6 +1837,7 @@ def project_export_all_issues(slug: str):
         fmodules = _parse_multi_arg("g_module") or _parse_multi_arg("module")
         fprocesses = _parse_multi_arg("g_process") or _parse_multi_arg("process")
         fpics = _parse_multi_arg("g_pic") or _parse_multi_arg("pic")
+        fproject_codes = _parse_project_code_args()
         threshold = request.args.get("threshold") or 14
 
     try:
@@ -1764,10 +1847,11 @@ def project_export_all_issues(slug: str):
         threshold = 14
 
     # Apply filter global 1 lần cho toàn bộ compute
-    if fmodules or fprocesses or fpics:
+    if fmodules or fprocesses or fpics or fproject_codes:
         filtered = _filter_parsed_data(
             state["data"],
             modules=fmodules, processes=fprocesses, pics=fpics,
+            project_codes=fproject_codes,
         )
     else:
         filtered = state["data"]
@@ -1828,6 +1912,7 @@ def project_export_all_issues(slug: str):
                 "modules": fmodules,
                 "processes": fprocesses,
                 "pics": fpics,
+                "project_codes": fproject_codes,
             },
             output_dir=_project_mgr.get_export_dir(slug),
         )
@@ -1856,6 +1941,7 @@ def export_chart_endpoint(slug):
         fmodules = body.get("modules") or body.get("module") or []
         fprocesses = body.get("processes") or body.get("process") or []
         fpics = body.get("pics") or body.get("pic") or []
+        fproject_codes = _project_codes_from_body(body)
         if isinstance(fmodules, str):
             fmodules = [x.strip() for x in fmodules.split(",") if x.strip()]
         if isinstance(fprocesses, str):
@@ -1867,6 +1953,7 @@ def export_chart_endpoint(slug):
         fmodules = _parse_multi_arg("module")
         fprocesses = _parse_multi_arg("process")
         fpics = _parse_multi_arg("pic")
+        fproject_codes = _parse_project_code_args()
 
     if not chart:
         return jsonify({"error": "Thiếu tham số chart"}), 400
@@ -1877,14 +1964,16 @@ def export_chart_endpoint(slug):
         }), 400
 
     try:
-        if fmodules or fprocesses or fpics:
+        if fmodules or fprocesses or fpics or fproject_codes:
             filtered = _filter_parsed_data(
                 st["data"], modules=fmodules, processes=fprocesses, pics=fpics,
+                project_codes=fproject_codes,
             )
             metrics = DashboardEngine().compute_all(filtered)
             subtitle = (
                 f"Filter: module={fmodules or '-'} · process={fprocesses or '-'} · "
-                f"pic={fpics or '-'} · {len(filtered.rows)} function"
+                f"pic={fpics or '-'} · project_code={fproject_codes or '-'} · "
+                f"{len(filtered.rows)} function"
             )
         else:
             metrics = st["metrics"]
@@ -1921,6 +2010,7 @@ def audit_report_endpoint(slug):
         fmodules = body.get("modules") or body.get("module") or []
         fprocesses = body.get("processes") or body.get("process") or []
         fpics = body.get("pics") or body.get("pic") or []
+        fproject_codes = _project_codes_from_body(body)
         if isinstance(fmodules, str):
             fmodules = [x.strip() for x in fmodules.split(",") if x.strip()]
         if isinstance(fprocesses, str):
@@ -1932,16 +2022,19 @@ def audit_report_endpoint(slug):
         fmodules = _parse_multi_arg("module")
         fprocesses = _parse_multi_arg("process")
         fpics = _parse_multi_arg("pic")
+        fproject_codes = _parse_project_code_args()
 
     try:
-        if scope == "filtered" and (fmodules or fprocesses or fpics):
+        if scope == "filtered" and (fmodules or fprocesses or fpics or fproject_codes):
             data = _filter_parsed_data(
                 st["data"], modules=fmodules, processes=fprocesses, pics=fpics,
+                project_codes=fproject_codes,
             )
             metrics = DashboardEngine().compute_all(data)
             subtitle = (
                 f"Scope: filtered · module={fmodules or '-'} · process={fprocesses or '-'} · "
-                f"pic={fpics or '-'} · {len(data.rows)} function"
+                f"pic={fpics or '-'} · project_code={fproject_codes or '-'} · "
+                f"{len(data.rows)} function"
             )
         else:
             data = st["data"]
@@ -2990,6 +3083,7 @@ def project_phase_matrix(slug: str):
             "modules": _parse_multi_arg("module"),
             "processes": _parse_multi_arg("process"),
             "pics": _parse_multi_arg("pic"),
+            "project_codes": _parse_project_code_args(),
         },
     })
 
@@ -3020,6 +3114,7 @@ def project_module_overview(slug: str):
             "modules": _parse_multi_arg("module"),
             "processes": _parse_multi_arg("process"),
             "pics": _parse_multi_arg("pic"),
+            "project_codes": _parse_project_code_args(),
         },
     })
 
@@ -3556,17 +3651,19 @@ def _require_state(slug: str):
 
 
 def _filtered_data_from_request(state):
-    """Đọc query params (module/process/pic) → return ParsedData đã filter (hoặc gốc nếu không có filter)."""
+    """Đọc query params (module/process/pic/g_project) → ParsedData đã filter."""
     fmodules = _parse_multi_arg("module")
     fprocesses = _parse_multi_arg("process")
     fpics = _parse_multi_arg("pic")
-    if not (fmodules or fprocesses or fpics):
+    fproject_codes = _parse_project_code_args()
+    if not (fmodules or fprocesses or fpics or fproject_codes):
         return state["data"]
     return _filter_parsed_data(
         state["data"],
         modules=fmodules,
         processes=fprocesses,
         pics=fpics,
+        project_codes=fproject_codes,
     )
 
 
@@ -3681,16 +3778,22 @@ def _filter_state_from_body_or_args(state):
     fmods = _as_list(body.get("module") or body.get("modules")) or _parse_multi_arg("module")
     fprocs = _as_list(body.get("process") or body.get("processes")) or _parse_multi_arg("process")
     fpics = _as_list(body.get("pic") or body.get("pics")) or _parse_multi_arg("pic")
+    fpcodes = _project_codes_from_body(body) or _parse_project_code_args()
 
-    if not (fmods or fprocs or fpics):
-        return state["data"], {"modules": [], "processes": [], "pics": []}
+    if not (fmods or fprocs or fpics or fpcodes):
+        return state["data"], {
+            "modules": [], "processes": [], "pics": [], "project_codes": [],
+        }
     filtered = _filter_parsed_data(
         state["data"],
         modules=fmods,
         processes=fprocs,
         pics=fpics,
+        project_codes=fpcodes,
     )
-    return filtered, {"modules": fmods, "processes": fprocs, "pics": fpics}
+    return filtered, {
+        "modules": fmods, "processes": fprocs, "pics": fpics, "project_codes": fpcodes,
+    }
 
 
 @app.route("/api/projects/<slug>/export-sla", methods=["GET", "POST"])
