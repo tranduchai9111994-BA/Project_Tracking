@@ -236,10 +236,10 @@
                     ⚙️ Cài đặt
                 </button>
             </div>
-            <!-- VI/EN language toggle -->
+            <!-- VI/EN language toggle — hiện ngôn ngữ đang chọn (VI / EN) -->
             <button id="btnLangToggle" type="button" onclick="I18n.toggleLang()"
                     class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm font-semibold"
-                    title="Switch language">EN</button>
+                    title="Ngôn ngữ hiện tại: Tiếng Việt — bấm để chuyển sang English">VI</button>
             <button id="btnTheme" onclick="toggleTheme()"
                     class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded text-sm">
                 <span id="themeIcon">🌙</span>
@@ -2090,14 +2090,14 @@
         <!-- ==== SECTION: SUMMARY ====
              Header nhỏ (S1) để gắn nút ? — grid cards giữ id section-summary cho anchor. -->
         <div id="section-summary-header" class="flex items-center gap-2 mb-2">
-            <h3 class="text-base font-semibold text-gray-700 dark:text-gray-200" data-help="section-summary">📋 Tổng quan dự án</h3>
+            <h3 class="text-base font-semibold text-gray-700 dark:text-gray-200" data-help="section-summary" data-i18n="section.summary">📋 Tổng quan dự án</h3>
         </div>
 
         <section id="section-summary" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-blue-500" title="Tổng số chức năng trong file Function List">
                 <div class="text-2xl">📋</div>
                 <div id="cardTotal" class="text-2xl font-bold text-gray-800">0</div>
-                <div class="text-gray-500 text-xs">Tổng chức năng</div>
+                <div class="text-gray-500 text-xs" data-i18n="card.total">Tổng chức năng</div>
                 <div id="cardTotalSub" class="summary-sub"></div>
             </div>
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-green-500 summary-card-clickable"
@@ -2105,7 +2105,7 @@
                  onclick="scrollToSection('section-tasktype')">
                 <div class="text-2xl">✅</div>
                 <div id="cardProgress" class="text-2xl font-bold text-green-600">0%</div>
-                <div class="text-gray-500 text-xs" id="cardProgressLabel">Closed phase cuối</div>
+                <div class="text-gray-500 text-xs" id="cardProgressLabel" data-i18n="card.progress">Closed phase cuối</div>
                 <div id="cardProgressSub" class="summary-sub"></div>
             </div>
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-red-500 summary-card-clickable"
@@ -2116,7 +2116,7 @@
                         title="Xem chi tiết trong modal">🔍</button>
                 <div class="text-2xl">⚠️</div>
                 <div id="cardOverdue" class="text-2xl font-bold text-red-600">0</div>
-                <div class="text-gray-500 text-xs">Function trễ deadline <span id="cardOverdueRecords" class="text-red-400"></span></div>
+                <div class="text-gray-500 text-xs"><span data-i18n="card.overdue">Function trễ deadline</span> <span id="cardOverdueRecords" class="text-red-400"></span></div>
                 <div id="cardOverdueSub" class="summary-sub"></div>
             </div>
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-orange-500 summary-card-clickable"
@@ -2124,7 +2124,7 @@
                  onclick="scrollToSection('section-unassigned')">
                 <div class="text-2xl">🚨</div>
                 <div id="cardUnassigned" class="text-2xl font-bold text-orange-600">0</div>
-                <div class="text-gray-500 text-xs">Function chưa PIC <span id="cardUnassignedRecords" class="text-orange-400"></span></div>
+                <div class="text-gray-500 text-xs"><span data-i18n="card.unassigned">Function chưa PIC</span> <span id="cardUnassignedRecords" class="text-orange-400"></span></div>
                 <div id="cardUnassignedSub" class="summary-sub"></div>
             </div>
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-amber-500 summary-card-clickable"
@@ -2132,7 +2132,7 @@
                  onclick="openMissingDeadlineDrill()">
                 <div class="text-2xl">📅</div>
                 <div id="cardMissingDeadline" class="text-2xl font-bold text-amber-700">0</div>
-                <div class="text-gray-500 text-xs">Chưa cập nhật deadline <span id="cardMissingDeadlineRecords" class="text-amber-500"></span></div>
+                <div class="text-gray-500 text-xs"><span data-i18n="card.missing_deadline">Chưa cập nhật deadline</span> <span id="cardMissingDeadlineRecords" class="text-amber-500"></span></div>
                 <div id="cardMissingDeadlineSub" class="summary-sub"></div>
             </div>
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-rose-500 summary-card-clickable"
@@ -2140,7 +2140,7 @@
                  onclick="scrollToSection('section-risk')">
                 <div class="text-2xl">⚡</div>
                 <div id="cardHighRisk" class="text-2xl font-bold text-rose-600">0</div>
-                <div class="text-gray-500 text-xs">High-risk (≥50 điểm)</div>
+                <div class="text-gray-500 text-xs" data-i18n="card.high_risk">High-risk (≥50 điểm)</div>
                 <div id="cardHighRiskSub" class="summary-sub"></div>
             </div>
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-fuchsia-500 summary-card-clickable"
@@ -2148,20 +2148,20 @@
                  onclick="openAnomalyDrill()">
                 <div class="text-2xl">🚨</div>
                 <div id="cardAnomaly" class="text-2xl font-bold text-fuchsia-700">0</div>
-                <div class="text-gray-500 text-xs" data-i18n="card.anomaly">Bất thường <span id="cardAnomalyRecords" class="text-fuchsia-500"></span></div>
+                <div class="text-gray-500 text-xs"><span data-i18n="card.anomaly">Bất thường</span> <span id="cardAnomalyRecords" class="text-fuchsia-500"></span></div>
                 <div id="cardAnomalySub" class="summary-sub"></div>
             </div>
             <div class="bg-white dashboard-card rounded-xl shadow-md p-4 border-l-4 border-purple-500" title="Tổng số Module (Phân hệ) unique trong file Function List">
                 <div class="text-2xl">📦</div>
                 <div id="cardModules" class="text-2xl font-bold text-purple-600">0</div>
-                <div class="text-gray-500 text-xs">Số Module</div>
+                <div class="text-gray-500 text-xs" data-i18n="card.modules">Số Module</div>
                 <div id="cardModulesSub" class="summary-sub"></div>
             </div>
         </section>
 
         <section id="section-globalfilter" class="bg-white dashboard-card rounded-xl shadow-md p-4 mb-6 no-print">
             <div class="flex items-center flex-wrap gap-3">
-                <span class="text-sm font-semibold text-gray-700 shrink-0">🎯 Phân tích theo:</span>
+                <span class="text-sm font-semibold text-gray-700 shrink-0" data-i18n="filter.analyze_by">🎯 Phân tích theo:</span>
                 <div id="globalFilterProjectCode" class="ms-container" data-label="Mã dự án"></div>
                 <div id="globalFilterModule" class="ms-container" data-label="Module"></div>
                 <button type="button" id="btnModuleOrder"
@@ -2169,6 +2169,8 @@
                         class="shrink-0 px-2 py-1 rounded text-xs border border-slate-300 dark:border-slate-500
                                bg-slate-50 hover:bg-blue-50 dark:bg-slate-700 dark:hover:bg-slate-600
                                text-slate-700 dark:text-slate-100"
+                        data-i18n="filter.module_order"
+                        data-i18n-title="filter.module_order_title"
                         title="Cấu hình số thứ tự Module hiển thị trên toàn dashboard (Settings → Thứ tự Module)">
                     ⚙ Thứ tự
                 </button>
@@ -2180,17 +2182,20 @@
                 <select id="savedViewSelect" onchange="applySavedView(this.value)"
                         class="border rounded px-2 py-1 text-xs bg-white max-w-[160px]"
                         title="View đã lưu">
-                    <option value="">📂 View đã lưu…</option>
+                    <option value="" data-i18n="filter.saved_views">📂 View đã lưu…</option>
                 </select>
                 <button type="button" onclick="saveCurrentView()"
                         class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded text-xs"
+                        data-i18n="filter.save_view"
+                        data-i18n-title="filter.save_view_title"
                         title="Lưu bộ lọc hiện tại">💾 Lưu</button>
                 <button type="button" onclick="deleteCurrentSavedView()"
                         class="bg-gray-400 hover:bg-gray-500 text-white px-2 py-1 rounded text-xs"
                         title="Xóa view đang chọn">🗑</button>
                 </div>
                 <button id="globalFilterClear" onclick="clearGlobalFilters()"
-                        class="hidden bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs shrink-0">
+                        class="hidden bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs shrink-0"
+                        data-i18n="filter.clear_all">
                     ✕ Bỏ tất cả
                 </button>
                 <span id="globalFilterStatus" class="text-xs text-blue-600 font-medium ml-auto"></span>
@@ -2220,7 +2225,7 @@
 
 <section id="section-overdue" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <h3 class="text-lg font-semibold text-red-700" data-help="section-overdue">⚠️ Danh sách trễ deadline</h3>
+                <h3 class="text-lg font-semibold text-red-700" data-help="section-overdue" data-i18n="section.overdue_title">⚠️ Danh sách trễ deadline</h3>
                 <div class="flex flex-wrap gap-2 items-center no-print">
                     <!-- Task 15: Module + Phase multi-select; PIC giữ single-select vì có thể nhiều PIC -->
                     <div id="filterModuleMS" class="text-sm min-w-[150px]"></div>
@@ -2229,7 +2234,8 @@
                     </select>
                     <div id="filterPhaseMS" class="text-sm min-w-[150px]"></div>
                     <button id="btnExport" onclick="exportOverdue()"
-                            class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm">
+                            class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm"
+                            data-i18n="btn.export_excel">
                         📥 Xuất Excel
                     </button>
                 </div>
@@ -2239,15 +2245,15 @@
                         <thead>
                         <tr class="bg-red-800 text-white">
                             <th class="px-2 py-2">#</th>
-                            <th class="px-2 py-2 text-left">Mã CN</th>
-                            <th class="px-2 py-2 text-left">Tên chức năng</th>
-                            <th class="px-2 py-2">Module</th>
-                            <th class="px-2 py-2">Phase</th>
-                            <th class="px-2 py-2">Deadline</th>
-                            <th class="px-2 py-2">Ngày trễ</th>
-                            <th class="px-2 py-2">Status</th>
-                            <th class="px-2 py-2 text-left">PIC</th>
-                            <th class="px-2 py-2">Priority</th>
+                            <th class="px-2 py-2 text-left" data-i18n="th.code">Mã CN</th>
+                            <th class="px-2 py-2 text-left" data-i18n="th.name">Tên chức năng</th>
+                            <th class="px-2 py-2" data-i18n="th.module">Module</th>
+                            <th class="px-2 py-2" data-i18n="th.phase">Phase</th>
+                            <th class="px-2 py-2" data-i18n="th.deadline">Deadline</th>
+                            <th class="px-2 py-2" data-i18n="th.days_late">Ngày trễ</th>
+                            <th class="px-2 py-2" data-i18n="th.status">Status</th>
+                            <th class="px-2 py-2 text-left" data-i18n="th.pic">PIC</th>
+                            <th class="px-2 py-2" data-i18n="th.priority">Priority</th>
                             <th class="px-2 py-2" title="Xem chi tiết">👁</th>
                             </tr>
                         </thead>
