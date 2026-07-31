@@ -35,20 +35,23 @@ from exporter.excel_exporter import (
 )
 from parser.excel_parser import VALID_STATUSES
 
-# Styles MoM — bám mẫu W30 (header #0070C0, section vàng, Times New Roman cho biên bản)
+# Styles MoM — hierarchy mẫu W30:
+#   H1 Title   = navy #1F4E79, trắng, 14pt bold, merge full-width
+#   H2 Section = vàng #FFC000 (hoặc xanh #0070C0 cho "Nội dung"), trắng, 12pt bold
+#   H3 Header  = xanh #0070C0, trắng, 11pt bold, center
 MOM_HEADER_FILL = PatternFill(start_color="0070C0", end_color="0070C0", fill_type="solid")
 MOM_HEADER_FONT = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
 MOM_HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
-TITLE_FONT = Font(name="Segoe UI", bold=True, size=16, color="1F4E79")
+TITLE_FONT = Font(name="Calibri", bold=True, size=16, color="1F4E79")
 TITLE_BAR_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
 TITLE_BAR_FONT = Font(name="Calibri", bold=True, size=14, color="FFFFFF")
 SECTION_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-SECTION_FONT = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
+SECTION_FONT = Font(name="Calibri", bold=True, size=12, color="FFFFFF")
 CONTENT_BAR_FILL = PatternFill(start_color="0070C0", end_color="0070C0", fill_type="solid")
 CONTENT_BAR_FONT = Font(name="Times New Roman", bold=True, size=12, color="FFFFFF")
 NOTE_FONT = Font(name="Times New Roman", italic=True, size=10, color="666666")
 GUIDE_FONT = Font(name="Calibri", size=9, italic=True, color="595959")
-LABEL_FONT = Font(name="Calibri", bold=True, size=11)
+LABEL_FONT = Font(name="Calibri", bold=True, size=11, color="1F4E79")
 META_LABEL_FILL = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 META_VALUE_FONT = Font(name="Times New Roman", size=12, color="0000FF")
 BODY_MOM_FONT = Font(name="Calibri", size=10)
@@ -73,6 +76,7 @@ STATUS_DONE_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_ty
 STATUS_OPEN_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 STATUS_WIP_FILL = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
 KPI_FILL = PatternFill(start_color="E7F3FF", end_color="E7F3FF", fill_type="solid")
+PHASE_HEADER_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 LEFT_TOP = Alignment(horizontal="left", vertical="top", wrap_text=True)
 LEFT_CENTER = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -169,14 +173,14 @@ def _normalize_status(status: Any) -> str:
 
 
 def _style_header_row(ws, row: int, start_col: int, end_col: int) -> None:
-    """Header xanh #0070C0, chữ trắng, center — đồng bộ mẫu W30."""
+    """H3 — table header xanh #0070C0, chữ trắng, center."""
     for c in range(start_col, end_col + 1):
         cell = ws.cell(row=row, column=c)
         cell.font = MOM_HEADER_FONT
         cell.fill = MOM_HEADER_FILL
         cell.alignment = MOM_HEADER_ALIGN
         cell.border = THIN_BORDER
-    ws.row_dimensions[row].height = 22
+    ws.row_dimensions[row].height = 24
 
 
 def _apply_border_row(ws, row: int, start_col: int, end_col: int) -> None:
@@ -189,17 +193,40 @@ def _apply_border_row(ws, row: int, start_col: int, end_col: int) -> None:
             cell.alignment = BODY_ALIGN
 
 
-def _style_title_bar(ws, row: int, title: str, end_col: int) -> None:
-    """Thanh tiêu đề xanh đậm + chữ trắng (Cover / Gantt / Dashboard)."""
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=end_col)
-    cell = ws.cell(row=row, column=1, value=title)
+def _style_title_bar(ws, row: int, title: str, end_col: int, *, start_col: int = 1) -> None:
+    """H1 — thanh tiêu đề navy #1F4E79 + chữ trắng (mọi sheet)."""
+    ws.merge_cells(
+        start_row=row, start_column=start_col, end_row=row, end_column=end_col,
+    )
+    cell = ws.cell(row=row, column=start_col, value=title)
     cell.font = TITLE_BAR_FONT
     cell.fill = TITLE_BAR_FILL
-    cell.alignment = Alignment(horizontal="left", vertical="center")
-    for c in range(1, end_col + 1):
+    cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    for c in range(start_col, end_col + 1):
         ws.cell(row=row, column=c).fill = TITLE_BAR_FILL
         ws.cell(row=row, column=c).border = THIN_BORDER
-    ws.row_dimensions[row].height = 26
+    ws.row_dimensions[row].height = 28
+
+
+def _style_section_bar(
+    ws, row: int, title: str, end_col: int, *, start_col: int = 1, letter: str = "",
+) -> None:
+    """H2 — section vàng #FFC000 (MoM A/B, Risk/Dashboard blocks)."""
+    if letter:
+        ws.cell(row=row, column=start_col, value=letter)
+        ws.cell(row=row, column=start_col + 1, value=title)
+    else:
+        ws.merge_cells(
+            start_row=row, start_column=start_col, end_row=row, end_column=end_col,
+        )
+        ws.cell(row=row, column=start_col, value=title)
+    for c in range(start_col, end_col + 1):
+        cell = ws.cell(row=row, column=c)
+        cell.fill = SECTION_FILL
+        cell.font = SECTION_FONT
+        cell.border = THIN_BORDER
+        cell.alignment = LEFT_CENTER
+    ws.row_dimensions[row].height = 22
 
 
 def _set_print_landscape(ws, *, fit_width: bool = True) -> None:
@@ -482,7 +509,7 @@ def _write_cover(
     meeting_sheet_name: str,
     today: date,
 ) -> None:
-    """Cover sạch kiểu W30: meta + TOC hyperlink, không freeze, tắt grid."""
+    """Cover sạch kiểu W30: H1 title + meta + TOC hyperlink."""
     ws = wb.create_sheet("Cover Page", 0)
     widths = {
         "A": 2, "B": 20, "C": 16, "D": 42, "E": 10, "F": 12,
@@ -493,42 +520,47 @@ def _write_cover(
 
     ws.sheet_view.showGridLines = False
 
-    # Accent line (không dùng title bar đậm full-width)
-    ws.merge_cells("B3:G3")
-    ws["B3"] = "MEETING MINUTES — iHRP Tracker"
-    ws["B3"].font = Font(name="Segoe UI", bold=True, size=12, color="1F4E79")
-    ws["B3"].border = MEDIUM_BOTTOM
-    for c in range(2, 8):
-        ws.cell(row=3, column=c).border = MEDIUM_BOTTOM
+    # H1
+    _style_title_bar(ws, 2, "MEETING MINUTES — iHRP Tracker", 7, start_col=2)
 
-    ws["B5"] = "Project Code:"
-    ws["B5"].font = Font(name="Segoe UI", size=10)
-    ws["C5"] = project_code or NA
-    ws["C5"].font = Font(name="Segoe UI", bold=True, size=12, color="1F4E79")
-    # Giữ C4 tương thích test cũ (một số test đọc C4)
     ws["B4"] = "Project Code"
-    ws["B4"].font = Font(name="Segoe UI", size=10, color="808080")
+    ws["B4"].font = Font(name="Calibri", size=10, color="808080")
+    ws["B4"].fill = META_LABEL_FILL
+    ws["B4"].alignment = LEFT_CENTER
+    ws["B4"].border = THIN_BORDER
     ws["C4"] = project_code or NA
-    ws["C4"].font = Font(name="Segoe UI", bold=True, size=13, color="1F4E79")
+    ws["C4"].font = Font(name="Calibri", bold=True, size=13, color="1F4E79")
+    ws["C4"].alignment = LEFT_CENTER
+    ws["C4"].border = THIN_BORDER
 
     ws["F4"] = "Meeting Minutes Records"
     ws["F4"].font = TITLE_FONT
     ws["F4"].alignment = Alignment(horizontal="right", vertical="center")
     ws.merge_cells("F4:G4")
 
-    ws["B6"] = "Version:"
-    ws["B6"].font = Font(name="Segoe UI", size=10)
-    ws["C6"] = "v1.3 (auto từ iHRP Tracker)"
-    ws["C6"].font = Font(name="Segoe UI", size=10)
+    ws["B5"] = "Version"
+    ws["B5"].font = Font(name="Calibri", size=10, color="808080")
+    ws["B5"].fill = META_LABEL_FILL
+    ws["B5"].alignment = LEFT_CENTER
+    ws["B5"].border = THIN_BORDER
+    ws["C5"] = "v1.4 (auto từ iHRP Tracker)"
+    ws["C5"].font = Font(name="Calibri", size=10)
+    ws["C5"].alignment = LEFT_CENTER
+    ws["C5"].border = THIN_BORDER
 
     ws["E5"] = "Tuần"
     ws["E5"].font = LABEL_FONT
     ws["E5"].fill = META_LABEL_FILL
     ws["E5"].alignment = CENTER
+    ws["E5"].border = THIN_BORDER
     ws["F5"] = week_label
     ws["F5"].font = Font(name="Calibri", bold=True, size=14, color="C00000")
     ws["F5"].alignment = CENTER
     ws["F5"].fill = BANNER_FILL
+    ws["F5"].border = THIN_BORDER
+
+    # H2 mục lục
+    _style_section_bar(ws, 7, "MỤC LỤC BÁO CÁO", 7, start_col=2)
 
     headers = ["Sheet Name", "Date", "Review subject"]
     for i, h in enumerate(headers, 2):
@@ -593,6 +625,8 @@ def _write_master_plan(wb, metrics: dict, parsed_data, today: Optional[date] = N
         ws.column_dimensions[col].width = w
     ws.sheet_view.showGridLines = False
 
+    # H1 + badge cập nhật
+    _style_title_bar(ws, 1, "MASTER PLAN — WBS Module × Phase (Function List)", 8, start_col=2)
     ws["I1"] = "Cập nhật liên tục"
     ws["I1"].font = BANNER_FONT
     ws["I1"].fill = BANNER_FILL
@@ -601,6 +635,8 @@ def _write_master_plan(wb, metrics: dict, parsed_data, today: Optional[date] = N
     ws["I1"].border = THIN_BORDER
     ws["J1"].border = THIN_BORDER
     ws["J1"].fill = BANNER_FILL
+    ws["K1"].fill = TITLE_BAR_FILL
+    ws["K1"].border = THIN_BORDER
 
     ws["B2"] = "STT"
     ws["C2"] = "Công việc"
@@ -630,7 +666,7 @@ def _write_master_plan(wb, metrics: dict, parsed_data, today: Optional[date] = N
             cell.fill = MOM_HEADER_FILL
             cell.alignment = MOM_HEADER_ALIGN
             cell.border = THIN_BORDER
-        ws.row_dimensions[r].height = 20
+        ws.row_dimensions[r].height = 22
 
     master_rows = _build_master_rows(metrics, parsed_data, today=today)
     if not master_rows:
@@ -869,6 +905,13 @@ def _write_mom_sheet(
     next_start = week_start + timedelta(days=7)
     next_end = week_end + timedelta(days=7)
 
+    # H1
+    _style_title_bar(
+        ws, 1,
+        f"BIÊN BẢN HỌP — {sheet_name}  ({week_start.strftime('%d/%m')}–{week_end.strftime('%d/%m/%Y')})",
+        8, start_col=1,
+    )
+
     meta_rows = [
         (2, "Ngày/Date:", today.strftime("%d/%m/%Y"), True),
         (3, "Giờ/Time:", "", False),
@@ -900,12 +943,14 @@ def _write_mom_sheet(
     ws["F2"].alignment = CENTER
     ws.merge_cells("F2:H2")
 
+    # H2 nội dung
     ws.merge_cells("B7:H7")
     ws["B7"] = "Nội dung / Content"
     for c in range(2, 9):
         ws.cell(row=7, column=c).fill = CONTENT_BAR_FILL
         ws.cell(row=7, column=c).border = THIN_BORDER
         ws.cell(row=7, column=c).font = CONTENT_BAR_FONT
+        ws.cell(row=7, column=c).alignment = LEFT_CENTER
     ws.row_dimensions[7].height = 22
 
     headers = ["STT", "Công việc", "PIC", "Ghi chú", "Từ ngày", "Đến ngày", "Tình trạng"]
@@ -914,15 +959,8 @@ def _write_mom_sheet(
     _style_header_row(ws, 8, 1, 8)
 
     def _write_plan_section(row: int, letter: str, title: str, items: list[dict], empty_hint: str) -> int:
-        ws.cell(row=row, column=2, value=letter)
-        ws.cell(row=row, column=3, value=title)
-        for c in range(2, 9):
-            ws.cell(row=row, column=c).fill = SECTION_FILL
-            ws.cell(row=row, column=c).font = SECTION_FONT
-            ws.cell(row=row, column=c).border = THIN_BORDER
-            ws.cell(row=row, column=c).alignment = LEFT_CENTER
+        _style_section_bar(ws, row, title, 8, start_col=2, letter=letter)
         ws.cell(row=row, column=1).border = THIN_BORDER
-        ws.row_dimensions[row].height = 20
         row += 1
         if items:
             for idx, it in enumerate(items, 1):
@@ -1044,16 +1082,8 @@ def _write_mom_sheet(
 
 
 def _block_title(ws, row: int, title: str, n_cols: int = 8) -> int:
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
-    cell = ws.cell(row=row, column=1, value=title)
-    cell.font = SECTION_FONT
-    cell.fill = SECTION_FILL
-    cell.alignment = LEFT_CENTER
-    for c in range(1, n_cols + 1):
-        ws.cell(row=row, column=c).fill = SECTION_FILL
-        ws.cell(row=row, column=c).border = THIN_BORDER
-        ws.cell(row=row, column=c).font = SECTION_FONT
-    ws.row_dimensions[row].height = 20
+    """H2 section cho Risk / PM Dashboard."""
+    _style_section_bar(ws, row, title, n_cols, start_col=1)
     return row + 1
 
 
@@ -1883,59 +1913,83 @@ def export_weekly_mom(
 
 
 def _write_pm_kehoach_sheet(wb, pm_plan: dict) -> None:
-    """Sheet bổ sung từ KeHoachDuAn (chiều PM) — không thay Master plan FL."""
+    """Sheet bổ sung từ KeHoachDuAn (chiều PM) — đồng bộ H1/H3 với MoM."""
     ws = wb.create_sheet("PM Lịch trình")
-    ws["A1"] = "Lịch trình từ kế hoạch dự án (KeHoachDuAn)"
-    ws["A1"].font = TITLE_FONT
-    ws.merge_cells("A1:H1")
+    ws.sheet_view.showGridLines = False
+    for col, width in enumerate([22, 45, 12, 12, 18, 18, 18, 25], 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+    _style_title_bar(ws, 1, "PM LỊCH TRÌNH — Kế hoạch dự án (KeHoachDuAn)", 8)
+    ws.merge_cells("A2:H2")
+    src = pm_plan.get("source_filename") or ""
+    imported = pm_plan.get("imported_at") or ""
+    ws["A2"] = f"Nguồn: {src or '—'}  ·  Import: {imported or '—'}"
+    ws["A2"].font = GUIDE_FONT
+    ws["A2"].alignment = LEFT_CENTER
+    ws.row_dimensions[2].height = 16
+
     headers = [
         "Giai đoạn", "Công việc", "Từ ngày", "Đến ngày",
         "PIC FPT", "Hỗ trợ FPT", "PIC KH", "Ghi chú",
     ]
     for c, h in enumerate(headers, 1):
-        cell = ws.cell(3, c, h)
-        cell.fill = MOM_HEADER_FILL
-        cell.font = MOM_HEADER_FONT
-        cell.alignment = MOM_HEADER_ALIGN
-        cell.border = THIN_BORDER
+        ws.cell(3, c, h)
+    _style_header_row(ws, 3, 1, 8)
 
     row = 4
-    for item in pm_plan.get("schedule") or []:
-        vals = [
-            item.get("phase") or "",
-            item.get("name") or "",
-            item.get("start") or "",
-            item.get("end") or "",
-            ", ".join(item.get("pic_fpt") or []),
-            ", ".join(item.get("support_fpt") or []),
-            ", ".join(item.get("pic_client") or []),
-            item.get("note") or "",
-        ]
-        for c, v in enumerate(vals, 1):
-            cell = ws.cell(row, c, v)
-            cell.border = THIN_BORDER
-            cell.alignment = LEFT_TOP
-            cell.font = BODY_MOM_FONT
-            if item.get("is_phase_header"):
-                cell.fill = SECTION_FILL
-                cell.font = BODY_MOM_BOLD
-        row += 1
-
-    if not pm_plan.get("schedule") and pm_plan.get("milestones"):
+    schedule = pm_plan.get("schedule") or []
+    if schedule:
+        for item in schedule:
+            vals = [
+                item.get("phase") or "",
+                item.get("name") or "",
+                item.get("start") or "",
+                item.get("end") or "",
+                ", ".join(item.get("pic_fpt") or []),
+                ", ".join(item.get("support_fpt") or []),
+                ", ".join(item.get("pic_client") or []),
+                item.get("note") or "",
+            ]
+            is_phase = bool(item.get("is_phase_header"))
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(row, c, v)
+                cell.border = THIN_BORDER
+                cell.alignment = LEFT_TOP if c in (2, 8) else CENTER if c in (3, 4) else LEFT_CENTER
+                cell.font = BODY_MOM_BOLD if is_phase else BODY_MOM_FONT
+                if is_phase:
+                    cell.fill = PHASE_HEADER_FILL
+                elif row % 2 == 0:
+                    cell.fill = ALT_ROW_FILL
+            ws.row_dimensions[row].height = 18
+            row += 1
+    elif pm_plan.get("milestones"):
         ws.cell(3, 1, "STT")
         ws.cell(3, 2, "Milestone (WBS)")
         for c in (1, 2):
             ws.cell(3, c).fill = MOM_HEADER_FILL
             ws.cell(3, c).font = MOM_HEADER_FONT
-        row = 4
+            ws.cell(3, c).alignment = MOM_HEADER_ALIGN
+            ws.cell(3, c).border = THIN_BORDER
         for m in pm_plan["milestones"]:
-            ws.cell(row, 1, m.get("stt") or "")
-            ws.cell(row, 2, m.get("name") or "")
+            ws.cell(row, 1, m.get("stt") or "").border = THIN_BORDER
+            ws.cell(row, 1).font = BODY_MOM_FONT
+            ws.cell(row, 1).alignment = CENTER
+            ws.cell(row, 2, m.get("name") or "").border = THIN_BORDER
+            ws.cell(row, 2).font = BODY_MOM_FONT
+            ws.cell(row, 2).alignment = LEFT_CENTER
             row += 1
+    else:
+        ws.cell(row, 1, "N/A — chưa có lịch trình / milestone trong kế hoạch PM.").font = NOTE_FONT
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        row += 1
 
-    for col, width in enumerate([22, 45, 12, 12, 18, 18, 18, 25], 1):
-        ws.column_dimensions[get_column_letter(col)].width = width
-    src = pm_plan.get("source_filename") or ""
-    imported = pm_plan.get("imported_at") or ""
-    ws.cell(row + 1, 1, f"Nguồn: {src} | Import: {imported}")
-    ws.cell(row + 1, 1).font = NOTE_FONT
+    row += 1
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    ws.cell(
+        row, 1,
+        "Không ghi đè Master plan từ Function List — sheet này chỉ chiếu kế hoạch PM.",
+    ).font = GUIDE_FONT
+
+    ws.freeze_panes = "A4"
+    ws.print_title_rows = "1:3"
+    _set_print_landscape(ws)

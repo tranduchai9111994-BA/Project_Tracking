@@ -154,10 +154,14 @@ def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
     assert cover["B11"].value == mom_name
     assert cover["B12"].value == "Risk Analysis"
     assert cover["B13"].value == "PM Dashboard"
-    # Presentation: header TOC xanh #0070C0
+    # Presentation: H1 navy + H2 mục lục + H3 TOC xanh #0070C0
+    assert "MEETING MINUTES" in str(cover["B2"].value).upper()
+    assert "1F4E79" in str(cover["B2"].fill.fgColor.rgb or "").upper()
+    assert "MỤC LỤC" in str(cover["B7"].value).upper()
     assert "0070C0" in str(cover["B8"].fill.fgColor.rgb or "").upper()
 
     mp = wb["Master plan"]
+    assert "MASTER PLAN" in str(mp["B1"].value).upper()
     assert mp["B2"].value == "STT"
     assert mp["C2"].value == "Công việc"
     # Có dữ liệu (không còn N/A placeholder duy nhất)
@@ -177,6 +181,7 @@ def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
     assert (gantt.column_dimensions["E"].width or 0) >= 6.5
 
     mom = wb[mom_name]
+    assert "BIÊN BẢN" in str(mom["A1"].value).upper()
     assert "Ngày" in str(mom["B2"].value)
     assert mom["B8"].value == "STT"
     assert mom["C8"].value == "Công việc"
@@ -318,6 +323,54 @@ def test_export_weekly_mom_empty_metrics_still_creates(tmp_path):
     assert "PM Dashboard" in wb.sheetnames
     assert "Gantt" in wb.sheetnames
     wb.close()
+
+
+def test_export_weekly_mom_pm_lich_trinh_format(tmp_path):
+    """Sheet PM Lịch trình — H1 navy + H3 #0070C0, phase header vàng."""
+    pm_plan = {
+        "source_filename": "kehoach.xlsx",
+        "imported_at": "2026-07-31T10:00:00",
+        "schedule": [
+            {
+                "phase": "Giai đoạn 1",
+                "name": "Golive demo",
+                "start": "2025-12-22",
+                "end": "2026-01-15",
+                "pic_fpt": [],
+                "support_fpt": [],
+                "pic_client": [],
+                "note": "",
+                "is_phase_header": True,
+            },
+            {
+                "phase": "Giai đoạn 1",
+                "name": "Quản trị HT",
+                "start": "2025-12-22",
+                "end": "2025-12-26",
+                "pic_fpt": ["NhiVN"],
+                "support_fpt": [],
+                "pic_client": [],
+                "note": "ok",
+                "is_phase_header": False,
+            },
+        ],
+    }
+    path = export_weekly_mom(
+        {}, str(tmp_path), project_code="demo", today=TODAY, pm_plan=pm_plan,
+    )
+    wb = openpyxl.load_workbook(path)
+    assert "PM Lịch trình" in wb.sheetnames
+    ws = wb["PM Lịch trình"]
+    assert "PM LỊCH TRÌNH" in str(ws["A1"].value).upper()
+    assert "1F4E79" in str(ws["A1"].fill.fgColor.rgb or "").upper()
+    assert ws["A3"].value == "Giai đoạn"
+    assert "0070C0" in str(ws["A3"].fill.fgColor.rgb or "").upper()
+    assert ws["B4"].value == "Golive demo"
+    assert "FFF2CC" in str(ws["A4"].fill.fgColor.rgb or "").upper()
+    assert ws["B5"].value == "Quản trị HT"
+    assert "NhiVN" in str(ws["E5"].value)
+    wb.close()
+
 
 
 def test_export_mom_week_sections_use_overlap(tmp_path):

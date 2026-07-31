@@ -220,8 +220,30 @@ def test_pm_store_and_export(tmp_path: Path, plan_file: Path, weekly_file: Path)
     )
     assert os.path.isfile(out)
     wb = openpyxl.load_workbook(out)
+    assert "Tổng quan" in wb.sheetnames
     assert "Lịch trình" in wb.sheetnames
     assert "Weekly Done" in wb.sheetnames
+    assert "WBS Gantt" in wb.sheetnames
+    # H1 navy + H3 #0070C0
+    cover = wb["Tổng quan"]
+    assert "CHIỀU PM" in str(cover["A1"].value).upper()
+    assert "1F4E79" in str(cover["A1"].fill.fgColor.rgb or "").upper()
+    assert "0070C0" in str(cover["A4"].fill.fgColor.rgb or "").upper()
+    sched = wb["Lịch trình"]
+    assert "LỊCH TRÌNH" in str(sched["A1"].value).upper()
+    assert sched["A3"].value == "Giai đoạn"
+    assert "0070C0" in str(sched["A3"].fill.fgColor.rgb or "").upper()
+    # Phase header vẫn tô vàng (không phá highlight)
+    phase_rows = [
+        r for r in range(4, (sched.max_row or 3) + 1)
+        if sched.cell(r, 10).value == "Yes"
+    ]
+    assert phase_rows, "expect at least one phase header row"
+    assert "FFF2CC" in str(sched.cell(phase_rows[0], 1).fill.fgColor.rgb or "").upper()
+    done = wb["Weekly Done"]
+    assert done["A3"].value == "STT"
+    assert "0070C0" in str(done["A3"].fill.fgColor.rgb or "").upper()
+    wb.close()
 
 
 def test_pm_api_flow(flask_client, plan_file, weekly_file):
