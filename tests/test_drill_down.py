@@ -221,12 +221,12 @@ def _make_multi_overdue_data(today):
             "Dev": _pd(-25, -20, "In-progress", ["B"]),
             "UAT": _pd(-10, -3, "Open", ["C"]),
         }),
-        # F3: 2 phase overdue
+        # F3: Analysis Closed → Dev Open no PIC = unassigned (predecessor gate)
         FunctionRow(row_num=4, meta={
             "ma_cn": "F3", "ten_cn": "F3", "module": "M2", "quy_trinh": "P2",
             "priority": "Could-have", "complexity": "Low", "fit_gap": "FIT", "giai_doan": "2",
         }, phases={
-            "Analysis": _pd(-15, -12, "In-progress", ["D"]),
+            "Analysis": _pd(-15, -12, "Closed", ["D"]),
             "Dev": _pd(-8, -1, "Open", []),  # unassigned + overdue
         }),
     ]

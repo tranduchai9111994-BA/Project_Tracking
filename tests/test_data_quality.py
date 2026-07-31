@@ -98,16 +98,36 @@ def test_missing_deadline_blank_status_skipped():
 
 
 def test_missing_deadline_dedupe_functions():
-    """2 phase cùng function thiếu End → count function=1, records=2."""
-    r = _mk_row(ma_cn="F99", phases={
+    """Cùng ma_cn, 2 row thiếu End → function_count=1, records=2."""
+    r1 = _mk_row(ma_cn="F99", row_num=2, phases={
         "Analysis": PhaseData(status="Open", end_date=None, pics=["A"]),
-        "Dev": PhaseData(status="In-progress", end_date=None, pics=["B"]),
     })
-    out = compute_data_quality(_mk_data([r]))
+    r2 = _mk_row(ma_cn="F99", row_num=3, phases={
+        "Analysis": PhaseData(status="In-progress", end_date=None, pics=["B"]),
+    })
+    out = compute_data_quality(_mk_data([r1, r2]))
     assert out["summary"]["missing_deadline_count"] == 1
     assert out["summary"]["missing_deadline_records"] == 2
-    funcs, recs = count_missing_deadlines(_mk_data([r]))
+    funcs, recs = count_missing_deadlines(_mk_data([r1, r2]))
     assert (funcs, recs) == (1, 2)
+
+
+def test_missing_deadline_respects_predecessor_gate():
+    """Dev thiếu End nhưng Analysis chưa Closed → không báo missing_deadline."""
+    r = _mk_row(phases={
+        "Analysis": PhaseData(status="In-progress", end_date=date(2026, 2, 1), pics=["A"]),
+        "Dev": PhaseData(status="Open", end_date=None, pics=["B"]),
+    })
+    out = compute_data_quality(_mk_data([r]))
+    assert "missing_deadline" not in [i["code"] for i in out["issues"]]
+
+    r2 = _mk_row(phases={
+        "Analysis": PhaseData(status="Closed", end_date=date(2026, 1, 1), pics=["A"]),
+        "Dev": PhaseData(status="Open", end_date=None, pics=["B"]),
+    })
+    out2 = compute_data_quality(_mk_data([r2]))
+    assert "missing_deadline" in [i["code"] for i in out2["issues"]]
+
 
 
 def test_blank_pic_when_active():

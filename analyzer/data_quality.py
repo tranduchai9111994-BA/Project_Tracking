@@ -13,6 +13,11 @@ from datetime import date
 from typing import Any
 
 from parser.excel_parser import ParsedData, FunctionRow, VALID_STATUSES
+from analyzer.unassigned import (
+    is_missing_deadline_phase,
+    is_predecessor_closed,
+    is_phase_in_scope,
+)
 
 
 # === Các loại issue ===
@@ -230,6 +235,11 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
                 })
 
         # ---- Phase-level issues ----
+        phase_order = (
+            data.all_phases
+            or [pg.name for pg in data.phase_groups]
+            or list(row.phases.keys())
+        )
         for phase_name, pd in row.phases.items():
             status = _norm_status(pd.status)
 
@@ -269,8 +279,10 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
                     "suggestion": ISSUE_META["closed_no_end"]["suggestion"],
                 })
 
-            # Đang làm (WIP) nhưng thiếu End/Deadline — tách riêng closed_no_end
-            if _is_active_status(status) and not pd.end_date:
+            # WIP thiếu End — cùng gate predecessor Closed với Unassigned
+            if is_missing_deadline_phase(
+                row, phase_name, pd, phase_order, require_active_status=True,
+            ):
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
                     "module": module, "phase": phase_name,
@@ -281,18 +293,21 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
                     "suggestion": ISSUE_META["missing_deadline"]["suggestion"],
                 })
 
-            # Blank PIC nhưng phase đang active hoặc có kế hoạch
-            if (_is_active_status(status) or _has_planned_dates(pd)) and not _is_closed_status(status):
-                if not pd.pics:
-                    issues.append({
-                        "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                        "module": module, "phase": phase_name,
-                        "code": "blank_pic",
-                        "severity": ISSUE_META["blank_pic"]["severity"],
-                        "label": ISSUE_META["blank_pic"]["label"],
-                        "detail": f"Phase '{phase_name}' có kế hoạch/đang làm nhưng chưa gán PIC",
-                        "suggestion": ISSUE_META["blank_pic"]["suggestion"],
-                    })
+            # Blank PIC — in-scope + đã tới lượt (predecessor Closed)
+            if (
+                is_phase_in_scope(pd)
+                and not pd.pics
+                and is_predecessor_closed(row, phase_name, phase_order)
+            ):
+                issues.append({
+                    "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                    "module": module, "phase": phase_name,
+                    "code": "blank_pic",
+                    "severity": ISSUE_META["blank_pic"]["severity"],
+                    "label": ISSUE_META["blank_pic"]["label"],
+                    "detail": f"Phase '{phase_name}' đã tới lượt nhưng chưa gán PIC",
+                    "suggestion": ISSUE_META["blank_pic"]["suggestion"],
+                })
 
             # U11 — Estimate MH vs duration (chỉ khi có cả Start+End+Estimate)
             if (
@@ -400,6 +415,8 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
 def count_missing_deadlines(data: ParsedData) -> tuple[int, int]:
     """Đếm function/phase thiếu End khi đang làm — dùng cho summary card.
 
+    Cùng gate predecessor Closed với Unassigned.
+
     Returns:
         (function_count, phase_records) — function dedupe theo ma_cn (fallback row_num).
     """
@@ -407,10 +424,16 @@ def count_missing_deadlines(data: ParsedData) -> tuple[int, int]:
     records = 0
     for row in data.rows:
         ma_cn = _row_ma_cn(row)
+        phase_order = (
+            data.all_phases
+            or [pg.name for pg in data.phase_groups]
+            or list(row.phases.keys())
+        )
         func_hit = False
-        for _phase_name, pd in row.phases.items():
-            status = _norm_status(pd.status)
-            if _is_active_status(status) and not pd.end_date:
+        for phase_name, pd in row.phases.items():
+            if is_missing_deadline_phase(
+                row, phase_name, pd, phase_order, require_active_status=True,
+            ):
                 records += 1
                 func_hit = True
         if func_hit:

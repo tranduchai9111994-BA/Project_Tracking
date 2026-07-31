@@ -7489,10 +7489,10 @@ const CHART_HELP = {
     },
     "section-unassigned": {
         title: "🚨 Task chưa có PIC phụ trách",
-        meaning: "Việc còn đang mở nhưng không có ai chịu trách nhiệm — nguồn chậm tiến độ phổ biến nhất.",
-        logic: "Lấy record phase-level có Status thuộc Open / Assigned / In-progress / Resolved / Pending nhưng ô PIC rỗng. Sắp xếp: đang trễ trước → Must-have trước → trễ nhiều ngày trước.",
-        example: "PR-012 phase Dev, Status Open, PIC rỗng, deadline 10/07 → vừa chưa gán vừa đã trễ, tô đỏ.",
-        note: "Dòng đỏ = chưa PIC và đã trễ; cam = chưa PIC và Must-have."
+        meaning: "Phase đã tới lượt nhưng chưa có người chịu trách nhiệm — nguồn chậm tiến độ phổ biến.",
+        logic: "Flag phase thiếu PIC chỉ khi: (1) phase in-scope (chưa Closed/Cancelled + có status hoặc Start/End), và (2) phase liền trước trong Function List đã Closed. Phase đầu không cần predecessor. Không báo Dev/Config khi Analysis chưa Closed.",
+        example: "Analysis Closed → Dev Open không PIC → vào list. Analysis còn In-progress → Dev trống PIC không vào list.",
+        note: "Dòng đỏ = chưa PIC và đã trễ; cam = chưa PIC và Must-have. Card Summary đếm function unique khớp bảng này."
     },
     "section-duration": {
         title: "⏱️ Phân tích Duration",

@@ -168,13 +168,15 @@ class DashboardEngine:
             last_phase_pct = 0
 
         # ==== Unassigned: đếm function unique VÀ phase-level ====
-        # Dùng chung định nghĩa _is_phase_active (phase active + no PIC).
+        # Gate: in-scope + thiếu PIC + phase trước đã Closed (xem analyzer.unassigned).
+        from analyzer.unassigned import is_unassigned_phase
+        phase_order = data.all_phases
         unassigned_functions = 0
         unassigned_records = 0
         for r in data.rows:
             func_has_unassigned = False
-            for _, pd in r.phases.items():
-                if self._is_phase_active(pd) and not pd.pics:
+            for phase_name, pd in r.phases.items():
+                if is_unassigned_phase(r, phase_name, pd, phase_order):
                     unassigned_records += 1
                     func_has_unassigned = True
             if func_has_unassigned:
@@ -642,36 +644,39 @@ class DashboardEngine:
 
     def _unassigned_tasks(self, data: ParsedData) -> list[dict]:
         """
-        Danh sách phase đang active mà không có PIC.
+        Danh sách phase thiếu PIC khi đã tới lượt.
 
-        Định nghĩa "active" (xem _is_phase_active): phase chưa Closed/Cancelled
-        và có ít nhất 1 dấu hiệu đã plan/làm (status có giá trị, hoặc có
-        Start/End date). Trước đây yêu cầu status truthy → mất các phase
-        đã plan ngày nhưng chưa fill status.
+        Tới lượt = phase in-scope (chưa Closed/Cancelled + có status/Start/End)
+        VÀ phase liền trước trong ``data.all_phases`` đã Closed (phase đầu
+        không cần predecessor). Tránh flag oan Dev/Config khi Analysis chưa xong.
         """
+        from analyzer.unassigned import is_unassigned_phase
+
         results = []
+        phase_order = data.all_phases
         for r in data.rows:
             for phase_name, pd in r.phases.items():
-                if self._is_phase_active(pd) and not pd.pics:
-                    results.append({
-                        "ma_cn": r.meta.get("ma_cn", ""),
-                        "ten_cn": r.meta.get("ten_cn", ""),
-                        "module": r.meta.get("module", ""),
-                        "phase": phase_name,
-                        # Nếu status blank thì hiện "(chưa fill)" cho FE dễ hiểu
-                        "status": pd.status or "(chưa fill status)",
-                        "priority": r.meta.get("priority", ""),
-                        "complexity": r.meta.get("complexity", ""),
-                        "end_date": pd.end_date.isoformat() if pd.end_date else "",
-                        "is_overdue": self._is_overdue(
-                            pd, r, phase_name, data.all_phases,
-                        ),
-                        "days_overdue": (
-                            (self.today - pd.end_date).days
-                            if self._is_overdue(pd, r, phase_name, data.all_phases)
-                            else 0
-                        ),
-                    })
+                if not is_unassigned_phase(r, phase_name, pd, phase_order):
+                    continue
+                results.append({
+                    "ma_cn": r.meta.get("ma_cn", ""),
+                    "ten_cn": r.meta.get("ten_cn", ""),
+                    "module": r.meta.get("module", ""),
+                    "phase": phase_name,
+                    # Nếu status blank thì hiện "(chưa fill)" cho FE dễ hiểu
+                    "status": pd.status or "(chưa fill status)",
+                    "priority": r.meta.get("priority", ""),
+                    "complexity": r.meta.get("complexity", ""),
+                    "end_date": pd.end_date.isoformat() if pd.end_date else "",
+                    "is_overdue": self._is_overdue(
+                        pd, r, phase_name, data.all_phases,
+                    ),
+                    "days_overdue": (
+                        (self.today - pd.end_date).days
+                        if self._is_overdue(pd, r, phase_name, data.all_phases)
+                        else 0
+                    ),
+                })
         # Sort: overdue trước, sau đó Must-have trước
         results.sort(key=lambda x: (
             0 if x["is_overdue"] else 1,
@@ -1182,22 +1187,9 @@ class DashboardEngine:
         )
 
     def _is_phase_active(self, pd: PhaseData) -> bool:
-        """
-        Phase "đang cần theo dõi": chưa Closed/Cancelled + có dấu hiệu
-        đã được plan hoặc bắt đầu làm.
-
-        Dấu hiệu:
-          - Status có giá trị (không phải None/blank), HOẶC
-          - Có Start date, HOẶC
-          - Có End date
-
-        Dùng cho unassigned detection: phase active mà không có PIC =
-        cần assign gấp. Tránh false positive với phase hoàn toàn trống
-        (chưa plan gì).
-        """
-        if pd.status in ("Closed", "Cancelled"):
-            return False
-        return bool(pd.status) or pd.start_date is not None or pd.end_date is not None
+        """Phase in-scope — ủy quyền ``analyzer.unassigned.is_phase_in_scope``."""
+        from analyzer.unassigned import is_phase_in_scope
+        return is_phase_in_scope(pd)
 
     def _row_has_overdue(
         self,

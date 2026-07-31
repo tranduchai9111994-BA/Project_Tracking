@@ -76,12 +76,12 @@ def compute_risk_score(
             factors.append(f"Trễ {max_overdue_days} ngày")
             breakdown["overdue_days"] = extra
 
-    # === Unassigned trong phase active ===
-    unassigned = False
-    for _, pd in row.phases.items():
-        if pd.status and pd.status not in ("Closed", "Cancelled") and not pd.pics:
-            unassigned = True
-            break
+    # === Unassigned: thiếu PIC khi đã tới lượt (predecessor Closed) ===
+    from analyzer.unassigned import is_unassigned_phase
+    unassigned = any(
+        is_unassigned_phase(row, pname, pd, phase_names)
+        for pname, pd in row.phases.items()
+    )
     if unassigned:
         score += 15
         factors.append("Không có PIC")

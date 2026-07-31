@@ -31,6 +31,7 @@ from typing import Any, Callable, Optional
 
 from parser.excel_parser import ParsedData, FunctionRow, PhaseData
 from analyzer.overdue import is_phase_overdue
+from analyzer.unassigned import is_unassigned_phase
 
 # Status coi là "done" khi filter effort remaining
 _DONE_STATUSES = frozenset({"Closed", "Cancelled"})
@@ -51,16 +52,9 @@ def _is_overdue(
 
 
 def _is_phase_active_for_unassigned(pd: PhaseData) -> bool:
-    """Phase 'đang cần theo dõi' — đồng bộ với ``dashboard_engine._is_phase_active``.
-
-    Không phải Closed/Cancelled + có ít nhất 1 dấu hiệu đã plan/làm
-    (status truthy, HOẶC Start date, HOẶC End date). Ngăn false positive
-    với phase hoàn toàn trống, nhưng vẫn bắt được phase đã plan ngày mà
-    chưa fill status (đây chính là case bị mismatch trước đây).
-    """
-    if pd.status in ("Closed", "Cancelled"):
-        return False
-    return bool(pd.status) or pd.start_date is not None or pd.end_date is not None
+    """Phase in-scope — đồng bộ ``analyzer.unassigned.is_phase_in_scope``."""
+    from analyzer.unassigned import is_phase_in_scope
+    return is_phase_in_scope(pd)
 
 
 def _days_overdue(
@@ -472,18 +466,14 @@ def _filter_overdue(data: ParsedData, filters: dict, today: date) -> list[dict]:
 
 
 def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dict]:
-    """Phase đang active (≠ Closed/Cancelled) mà không có PIC → dedupe theo ma_cn.
+    """Phase thiếu PIC khi đã tới lượt → dedupe theo ma_cn.
 
-    Đồng bộ với ``dashboard_engine._is_phase_active``: phase được coi là
-    active nếu status truthy HOẶC có Start/End date. Bug cũ chỉ bắt phase
-    có status truthy nên card summary hiển thị số nhưng drill trả rỗng
-    khi phase chỉ có End date mà status blank.
-
-    Sau khi collect phase-records, gom lại theo ma_cn để card (đếm
-    distinct function) khớp với drill (cũng distinct function).
+    Đồng bộ ``analyzer.unassigned.is_unassigned_phase`` (in-scope + predecessor
+    Closed). Card summary và drill cùng rule → count khớp.
     """
     module = filters.get("module", "")
     phase_f = filters.get("phase", "")
+    phase_order = data.all_phases
     records = []
     for row in data.rows:
         if module and row.meta.get("module") != module:
@@ -491,11 +481,12 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
         for phase_name, pd in row.phases.items():
             if phase_f and phase_name != phase_f:
                 continue
-            if not _is_phase_active_for_unassigned(pd):
+            if not is_unassigned_phase(row, phase_name, pd, phase_order):
                 continue
-            if pd.pics:
-                continue
-            records.append(_row_to_dict(row, phase_name=phase_name, today=today))
+            records.append(_row_to_dict(
+                row, phase_name=phase_name, today=today,
+                phase_order=phase_order,
+            ))
     result = _dedupe_by_ma_cn(records)
     result.sort(key=lambda x: (0 if x["is_overdue"] else 1, -x["days_overdue"]))
     return result
