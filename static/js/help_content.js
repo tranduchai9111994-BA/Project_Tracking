@@ -214,6 +214,24 @@ const HELP_CONTENT = {
             "1 MD = 8 MH; 1 MM = 22 MD (định nghĩa chuẩn)",
         ],
     },
+    "forecast-manpower": {
+        category: "Tiến độ & Timeline",
+        title: "Forecast Manpower — MH / MD / MM & tuyển",
+        purpose: "Ước lượng khối lượng còn lại theo Estimate MH (hoặc Duration), quy đổi MD/MM, và tính cần bao nhiêu người / tuyển thêm theo Dev riêng vs Triển khai chung.",
+        steps: [
+            "Chọn cơ sở Unit (Estimate MH, trống = 8) hoặc Duration (ngày làm Start→End × 8 MH)",
+            "Chọn đơn vị hiển thị: MH / MD / MM",
+            "Nhập Target tháng + số người Dev / Triển khai hiện tại",
+            "Xem pool + từng công đoạn: còn lại, người cần, tuyển thêm, cột ghi chú phương pháp",
+            "Xuất Excel: Tổng hợp | Chi tiết | Cả hai",
+        ],
+        example: "Còn 320 MH Dev, target 1 tháng (160 MH/người) → cần 2 người. Đang có 1 → tuyển thêm 1.",
+        tips: [
+            "Lập trình = pool riêng; Phân tích/Test/Config/UAT/Golive = Triển khai chung",
+            "1 MD = 8 MH; 1 MM = 160 MH (20 ngày × 8h) trong section này",
+            "Filter Module/Quy trình + global filter đều được tôn trọng",
+        ],
+    },
     "baseline": {
         category: "Tiến độ & Timeline",
         title: "Baseline Variance",

@@ -111,6 +111,7 @@
     <a href="#section-deps">Dependency</a>
     <a href="#section-gantt">Timeline</a>
     <a href="#section-forecast-gantt" data-i18n="nav.forecast_gantt">Forecast UAT/Golive</a>
+    <a href="#section-forecast-manpower">Forecast Manpower</a>
     <a href="#section-gantt-calendar">Gantt Calendar</a>
     <a href="#section-kanban">Kanban</a>
     <a href="#section-pic">PIC</a>
@@ -3498,6 +3499,82 @@
             <p id="fgEmptyHint" class="hidden text-sm text-gray-500 italic mt-2">
                 Chưa có dự án nào có End date cho milestone. Chọn dự án đã upload Function List.
             </p>
+        </section>
+
+<section id="section-forecast-manpower" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+                <div class="min-w-0">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-forecast-manpower">
+                        👷 Forecast Manpower — MH / MD / MM &amp; nhu cầu tuyển
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Estimate MH trên Function List (trống = <b>8</b>). Chọn cơ sở <b>Unit</b> hoặc <b>Duration</b>,
+                        đơn vị MH/MD/MM. Dev tính riêng; phân tích/test/cấu hình/UAT/golive gộp
+                        <b>Triển khai chung</b>. Nhập số người hiện tại → ra số cần tuyển thêm.
+                    </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 no-print shrink-0">
+                    <span class="bg-slate-50 text-slate-700 px-3 py-1.5 rounded border text-xs">
+                        Còn lại: <b id="fmRemainLabel">—</b>
+                    </span>
+                    <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200 text-xs">
+                        Tuyển Dev: <b id="fmHireDev">0</b> · Triển khai: <b id="fmHireImpl">0</b>
+                    </span>
+                        <button type="button" onclick="exportForecastManpower(event)"
+                            class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1"
+                            title="Xuất Excel tổng / chi tiết">📥 Xuất</button>
+                </div>
+            </div>
+            <div class="flex flex-wrap items-end gap-2 mb-3 no-print text-xs">
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Cơ sở tính</span>
+                    <div class="inline-flex rounded border border-gray-300 overflow-hidden">
+                        <button type="button" data-fm-basis="unit" onclick="setFmBasis('unit')"
+                                class="fm-basis-btn px-2.5 py-1 bg-blue-600 text-white">Unit (MH)</button>
+                        <button type="button" data-fm-basis="duration" onclick="setFmBasis('duration')"
+                                class="fm-basis-btn px-2.5 py-1 border-l hover:bg-blue-50">Duration</button>
+                    </div>
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Đơn vị</span>
+                    <select id="fmUnit" class="border rounded px-2 py-1 bg-white" onchange="loadForecastManpower()">
+                        <option value="manhour">Man-hour (MH)</option>
+                        <option value="manday">Man-day (MD)</option>
+                        <option value="manmonth" selected>Man-month (MM)</option>
+                    </select>
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">MH mặc định</span>
+                    <input id="fmDefaultMh" type="number" min="1" step="1" value="8"
+                           class="border rounded px-2 py-1 w-20" onchange="loadForecastManpower()">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Target (tháng)</span>
+                    <input id="fmTargetMonths" type="number" min="0.25" step="0.25" value="1"
+                           class="border rounded px-2 py-1 w-20" onchange="loadForecastManpower()">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Người Dev hiện tại</span>
+                    <input id="fmHcDev" type="number" min="0" step="1" value="0"
+                           class="border rounded px-2 py-1 w-20" onchange="loadForecastManpower()">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Người Triển khai hiện tại</span>
+                    <input id="fmHcImpl" type="number" min="0" step="1" value="0"
+                           class="border rounded px-2 py-1 w-20" onchange="loadForecastManpower()">
+                </div>
+                <div id="fmModuleMS" class="min-w-[160px]"></div>
+                <div id="fmProcessMS" class="min-w-[160px]"></div>
+                <button type="button" onclick="loadForecastManpower()"
+                        class="px-2.5 py-1 border rounded hover:bg-gray-50">↻ Tính lại</button>
+            </div>
+            <p id="fmBasisHint" class="text-[11px] text-slate-500 mb-2"></p>
+            <div id="fmPoolWrap" class="overflow-x-auto mb-3"></div>
+            <div id="fmStageWrap" class="overflow-x-auto"></div>
+            <details class="mt-3 text-xs">
+                <summary class="cursor-pointer text-blue-700 hover:underline">Chi tiết function × phase (top 200)</summary>
+                <div id="fmDetailWrap" class="overflow-x-auto mt-2"></div>
+            </details>
         </section>
 
 <section id="section-gantt" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">

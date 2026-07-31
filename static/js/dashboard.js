@@ -8112,7 +8112,8 @@ const DEFAULT_SIDEBAR_GROUP_DEFS = [
         name_vi: "Forecast",
         name_en: "Forecast",
         sections: [
-            "section-gantt", "section-forecast-gantt", "section-gantt-calendar", "section-burndown",
+            "section-gantt", "section-forecast-gantt", "section-forecast-manpower",
+            "section-gantt-calendar", "section-burndown",
             "section-capacity", "section-pic-overload", "section-baseline",
             "section-duration",
         ],
@@ -13111,6 +13112,7 @@ const _PRESENT_LAZY_LOADERS = {
     "section-sla":            "loadBurndownAndSLA",
     "section-pic-overload":   "loadPicOverload",
     "section-forecast-gantt": "loadForecastGantt",
+    "section-forecast-manpower": "loadForecastManpower",
     "section-fitgap-dashboard": "loadFitgapDashboard",
     "section-function-diff":  "loadFunctionDiff",
     "section-custom-dashboards": "loadCustomDashboards",
@@ -14368,6 +14370,7 @@ const _VISIBILITY_GROUPS = [
         items: [
             { id: "section-gantt",          label: "Gantt",              desc: "Sơ đồ Gantt lộ trình phase theo function" },
             { id: "section-forecast-gantt", label: "Forecast UAT/Golive", desc: "Tháng dự kiến UAT/Golive với KH — Gantt theo tháng, 1 hoặc nhiều dự án" },
+            { id: "section-forecast-manpower", label: "Forecast Manpower", desc: "MH/MD/MM theo công đoạn + nhu cầu tuyển (Dev riêng / Triển khai chung)" },
             { id: "section-gantt-calendar", label: "Gantt Calendar",     desc: "Timeline Excel-style: header Month/Week/Day, bar tô màu theo phase, marker Today" },
             { id: "section-burndown",       label: "Burndown & Velocity", desc: "Đường burndown + velocity theo tuần" },
             { id: "section-sla",            label: "SLA vi phạm",        desc: "Danh sách task vượt SLA theo priority" },
@@ -18681,6 +18684,221 @@ async function exportForecastGantt() {
     await downloadFile("/api/forecast-gantt/export?" + params.toString(), "Forecast_Gantt.xlsx");
 }
 window.exportForecastGantt = exportForecastGantt;
+
+// ========================================================================
+// FORECAST MANPOWER — MH / MD / MM + nhu cầu tuyển
+// Section: #section-forecast-manpower
+// ========================================================================
+const _fmState = { basis: "unit", data: null };
+
+function setFmBasis(basis) {
+    _fmState.basis = basis === "duration" ? "duration" : "unit";
+    document.querySelectorAll(".fm-basis-btn").forEach(btn => {
+        const on = btn.getAttribute("data-fm-basis") === _fmState.basis;
+        btn.classList.toggle("bg-blue-600", on);
+        btn.classList.toggle("text-white", on);
+        btn.classList.toggle("hover:bg-blue-50", !on);
+    });
+    loadForecastManpower();
+}
+window.setFmBasis = setFmBasis;
+
+function _fmEnsureFilters() {
+    const s = structureCache || metricsData?.structure || {};
+    const mods = s.all_modules || [];
+    const procs = s.all_processes || [];
+    if (!_msInstances.fmModule && document.getElementById("fmModuleMS")) {
+        createMultiSelect({
+            el: "#fmModuleMS",
+            key: "fmModule",
+            label: "Module",
+            options: mods,
+            selected: [],
+            allText: "Tất cả module",
+            onChange: () => loadForecastManpower(),
+        });
+    } else if (_msInstances.fmModule) {
+        _msInstances.fmModule.setOptions(mods, false);
+    }
+    if (!_msInstances.fmProcess && document.getElementById("fmProcessMS")) {
+        createMultiSelect({
+            el: "#fmProcessMS",
+            key: "fmProcess",
+            label: "Quy trình",
+            options: procs,
+            selected: [],
+            allText: "Tất cả quy trình",
+            onChange: () => loadForecastManpower(),
+        });
+    } else if (_msInstances.fmProcess) {
+        _msInstances.fmProcess.setOptions(procs, false);
+    }
+}
+
+function _fmCollectParams() {
+    const params = new URLSearchParams();
+    params.set("basis", _fmState.basis || "unit");
+    params.set("unit", document.getElementById("fmUnit")?.value || "manmonth");
+    params.set("default_mh", document.getElementById("fmDefaultMh")?.value || "8");
+    params.set("target_months", document.getElementById("fmTargetMonths")?.value || "1");
+    params.set("hc_dev", document.getElementById("fmHcDev")?.value || "0");
+    params.set("hc_impl_shared", document.getElementById("fmHcImpl")?.value || "0");
+    // Also send as headcount JSON for clarity
+    const hc = {
+        dev: Number(document.getElementById("fmHcDev")?.value || 0),
+        impl_shared: Number(document.getElementById("fmHcImpl")?.value || 0),
+    };
+    params.set("headcount", JSON.stringify(hc));
+    const mods = _msInstances.fmModule?.getSelected?.() || [];
+    const procs = _msInstances.fmProcess?.getSelected?.() || [];
+    if (mods.length) params.set("module", mods.join(","));
+    if (procs.length) params.set("process", procs.join(","));
+    // Global filters AND
+    if (typeof globalFilters !== "undefined" && globalFilters) {
+        if (globalFilters.modules?.length) {
+            const g = globalFilters.modules;
+            const local = mods.length ? mods : g;
+            const and = mods.length ? g.filter(m => local.includes(m)) : g;
+            if (and.length) params.set("module", and.join(","));
+            else if (mods.length) params.set("module", mods.join(","));
+        }
+        if (globalFilters.processes?.length && !procs.length) {
+            params.set("process", globalFilters.processes.join(","));
+        }
+        if (globalFilters.pics?.length) {
+            params.set("pic", globalFilters.pics.join(","));
+        }
+    }
+    return params;
+}
+
+async function loadForecastManpower() {
+    if (!currentProjectSlug) return;
+    const section = document.getElementById("section-forecast-manpower");
+    if (!section) return;
+    _fmEnsureFilters();
+    const params = _fmCollectParams();
+    try {
+        const r = await fetch(
+            `/api/projects/${encodeURIComponent(currentProjectSlug)}/forecast-manpower?` + params.toString()
+        );
+        if (!r.ok) {
+            console.warn("[forecast-manpower]", r.status);
+            return;
+        }
+        const data = await r.json();
+        _fmState.data = data;
+        renderForecastManpower(data);
+    } catch (err) {
+        console.error("[loadForecastManpower]", err);
+    }
+}
+window.loadForecastManpower = loadForecastManpower;
+
+function _fmFmt(n) {
+    if (n == null || n === "") return "—";
+    const x = Number(n);
+    if (Number.isNaN(x)) return escapeHtml(String(n));
+    return x % 1 === 0 ? String(x) : x.toFixed(2);
+}
+
+function renderForecastManpower(data) {
+    const section = document.getElementById("section-forecast-manpower");
+    if (!section || !data) return;
+    const unit = data.display_unit_label || data.display_unit || "";
+    const tot = data.totals || {};
+    const remainEl = document.getElementById("fmRemainLabel");
+    if (remainEl) remainEl.textContent = `${_fmFmt(tot.display_remaining)} ${unit}`;
+    const hd = document.getElementById("fmHireDev");
+    const hi = document.getElementById("fmHireImpl");
+    if (hd) hd.textContent = String(tot.hire_dev ?? 0);
+    if (hi) hi.textContent = String(tot.hire_impl ?? 0);
+    const hint = document.getElementById("fmBasisHint");
+    if (hint) {
+        hint.textContent = (data.basis_label || "") + " · "
+            + (data.hints || []).join(" ");
+    }
+
+    const cols = [
+        ["label", "Nhóm / Công đoạn"],
+        ["display_total", `Tổng`],
+        ["display_remaining", `Còn lại`],
+        ["display_closed", `Closed`],
+        ["count_remaining", "Phase còn"],
+        ["count_defaulted", "Dùng MH mặc định"],
+        ["headcount_current", "Người hiện tại"],
+        ["people_needed", "Người cần"],
+        ["hire_needed", "Tuyển thêm"],
+        ["months_with_current", "Tháng với HC hiện tại"],
+        ["method_note", "Ghi chú / phương pháp"],
+    ];
+
+    function tableHtml(rows, title) {
+        const head = cols.map(c => `<th class="px-2 py-1.5 text-left">${c[1]}</th>`).join("");
+        const body = (rows || []).map(r => {
+            const hire = Number(r.hire_needed || 0);
+            return `<tr class="border-b hover:bg-slate-50 ${hire > 0 ? "bg-red-50/40" : ""}">`
+                + cols.map(([k]) => {
+                    let v = r[k];
+                    if (k.startsWith("display_") || k === "months_with_current") v = _fmFmt(v);
+                    if (k === "method_note") {
+                        return `<td class="px-2 py-1 text-[11px] text-slate-600 max-w-md">${escapeHtml(v || "")}</td>`;
+                    }
+                    if (k === "hire_needed" && hire > 0) {
+                        return `<td class="px-2 py-1.5 font-semibold text-red-700">${escapeHtml(String(v))}</td>`;
+                    }
+                    return `<td class="px-2 py-1.5">${escapeHtml(v == null ? "" : String(v))}</td>`;
+                }).join("")
+                + `</tr>`;
+        }).join("");
+        return `<h4 class="text-sm font-semibold text-slate-700 mb-1">${title}</h4>`
+            + `<table class="w-full text-sm mb-2"><thead><tr class="bg-slate-700 text-white">${head}</tr></thead>`
+            + `<tbody>${body || `<tr><td colspan="${cols.length}" class="px-2 py-3 text-gray-400 italic">Không có dữ liệu</td></tr>`}</tbody></table>`;
+    }
+
+    const poolWrap = document.getElementById("fmPoolWrap");
+    if (poolWrap) poolWrap.innerHTML = tableHtml(data.pools, "Pool: Dev riêng · Triển khai chung");
+    const stageWrap = document.getElementById("fmStageWrap");
+    if (stageWrap) stageWrap.innerHTML = tableHtml(data.stages, "Theo công đoạn (task type)");
+
+    const detailWrap = document.getElementById("fmDetailWrap");
+    if (detailWrap) {
+        const items = (data.detail || []).slice(0, 200);
+        const dhead = ["Mã CN", "Tên", "Module", "Phase", "Công đoạn", "Pool", "Status", "MH", "Default?", "Phương pháp"];
+        detailWrap.innerHTML = `<table class="w-full text-xs"><thead><tr class="bg-slate-600 text-white">`
+            + dhead.map(h => `<th class="px-1.5 py-1">${h}</th>`).join("")
+            + `</tr></thead><tbody>`
+            + items.map(d => `<tr class="border-b">`
+                + `<td class="px-1.5 py-1">${escapeHtml(d.ma_cn || "")}</td>`
+                + `<td class="px-1.5 py-1 max-w-[180px] truncate">${escapeHtml(d.ten_cn || "")}</td>`
+                + `<td class="px-1.5 py-1">${escapeHtml(d.module || "")}</td>`
+                + `<td class="px-1.5 py-1">${escapeHtml(d.phase || "")}</td>`
+                + `<td class="px-1.5 py-1">${escapeHtml(d.task_type || "")}</td>`
+                + `<td class="px-1.5 py-1">${escapeHtml(d.pool || "")}</td>`
+                + `<td class="px-1.5 py-1">${escapeHtml(d.status || "")}</td>`
+                + `<td class="px-1.5 py-1 text-right">${_fmFmt(d.mh)}</td>`
+                + `<td class="px-1.5 py-1">${d.used_default ? "Yes" : ""}</td>`
+                + `<td class="px-1.5 py-1 text-slate-500">${escapeHtml(d.method_note || "")}</td>`
+                + `</tr>`).join("")
+            + `</tbody></table>`
+            + (data.detail && data.detail.length > 200
+                ? `<p class="text-[11px] text-gray-500 mt-1">Hiển thị 200/${data.detail.length} — xuất Excel để lấy đủ.</p>`
+                : "");
+    }
+}
+
+async function exportForecastManpower(ev) {
+    if (!currentProjectSlug) return;
+    openExportModePicker(ev, null, async (mode) => {
+        const params = _fmCollectParams();
+        params.set("mode", mode || "both");
+        await downloadFile(
+            `/api/projects/${encodeURIComponent(currentProjectSlug)}/export-forecast-manpower?` + params.toString(),
+            "Forecast_Manpower.xlsx"
+        );
+    });
+}
+window.exportForecastManpower = exportForecastManpower;
 
 // ========================================================================
 // COLUMN PICKER — ẩn/hiện cột bảng, localStorage per table id

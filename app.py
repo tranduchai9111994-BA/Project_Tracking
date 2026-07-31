@@ -3163,6 +3163,159 @@ def forecast_gantt_export():
 
 
 # ==========================================================================
+# Forecast Manpower — MH / MD / MM + nhu cầu tuyển theo công đoạn
+# ==========================================================================
+
+def _forecast_manpower_params():
+    """Parse query/body chung cho forecast-manpower."""
+    body = request.get_json(silent=True) or {}
+    src = {**request.args.to_dict(), **body}
+    basis = (src.get("basis") or "unit").strip().lower()
+    if basis not in ("unit", "duration"):
+        basis = "unit"
+    display_unit = (src.get("unit") or src.get("display_unit") or "manhour").strip().lower()
+    if display_unit in ("mh", "hour", "hours"):
+        display_unit = "manhour"
+    if display_unit in ("md", "day", "days"):
+        display_unit = "manday"
+    if display_unit in ("mm", "month", "months"):
+        display_unit = "manmonth"
+    if display_unit not in ("manhour", "manday", "manmonth"):
+        display_unit = "manhour"
+    try:
+        default_mh = float(src.get("default_mh") or 8)
+    except (TypeError, ValueError):
+        default_mh = 8.0
+    try:
+        target_months = float(src.get("target_months") or 1)
+    except (TypeError, ValueError):
+        target_months = 1.0
+    headcount = src.get("headcount") or {}
+    if isinstance(headcount, str):
+        import json as _json
+        raw_hc = headcount.strip()
+        headcount = {}
+        if raw_hc.startswith("{"):
+            try:
+                headcount = _json.loads(raw_hc)
+            except Exception:
+                headcount = {}
+        else:
+            for part in raw_hc.split(","):
+                if ":" in part:
+                    k, v = part.split(":", 1)
+                    try:
+                        headcount[k.strip()] = float(v.strip())
+                    except ValueError:
+                        pass
+    if not isinstance(headcount, dict):
+        headcount = {}
+    # Also accept flat keys hc_dev, hc_impl, hc_<stage>
+    for k, v in list(src.items()):
+        if k.startswith("hc_") and v not in (None, ""):
+            try:
+                headcount[k[3:]] = float(v)
+            except (TypeError, ValueError):
+                pass
+    modules = src.get("module") or src.get("modules") or ""
+    processes = src.get("process") or src.get("processes") or ""
+    pics = src.get("pic") or src.get("pics") or ""
+    if isinstance(modules, str):
+        modules = [m.strip() for m in modules.split(",") if m.strip()]
+    if isinstance(processes, str):
+        processes = [p.strip() for p in processes.split(",") if p.strip()]
+    if isinstance(pics, str):
+        pics = [p.strip() for p in pics.split(",") if p.strip()]
+    hc_clean = {}
+    for k, v in headcount.items():
+        try:
+            if v is not None and str(v).strip() != "":
+                hc_clean[str(k)] = float(v)
+        except (TypeError, ValueError):
+            pass
+    return {
+        "basis": basis,
+        "display_unit": display_unit,
+        "default_mh": default_mh,
+        "target_months": target_months,
+        "headcount": hc_clean,
+        "modules": modules or None,
+        "processes": processes or None,
+        "pics": pics or None,
+        "mode": (src.get("mode") or "both").strip().lower(),
+    }
+
+
+@app.route("/api/projects/<slug>/forecast-manpower", methods=["GET", "POST"])
+def forecast_manpower(slug: str):
+    """
+    Ước lượng manhours / mandays / manmonths + nhu cầu tuyển theo công đoạn.
+
+    Params: basis=unit|duration, unit=manhour|manday|manmonth,
+            default_mh=8, target_months=1, headcount={...} hoặc hc_dev / hc_impl,
+            module/process/pic filters.
+    """
+    from analyzer.forecast_manpower import compute_forecast_manpower
+
+    state = _get_state(slug)
+    if not state or not state.get("data"):
+        return jsonify({"error": "Chưa có dữ liệu. Hãy upload Function List."}), 400
+    p = _forecast_manpower_params()
+    data = _filter_parsed_data(
+        state["data"],
+        modules=p["modules"],
+        processes=p["processes"],
+        pics=p["pics"],
+    )
+    result = compute_forecast_manpower(
+        data,
+        basis=p["basis"],
+        display_unit=p["display_unit"],
+        default_mh=p["default_mh"],
+        target_months=p["target_months"],
+        headcount=p["headcount"],
+    )
+    return jsonify({"success": True, **result})
+
+
+@app.route("/api/projects/<slug>/export-forecast-manpower", methods=["GET", "POST"])
+def export_forecast_manpower_api(slug: str):
+    """Xuất Excel Forecast Manpower (Tong_hop / Chi_tiet / both)."""
+    from analyzer.forecast_manpower import compute_forecast_manpower
+    from exporter.forecast_manpower_exporter import export_forecast_manpower
+
+    state = _get_state(slug)
+    if not state or not state.get("data"):
+        return jsonify({"error": "Chưa có dữ liệu. Hãy upload Function List."}), 400
+    p = _forecast_manpower_params()
+    data = _filter_parsed_data(
+        state["data"],
+        modules=p["modules"],
+        processes=p["processes"],
+        pics=p["pics"],
+    )
+    result = compute_forecast_manpower(
+        data,
+        basis=p["basis"],
+        display_unit=p["display_unit"],
+        default_mh=p["default_mh"],
+        target_months=p["target_months"],
+        headcount=p["headcount"],
+    )
+    try:
+        filepath = export_forecast_manpower(
+            result, app.config["UPLOAD_FOLDER"], mode=p["mode"]
+        )
+        return send_file(
+            filepath,
+            as_attachment=True,
+            download_name=os.path.basename(filepath),
+        )
+    except Exception as e:
+        return jsonify({"error": f"Lỗi khi xuất Excel: {str(e)}"}), 500
+
+
+# ==========================================================================
 # Project stores — capacity / saved views / history / settings / aliases
 # ==========================================================================
 
