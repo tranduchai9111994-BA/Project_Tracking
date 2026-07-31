@@ -118,3 +118,38 @@ def test_export_empty_overdue_still_creates_file(tmp_path):
     """Empty overdue list vẫn tạo file (không crash)."""
     path = export_overdue_report([], str(tmp_path))
     assert os.path.exists(path)
+
+
+def test_export_task_type_chart_detail_sheet(tmp_path, parsed_data, metrics):
+    """export_chart(task_type) có Chi_tiet với cột status + đủ số function."""
+    from exporter.excel_exporter import export_chart, build_task_type_detail_rows
+
+    tt, rows = build_task_type_detail_rows(parsed_data)
+    assert "Phân tích" in tt
+    assert "Lập trình" in tt
+    assert len(rows) == len(parsed_data.rows)
+    assert rows[0]["statuses"]["Phân tích"] == "Closed"
+
+    path = export_chart(
+        "task_type",
+        metrics,
+        output_dir=str(tmp_path),
+        parsed_data=parsed_data,
+        group_by="module",
+    )
+    assert os.path.exists(path)
+    wb = openpyxl.load_workbook(path)
+    assert set(wb.sheetnames) >= {"Tong_hop", "Theo_nhom", "Chi_tiet"}
+    ws = wb["Chi_tiet"]
+    headers = [c.value for c in ws[4]]
+    assert "Phân tích" in headers
+    assert "Lập trình" in headers
+    assert "UAT" in headers
+    # Đếm data rows
+    n = 0
+    for row in ws.iter_rows(min_row=5, values_only=True):
+        if row[0] is None or (isinstance(row[0], str) and str(row[0]).startswith("Tổng")):
+            break
+        n += 1
+    assert n == len(parsed_data.rows)
+    wb.close()

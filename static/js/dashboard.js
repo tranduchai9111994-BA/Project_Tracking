@@ -5298,6 +5298,7 @@ async function downloadFile(url, defaultName) {
 /**
  * Xuất Excel cho 1 chart chính (module_overview, task_type, effort_heatmap…).
  * Dùng API /api/projects/<slug>/export-chart — áp dụng global filter hiện tại nếu có.
+ * task_type: thêm group_by (Module/Quy trình) khớp toggle UI → sheet Chi_tiet status.
  */
 async function exportChartData(chartKey) {
     if (!metricsData) {
@@ -5310,6 +5311,9 @@ async function exportChartData(chartKey) {
     if (globalFilters.processes.length) params.set("process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) params.set("pic", globalFilters.pics.join(","));
     if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
+    if (chartKey === "task_type") {
+        params.set("group_by", (typeof _taskTypeGroupBy !== "undefined" && _taskTypeGroupBy) || "module");
+    }
     await downloadFile(
         `/api/projects/${currentProjectSlug}/export-chart?${params.toString()}`,
         `Chart_${chartKey}.xlsx`

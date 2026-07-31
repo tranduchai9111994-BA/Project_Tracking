@@ -68,6 +68,66 @@ def test_export_chart_post_body(flask_client, sample_xlsx_path):
     assert r.data[:2] == b"PK"
 
 
+def test_export_task_type_detail_status_columns(flask_client, sample_xlsx_path):
+    """task_type export có sheet Chi_tiet với cột status work-bucket + số row khớp filter."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get(
+        "/api/projects/default/export-chart?chart=task_type&module=TMS"
+    )
+    assert r.status_code == 200
+    assert r.data[:2] == b"PK"
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    assert "Tong_hop" in wb.sheetnames
+    assert "Chi_tiet" in wb.sheetnames
+    ws = wb["Chi_tiet"]
+    # Header row 4 (title/subtitle/_write_sheet convention)
+    headers = [c.value for c in ws[4]]
+    assert "Mã CN" in headers
+    assert "Tên chức năng" in headers
+    assert "Module" in headers
+    # Work-bucket status columns từ sample: Phân tích / Lập trình / UAT
+    status_cols = {"Phân tích", "Lập trình", "UAT"}
+    assert status_cols.issubset(set(headers))
+    # Data rows (sau header) — sample có 2 function TMS
+    data_rows = []
+    for row in ws.iter_rows(min_row=5, values_only=True):
+        if row[0] is None:
+            break
+        # Summary row bắt đầu bằng "Tổng:"
+        if isinstance(row[0], str) and row[0].startswith("Tổng"):
+            break
+        data_rows.append(row)
+    assert len(data_rows) == 2
+    module_idx = headers.index("Module")
+    assert all(row[module_idx] == "TMS" for row in data_rows)
+    # Status cells không phải số (đã chuẩn hóa Closed / In-progress / … / blank)
+    phan_tich_idx = headers.index("Phân tích")
+    statuses = {row[phan_tich_idx] for row in data_rows}
+    assert "Closed" in statuses
+    wb.close()
+
+
+def test_export_task_type_filter_row_count(flask_client, sample_xlsx_path):
+    """Filter Module=PR → Chi_tiet chỉ còn function PR (sample: 1 row)."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.post(
+        "/api/projects/default/export-chart",
+        json={"chart": "task_type", "module": ["PR"], "group_by": "module"},
+    )
+    assert r.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    ws = wb["Chi_tiet"]
+    headers = [c.value for c in ws[4]]
+    ma_idx = headers.index("Mã CN")
+    codes = []
+    for row in ws.iter_rows(min_row=5, values_only=True):
+        if row[0] is None or (isinstance(row[0], str) and str(row[0]).startswith("Tổng")):
+            break
+        codes.append(row[ma_idx])
+    assert codes == ["PR.FR.03"]
+    wb.close()
+
+
 # ==========================================================================
 # GET/POST /api/projects/<slug>/audit-report
 # ==========================================================================

@@ -1147,16 +1147,94 @@ SUPPORTED_EXPORT_CHARTS = {
 }
 
 
+def _normalize_export_status(status: Any) -> str:
+    """Chuẩn hóa status phase cho Excel (bỏ số lệch cột, map alias)."""
+    from parser.excel_parser import VALID_STATUSES, STATUS_ALIASES
+
+    if status is None:
+        return ""
+    s = str(status).strip()
+    if not s or s.isdigit():
+        return ""
+    alias = STATUS_ALIASES.get(s.lower())
+    if alias:
+        return alias
+    for valid in VALID_STATUSES:
+        if s.lower() == valid.lower():
+            return valid
+    return s
+
+
+def _status_for_task_type(row, phase_names: list[str]) -> str:
+    """Gộp status các phase thuộc 1 work bucket (1 phase → 1 status; nhiều → join)."""
+    statuses: list[str] = []
+    seen: set[str] = set()
+    for ph in phase_names:
+        pd = (row.phases or {}).get(ph)
+        if pd is None:
+            continue
+        st = _normalize_export_status(getattr(pd, "status", None))
+        if st and st not in seen:
+            seen.add(st)
+            statuses.append(st)
+    return " | ".join(statuses)
+
+
+def build_task_type_detail_rows(parsed_data) -> tuple[list[str], list[dict[str, Any]]]:
+    """
+    Build danh sách function × status theo loại công việc.
+
+    Returns:
+        (task_types, rows) — mỗi row: meta + statuses[task_type] = status chuẩn hóa.
+    """
+    from analyzer.rlog_weekly import _row_rlog_id
+
+    task_types: list[str] = []
+    task_phase_map: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    for pg in getattr(parsed_data, "phase_groups", []) or []:
+        tt = pg.task_type
+        task_phase_map.setdefault(tt, []).append(pg.name)
+        if tt not in seen:
+            task_types.append(tt)
+            seen.add(tt)
+
+    rows: list[dict[str, Any]] = []
+    for r in getattr(parsed_data, "rows", []) or []:
+        meta = r.meta or {}
+        rlog = _row_rlog_id(r) or ""
+        statuses = {
+            tt: _status_for_task_type(r, task_phase_map.get(tt) or [])
+            for tt in task_types
+        }
+        rows.append({
+            "ma_cn": meta.get("ma_cn") or "",
+            "ten_cn": meta.get("ten_cn") or "",
+            "module": meta.get("module") or "",
+            "quy_trinh": meta.get("quy_trinh") or "",
+            "priority": meta.get("priority") or "",
+            "complexity": meta.get("complexity") or "",
+            "ma_du_an": meta.get("ma_du_an") or "",
+            "rlog_id": rlog,
+            "statuses": statuses,
+        })
+    return task_types, rows
+
+
 def export_chart(
     chart: str,
     metrics: dict[str, Any],
     output_dir: str = "uploads",
     subtitle: str = "",
+    parsed_data=None,
+    group_by: str = "module",
 ) -> str:
     """
     Xuất 1 sheet Excel cho chart cụ thể từ metrics đã compute.
 
     chart: xem SUPPORTED_EXPORT_CHARTS
+    parsed_data: optional ParsedData — dùng cho sheet chi tiết (task_type).
+    group_by: "module" | "process" — nhóm summary task_type (khớp toggle UI).
     """
     if chart not in SUPPORTED_EXPORT_CHARTS:
         raise ValueError(f"Chart không hỗ trợ: {chart}. Hỗ trợ: {sorted(SUPPORTED_EXPORT_CHARTS)}")
@@ -1271,19 +1349,87 @@ def export_chart(
         _write_sheet(ws, "TIẾN ĐỘ THEO PHASE (Status count)", columns, data_rows, subtitle=sub)
 
     elif chart == "task_type":
-        ws.title = "Task_Type"
+        # Sheet 1 — summary % Closed (giống chart bar: trung bình theo nhóm)
+        ws.title = "Tong_hop"
         d = metrics.get("progress_by_task_type") or {}
         task_types = d.get("task_types") or []
-        by_module = d.get("by_module") or {}
-        modules = list(by_module.keys())
-        columns = [("Module", 12)] + [(tt, 14) for tt in task_types]
-        data_rows = []
-        for m in modules:
-            row = [m]
+        gb = (group_by or "module").strip().lower()
+        by_source = (d.get("by_process") if gb == "process" else d.get("by_module")) or {}
+        groups = list(by_source.keys())
+        summary_rows = []
+        for tt in task_types:
+            vals = [
+                by_source[g].get(tt)
+                for g in groups
+                if isinstance(by_source.get(g), dict) and by_source[g].get(tt) is not None
+            ]
+            avg = round(sum(vals) / len(vals), 2) if vals else 0
+            summary_rows.append([tt, avg])
+        _write_sheet(
+            ws,
+            "TIẾN ĐỘ THEO CÔNG VIỆC (% Closed trung bình)",
+            [("Loại công việc", 24), ("% Closed", 12)],
+            summary_rows,
+            subtitle=sub,
+        )
+
+        # Sheet phụ — matrix theo Module / Quy trình (giống export cũ)
+        group_label = "Quy trình" if gb == "process" else "Module"
+        ws_mat = wb.create_sheet("Theo_nhom")
+        columns_mat = [(group_label, 18)] + [(tt, 14) for tt in task_types]
+        matrix_rows = []
+        for g in groups:
+            row = [g]
             for tt in task_types:
-                row.append((by_module.get(m) or {}).get(tt, 0))
-            data_rows.append(row)
-        _write_sheet(ws, "TIẾN ĐỘ THEO CÔNG VIỆC (% Closed)", columns, data_rows, subtitle=sub)
+                row.append((by_source.get(g) or {}).get(tt, 0))
+            matrix_rows.append(row)
+        _write_sheet(
+            ws_mat,
+            f"TIẾN ĐỘ THEO CÔNG VIỆC — theo {group_label} (% Closed)",
+            columns_mat,
+            matrix_rows,
+            subtitle=sub,
+        )
+
+        # Sheet chính — mỗi function × status từng loại việc
+        if parsed_data is not None:
+            tt_detail, detail_items = build_task_type_detail_rows(parsed_data)
+            # Ưu tiên thứ tự task_types từ metrics; bổ sung nếu parser có thêm
+            tt_cols = list(task_types) if task_types else list(tt_detail)
+            for tt in tt_detail:
+                if tt not in tt_cols:
+                    tt_cols.append(tt)
+            ws_det = wb.create_sheet("Chi_tiet")
+            columns_det = [
+                ("STT", 6),
+                ("Mã CN", 14),
+                ("Rlog ID", 14),
+                ("Tên chức năng", 40),
+                ("Module", 10),
+                ("Quy trình", 22),
+                ("Priority", 12),
+                ("Mã dự án", 22),
+            ] + [(tt, 14) for tt in tt_cols]
+            detail_rows = []
+            for idx, it in enumerate(detail_items):
+                st_map = it.get("statuses") or {}
+                detail_rows.append([
+                    idx + 1,
+                    it.get("ma_cn", ""),
+                    it.get("rlog_id", ""),
+                    it.get("ten_cn", ""),
+                    it.get("module", ""),
+                    it.get("quy_trinh", ""),
+                    it.get("priority", ""),
+                    it.get("ma_du_an", ""),
+                ] + [st_map.get(tt, "") for tt in tt_cols])
+            _write_sheet(
+                ws_det,
+                "CHI TIẾT CHỨC NĂNG — Status theo loại công việc",
+                columns_det,
+                detail_rows,
+                subtitle=sub,
+            )
 
     elif chart == "priority":
         ws.title = "Priority"

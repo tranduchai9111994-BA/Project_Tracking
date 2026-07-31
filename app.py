@@ -2006,6 +2006,7 @@ def export_chart_endpoint(slug):
     Xuất Excel 1 chart từ metrics.
     Query/body: chart (bắt buộc) + optional module/process/pic filters.
     Khi có filter → recompute metrics trên subset rồi export.
+    task_type: thêm sheet Chi_tiet (status theo loại việc); group_by=module|process.
     """
     st, err = _need_state(slug)
     if err:
@@ -2018,6 +2019,7 @@ def export_chart_endpoint(slug):
         fprocesses = body.get("processes") or body.get("process") or []
         fpics = body.get("pics") or body.get("pic") or []
         fproject_codes = _project_codes_from_body(body)
+        group_by = (body.get("group_by") or "module").strip().lower()
         if isinstance(fmodules, str):
             fmodules = [x.strip() for x in fmodules.split(",") if x.strip()]
         if isinstance(fprocesses, str):
@@ -2030,6 +2032,7 @@ def export_chart_endpoint(slug):
         fprocesses = _parse_multi_arg("process")
         fpics = _parse_multi_arg("pic")
         fproject_codes = _parse_project_code_args()
+        group_by = (request.args.get("group_by") or "module").strip().lower()
 
     if not chart:
         return jsonify({"error": "Thiếu tham số chart"}), 400
@@ -2046,6 +2049,7 @@ def export_chart_endpoint(slug):
                 project_codes=fproject_codes,
             )
             metrics = DashboardEngine().compute_all(filtered)
+            data_for_export = filtered
             subtitle = (
                 f"Filter: module={fmodules or '-'} · process={fprocesses or '-'} · "
                 f"pic={fpics or '-'} · project_code={fproject_codes or '-'} · "
@@ -2053,6 +2057,7 @@ def export_chart_endpoint(slug):
             )
         else:
             metrics = st["metrics"]
+            data_for_export = st["data"]
             subtitle = ""
 
         filepath = export_chart(
@@ -2060,6 +2065,8 @@ def export_chart_endpoint(slug):
             metrics=metrics,
             output_dir=_project_mgr.get_export_dir(slug),
             subtitle=subtitle,
+            parsed_data=data_for_export if chart == "task_type" else None,
+            group_by=group_by if chart == "task_type" else "module",
         )
         return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
     except ValueError as e:
