@@ -105,16 +105,17 @@ def compute_risk_score(
         factors.append("Duration bất thường")
         breakdown["long_duration"] = 10
 
-    # === Stalled ===
+    # === Stalled (bỏ qua nếu đã Closed hết / phase cuối Closed) ===
+    from analyzer.stalled import is_fully_closed, is_stalled_transition
+
     stalled = False
-    for i in range(len(phase_names) - 1):
-        curr = row.phases.get(phase_names[i])
-        nxt = row.phases.get(phase_names[i + 1])
-        curr_done = curr and curr.status == "Closed"
-        next_not_started = (not nxt) or (nxt.status in (None, "Open"))
-        if curr_done and next_not_started:
-            stalled = True
-            break
+    if not is_fully_closed(row, phase_names):
+        for i in range(len(phase_names) - 1):
+            curr = row.phases.get(phase_names[i])
+            nxt = row.phases.get(phase_names[i + 1])
+            if is_stalled_transition(curr, nxt):
+                stalled = True
+                break
     if stalled:
         score += 10
         factors.append("Bị đình trệ")

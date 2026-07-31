@@ -7537,8 +7537,8 @@ const CHART_HELP = {
     },
     "section-stalled": {
         title: "🔄 Task bị đình trệ",
-        meaning: "Function bị kẹt giữa hai phase: phase trước đã xong nhưng phase sau chưa ai bắt đầu.",
-        logic: "Với mỗi cặp phase liền nhau: phase trước Status Closed, phase sau chưa có tiến triển → tính số ngày chờ = hôm nay − ngày End của phase trước.",
+        meaning: "Function bị kẹt giữa hai phase: phase trước đã xong nhưng phase sau chưa ai bắt đầu. Đã Closed hết (hoặc phase cuối Closed) thì không vào list.",
+        logic: "Với mỗi cặp phase liền nhau: phase trước Status Closed, phase sau chưa có tiến triển → tính số ngày chờ = hôm nay − ngày End của phase trước. Loại function có phase cuối Closed hoặc mọi phase Closed/Cancelled.",
         example: "HR-045 Analysis Closed 01/07, Dev vẫn Open → chờ 27 ngày, cần escalate.",
         note: "Chờ > 7 ngày tô cam, > 14 ngày tô đỏ. Danh sách transitions cho biết chặng chuyển giao nào tắc nhiều nhất."
     },

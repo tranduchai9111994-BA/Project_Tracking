@@ -404,15 +404,16 @@ const HELP_CONTENT = {
     "stalled": {
         category: "Danh sách vấn đề",
         title: "Task bị đình trệ",
-        purpose: "Phát hiện function bị kẹt giữa hai phase: phase trước đã Closed nhưng phase kế tiếp chưa ai bắt đầu — bottleneck chuyển giao.",
+        purpose: "Phát hiện function bị kẹt giữa hai phase: phase trước đã Closed nhưng phase kế tiếp chưa ai bắt đầu — bottleneck chuyển giao. Bỏ qua function đã xong toàn trình (phase cuối Closed, hoặc mọi phase Closed/Cancelled).",
         steps: [
             "Với mỗi cặp phase liền nhau: phase trước Status = Closed, phase sau chưa có tiến triển → vào danh sách",
+            "Nếu Golive (phase cuối) đã Closed, hoặc mọi phase Closed/Cancelled → không đưa vào list/transitions",
             "Cột 'Chờ (ngày)' = hôm nay − ngày End của phase đã Closed; sort giảm dần theo wait_days",
             "Funnel chart (trái): tổng số function Closed theo từng phase",
             "Transitions (phải): cặp 'từ → sang' bị kẹt nhiều nhất",
             "Bấm Chi tiết / 📥 để drill-down hoặc xuất Excel",
         ],
-        example: "HR-045 Analysis Closed 01/07, Dev vẫn Open → chờ 27 ngày → cần escalate Dev team. 10 function Closed Analysis chưa vào Dev = bottleneck lớn.",
+        example: "HR-045 Analysis Closed 01/07, Dev vẫn Open → chờ 27 ngày → cần escalate Dev team. Function đã Golive Closed dù Dev blank → không vào list.",
         tips: [
             "Wait_days > 7 tô cam, > 14 tô đỏ — ưu tiên escalate dòng đỏ trước",
             "Transitions cho biết chặng chuyển giao nào tắc nhiều nhất",

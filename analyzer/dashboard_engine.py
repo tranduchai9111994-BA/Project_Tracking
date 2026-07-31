@@ -800,9 +800,11 @@ class DashboardEngine:
     def _stalled_tasks(self, data: ParsedData) -> dict:
         """
         Function bị kẹt: phase trước Closed nhưng phase sau vẫn None/Open.
-        Kèm funnel data (số function Closed mỗi phase) và transition heatmap.
+        Bỏ qua function đã xong toàn trình (phase cuối Closed, hoặc mọi
+        phase Closed/Cancelled). Kèm funnel Closed/phase + transition heatmap.
         """
         from analyzer.gantt_calendar import _is_outlier_date
+        from analyzer.stalled import is_fully_closed, is_stalled_transition
 
         items = []
         phase_names = [pg.name for pg in data.phase_groups]
@@ -819,34 +821,35 @@ class DashboardEngine:
         # Detect stalled + transition matrix
         transition = defaultdict(int)  # (from_phase, to_phase) -> count stalled
         for r in data.rows:
+            if is_fully_closed(r, phase_names):
+                continue
             for i in range(len(phase_names) - 1):
                 curr = phase_names[i]
                 nxt = phase_names[i + 1]
                 curr_pd = r.phases.get(curr)
                 next_pd = r.phases.get(nxt)
 
-                curr_done = curr_pd and curr_pd.status == "Closed"
-                next_not_started = (not next_pd) or (next_pd.status in (None, "Open"))
+                if not is_stalled_transition(curr_pd, next_pd):
+                    continue
 
-                if curr_done and next_not_started:
-                    wait_days = 0
-                    # Bỏ date outlier (VD 1936-03-26) khi tính Chờ (ngày) —
-                    # cùng logic Gantt `_is_outlier_date`.
-                    if curr_pd.end_date and not _is_outlier_date(curr_pd.end_date, self.today):
-                        wait_days = (self.today - curr_pd.end_date).days
+                wait_days = 0
+                # Bỏ date outlier (VD 1936-03-26) khi tính Chờ (ngày) —
+                # cùng logic Gantt `_is_outlier_date`.
+                if curr_pd.end_date and not _is_outlier_date(curr_pd.end_date, self.today):
+                    wait_days = (self.today - curr_pd.end_date).days
 
-                    transition[(curr, nxt)] += 1
+                transition[(curr, nxt)] += 1
 
-                    items.append({
-                        "ma_cn": r.meta.get("ma_cn", ""),
-                        "ten_cn": r.meta.get("ten_cn", ""),
-                        "module": r.meta.get("module", ""),
-                        "completed_phase": curr,
-                        "waiting_phase": nxt,
-                        "completed_date": curr_pd.end_date.isoformat() if curr_pd.end_date else "",
-                        "wait_days": wait_days,
-                        "priority": r.meta.get("priority", ""),
-                    })
+                items.append({
+                    "ma_cn": r.meta.get("ma_cn", ""),
+                    "ten_cn": r.meta.get("ten_cn", ""),
+                    "module": r.meta.get("module", ""),
+                    "completed_phase": curr,
+                    "waiting_phase": nxt,
+                    "completed_date": curr_pd.end_date.isoformat() if curr_pd.end_date else "",
+                    "wait_days": wait_days,
+                    "priority": r.meta.get("priority", ""),
+                })
 
         items.sort(key=lambda x: x["wait_days"], reverse=True)
 

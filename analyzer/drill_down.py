@@ -500,9 +500,11 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
 def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
     """
     Function bị kẹt: phase trước Closed, phase sau None/Open.
+    Bỏ qua function đã xong toàn trình (phase cuối Closed / all Closed|Cancelled).
     Optional phase = completed_phase hoặc waiting_phase.
     """
     from analyzer.gantt_calendar import _is_outlier_date
+    from analyzer.stalled import is_fully_closed, is_stalled_transition
 
     phase_f = filters.get("phase", "")
     module = filters.get("module", "")
@@ -511,6 +513,8 @@ def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
     for row in data.rows:
         if module and row.meta.get("module") != module:
             continue
+        if is_fully_closed(row, phase_names):
+            continue
         for i in range(len(phase_names) - 1):
             curr = phase_names[i]
             nxt = phase_names[i + 1]
@@ -518,9 +522,7 @@ def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
                 continue
             curr_pd = row.phases.get(curr)
             next_pd = row.phases.get(nxt)
-            curr_done = curr_pd and curr_pd.status == "Closed"
-            next_not_started = (not next_pd) or (next_pd.status in (None, "Open"))
-            if not (curr_done and next_not_started):
+            if not is_stalled_transition(curr_pd, next_pd):
                 continue
             # Hiện phase đang chờ (waiting)
             item = _row_to_dict(row, phase_name=nxt, today=today)
