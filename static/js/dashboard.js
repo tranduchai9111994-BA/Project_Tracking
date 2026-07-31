@@ -4201,14 +4201,14 @@ function renderProcessTreemap() {
         <div class="flex flex-wrap gap-1" style="min-height:300px;">
             ${items.map(i => {
                 const width = Math.max(10, (i.total / totalFuncs) * 100);
-                const color = i.pct_closed >= 80 ? "#16a34a"
-                            : i.pct_closed >= 50 ? "#eab308"
-                            : i.pct_closed >= 20 ? "#f97316" : "#ef4444";
+                // Nền pastel + chữ tối (WCAG-ish) — tránh cam neon + white mỏng.
+                // Giữ 4 bậc semantic theo % Closed: đỏ → cam → vàng → xanh.
+                const tone = _processTreemapTone(i.pct_closed);
                 const ord = _processModuleOrderNum(i.modules);
                 const ordBadge = ord
                     ? `<span class="tm-order" title="Thứ tự module (module_order)">#${ord}</span> `
                     : "";
-                return `<div class="treemap-cell cursor-pointer" style="flex-basis:calc(${width}% - 4px);min-width:150px;min-height:80px;background:${color};"
+                return `<div class="treemap-cell cursor-pointer" style="flex-basis:calc(${width}% - 4px);min-width:150px;min-height:80px;background:${tone.bg};color:${tone.fg};border-left:4px solid ${tone.accent};"
                     onclick="openDrillDown('process', {process: '${escapeAttr(i.process)}'})"
                     title="Click để xem ${escapeAttr(i.process)}">
                     <div class="tm-title" title="${escapeHtml(i.process)}">${ordBadge}${escapeHtml(shortenProcess(i.process))}</div>
@@ -4217,6 +4217,18 @@ function renderProcessTreemap() {
                 </div>`;
             }).join("")}
         </div>`;
+}
+
+/**
+ * Tone pastel cho Process treemap — nền nhạt + chữ tối, accent theo % Closed.
+ * @returns {{ bg: string, fg: string, accent: string }}
+ */
+function _processTreemapTone(pct) {
+    const p = Number(pct) || 0;
+    if (p >= 80) return { bg: "#dcfce7", fg: "#14532d", accent: "#16a34a" };
+    if (p >= 50) return { bg: "#fef9c3", fg: "#713f12", accent: "#ca8a04" };
+    if (p >= 20) return { bg: "#ffedd5", fg: "#9a3412", accent: "#ea580c" };
+    return { bg: "#fee2e2", fg: "#991b1b", accent: "#dc2626" };
 }
 
 function shortenProcess(name) {
