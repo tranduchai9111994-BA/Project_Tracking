@@ -1841,6 +1841,7 @@ def export_weekly_mom(
     project_code: str = "",
     parsed_data=None,
     today: Optional[date] = None,
+    pm_plan: Optional[dict] = None,
 ) -> str:
     """
     Sinh workbook báo cáo tuần MoM (mẫu W30) + Master/Gantt + Risk + PM Dashboard.
@@ -1851,6 +1852,7 @@ def export_weekly_mom(
         project_code: mã dự án (slug hoặc tên) — hiện trên Cover
         parsed_data: ParsedData optional — kế hoạch tuần / PIC / Master plan
         today: ngày báo cáo (test có thể cố định)
+        pm_plan: dict kế hoạch chiều PM (KeHoachDuAn) — nếu có, thêm sheet PM Lịch trình
 
     Returns:
         Đường dẫn file .xlsx đã lưu.
@@ -1869,6 +1871,8 @@ def export_weekly_mom(
     _write_mom_sheet(wb, meeting_sheet, week_label, today, metrics or {}, parsed_data)
     _write_risk_sheet(wb, metrics or {}, today, week_label, parsed_data=parsed_data)
     _write_pm_dashboard(wb, metrics or {}, today, week_label)
+    if pm_plan and (pm_plan.get("schedule") or pm_plan.get("milestones")):
+        _write_pm_kehoach_sheet(wb, pm_plan)
 
     os.makedirs(output_dir, exist_ok=True)
     safe_code = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in code)[:40]
@@ -1876,3 +1880,62 @@ def export_weekly_mom(
     filepath = os.path.join(output_dir, filename)
     wb.save(filepath)
     return filepath
+
+
+def _write_pm_kehoach_sheet(wb, pm_plan: dict) -> None:
+    """Sheet bổ sung từ KeHoachDuAn (chiều PM) — không thay Master plan FL."""
+    ws = wb.create_sheet("PM Lịch trình")
+    ws["A1"] = "Lịch trình từ kế hoạch dự án (KeHoachDuAn)"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:H1")
+    headers = [
+        "Giai đoạn", "Công việc", "Từ ngày", "Đến ngày",
+        "PIC FPT", "Hỗ trợ FPT", "PIC KH", "Ghi chú",
+    ]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(3, c, h)
+        cell.fill = MOM_HEADER_FILL
+        cell.font = MOM_HEADER_FONT
+        cell.alignment = MOM_HEADER_ALIGN
+        cell.border = THIN_BORDER
+
+    row = 4
+    for item in pm_plan.get("schedule") or []:
+        vals = [
+            item.get("phase") or "",
+            item.get("name") or "",
+            item.get("start") or "",
+            item.get("end") or "",
+            ", ".join(item.get("pic_fpt") or []),
+            ", ".join(item.get("support_fpt") or []),
+            ", ".join(item.get("pic_client") or []),
+            item.get("note") or "",
+        ]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row, c, v)
+            cell.border = THIN_BORDER
+            cell.alignment = LEFT_TOP
+            cell.font = BODY_MOM_FONT
+            if item.get("is_phase_header"):
+                cell.fill = SECTION_FILL
+                cell.font = BODY_MOM_BOLD
+        row += 1
+
+    if not pm_plan.get("schedule") and pm_plan.get("milestones"):
+        ws.cell(3, 1, "STT")
+        ws.cell(3, 2, "Milestone (WBS)")
+        for c in (1, 2):
+            ws.cell(3, c).fill = MOM_HEADER_FILL
+            ws.cell(3, c).font = MOM_HEADER_FONT
+        row = 4
+        for m in pm_plan["milestones"]:
+            ws.cell(row, 1, m.get("stt") or "")
+            ws.cell(row, 2, m.get("name") or "")
+            row += 1
+
+    for col, width in enumerate([22, 45, 12, 12, 18, 18, 18, 25], 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    src = pm_plan.get("source_filename") or ""
+    imported = pm_plan.get("imported_at") or ""
+    ws.cell(row + 1, 1, f"Nguồn: {src} | Import: {imported}")
+    ws.cell(row + 1, 1).font = NOTE_FONT

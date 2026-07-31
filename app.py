@@ -13,6 +13,7 @@ V2 features:
 """
 import io
 import os
+import re
 import sys
 import shutil
 import tempfile
@@ -55,6 +56,7 @@ from exporter.excel_exporter import (
     SUPPORTED_EXPORT_CHARTS,
 )
 from exporter.weekly_mom import export_weekly_mom
+from exporter.pm_exporter import export_pm_report
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(__file__), "uploads")
@@ -1844,19 +1846,212 @@ def export_weekly_mom_api(slug=None):
     if err:
         return err
     try:
+        from analyzer import pm_store as _pm_store
         proj = _project_mgr.get_project(slug)
         project_code = (proj.name if proj else None) or slug
+        pdir = _project_mgr.get_project_folder(slug)
+        pm_plan = _pm_store.load_plan(pdir)
         filepath = export_weekly_mom(
             st["metrics"],
             _project_mgr.get_export_dir(slug),
             project_code=project_code,
             parsed_data=st.get("data"),
+            pm_plan=pm_plan,
         )
         return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"error": f"Lỗi khi xuất MoM tuần: {str(e)}"}), 500
+
+
+# ==========================================================================
+# Chiều PM — Kế hoạch dự án (Excel) + Weekly Report (PPT)
+# ==========================================================================
+
+def _pm_save_tmp(file_storage, allowed_ext: tuple[str, ...]) -> tuple:
+    """Lưu file upload vào uploads/tmp/. Return (tmp_id, filename, path) | (None, err, status)."""
+    import uuid as _uuid
+    if not file_storage or not file_storage.filename:
+        return None, "Chưa chọn file", 400
+    fname = file_storage.filename
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in allowed_ext:
+        return None, f"Chỉ hỗ trợ file {', '.join(allowed_ext)}", 400
+    tmp_dir = os.path.join(app.config["UPLOAD_FOLDER"], "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    _prune_old_tmp_uploads()
+    tmp_id = _uuid.uuid4().hex[:16]
+    tmp_path = os.path.join(tmp_dir, f"{tmp_id}{ext}")
+    file_storage.save(tmp_path)
+    return tmp_id, fname, tmp_path
+
+
+def _pm_tmp_path(tmp_id: str) -> Optional[str]:
+    """Tìm file tmp theo id (xlsx/pptx/xls)."""
+    if not tmp_id or not re.fullmatch(r"[0-9a-f]{8,32}", tmp_id):
+        return None
+    tmp_dir = os.path.join(app.config["UPLOAD_FOLDER"], "tmp")
+    for ext in (".xlsx", ".pptx", ".xls"):
+        fp = os.path.join(tmp_dir, f"{tmp_id}{ext}")
+        if os.path.isfile(fp):
+            return fp
+    return None
+
+
+@app.route("/api/projects/<slug>/pm", methods=["GET"])
+def pm_get(slug: str):
+    """Lấy bundle chiều PM đã lưu (+ optional join Function List)."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    from analyzer import pm_store as _pm_store
+    pdir = _project_mgr.get_project_folder(slug)
+    bundle = _pm_store.load_pm_bundle(pdir)
+    st = _get_state(slug)
+    fl_links = _pm_store.link_with_function_list(
+        bundle.get("plan"),
+        bundle.get("weekly"),
+        st.get("data") if st else None,
+    )
+    bundle["fl_links"] = fl_links
+    return jsonify(bundle)
+
+
+@app.route("/api/projects/<slug>/pm/plan/preview", methods=["POST"])
+def pm_plan_preview(slug: str):
+    """Upload KeHoachDuAn → đề xuất sheet mapping."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    from parser.pm_plan_parser import preview_plan_workbook
+    if "file" not in request.files:
+        return jsonify({"error": "Không tìm thấy file"}), 400
+    tmp_id, fname, tmp_path = _pm_save_tmp(request.files["file"], (".xlsx", ".xls"))
+    if tmp_id is None:
+        return jsonify({"error": fname}), tmp_path  # fname=err, tmp_path=status
+    try:
+        preview = preview_plan_workbook(tmp_path)
+    except Exception as e:
+        return jsonify({"error": f"Không đọc được Excel: {e}"}), 400
+    return jsonify({"tmp_id": tmp_id, "filename": fname, **preview})
+
+
+@app.route("/api/projects/<slug>/pm/plan/confirm", methods=["POST"])
+def pm_plan_confirm(slug: str):
+    """Xác nhận mapping + parse + lưu plan.json."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    from parser.pm_plan_parser import parse_plan, propose_sheet_mapping
+    from analyzer import pm_store as _pm_store
+    body = request.get_json(silent=True) or {}
+    tmp_id = (body.get("tmp_id") or "").strip()
+    tmp_path = _pm_tmp_path(tmp_id)
+    if not tmp_path:
+        return jsonify({"error": "tmp_id không hợp lệ hoặc file tạm đã hết hạn"}), 400
+    mapping = body.get("sheet_mapping") or {}
+    if not isinstance(mapping, dict):
+        mapping = {}
+    try:
+        parsed = parse_plan(tmp_path, sheet_mapping=mapping or None)
+        if not mapping:
+            parsed["sheet_mapping"] = propose_sheet_mapping(parsed.get("sheet_names") or [])
+        pdir = _project_mgr.get_project_folder(slug)
+        saved = _pm_store.save_plan(
+            pdir, parsed,
+            source_filename=body.get("filename") or os.path.basename(tmp_path),
+            source_path=tmp_path,
+        )
+        return jsonify({
+            "ok": True,
+            "summary": saved.get("summary"),
+            "sheet_mapping": saved.get("sheet_mapping"),
+            "imported_at": saved.get("imported_at"),
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi parse kế hoạch: {e}"}), 500
+
+
+@app.route("/api/projects/<slug>/pm/weekly/preview", methods=["POST"])
+def pm_weekly_preview(slug: str):
+    """Upload Weekly PPT → tóm tắt slides."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    from parser.pm_weekly_parser import preview_weekly
+    if "file" not in request.files:
+        return jsonify({"error": "Không tìm thấy file"}), 400
+    tmp_id, fname, tmp_path = _pm_save_tmp(request.files["file"], (".pptx",))
+    if tmp_id is None:
+        return jsonify({"error": fname}), tmp_path
+    try:
+        preview = preview_weekly(tmp_path)
+    except Exception as e:
+        return jsonify({"error": f"Không đọc được PPT: {e}"}), 400
+    return jsonify({"tmp_id": tmp_id, "filename": fname, **preview})
+
+
+@app.route("/api/projects/<slug>/pm/weekly/confirm", methods=["POST"])
+def pm_weekly_confirm(slug: str):
+    """Parse + lưu weekly.json."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    from parser.pm_weekly_parser import parse_weekly
+    from analyzer import pm_store as _pm_store
+    body = request.get_json(silent=True) or {}
+    tmp_id = (body.get("tmp_id") or "").strip()
+    tmp_path = _pm_tmp_path(tmp_id)
+    if not tmp_path:
+        return jsonify({"error": "tmp_id không hợp lệ hoặc file tạm đã hết hạn"}), 400
+    try:
+        parsed = parse_weekly(tmp_path)
+        pdir = _project_mgr.get_project_folder(slug)
+        saved = _pm_store.save_weekly(
+            pdir, parsed,
+            source_filename=body.get("filename") or os.path.basename(tmp_path),
+            source_path=tmp_path,
+        )
+        return jsonify({
+            "ok": True,
+            "summary": saved.get("summary"),
+            "period_start": saved.get("period_start"),
+            "period_end": saved.get("period_end"),
+            "imported_at": saved.get("imported_at"),
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi parse weekly: {e}"}), 500
+
+
+@app.route("/api/projects/<slug>/pm/export", methods=["GET"])
+def pm_export(slug: str):
+    """Xuất Excel tổng hợp chiều PM."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    from analyzer import pm_store as _pm_store
+    pdir = _project_mgr.get_project_folder(slug)
+    plan = _pm_store.load_plan(pdir)
+    weekly = _pm_store.load_weekly(pdir)
+    if not plan and not weekly:
+        return jsonify({"error": "Chưa có dữ liệu chiều PM — hãy import kế hoạch hoặc weekly"}), 400
+    st = _get_state(slug)
+    fl_links = _pm_store.link_with_function_list(
+        plan, weekly, st.get("data") if st else None,
+    )
+    proj = _project_mgr.get_project(slug)
+    project_code = (proj.name if proj else None) or slug
+    try:
+        filepath = export_pm_report(
+            plan, weekly,
+            _project_mgr.get_export_dir(slug),
+            project_code=project_code,
+            fl_links=fl_links,
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi xuất chiều PM: {e}"}), 500
 
 
 # ==========================================================================
@@ -2495,6 +2690,157 @@ def portfolio_rollup():
         "skipped": rollup["skipped"],
         "projects_count": rollup["projects_count"],
     })
+
+
+# ==========================================================================
+# PIC Overload — đa dự án (ngày / tuần / tháng)
+# ==========================================================================
+
+def _pic_overload_thresholds_from_request() -> dict:
+    """Merge settings đã lưu + query/body overrides."""
+    from analyzer.pic_overload import load_overload_settings, merge_thresholds
+    base = load_overload_settings(app.config["PROJECTS_FOLDER"])
+    src = request.args if request.method == "GET" else (request.get_json(silent=True) or {})
+    overrides = {}
+    for k in (
+        "day_max_tasks",
+        "week_min_overload_days",
+        "month_min_overload_days",
+        "week_max_task_days",
+        "month_max_task_days",
+    ):
+        if k in src and src.get(k) not in (None, ""):
+            overrides[k] = src.get(k)
+    if "phase_keywords" in src:
+        overrides["phase_keywords"] = src.get("phase_keywords")
+    return merge_thresholds({**base, **overrides})
+
+
+@app.route("/api/pic-overload/settings", methods=["GET", "PUT"])
+def pic_overload_settings():
+    """Settings ngưỡng PIC Overload (global, đa dự án)."""
+    from analyzer.pic_overload import load_overload_settings, save_overload_settings
+    folder = app.config["PROJECTS_FOLDER"]
+    if request.method == "GET":
+        return jsonify({"success": True, "settings": load_overload_settings(folder)})
+    body = request.get_json(silent=True) or {}
+    saved = save_overload_settings(folder, body)
+    return jsonify({"success": True, "settings": saved})
+
+
+@app.route("/api/pic-overload", methods=["GET"])
+def pic_overload():
+    """
+    PIC Overload đa dự án.
+    Query:
+      grain=day|week|month
+      from=, to= (YYYY-MM-DD)
+      pic= (optional filter)
+      include_archived=0|1
+      day_max_tasks= (override)
+      phase_keywords=Dev,Config (optional)
+    """
+    from analyzer.pic_overload import compute_pic_overload, VALID_GRAINS
+    grain = (request.args.get("grain") or "day").strip().lower()
+    if grain not in VALID_GRAINS:
+        grain = "day"
+    thr = _pic_overload_thresholds_from_request()
+    include_archived = request.args.get("include_archived") in ("1", "true", "yes")
+    pic = (request.args.get("pic") or "").strip() or None
+    try:
+        detail_limit = int(request.args.get("detail_limit") or 5000)
+    except (TypeError, ValueError):
+        detail_limit = 5000
+    detail_limit = max(100, min(detail_limit, 20000))
+
+    result = compute_pic_overload(
+        _project_mgr,
+        _portfolio_state_loader,
+        grain=grain,
+        date_from=request.args.get("from"),
+        date_to=request.args.get("to"),
+        thresholds=thr,
+        pic_filter=pic,
+        include_archived=include_archived,
+        detail_limit=detail_limit,
+    )
+    return jsonify({"success": True, **result})
+
+
+@app.route("/api/pic-overload/export", methods=["GET", "POST"])
+def pic_overload_export():
+    """
+    Xuất Excel PIC Overload.
+    Body/query: grain, from, to, mode=summary|detail|both, include_fl=0|1, pic=
+    """
+    from analyzer.pic_overload import compute_pic_overload, VALID_GRAINS
+    from exporter.pic_overload_exporter import export_pic_overload_report
+
+    body = request.get_json(silent=True) or {}
+    src = {**request.args.to_dict(), **body}
+    grain = (src.get("grain") or "day").strip().lower()
+    if grain not in VALID_GRAINS:
+        grain = "day"
+    mode = (src.get("mode") or "both").strip().lower()
+    include_fl = str(src.get("include_fl") or "0").lower() in ("1", "true", "yes")
+    thr = _pic_overload_thresholds_from_request()
+    # Re-merge body overrides for thresholds
+    for k in (
+        "day_max_tasks",
+        "week_min_overload_days",
+        "month_min_overload_days",
+        "week_max_task_days",
+        "month_max_task_days",
+        "phase_keywords",
+    ):
+        if k in src and src.get(k) not in (None, ""):
+            thr[k] = src[k]
+    from analyzer.pic_overload import merge_thresholds
+    thr = merge_thresholds(thr)
+
+    pic = (src.get("pic") or "").strip() or None
+    result = compute_pic_overload(
+        _project_mgr,
+        _portfolio_state_loader,
+        grain=grain,
+        date_from=src.get("from"),
+        date_to=src.get("to"),
+        thresholds=thr,
+        pic_filter=pic,
+        include_archived=str(src.get("include_archived") or "").lower() in ("1", "true", "yes"),
+    )
+
+    project_data = None
+    project_dirs = None
+    if include_fl:
+        project_data = {}
+        project_dirs = {}
+        slugs = {d.get("project_slug") for d in (result.get("detail") or []) if d.get("project_slug")}
+        for slug in slugs:
+            st = _get_state(slug)
+            if st and st.get("data"):
+                project_data[slug] = st["data"]
+                try:
+                    project_dirs[slug] = _project_dir_for(slug)
+                except Exception:
+                    pass
+
+    try:
+        filepath = export_pic_overload_report(
+            result,
+            output_dir=app.config["UPLOAD_FOLDER"],
+            mode=mode,
+            include_fl=include_fl,
+            project_data=project_data,
+            project_dirs=project_dirs,
+        )
+        return send_file(
+            filepath,
+            as_attachment=True,
+            download_name=os.path.basename(filepath),
+        )
+    except Exception as e:
+        return jsonify({"error": f"Lỗi khi xuất Excel: {str(e)}"}), 500
 
 
 # ==========================================================================

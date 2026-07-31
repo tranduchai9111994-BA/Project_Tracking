@@ -17,6 +17,12 @@ colorama==0.4.6
 openpyxl==3.1.5
 et_xmlfile==2.0.0
 
+# --- PowerPoint (chiều PM — Weekly Report) ---
+python-pptx==1.0.2
+# Transitives của python-pptx (pin loosely — pip resolve sẽ chọn tương thích):
+# lxml, Pillow, XlsxWriter
+
+
 # --- Registry API integrations (T30) ---
 # requests: HTTP client cho luồng login + tải file Excel từ ứng dụng nguồn.
 # beautifulsoup4: parse CSRF token trong HTML form login (fallback regex vẫn

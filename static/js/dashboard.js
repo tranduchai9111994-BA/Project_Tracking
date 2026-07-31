@@ -2067,6 +2067,7 @@ function renderDashboard() {
     _safe("filters", populateFilters);
     _safe("overdue", renderOverdueTable);
     _safe("rlogWeekly", renderRlogWeekly);
+    _safe("pmDimension", loadPmDimension);
 
     // V2 sections
     _safe("unassigned", renderUnassignedSection);
@@ -3376,6 +3377,302 @@ async function exportWeeklyMom() {
     }
 }
 window.exportWeeklyMom = exportWeeklyMom;
+
+
+// ========================================================================
+// Chiều PM — KeHoachDuAn + Weekly PPT
+// ========================================================================
+let _pmPlanPreview = null;   // {tmp_id, filename, proposed_mapping, role_labels, roles}
+let _pmWeeklyPreview = null;
+let _pmData = null;
+
+async function loadPmDimension() {
+    if (!currentProjectSlug) return;
+    try {
+        const res = await fetch(`/api/projects/${currentProjectSlug}/pm`);
+        if (!res.ok) return;
+        _pmData = await res.json();
+        renderPmDimension(_pmData);
+    } catch (err) {
+        console.error("[loadPmDimension]", err);
+    }
+}
+window.loadPmDimension = loadPmDimension;
+
+function renderPmDimension(data) {
+    const plan = data && data.plan;
+    const weekly = data && data.weekly;
+    const links = (data && data.fl_links) || {};
+    const status = document.getElementById("pmStatusLine");
+    const parts = [];
+    if (plan) parts.push(`Kế hoạch: ${plan.source_filename || "—"} (${plan.imported_at || ""})`);
+    if (weekly) {
+        const per = `${weekly.period_start || "?"} → ${weekly.period_end || "?"}`;
+        parts.push(`Weekly: ${weekly.source_filename || "—"} | ${per}`);
+    }
+    if (status) status.textContent = parts.length ? parts.join(" · ") : "Chưa import dữ liệu PM.";
+
+    const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setTxt("pmMilestoneCount", plan ? (plan.milestones || []).length : "—");
+    setTxt("pmScheduleCount", plan ? (plan.schedule || []).length : "—");
+    setTxt("pmDoneCount", weekly ? (weekly.done || []).length : "—");
+    setTxt("pmNextCount", weekly ? (weekly.next || []).length : "—");
+    setTxt("pmPeriodLabel", weekly && weekly.period_start
+        ? `(${weekly.period_start} → ${weekly.period_end || "?"})` : "");
+    setTxt("pmLinkCount", links.link_count ? `(${links.link_count})` : "");
+
+    const esc = (s) => String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    const schedBody = document.getElementById("pmScheduleBody");
+    if (schedBody) {
+        const rows = (plan && plan.schedule) || [];
+        if (!rows.length) {
+            schedBody.innerHTML = `<tr><td colspan="5" class="px-2 py-3 text-gray-400 text-center">Chưa có lịch trình</td></tr>`;
+        } else {
+            schedBody.innerHTML = rows.map((r) => {
+                const cls = r.is_phase_header ? "bg-amber-50 font-semibold" : "";
+                return `<tr class="${cls}">
+                    <td class="px-2 py-1 border-b">${esc(r.name)}</td>
+                    <td class="px-2 py-1 border-b whitespace-nowrap">${esc(r.start || "")}</td>
+                    <td class="px-2 py-1 border-b whitespace-nowrap">${esc(r.end || "")}</td>
+                    <td class="px-2 py-1 border-b">${esc((r.pic_fpt || []).join(", "))}</td>
+                    <td class="px-2 py-1 border-b text-gray-500">${esc(r.phase || "")}</td>
+                </tr>`;
+            }).join("");
+        }
+    }
+
+    const msBody = document.getElementById("pmMilestoneBody");
+    if (msBody) {
+        const rows = (plan && plan.milestones) || [];
+        msBody.innerHTML = rows.length
+            ? rows.map((m) => `<tr><td class="px-2 py-1 border-b">${esc(m.stt)}</td><td class="px-2 py-1 border-b">${esc(m.name)}</td></tr>`).join("")
+            : `<tr><td colspan="2" class="px-2 py-3 text-gray-400 text-center">Chưa có WBS</td></tr>`;
+    }
+
+    const doneBody = document.getElementById("pmDoneBody");
+    if (doneBody) {
+        const rows = (weekly && weekly.done) || [];
+        doneBody.innerHTML = rows.length
+            ? rows.map((r) => `<tr>
+                <td class="px-2 py-1 border-b">${esc(r.stt)}</td>
+                <td class="px-2 py-1 border-b">${esc(r.task)}</td>
+                <td class="px-2 py-1 border-b">${esc(r.unit)}</td>
+                <td class="px-2 py-1 border-b whitespace-nowrap">${esc(r.date)}</td>
+                <td class="px-2 py-1 border-b">${esc(r.status)}</td>
+              </tr>`).join("")
+            : `<tr><td colspan="5" class="px-2 py-3 text-gray-400 text-center">Chưa import weekly</td></tr>`;
+    }
+
+    const nextBody = document.getElementById("pmNextBody");
+    if (nextBody) {
+        const rows = (weekly && weekly.next) || [];
+        nextBody.innerHTML = rows.length
+            ? rows.map((r) => `<tr>
+                <td class="px-2 py-1 border-b">${esc(r.stt)}</td>
+                <td class="px-2 py-1 border-b">${esc(r.task)}</td>
+                <td class="px-2 py-1 border-b">${esc(r.unit)}</td>
+                <td class="px-2 py-1 border-b whitespace-nowrap">${esc(r.start)}</td>
+                <td class="px-2 py-1 border-b whitespace-nowrap">${esc(r.end)}</td>
+              </tr>`).join("")
+            : `<tr><td colspan="5" class="px-2 py-3 text-gray-400 text-center">Chưa import weekly</td></tr>`;
+    }
+
+    const riskList = document.getElementById("pmRiskList");
+    if (riskList) {
+        const items = [];
+        ((weekly && weekly.issues) || []).forEach((t) => items.push(`Issue: ${t}`));
+        ((weekly && weekly.risks) || []).forEach((t) => items.push(`Risk: ${t}`));
+        riskList.innerHTML = items.length
+            ? items.map((t) => `<li>${esc(t)}</li>`).join("")
+            : `<li class="text-gray-400 list-none -ml-5">Không có / chưa import</li>`;
+    }
+
+    const linkBody = document.getElementById("pmLinkBody");
+    if (linkBody) {
+        const rows = [];
+        (links.schedule_links || []).forEach((l) => rows.push({
+            src: "Lịch trình", name: l.name, mod: (l.modules || []).join(", "),
+        }));
+        (links.weekly_links || []).forEach((l) => rows.push({
+            src: `Weekly/${l.kind}`, name: l.task, mod: (l.modules || []).join(", "),
+        }));
+        linkBody.innerHTML = rows.length
+            ? rows.slice(0, 50).map((r) => `<tr>
+                <td class="px-2 py-1 border-b">${esc(r.src)}</td>
+                <td class="px-2 py-1 border-b">${esc(r.name)}</td>
+                <td class="px-2 py-1 border-b">${esc(r.mod)}</td>
+              </tr>`).join("")
+            : `<tr><td colspan="3" class="px-2 py-3 text-gray-400 text-center">Chưa có link (cần FL + PM trùng module/PIC)</td></tr>`;
+    }
+}
+
+async function pmImportPlan(input) {
+    if (!currentProjectSlug) { showToast("⚠️ Chưa chọn project"); return; }
+    const file = input && input.files && input.files[0];
+    if (!file) return;
+    showToast("📐 Đang đọc kế hoạch…");
+    try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch(`/api/projects/${currentProjectSlug}/pm/plan/preview`, {
+            method: "POST", body: fd,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        _pmPlanPreview = data;
+        _renderPmMappingTable(data);
+        document.getElementById("pmMappingBox").classList.remove("hidden");
+        showToast("✅ Đề xuất mapping — kiểm tra rồi Chấp nhận");
+    } catch (err) {
+        console.error("[pmImportPlan]", err);
+        showToast("❌ " + (err.message || "Lỗi upload kế hoạch"), "red");
+    } finally {
+        if (input) input.value = "";
+    }
+}
+window.pmImportPlan = pmImportPlan;
+
+function _renderPmMappingTable(data) {
+    const body = document.getElementById("pmMappingBody");
+    const fn = document.getElementById("pmMappingFilename");
+    if (fn) fn.textContent = data.filename || "";
+    const roles = data.roles || [];
+    const labels = data.role_labels || {};
+    const proposed = data.proposed_mapping || {};
+    const sheets = (data.sheets || []).map((s) => s.name);
+    if (!body) return;
+    body.innerHTML = sheets.map((name) => {
+        const cur = proposed[name] || "ignore";
+        const opts = roles.map((r) =>
+            `<option value="${r}" ${r === cur ? "selected" : ""}>${labels[r] || r}</option>`
+        ).join("");
+        return `<tr>
+            <td class="px-2 py-1 border-b font-medium">${name}</td>
+            <td class="px-2 py-1 border-b">
+              <select data-sheet="${name}" class="pm-role-select border rounded px-2 py-1 text-xs w-full max-w-xs">${opts}</select>
+            </td>
+          </tr>`;
+    }).join("");
+}
+
+function pmCancelPlanPreview() {
+    _pmPlanPreview = null;
+    const box = document.getElementById("pmMappingBox");
+    if (box) box.classList.add("hidden");
+}
+window.pmCancelPlanPreview = pmCancelPlanPreview;
+
+async function pmConfirmPlan() {
+    if (!_pmPlanPreview || !currentProjectSlug) return;
+    const mapping = {};
+    document.querySelectorAll(".pm-role-select").forEach((sel) => {
+        mapping[sel.getAttribute("data-sheet")] = sel.value;
+    });
+    showToast("💾 Đang lưu kế hoạch…");
+    try {
+        const res = await fetch(`/api/projects/${currentProjectSlug}/pm/plan/confirm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                tmp_id: _pmPlanPreview.tmp_id,
+                filename: _pmPlanPreview.filename,
+                sheet_mapping: mapping,
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        pmCancelPlanPreview();
+        showToast(`✅ Đã lưu kế hoạch (WBS ${data.summary?.milestone_count || 0}, lịch ${data.summary?.schedule_count || 0})`);
+        await loadPmDimension();
+    } catch (err) {
+        console.error("[pmConfirmPlan]", err);
+        showToast("❌ " + (err.message || "Lỗi lưu kế hoạch"), "red");
+    }
+}
+window.pmConfirmPlan = pmConfirmPlan;
+
+async function pmImportWeekly(input) {
+    if (!currentProjectSlug) { showToast("⚠️ Chưa chọn project"); return; }
+    const file = input && input.files && input.files[0];
+    if (!file) return;
+    showToast("📐 Đang đọc Weekly PPT…");
+    try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch(`/api/projects/${currentProjectSlug}/pm/weekly/preview`, {
+            method: "POST", body: fd,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        _pmWeeklyPreview = data;
+        const body = document.getElementById("pmWeeklyPreviewBody");
+        const fn = document.getElementById("pmWeeklyFilename");
+        if (fn) fn.textContent = `${data.filename || ""} — ${data.slide_count || 0} slides`;
+        if (body) {
+            body.innerHTML = (data.slides || []).map((s) =>
+                `<tr><td class="px-2 py-1 border-b">${s.index}</td>
+                 <td class="px-2 py-1 border-b">${s.title || ""}</td>
+                 <td class="px-2 py-1 border-b">${s.kind || ""}</td></tr>`
+            ).join("");
+        }
+        document.getElementById("pmWeeklyPreviewBox").classList.remove("hidden");
+        showToast("✅ Xem slides rồi Parse & lưu");
+    } catch (err) {
+        console.error("[pmImportWeekly]", err);
+        showToast("❌ " + (err.message || "Lỗi upload weekly"), "red");
+    } finally {
+        if (input) input.value = "";
+    }
+}
+window.pmImportWeekly = pmImportWeekly;
+
+function pmCancelWeeklyPreview() {
+    _pmWeeklyPreview = null;
+    const box = document.getElementById("pmWeeklyPreviewBox");
+    if (box) box.classList.add("hidden");
+}
+window.pmCancelWeeklyPreview = pmCancelWeeklyPreview;
+
+async function pmConfirmWeekly() {
+    if (!_pmWeeklyPreview || !currentProjectSlug) return;
+    showToast("💾 Đang parse weekly…");
+    try {
+        const res = await fetch(`/api/projects/${currentProjectSlug}/pm/weekly/confirm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                tmp_id: _pmWeeklyPreview.tmp_id,
+                filename: _pmWeeklyPreview.filename,
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        pmCancelWeeklyPreview();
+        showToast(`✅ Weekly đã lưu (done ${data.summary?.done_count || 0}, next ${data.summary?.next_count || 0})`);
+        await loadPmDimension();
+    } catch (err) {
+        console.error("[pmConfirmWeekly]", err);
+        showToast("❌ " + (err.message || "Lỗi lưu weekly"), "red");
+    }
+}
+window.pmConfirmWeekly = pmConfirmWeekly;
+
+async function exportPmReport() {
+    if (!currentProjectSlug) { showToast("⚠️ Chưa chọn project"); return; }
+    showToast("📥 Đang xuất chiều PM…");
+    try {
+        await downloadFile(
+            `/api/projects/${currentProjectSlug}/pm/export`,
+            `ChieuPM_${currentProjectSlug}.xlsx`,
+        );
+    } catch (err) {
+        console.error("[exportPmReport]", err);
+        showToast("❌ " + (err.message || "Lỗi xuất chiều PM"), "red");
+    }
+}
+window.exportPmReport = exportPmReport;
 
 
 // ========================================================================
@@ -10631,6 +10928,7 @@ function _sectionShortLabel(sid) {
         "section-module": "Module", "section-tasktype": "Task type",
         "section-matrix": "Matrix", "section-phase": "Phase",
         "section-rlog": "Rlog tuần",
+        "section-pm": "Chiều PM",
         "section-pic": "PIC", "section-effort": "Effort",
         "section-priority": "Priority/Complexity/GAP",
         "section-fitgap-dashboard": "FIT/GAP",
@@ -12740,6 +13038,7 @@ const _VISIBILITY_GROUPS = [
         items: [
             { id: "section-summary",  label: "Summary cards",         desc: "Các thẻ KPI tổng quan trên đầu trang" },
             { id: "section-rlog",     label: "Rlog tuần",             desc: "Rlog coded tuần này + kế hoạch code tuần tới" },
+            { id: "section-pm",       label: "Chiều PM",              desc: "Kế hoạch dự án + Weekly PPT (milestone, lịch trình, risk)" },
             { id: "section-module",   label: "Module Overview",       desc: "Bảng tổng quan theo Module/Quy trình" },
             { id: "section-matrix",   label: "Matrix Phase × Module", desc: "Ma trận số function theo Phase × Module/Quy trình" },
             { id: "section-tasktype", label: "Task Type Progress",    desc: "Tiến độ theo loại công việc (Phân tích/Dev/Test/UAT/Golive)" },

@@ -75,6 +75,7 @@
 <nav id="sidebarNav" class="sidebar-nav no-print hidden">
     <!-- Nhóm A: Cảnh báo (+ Rlog tuần sát đầu — quan trọng cho PM) -->
     <a href="#section-summary" data-i18n="nav.summary">Summary</a>
+    <a href="#section-pm" data-i18n="nav.pm">Chiều PM</a>
     <a href="#section-rlog" data-i18n="nav.rlog">Rlog tuần</a>
     <a href="#section-overdue" data-i18n="nav.overdue">Overdue</a>
     <a href="#section-unassigned" data-i18n="nav.unassigned">Chưa PIC</a>
@@ -2365,6 +2366,191 @@
                                 <tbody id="rlogPlanBody"></tbody>
                             </table>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============ CHIỀU PM (KeHoachDuAn + Weekly PPT) ============ -->
+        <section id="section-pm" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-start justify-between gap-3 flex-wrap mb-3">
+                <div class="min-w-0">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-pm" data-i18n="section.pm_title">📐 Chiều PM</h3>
+                    <p class="chart-subtitle" data-i18n="section.pm_sub">Kế hoạch dự án (Excel) + báo cáo tuần (PPT) — milestone, lịch trình, risk, tiến độ tuần.</p>
+                    <p class="text-xs text-gray-500 mt-1" id="pmStatusLine">Chưa import dữ liệu PM.</p>
+                </div>
+                <div class="flex items-center gap-2 no-print shrink-0 flex-wrap">
+                    <label class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm cursor-pointer">
+                        📤 Kế hoạch (.xlsx)
+                        <input type="file" id="pmPlanFile" accept=".xlsx,.xls" class="hidden" onchange="pmImportPlan(this)">
+                    </label>
+                    <label class="bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded text-sm cursor-pointer">
+                        📤 Weekly (.pptx)
+                        <input type="file" id="pmWeeklyFile" accept=".pptx" class="hidden" onchange="pmImportWeekly(this)">
+                    </label>
+                    <button type="button" onclick="exportPmReport()"
+                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm"
+                            data-i18n="btn.export_pm">
+                        📥 Xuất chiều PM
+                    </button>
+                </div>
+            </div>
+
+            <!-- Mapping review (plan) -->
+            <div id="pmMappingBox" class="hidden mb-4 border border-indigo-200 bg-indigo-50 rounded-lg p-3">
+                <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                    <h4 class="text-sm font-semibold text-indigo-900">Ánh xạ sheet kế hoạch (đề xuất — chỉnh nếu cần)</h4>
+                    <div class="flex gap-2">
+                        <button type="button" class="bg-indigo-700 hover:bg-indigo-800 text-white text-xs px-3 py-1 rounded" onclick="pmConfirmPlan()">✓ Chấp nhận &amp; lưu</button>
+                        <button type="button" class="bg-gray-200 hover:bg-gray-300 text-xs px-3 py-1 rounded" onclick="pmCancelPlanPreview()">Huỷ</button>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-600 mb-2" id="pmMappingFilename"></p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs bg-white rounded border">
+                        <thead class="bg-indigo-800 text-white">
+                            <tr>
+                                <th class="px-2 py-1.5 text-left">Sheet trong file</th>
+                                <th class="px-2 py-1.5 text-left">Vai trò</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pmMappingBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Weekly preview accept -->
+            <div id="pmWeeklyPreviewBox" class="hidden mb-4 border border-violet-200 bg-violet-50 rounded-lg p-3">
+                <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                    <h4 class="text-sm font-semibold text-violet-900">Xác nhận Weekly PPT</h4>
+                    <div class="flex gap-2">
+                        <button type="button" class="bg-violet-700 hover:bg-violet-800 text-white text-xs px-3 py-1 rounded" onclick="pmConfirmWeekly()">✓ Parse &amp; lưu</button>
+                        <button type="button" class="bg-gray-200 hover:bg-gray-300 text-xs px-3 py-1 rounded" onclick="pmCancelWeeklyPreview()">Huỷ</button>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-600 mb-2" id="pmWeeklyFilename"></p>
+                <div class="overflow-x-auto max-h-40 overflow-y-auto">
+                    <table class="w-full text-xs bg-white rounded border">
+                        <thead class="bg-violet-800 text-white sticky top-0">
+                            <tr>
+                                <th class="px-2 py-1 text-left">#</th>
+                                <th class="px-2 py-1 text-left">Tiêu đề</th>
+                                <th class="px-2 py-1 text-left">Loại</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pmWeeklyPreviewBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div class="rounded-lg bg-slate-50 border px-3 py-2 text-center">
+                    <div class="text-xl font-bold text-slate-800" id="pmMilestoneCount">—</div>
+                    <div class="text-[10px] uppercase text-slate-600">WBS / Milestone</div>
+                </div>
+                <div class="rounded-lg bg-slate-50 border px-3 py-2 text-center">
+                    <div class="text-xl font-bold text-slate-800" id="pmScheduleCount">—</div>
+                    <div class="text-[10px] uppercase text-slate-600">Lịch trình</div>
+                </div>
+                <div class="rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2 text-center">
+                    <div class="text-xl font-bold text-emerald-800" id="pmDoneCount">—</div>
+                    <div class="text-[10px] uppercase text-emerald-700">Done tuần này</div>
+                </div>
+                <div class="rounded-lg bg-sky-50 border border-sky-100 px-3 py-2 text-center">
+                    <div class="text-xl font-bold text-sky-800" id="pmNextCount">—</div>
+                    <div class="text-[10px] uppercase text-sky-700">Tuần tới</div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <h4 class="text-sm font-semibold text-gray-800 mb-2">🗓 Lịch trình (KeHoachDuAn)</h4>
+                    <div class="overflow-x-auto max-h-80 overflow-y-auto border rounded">
+                        <table class="w-full text-xs">
+                            <thead class="bg-slate-700 text-white sticky top-0">
+                                <tr>
+                                    <th class="px-2 py-1.5 text-left">Công việc</th>
+                                    <th class="px-2 py-1.5 text-left">Từ</th>
+                                    <th class="px-2 py-1.5 text-left">Đến</th>
+                                    <th class="px-2 py-1.5 text-left">PIC FPT</th>
+                                    <th class="px-2 py-1.5 text-left">Giai đoạn</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pmScheduleBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div>
+                    <h4 class="text-sm font-semibold text-gray-800 mb-2">📌 WBS / Milestone</h4>
+                    <div class="overflow-x-auto max-h-80 overflow-y-auto border rounded">
+                        <table class="w-full text-xs">
+                            <thead class="bg-slate-700 text-white sticky top-0">
+                                <tr>
+                                    <th class="px-2 py-1.5 text-left">STT</th>
+                                    <th class="px-2 py-1.5 text-left">Công việc</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pmMilestoneBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <h4 class="text-sm font-semibold text-emerald-800 mb-2">✅ Công việc trong tuần <span id="pmPeriodLabel" class="font-normal text-gray-500"></span></h4>
+                    <div class="overflow-x-auto max-h-64 overflow-y-auto border rounded">
+                        <table class="w-full text-xs">
+                            <thead class="bg-emerald-700 text-white sticky top-0">
+                                <tr>
+                                    <th class="px-2 py-1.5 text-left">STT</th>
+                                    <th class="px-2 py-1.5 text-left">Công việc</th>
+                                    <th class="px-2 py-1.5 text-left">Đơn vị</th>
+                                    <th class="px-2 py-1.5 text-left">Ngày</th>
+                                    <th class="px-2 py-1.5 text-left">TT</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pmDoneBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div>
+                    <h4 class="text-sm font-semibold text-sky-800 mb-2">📅 Công việc tuần tới</h4>
+                    <div class="overflow-x-auto max-h-64 overflow-y-auto border rounded">
+                        <table class="w-full text-xs">
+                            <thead class="bg-sky-700 text-white sticky top-0">
+                                <tr>
+                                    <th class="px-2 py-1.5 text-left">STT</th>
+                                    <th class="px-2 py-1.5 text-left">Công việc</th>
+                                    <th class="px-2 py-1.5 text-left">Đơn vị</th>
+                                    <th class="px-2 py-1.5 text-left">Bắt đầu</th>
+                                    <th class="px-2 py-1.5 text-left">Kết thúc</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pmNextBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div>
+                    <h4 class="text-sm font-semibold text-amber-800 mb-2">⚠️ Vấn đề / Rủi ro (Weekly)</h4>
+                    <ul id="pmRiskList" class="text-xs list-disc pl-5 text-gray-700 space-y-1"></ul>
+                </div>
+                <div>
+                    <h4 class="text-sm font-semibold text-indigo-800 mb-2">🔗 Liên kết Function List <span id="pmLinkCount" class="font-normal text-gray-500"></span></h4>
+                    <div class="overflow-x-auto max-h-40 overflow-y-auto border rounded">
+                        <table class="w-full text-xs">
+                            <thead class="bg-indigo-700 text-white sticky top-0">
+                                <tr>
+                                    <th class="px-2 py-1 text-left">Nguồn</th>
+                                    <th class="px-2 py-1 text-left">Tên</th>
+                                    <th class="px-2 py-1 text-left">Module</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pmLinkBody"></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
