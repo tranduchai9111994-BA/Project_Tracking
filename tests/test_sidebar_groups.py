@@ -51,7 +51,7 @@ _DEFAULT_MEMBERSHIP = {
         "section-matrix", "section-phase", "section-giaidoan",
     },
     "forecast": {
-        "section-gantt", "section-gantt-calendar", "section-burndown",
+        "section-gantt", "section-forecast-gantt", "section-gantt-calendar", "section-burndown",
         "section-capacity", "section-pic-overload", "section-baseline",
         "section-duration",
     },

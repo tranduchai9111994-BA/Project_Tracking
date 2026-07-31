@@ -110,6 +110,7 @@
     <a href="#section-slow">PIC chậm</a>
     <a href="#section-deps">Dependency</a>
     <a href="#section-gantt">Timeline</a>
+    <a href="#section-forecast-gantt" data-i18n="nav.forecast_gantt">Forecast UAT/Golive</a>
     <a href="#section-gantt-calendar">Gantt Calendar</a>
     <a href="#section-kanban">Kanban</a>
     <a href="#section-pic">PIC</a>
@@ -1204,7 +1205,6 @@
                     </p>
                     <div id="visibilityPanel" class="space-y-2"></div>
                 </section>
-
 
                 <!-- FL re-import template + mapping review -->
                 <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40 ring-1 ring-emerald-200 dark:ring-emerald-800"
@@ -2469,7 +2469,9 @@
                 </div>
                 <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                        <h4 class="text-sm font-semibold text-emerald-800 mb-2">✅ Rlog coded tuần này <span id="rlogCodedLabel" class="font-normal text-gray-500"></span></h4>
+                        <h4 class="text-sm font-semibold text-emerald-800 mb-2 flex items-center gap-2 flex-wrap">
+                            ✅ Rlog coded tuần này <span id="rlogCodedLabel" class="font-normal text-gray-500"></span>
+</h4>
                         <div class="overflow-x-auto max-h-72 overflow-y-auto border rounded">
                             <table class="w-full text-xs">
                                 <thead class="bg-emerald-700 text-white sticky top-0">
@@ -2488,8 +2490,7 @@
                     <div>
                         <h4 class="text-sm font-semibold text-sky-800 mb-2 flex items-center gap-2 flex-wrap">
                             📅 Kế hoạch code tuần tới <span id="rlogPlanLabel" class="font-normal text-gray-500"></span>
-                            <span data-col-picker="rlogPlan" data-col-table="#rlogPlanBody" class="no-print"></span>
-                        </h4>
+</h4>
                         <div class="overflow-x-auto max-h-72 overflow-y-auto border rounded">
                             <table class="w-full text-xs">
                                 <thead class="bg-sky-700 text-white sticky top-0">
@@ -2707,7 +2708,7 @@
                         <option value="">Tất cả PIC</option>
                     </select>
                     <div id="filterPhaseMS" class="text-sm min-w-[150px]"></div>
-                    <button id="btnExport" onclick="openExportModePicker(event, '', exportOverdue)"
+<button id="btnExport" onclick="openExportModePicker(event, '', exportOverdue)"
                             class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm"
                             data-i18n="btn.export_excel">
                         📥 Xuất Excel
@@ -2747,7 +2748,7 @@
                     <p class="text-xs text-gray-500 mt-0.5">Chỉ báo thiếu PIC khi đã tới Start + phase liền trước Closed (không có Start: End đã đến hoặc đang Open/Assigned/In-progress).</p>
                 </div>
                 <div class="flex items-center gap-2">
-                    <button onclick="openDrillDown('unassigned', {})" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1 no-print">Chi tiết</button>
+<button onclick="openDrillDown('unassigned', {})" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1 no-print">Chi tiết</button>
                     <button onclick="openExportModePicker(event, 'unassigned')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
             </div>
@@ -2786,7 +2787,7 @@
                 <div class="flex items-center gap-2 flex-wrap no-print">
                     <!-- Local Module multi-select (giống Overdue / Data Quality) -->
                     <div id="stalledModuleMS" class="text-sm min-w-[150px]"></div>
-                    <button onclick="openStalledDrillDown()" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1">Chi tiết</button>
+<button onclick="openStalledDrillDown()" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1">Chi tiết</button>
                     <button onclick="openExportModePicker(event, '', exportStalled)"
                             class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm"
                             title="Xuất Excel theo filter Module (+ global filter)">
@@ -2967,7 +2968,7 @@
                     <select id="dqCodeFilter" class="text-sm border rounded px-2 py-1">
                         <option value="all">Tất cả loại</option>
                     </select>
-                    <button onclick="exportDataQuality()"
+<button onclick="exportDataQuality()"
                             class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
                         📥 Xuất Excel
                     </button>
@@ -3447,6 +3448,51 @@
         
 
         <!-- ============ NHÓM C: TIMELINE & CHI TIẾT ============ -->
+
+<section id="section-forecast-gantt" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+                <div class="min-w-0">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-forecast-gantt"
+                        data-i18n="section.forecast_gantt_title">📆 Forecast — UAT / Golive theo tháng</h3>
+                    <p class="text-xs text-gray-500 mt-0.5" data-i18n="section.forecast_gantt_sub">
+                        Với hiện trạng Function List: tháng dự kiến UAT / Golive với KH (Gantt theo tháng).
+                        1 dự án: thêm Phân tích / Dev / Cấu hình xong.
+                    </p>
+                    <p class="text-[11px] text-slate-500 mt-1" id="fgRuleHint"></p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 no-print shrink-0">
+                    <span class="bg-violet-50 text-violet-800 px-3 py-1.5 rounded border border-violet-200 text-xs">
+                        UAT: <b id="fgUatMonth">—</b>
+                    </span>
+                    <span class="bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded border border-emerald-200 text-xs">
+                        Golive: <b id="fgGoliveMonth">—</b>
+                    </span>
+                    <button type="button" onclick="exportForecastGantt()"
+                            class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1"
+                            data-i18n="btn.export_excel" title="Xuất Excel">📥 Xuất</button>
+                </div>
+            </div>
+            <div class="flex flex-wrap items-end gap-2 mb-3 no-print text-xs">
+                <div class="flex flex-col gap-0.5 min-w-[200px]">
+                    <span class="text-gray-500" data-i18n="fg.projects">Dự án</span>
+                    <div id="fgProjectMS" class="text-sm min-w-[200px]"></div>
+                </div>
+                <div class="inline-flex rounded border border-gray-300 overflow-hidden">
+                    <button type="button" data-fg-row="project" onclick="setForecastGanttRowMode('project')"
+                            class="fg-row-btn px-2.5 py-1 bg-blue-600 text-white" data-i18n="fg.row_project">Hàng = Dự án</button>
+                    <button type="button" data-fg-row="milestone" onclick="setForecastGanttRowMode('milestone')"
+                            class="fg-row-btn px-2.5 py-1 border-l hover:bg-blue-50" data-i18n="fg.row_milestone">Hàng = Milestone</button>
+                </div>
+                <button type="button" onclick="loadForecastGantt()"
+                        class="px-2.5 py-1 border rounded hover:bg-gray-50">↻ Tải lại</button>
+            </div>
+            <div id="fgSummaryCards" class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3 text-xs"></div>
+            <div id="fgGanttWrap" class="overflow-x-auto border rounded"></div>
+            <div id="fgDetailWrap" class="overflow-x-auto mt-3"></div>
+            <p id="fgEmptyHint" class="hidden text-sm text-gray-500 italic mt-2">
+                Chưa có dự án nào có End date cho milestone. Chọn dự án đã upload Function List.
+            </p>
+        </section>
 
 <section id="section-gantt" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">

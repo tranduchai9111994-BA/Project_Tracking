@@ -585,6 +585,7 @@ function applyDashboardResponse(data) {
     // P3/P4 hooks — lazy analytics + saved views + deep-link URL.
     try { if (typeof loadBurndownAndSLA === "function") setTimeout(loadBurndownAndSLA, 100); } catch (e) {}
     try { if (typeof loadPicOverload === "function") setTimeout(loadPicOverload, 150); } catch (e) {}
+    try { if (typeof loadForecastGantt === "function") setTimeout(loadForecastGantt, 160); } catch (e) {}
     // Task 2 — FIT/GAP Dashboard: fetch riêng như SLA/Capacity vì compute nặng
     // (đi qua tất cả rows) và support aging_threshold_days configurable.
     try { if (typeof loadFitgapDashboard === "function") setTimeout(loadFitgapDashboard, 120); } catch (e) {}
@@ -2086,7 +2087,6 @@ function renderDashboard() {
 
     // T21: Data Quality panel (lazy fetch — không block render chính)
     _safe("dataQuality", loadDataQuality);
-    _safe("colPickers", () => { if (typeof initAllColumnPickers === "function") initAllColumnPickers(); });
 
     // T22: Aging WIP tracking
     _safe("agingWip", loadAgingWip);
@@ -3179,8 +3179,6 @@ function renderOverdueTable() {
     }).join("");
 
     renderPager("overdueShowMoreWrap", "overdue", items.length, () => renderOverdueTable());
-    try { applyColumnVisibility("overdue"); } catch (e) {}
-
     document.getElementById("overdueCount").textContent =
         items.length === 0
             ? "Không có task trễ"
@@ -3296,8 +3294,6 @@ function renderRlogWeekly() {
             </tr>`).join("")
             : `<tr><td colspan="6" class="px-2 py-3 text-center text-gray-400">Không có Rlog kế hoạch tuần tới</td></tr>`;
     }
-    try { applyColumnVisibility("rlogCoded"); } catch (e) {}
-    try { applyColumnVisibility("rlogPlan"); } catch (e) {}
 
     const canvas = document.getElementById("chartRlogWeekly");
     if (canvas && typeof Chart !== "undefined") {
@@ -3839,7 +3835,6 @@ function renderUnassignedSection() {
     }).join("");
 
     renderPager("unassignedShowMoreWrap", "unassigned", items.length, () => renderUnassignedSection());
-    try { applyColumnVisibility("unassigned"); } catch (e) {}
     document.getElementById("unassignedCount").textContent =
         `Đang xem ${start + 1}–${end}/${total} task chưa có PIC`;
 }
@@ -4205,7 +4200,6 @@ function renderStalledTable(selectedOverride) {
     }).join("");
 
     renderPager("stalledShowMoreWrap", "stalled", items.length, () => renderStalledTable(selected));
-    try { applyColumnVisibility("stalled"); } catch (e) {}
     const cnt = document.getElementById("stalledCount");
     if (cnt) {
         const totalAll = metricsData?.stalled_tasks?.items_total
@@ -7888,7 +7882,7 @@ const DEFAULT_SIDEBAR_GROUP_DEFS = [
         name_vi: "Forecast",
         name_en: "Forecast",
         sections: [
-            "section-gantt", "section-gantt-calendar", "section-burndown",
+            "section-gantt", "section-forecast-gantt", "section-gantt-calendar", "section-burndown",
             "section-capacity", "section-pic-overload", "section-baseline",
             "section-duration",
         ],
@@ -12808,6 +12802,7 @@ const _PRESENT_LAZY_LOADERS = {
     "section-burndown":       "loadBurndownAndSLA",
     "section-sla":            "loadBurndownAndSLA",
     "section-pic-overload":   "loadPicOverload",
+    "section-forecast-gantt": "loadForecastGantt",
     "section-fitgap-dashboard": "loadFitgapDashboard",
     "section-function-diff":  "loadFunctionDiff",
     "section-custom-dashboards": "loadCustomDashboards",
@@ -13202,7 +13197,6 @@ function _dqRenderTable() {
             ✅ Không có issue nào phù hợp filter. Dữ liệu clean!
         </td></tr>`;
         const pager = document.getElementById("dqPagerWrap");
-    try { applyColumnVisibility("dq"); } catch (e) {}
         if (pager) pager.innerHTML = "";
         return;
     }
@@ -13475,6 +13469,9 @@ const _CMD_ACTIONS = [
                    else showToast("Chưa sẵn sàng"); } },
     { id: "act.export-fl-reimport", label: "📥 Xuất FL chỉnh sửa (re-import)", kind: "action",
       run: () => { if (typeof exportFlReimport === "function") exportFlReimport();
+                   else showToast("Chưa sẵn sàng"); } },
+    { id: "act.export-weekly-mom", label: "📋 Xuất MoM tuần", kind: "action",
+      run: () => { if (typeof exportWeeklyMom === "function") exportWeeklyMom();
                    else showToast("Chưa sẵn sàng"); } },
     { id: "act.export-overdue", label: "📥 Xuất Excel Overdue", kind: "action",
       run: () => { if (typeof exportOverdue === "function") exportOverdue();
@@ -14061,6 +14058,7 @@ const _VISIBILITY_GROUPS = [
         name: "📈 Tiến độ & Timeline",
         items: [
             { id: "section-gantt",          label: "Gantt",              desc: "Sơ đồ Gantt lộ trình phase theo function" },
+            { id: "section-forecast-gantt", label: "Forecast UAT/Golive", desc: "Tháng dự kiến UAT/Golive với KH — Gantt theo tháng, 1 hoặc nhiều dự án" },
             { id: "section-gantt-calendar", label: "Gantt Calendar",     desc: "Timeline Excel-style: header Month/Week/Day, bar tô màu theo phase, marker Today" },
             { id: "section-burndown",       label: "Burndown & Velocity", desc: "Đường burndown + velocity theo tuần" },
             { id: "section-sla",            label: "SLA vi phạm",        desc: "Danh sách task vượt SLA theo priority" },
@@ -17765,8 +17763,6 @@ async function _flTplDelete() {
 window._flTplDelete = _flTplDelete;
 
 
-
-
 // ========================================================================
 // T-AA — ARCHIVE SETTINGS UI
 // ========================================================================
@@ -17935,180 +17931,325 @@ async function _archOne(snapId) {
 window._archOne = _archOne;
 
 // ========================================================================
-// COLUMN PICKER — ẩn/hiện cột bảng, localStorage per table id
-// Không ảnh hưởng export (server-side vẫn đủ cột).
-// Mount: <div data-col-picker="overdue" data-col-table="#section-overdue table">
-// Header th cần data-col="code"; data-col-locked="1" = luôn hiện.
+// FORECAST GANTT — UAT / Golive theo tháng (đa dự án)
+// Section: #section-forecast-gantt — ids fg* riêng, tránh đụng Gantt khác
 // ========================================================================
-const COL_PICKER_STORAGE_KEY = "ihrp_table_cols_v1";
-const _colPickerMounted = new Set();
+const _fgState = {
+    data: null,
+    rowMode: "project", // project | milestone
+    selectedSlugs: null, // null = chưa init → mặc định current project
+};
 
-function _colPickerLoadAll() {
-    try {
-        return JSON.parse(localStorage.getItem(COL_PICKER_STORAGE_KEY) || "{}") || {};
-    } catch (e) {
-        return {};
+const _FG_MS_COLORS = {
+    analysis: "#8b5cf6",
+    dev: "#3b82f6",
+    config: "#14b8a6",
+    uat: "#7c3aed",
+    golive: "#059669",
+};
+
+function _fgT(key, fallback) {
+    if (typeof I18n !== "undefined" && I18n.t) {
+        const v = I18n.t(key);
+        if (v && v !== key) return v;
+    }
+    return fallback;
+}
+
+function _fgFmtMonth(mk) {
+    if (!mk) return "—";
+    const m = String(mk).match(/^(\d{4})-(\d{2})$/);
+    if (!m) return escapeHtml(mk);
+    return `${m[2]}/${m[1]}`;
+}
+
+function _fgEnsureProjectMS() {
+    const el = document.getElementById("fgProjectMS");
+    if (!el) return;
+    const slugs = (allProjects || []).map(p => p.slug);
+    if (!_msInstances.fgProjects) {
+        createMultiSelect({
+            el: "#fgProjectMS",
+            key: "fgProjects",
+            label: _fgT("fg.projects", "Dự án"),
+            options: slugs,
+            selected: _fgState.selectedSlugs || (currentProjectSlug ? [currentProjectSlug] : []),
+            allText: "Tất cả dự án",
+            onChange: (arr) => {
+                _fgState.selectedSlugs = arr.slice();
+                loadForecastGantt();
+            },
+        });
+    } else {
+        _msInstances.fgProjects.setOptions(slugs, /*dropInvalid=*/false);
+        if (_fgState.selectedSlugs == null && currentProjectSlug) {
+            _fgState.selectedSlugs = [currentProjectSlug];
+            _msInstances.fgProjects.setSelected([currentProjectSlug], /*silent=*/true);
+        }
     }
 }
 
-function _colPickerSave(tableId, hidden) {
-    const all = _colPickerLoadAll();
-    all[tableId] = Array.isArray(hidden) ? hidden : [];
+function setForecastGanttRowMode(mode) {
+    _fgState.rowMode = mode === "milestone" ? "milestone" : "project";
+    document.querySelectorAll(".fg-row-btn").forEach(btn => {
+        const on = btn.getAttribute("data-fg-row") === _fgState.rowMode;
+        btn.classList.toggle("bg-blue-600", on);
+        btn.classList.toggle("text-white", on);
+        btn.classList.toggle("hover:bg-blue-50", !on);
+    });
+    if (_fgState.data) renderForecastGantt(_fgState.data);
+}
+window.setForecastGanttRowMode = setForecastGanttRowMode;
+
+async function loadForecastGantt() {
+    const section = document.getElementById("section-forecast-gantt");
+    if (!section) return;
+    _fgEnsureProjectMS();
+    const selected = _msInstances.fgProjects?.getSelected?.() || _fgState.selectedSlugs || [];
+    const params = new URLSearchParams();
+    if (selected.length) params.set("slugs", selected.join(","));
     try {
-        localStorage.setItem(COL_PICKER_STORAGE_KEY, JSON.stringify(all));
-    } catch (e) { /* localStorage disabled */ }
-}
-
-function _colPickerHidden(tableId) {
-    const all = _colPickerLoadAll();
-    return Array.isArray(all[tableId]) ? all[tableId] : [];
-}
-
-function _resolveColTable(host) {
-    const sel = host.getAttribute("data-col-table");
-    if (!sel) return null;
-    let el = document.querySelector(sel);
-    if (!el) return null;
-    if (el.tagName === "TABLE") return el;
-    return el.closest("table");
-}
-
-function applyColumnVisibility(tableId, tableEl) {
-    if (!tableEl) {
-        const host = document.querySelector(`[data-col-picker="${tableId}"]`);
-        if (host) tableEl = _resolveColTable(host);
-    }
-    if (!tableEl) return;
-    const hidden = new Set(_colPickerHidden(tableId));
-    const ths = tableEl.querySelectorAll("thead th");
-    const colIndex = [];
-    ths.forEach((th, i) => {
-        const col = th.getAttribute("data-col");
-        if (!col) {
-            colIndex.push(null);
+        const r = await fetch("/api/forecast-gantt?" + params.toString());
+        if (!r.ok) {
+            console.warn("[forecast-gantt]", r.status);
             return;
         }
-        colIndex.push(col);
-        const locked = th.getAttribute("data-col-locked") === "1";
-        const hide = !locked && hidden.has(col);
-        th.classList.toggle("col-picker-hidden", hide);
-        th.style.display = hide ? "none" : "";
-    });
-    tableEl.querySelectorAll("tbody tr").forEach(tr => {
-        Array.from(tr.children).forEach((td, i) => {
-            const col = colIndex[i];
-            if (!col) return;
-            const th = ths[i];
-            const locked = th && th.getAttribute("data-col-locked") === "1";
-            const hide = !locked && hidden.has(col);
-            td.classList.toggle("col-picker-hidden", hide);
-            td.style.display = hide ? "none" : "";
-        });
-    });
+        const data = await r.json();
+        _fgState.data = data;
+        renderForecastGantt(data);
+    } catch (err) {
+        console.error("[loadForecastGantt]", err);
+    }
 }
-window.applyColumnVisibility = applyColumnVisibility;
+window.loadForecastGantt = loadForecastGantt;
 
-function _colPickerRebuildPanel(host, tableId, tableEl) {
-    const panel = host.querySelector(".col-picker-panel");
-    if (!panel) return;
-    const hidden = new Set(_colPickerHidden(tableId));
-    const ths = tableEl.querySelectorAll("thead th[data-col]");
-    const items = [];
-    ths.forEach(th => {
-        const col = th.getAttribute("data-col");
-        const locked = th.getAttribute("data-col-locked") === "1";
-        if (locked) return;
-        let label = (th.textContent || col).trim();
-        if (!label || label === "👁") label = col;
-        const checked = !hidden.has(col);
-        items.push(
-            `<label class="col-picker-item">`
-            + `<input type="checkbox" data-col-toggle="${escapeHtml(col)}" ${checked ? "checked" : ""}>`
-            + `<span>${escapeHtml(label)}</span></label>`
-        );
-    });
-    panel.innerHTML = items.length
-        ? items.join("") + `<button type="button" class="col-picker-reset">↺ Mặc định</button>`
-        : `<div class="text-xs text-gray-500 px-2 py-1">Không có cột tuỳ chọn</div>`;
+function renderForecastGantt(data) {
+    const section = document.getElementById("section-forecast-gantt");
+    if (!section || !data) return;
+    const projects = data.projects || [];
+    const ruleEl = document.getElementById("fgRuleHint");
+    if (ruleEl) ruleEl.textContent = data.rule || "";
 
-    panel.querySelectorAll("input[data-col-toggle]").forEach(inp => {
-        inp.addEventListener("change", () => {
-            const next = [];
-            panel.querySelectorAll("input[data-col-toggle]").forEach(x => {
-                if (!x.checked) next.push(x.getAttribute("data-col-toggle"));
-            });
-            _colPickerSave(tableId, next);
-            applyColumnVisibility(tableId, tableEl);
-        });
-    });
-    const reset = panel.querySelector(".col-picker-reset");
-    if (reset) {
-        reset.addEventListener("click", () => {
-            _colPickerSave(tableId, []);
-            _colPickerRebuildPanel(host, tableId, tableEl);
-            applyColumnVisibility(tableId, tableEl);
-        });
+    const uatEl = document.getElementById("fgUatMonth");
+    const glEl = document.getElementById("fgGoliveMonth");
+    if (projects.length === 1) {
+        const ms = projects[0].milestones || {};
+        if (uatEl) uatEl.textContent = _fgFmtMonth(ms.uat?.month);
+        if (glEl) glEl.textContent = _fgFmtMonth(ms.golive?.month);
+    } else {
+        const agg = data.milestone_aggregate || {};
+        if (uatEl) {
+            uatEl.textContent = _fgFmtMonth(agg.uat?.month)
+                + (projects.length ? ` (${projects.length} DA)` : "");
+        }
+        if (glEl) {
+            glEl.textContent = _fgFmtMonth(agg.golive?.month)
+                + (projects.length ? ` (${projects.length} DA)` : "");
+        }
+    }
+
+    _renderFgSummaryCards(data);
+    if (_fgState.rowMode === "milestone") {
+        _renderFgGanttByMilestone(data);
+    } else {
+        _renderFgGanttByProject(data);
+    }
+    _renderFgDetailTable(data);
+
+    const empty = document.getElementById("fgEmptyHint");
+    if (empty) {
+        const anyMonth = projects.some(p =>
+            Object.values(p.milestones || {}).some(m => m && m.month));
+        empty.classList.toggle("hidden", anyMonth || projects.length === 0);
+        if (projects.length === 0) {
+            empty.classList.remove("hidden");
+            empty.textContent =
+                "Chưa có dự án nào có End date cho milestone. Chọn dự án đã upload Function List.";
+        }
     }
 }
 
-function mountColumnPicker(host) {
-    if (!host || host.dataset.colPickerReady === "1") return;
-    const tableId = host.getAttribute("data-col-picker");
-    if (!tableId) return;
-    const tableEl = _resolveColTable(host);
-    if (!tableEl) return;
+function _renderFgSummaryCards(data) {
+    const wrap = document.getElementById("fgSummaryCards");
+    if (!wrap) return;
+    const sum = data.summary || {};
+    const uat = sum.uat_by_month || {};
+    const gl = sum.golive_by_month || {};
+    const uatHtml = Object.keys(uat).length
+        ? Object.entries(uat).map(([mk, names]) =>
+            `<div class="fg-month-chip"><b>${_fgFmtMonth(mk)}</b>: `
+            + `${escapeHtml((names || []).join(", "))}</div>`
+          ).join("")
+        : "<span class=\"text-gray-400\">Chưa có dữ liệu UAT</span>";
+    const glHtml = Object.keys(gl).length
+        ? Object.entries(gl).map(([mk, names]) =>
+            `<div class="fg-month-chip"><b>${_fgFmtMonth(mk)}</b>: `
+            + `${escapeHtml((names || []).join(", "))}</div>`
+          ).join("")
+        : "<span class=\"text-gray-400\">Chưa có dữ liệu Golive</span>";
+    wrap.innerHTML =
+        `<div class="border rounded p-2 bg-violet-50/50">`
+        + `<div class="font-semibold text-violet-900 mb-1">UAT với KH theo tháng</div>${uatHtml}</div>`
+        + `<div class="border rounded p-2 bg-emerald-50/50">`
+        + `<div class="font-semibold text-emerald-900 mb-1">Golive với KH theo tháng</div>${glHtml}</div>`;
+}
 
-    host.dataset.colPickerReady = "1";
-    host.classList.add("col-picker");
-    host.innerHTML =
-        `<button type="button" class="col-picker-btn" title="Ẩn/hiện cột" aria-haspopup="true">Cột ▾</button>`
-        + `<div class="col-picker-panel hidden" role="menu"></div>`;
+function _fgMonthIndex(months, mk) {
+    if (!mk) return -1;
+    return (months || []).indexOf(mk);
+}
 
-    const btn = host.querySelector(".col-picker-btn");
-    const panel = host.querySelector(".col-picker-panel");
-    btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        document.querySelectorAll(".col-picker-panel").forEach(p => {
-            if (p !== panel) p.classList.add("hidden");
-        });
-        const opening = panel.classList.contains("hidden");
-        if (opening) {
-            _colPickerRebuildPanel(host, tableId, tableEl);
-            panel.classList.remove("hidden");
-        } else {
-            panel.classList.add("hidden");
+function _renderFgGanttByProject(data) {
+    const wrap = document.getElementById("fgGanttWrap");
+    if (!wrap) return;
+    const months = data.months || [];
+    const milestones = data.milestones || [];
+    const projects = data.projects || [];
+    if (!projects.length) {
+        wrap.innerHTML = "";
+        return;
+    }
+    const labelW = 160;
+    const cellW = 56;
+    const today = new Date();
+    const todayMk = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+    const todayIdx = _fgMonthIndex(months, todayMk);
+
+    let html = `<div class="fg-gantt" style="--fg-label-w:${labelW}px;--fg-cell-w:${cellW}px">`;
+    html += `<div class="fg-gantt-ruler"><div class="fg-gantt-label">Dự án</div>`
+         + `<div class="fg-gantt-track">`;
+    months.forEach((mk, i) => {
+        const isToday = i === todayIdx;
+        html += `<div class="fg-gantt-tick${isToday ? " fg-today" : ""}" title="${mk}">`
+             + `${_fgFmtMonth(mk)}</div>`;
+    });
+    html += `</div></div>`;
+
+    for (const proj of projects) {
+        html += `<div class="fg-gantt-row"><div class="fg-gantt-label" title="${escapeHtml(proj.slug)}">`
+             + `${escapeHtml(proj.name || proj.slug)}</div>`;
+        html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
+        for (const m of milestones) {
+            const info = (proj.milestones || {})[m.id] || {};
+            const idx = _fgMonthIndex(months, info.month);
+            if (idx < 0) continue;
+            const color = _FG_MS_COLORS[m.id] || "#64748b";
+            const left = idx * cellW + cellW / 2 - 7;
+            const letter = m.id === "uat" ? "U" : m.id === "golive" ? "G" : m.id.charAt(0).toUpperCase();
+            const title = `${m.label}: ${_fgFmtMonth(info.month)} (${info.source || ""}) · Closed ${info.closed}/${info.total}`;
+            html += `<div class="fg-marker${m.highlight ? " fg-marker-hi" : ""}" `
+                 + `style="left:${left}px;background:${color}" title="${escapeHtml(title)}">`
+                 + `${escapeHtml(letter)}</div>`;
         }
-    });
-    applyColumnVisibility(tableId, tableEl);
-    _colPickerMounted.add(tableId);
+        html += `</div></div>`;
+    }
+    html += `</div>`;
+    html += `<div class="fg-legend mt-2">` + milestones.map(m =>
+        `<span><i style="background:${_FG_MS_COLORS[m.id] || "#64748b"}"></i>${escapeHtml(m.label)}</span>`
+    ).join("") + `</div>`;
+    wrap.innerHTML = html;
 }
 
-function initAllColumnPickers() {
-    document.querySelectorAll("[data-col-picker]").forEach(host => {
-        try { mountColumnPicker(host); } catch (e) {
-            console.warn("[col-picker]", e);
+function _renderFgGanttByMilestone(data) {
+    const wrap = document.getElementById("fgGanttWrap");
+    if (!wrap) return;
+    const months = data.months || [];
+    const milestones = data.milestones || [];
+    const projects = data.projects || [];
+    const labelW = 160;
+    const cellW = 56;
+    const today = new Date();
+    const todayMk = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+    const todayIdx = _fgMonthIndex(months, todayMk);
+
+    let html = `<div class="fg-gantt" style="--fg-label-w:${labelW}px;--fg-cell-w:${cellW}px">`;
+    html += `<div class="fg-gantt-ruler"><div class="fg-gantt-label">Milestone</div>`
+         + `<div class="fg-gantt-track">`;
+    months.forEach((mk, i) => {
+        html += `<div class="fg-gantt-tick${i === todayIdx ? " fg-today" : ""}">`
+             + `${_fgFmtMonth(mk)}</div>`;
+    });
+    html += `</div></div>`;
+
+    for (const m of milestones) {
+        let maxIdx = -1;
+        const tipParts = [];
+        for (const proj of projects) {
+            const info = (proj.milestones || {})[m.id] || {};
+            const idx = _fgMonthIndex(months, info.month);
+            if (idx >= 0) {
+                if (idx > maxIdx) maxIdx = idx;
+                tipParts.push(`${proj.name}: ${_fgFmtMonth(info.month)}`);
+            }
         }
-    });
+        html += `<div class="fg-gantt-row"><div class="fg-gantt-label">${escapeHtml(m.label)}</div>`;
+        html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
+        if (maxIdx >= 0) {
+            const color = _FG_MS_COLORS[m.id] || "#64748b";
+            const left = maxIdx * cellW + 4;
+            const width = cellW - 8;
+            html += `<div class="fg-bar${m.highlight ? " fg-marker-hi" : ""}" `
+                 + `style="left:${left}px;width:${width}px;background:${color}" `
+                 + `title="${escapeHtml(tipParts.join(" · "))}"></div>`;
+        }
+        html += `</div></div>`;
+    }
+    html += `</div>`;
+    wrap.innerHTML = html;
 }
-window.initAllColumnPickers = initAllColumnPickers;
 
-document.addEventListener("click", (e) => {
-    if (e.target.closest && e.target.closest(".col-picker")) return;
-    document.querySelectorAll(".col-picker-panel").forEach(p => p.classList.add("hidden"));
-});
-
-// Re-apply sau mỗi lần render tbody (export không đụng)
-function _reapplyKnownColPickers() {
-    ["overdue", "unassigned", "stalled", "rlogCoded", "rlogPlan", "dq"].forEach(id => {
-        try { applyColumnVisibility(id); } catch (e) {}
-    });
+function _renderFgDetailTable(data) {
+    const wrap = document.getElementById("fgDetailWrap");
+    if (!wrap) return;
+    const projects = data.projects || [];
+    const milestones = data.milestones || [];
+    if (projects.length === 1) {
+        const proj = projects[0];
+        const ms = proj.milestones || {};
+        const rows = milestones.map(m => {
+            const info = ms[m.id] || {};
+            const src = info.source === "open_max" ? "max End còn mở"
+                      : info.source === "closed_max" ? "max End Closed"
+                      : "không có End";
+            return `<tr>
+                <td class="px-2 py-1.5 font-medium">${escapeHtml(m.label)}</td>
+                <td class="px-2 py-1.5 text-center">${_fgFmtMonth(info.month)}</td>
+                <td class="px-2 py-1.5 text-center text-xs">${info.date || "—"}</td>
+                <td class="px-2 py-1.5 text-xs">${src}</td>
+                <td class="px-2 py-1.5 text-center text-xs">${info.closed ?? 0}/${info.total ?? 0}</td>
+                <td class="px-2 py-1.5 text-xs text-gray-500">${escapeHtml((info.phases || []).join(", ") || "—")}</td>
+            </tr>`;
+        }).join("");
+        wrap.innerHTML = `<table class="w-full text-sm"><thead><tr class="bg-slate-700 text-white">
+            <th class="px-2 py-2 text-left">Milestone</th>
+            <th class="px-2 py-2">Tháng</th>
+            <th class="px-2 py-2">Ngày</th>
+            <th class="px-2 py-2 text-left">Nguồn</th>
+            <th class="px-2 py-2">Closed/Tổng</th>
+            <th class="px-2 py-2 text-left">Phase</th>
+        </tr></thead><tbody>${rows}</tbody></table>`;
+        return;
+    }
+    const head = `<th class="px-2 py-2 text-left">Dự án</th>`
+        + milestones.map(m => `<th class="px-2 py-2">${escapeHtml(m.label)}</th>`).join("");
+    const body = projects.map(proj => {
+        const ms = proj.milestones || {};
+        return `<tr><td class="px-2 py-1.5 font-medium">${escapeHtml(proj.name)}</td>`
+            + milestones.map(m => {
+                const info = ms[m.id] || {};
+                const cls = m.highlight ? "font-semibold text-violet-800" : "";
+                return `<td class="px-2 py-1.5 text-center ${cls}" title="${escapeHtml(info.source || "")}">`
+                     + `${_fgFmtMonth(info.month)}</td>`;
+            }).join("") + `</tr>`;
+    }).join("");
+    wrap.innerHTML = `<table class="w-full text-sm"><thead><tr class="bg-slate-700 text-white">${head}</tr></thead>`
+        + `<tbody>${body}</tbody></table>`;
 }
 
-
-if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-        try { initAllColumnPickers(); } catch (e) {}
-    });
-} else {
-    try { initAllColumnPickers(); } catch (e) {}
+async function exportForecastGantt() {
+    const selected = _msInstances.fgProjects?.getSelected?.() || _fgState.selectedSlugs || [];
+    const params = new URLSearchParams();
+    if (selected.length) params.set("slugs", selected.join(","));
+    await downloadFile("/api/forecast-gantt/export?" + params.toString(), "Forecast_Gantt.xlsx");
 }
+window.exportForecastGantt = exportForecastGantt;

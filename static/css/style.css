@@ -2287,3 +2287,45 @@ html.dark .hdr-menu-item:hover {
     color: #93c5fd;
 }
 
+/* ---- Forecast Gantt (section-forecast-gantt) ---- */
+.fg-gantt { font-size: 11px; min-width: 100%; }
+.fg-gantt-ruler, .fg-gantt-row {
+  display: flex; align-items: stretch; border-bottom: 1px solid #e2e8f0;
+}
+.fg-gantt-ruler { background: #f8fafc; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+.fg-gantt-label {
+  flex: 0 0 var(--fg-label-w, 160px); width: var(--fg-label-w, 160px);
+  padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-right: 1px solid #e2e8f0; background: inherit;
+}
+.fg-gantt-track {
+  position: relative; display: flex; flex: 1; min-height: 28px;
+  background-image: repeating-linear-gradient(
+    to right, transparent 0, transparent calc(var(--fg-cell-w, 56px) - 1px),
+    #e2e8f0 calc(var(--fg-cell-w, 56px) - 1px), #e2e8f0 var(--fg-cell-w, 56px)
+  );
+}
+.fg-gantt-tick {
+  flex: 0 0 var(--fg-cell-w, 56px); width: var(--fg-cell-w, 56px);
+  text-align: center; padding: 6px 2px; color: #475569;
+}
+.fg-gantt-tick.fg-today { background: #dbeafe; color: #1d4ed8; }
+.fg-marker {
+  position: absolute; top: 5px; width: 16px; height: 16px; border-radius: 50%;
+  color: #fff; font-size: 9px; font-weight: 700; line-height: 16px; text-align: center;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.8);
+}
+.fg-marker-hi { box-shadow: 0 0 0 2px #fff, 0 0 0 3px currentColor; }
+.fg-bar {
+  position: absolute; top: 7px; height: 14px; border-radius: 3px; opacity: .9;
+}
+.fg-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #475569; }
+.fg-legend i {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px;
+  vertical-align: middle;
+}
+.fg-month-chip { margin: 2px 0; }
+html.dark .fg-gantt-ruler { background: #1e293b; }
+html.dark .fg-gantt-label { border-color: #334155; }
+html.dark .fg-gantt-ruler, html.dark .fg-gantt-row { border-color: #334155; }
+html.dark .fg-gantt-tick { color: #94a3b8; }

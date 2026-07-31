@@ -3099,6 +3099,69 @@ def pic_overload_export():
         return jsonify({"error": f"Lỗi khi xuất Excel: {str(e)}"}), 500
 
 
+@app.route("/api/forecast-gantt", methods=["GET", "POST"])
+def forecast_gantt():
+    """
+    Forecast Gantt — tháng UAT/Golive (+ Phân tích/Dev/Cấu hình) đa dự án.
+
+    Query/body:
+      slugs=a,b,c  (optional; trống = mọi project active có file)
+      include_archived=0|1
+    """
+    from analyzer.forecast_gantt import compute_forecast_gantt
+
+    body = request.get_json(silent=True) or {}
+    raw = request.args.get("slugs") or body.get("slugs") or ""
+    if isinstance(raw, list):
+        slugs = [str(s).strip() for s in raw if str(s).strip()]
+    else:
+        slugs = [s.strip() for s in str(raw).split(",") if s.strip()]
+    include_archived = (
+        request.args.get("include_archived") in ("1", "true", "yes")
+        or body.get("include_archived") in (True, 1, "1", "true", "yes")
+    )
+    result = compute_forecast_gantt(
+        _project_mgr,
+        _portfolio_state_loader,
+        slugs=slugs or None,
+        include_archived=include_archived,
+    )
+    return jsonify({"success": True, **result})
+
+
+@app.route("/api/forecast-gantt/export", methods=["GET", "POST"])
+def forecast_gantt_export():
+    """Xuất Excel nhẹ Forecast Gantt (cùng filter slugs)."""
+    from analyzer.forecast_gantt import compute_forecast_gantt
+    from exporter.forecast_gantt_exporter import export_forecast_gantt
+
+    body = request.get_json(silent=True) or {}
+    raw = request.args.get("slugs") or body.get("slugs") or ""
+    if isinstance(raw, list):
+        slugs = [str(s).strip() for s in raw if str(s).strip()]
+    else:
+        slugs = [s.strip() for s in str(raw).split(",") if s.strip()]
+    include_archived = (
+        request.args.get("include_archived") in ("1", "true", "yes")
+        or body.get("include_archived") in (True, 1, "1", "true", "yes")
+    )
+    result = compute_forecast_gantt(
+        _project_mgr,
+        _portfolio_state_loader,
+        slugs=slugs or None,
+        include_archived=include_archived,
+    )
+    try:
+        filepath = export_forecast_gantt(result, app.config["UPLOAD_FOLDER"])
+        return send_file(
+            filepath,
+            as_attachment=True,
+            download_name=os.path.basename(filepath),
+        )
+    except Exception as e:
+        return jsonify({"error": f"Lỗi khi xuất Excel: {str(e)}"}), 500
+
+
 # ==========================================================================
 # Project stores — capacity / saved views / history / settings / aliases
 # ==========================================================================
