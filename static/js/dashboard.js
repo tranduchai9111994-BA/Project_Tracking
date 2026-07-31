@@ -329,10 +329,18 @@ function setUploadZoneCollapsed(collapsed, opts) {
         body.classList.toggle("hidden", !!collapsed);
     }
     if (toolbarBtn) {
-        toolbarBtn.textContent = collapsed ? "⬆ Upload Excel" : "▴ Thu gọn upload";
-        toolbarBtn.title = collapsed
-            ? "Hiện vùng kéo thả Function List (upload Excel tay)"
-            : "Thu gọn vùng upload (ưu tiên Đồng bộ)";
+        const t = (typeof I18n !== "undefined" && I18n.t) ? I18n.t.bind(I18n) : (k) => k;
+        if (collapsed) {
+            toolbarBtn.textContent = t("btn.upload_excel");
+            toolbarBtn.title = t("btn.upload_excel_title");
+            toolbarBtn.setAttribute("data-i18n", "btn.upload_excel");
+            toolbarBtn.setAttribute("data-i18n-title", "btn.upload_excel_title");
+        } else {
+            toolbarBtn.textContent = t("btn.upload_collapse");
+            toolbarBtn.title = t("btn.upload_collapse_title");
+            toolbarBtn.setAttribute("data-i18n", "btn.upload_collapse");
+            toolbarBtn.setAttribute("data-i18n-title", "btn.upload_collapse_title");
+        }
     }
     if (persist) _writeUploadZoneCollapsedPref(!!collapsed);
 }
@@ -10986,6 +10994,12 @@ window.onLangChanged = function (_lang) {
     Object.values(_msInstances).forEach((inst) => {
         if (inst && typeof inst.applyLang === "function") inst.applyLang();
     });
+    // Refresh label Upload / Thu gọn theo state hiện tại
+    if (typeof setUploadZoneCollapsed === "function" && typeof isUploadZoneCollapsed === "function") {
+        try {
+            setUploadZoneCollapsed(isUploadZoneCollapsed(), { persist: false });
+        } catch (_) { /* ignore */ }
+    }
 };
 
 
@@ -11098,7 +11112,12 @@ window.toggleLayoutEditMode = function () {
     const on = !document.body.classList.contains("layout-edit");
     document.body.classList.toggle("layout-edit", on);
     const label = document.getElementById("layoutEditLabel");
-    if (label) label.textContent = on ? "✅ Xong" : "🔧 Chỉnh thứ tự";
+    if (label) {
+        const t = (typeof I18n !== "undefined" && I18n.t) ? I18n.t.bind(I18n) : null;
+        label.textContent = on
+            ? "✅ Xong"
+            : (t ? t("btn.layout_edit") : "🔧 Chỉnh thứ tự");
+    }
     if (on) {
         _initSortable();
         showToast("Đang bật chế độ kéo thả — kéo section để đổi thứ tự");
@@ -14819,7 +14838,8 @@ function toggleSyncQuickMenu(event) {
     const menu = document.getElementById("syncQuickMenu");
     if (!menu) return;
     const hidden = menu.classList.contains("hidden");
-    // Đóng menu khác bất kỳ đang mở (drill status, project selector…) — để đơn giản chỉ toggle menu này
+    // Đóng menu header khác trước khi mở sync
+    closeHdrMenus({ except: "syncQuickMenu" });
     if (hidden) {
         _integRefreshSyncQuickMenu();
         menu.classList.remove("hidden");
@@ -14830,6 +14850,52 @@ function toggleSyncQuickMenu(event) {
     } else {
         menu.classList.add("hidden");
     }
+}
+
+/** Đóng mọi dropdown header (Xuất / Thêm / Sync) trừ menu được chỉ định. */
+function closeHdrMenus(opts) {
+    const except = opts && opts.except;
+    const ids = ["exportMenu", "moreMenu", "syncQuickMenu"];
+    for (const id of ids) {
+        if (except && id === except) continue;
+        const el = document.getElementById(id);
+        if (el) el.classList.add("hidden");
+    }
+    for (const btnId of ["btnExportMenu", "btnMoreMenu"]) {
+        const btn = document.getElementById(btnId);
+        if (btn) btn.setAttribute("aria-expanded", "false");
+    }
+}
+window.closeHdrMenus = closeHdrMenus;
+
+/** Toggle dropdown Xuất / Thêm trên toolbar. */
+function toggleHdrMenu(menuId, btnId, event) {
+    event?.stopPropagation();
+    const menu = document.getElementById(menuId);
+    const btn = document.getElementById(btnId);
+    if (!menu) return;
+    const willOpen = menu.classList.contains("hidden");
+    closeHdrMenus();
+    if (willOpen) {
+        menu.classList.remove("hidden");
+        if (btn) btn.setAttribute("aria-expanded", "true");
+        setTimeout(() => {
+            document.addEventListener("click", _closeHdrMenusOnce, { once: true });
+        }, 0);
+    }
+}
+window.toggleHdrMenu = toggleHdrMenu;
+
+function _closeHdrMenusOnce(e) {
+    const menus = ["exportMenu", "moreMenu"].map((id) => document.getElementById(id));
+    const btns = ["btnExportMenu", "btnMoreMenu"].map((id) => document.getElementById(id));
+    const inside = menus.some((m) => m && m.contains(e.target))
+        || btns.some((b) => b && b.contains(e.target));
+    if (inside) {
+        document.addEventListener("click", _closeHdrMenusOnce, { once: true });
+        return;
+    }
+    closeHdrMenus();
 }
 function _integCloseSyncMenuOnce(e) {
     const menu = document.getElementById("syncQuickMenu");
@@ -15515,14 +15581,14 @@ const _TOUR_STEPS = [
         desc: "Function cần xử lý ngay. Filter theo module/PIC, xuất Excel để gửi team.",
     },
     {
-        selector: "#btnExportPdf, #btnExportAllIssues",
+        selector: "#btnExportMenu, #btnExportPdf, #btnExportAllIssues, #btnExportWeeklyMom",
         title: "Bước 7: Xuất báo cáo",
-        desc: "📄 Xuất PDF cho leadership; 📊 Xuất vấn đề = 1 file Excel multi-sheet có mọi loại issue.",
+        desc: "Mở «Xuất ▾»: 📄 PDF cho leadership; 📊 Xuất vấn đề = Excel multi-sheet; 📋 MoM tuần.",
     },
     {
-        selector: "#btnGlobalHelp, #btnSettings",
+        selector: "#btnMoreMenu, #btnGlobalHelp, #btnSettings",
         title: "Bước 8: Trợ giúp + Cài đặt",
-        desc: "❓ Trợ giúp — mở menu này bằng Ctrl+/. Xem help từng section bằng nút ? cạnh title. ⚙️ Cài đặt để chỉnh threshold, ẩn/hiện section, Public API, LAN.",
+        desc: "Mở «Thêm ▾»: ❓ Trợ giúp (Ctrl+/), ⚙️ Cài đặt threshold / section / Public API / LAN.",
     },
 ];
 

@@ -24,8 +24,35 @@
             "nav.dq": "Data Quality",
             "nav.anomaly": "Bất thường",
             "btn.settings": "⚙️ Cài đặt",
+            "btn.settings_title": "Cài đặt: thứ tự Module, threshold, aging WIP, digest, reminder…",
             "btn.export_pdf": "📄 Xuất PDF",
+            "btn.export_pdf_title": "Xuất PDF báo cáo tuần (client-side)",
             "btn.export_issues": "📊 Xuất vấn đề",
+            "btn.export_issues_title": "Xuất Excel 1 file chứa mọi loại vấn đề",
+            "btn.export_weekly_mom": "📋 Xuất MoM tuần",
+            "btn.export_weekly_mom_title": "Xuất Excel báo cáo tuần MoM (Cover + Master plan + biên bản họp + PM Dashboard)",
+            "btn.export_menu": "📤 Xuất ▾",
+            "btn.export_menu_title": "Xuất báo cáo (PDF, vấn đề, MoM tuần)",
+            "btn.more_menu": "⋯ Thêm ▾",
+            "btn.more_menu_title": "Thêm thao tác (dashboard, API, trợ giúp, cài đặt)",
+            "btn.present": "🎬 Trình chiếu",
+            "btn.present_title": "Chế độ trình chiếu (1 section/lần, ← → điều hướng, Esc thoát)",
+            "btn.help": "❓ Trợ giúp",
+            "btn.help_title": "Trợ giúp toàn hệ thống (Ctrl+/)",
+            "btn.integrations": "🔌 API Registry",
+            "btn.integrations_title": "Registry API: cấu hình + đồng bộ dữ liệu từ ứng dụng nguồn",
+            "btn.sync": "🔄 Đồng bộ ▾",
+            "btn.sync_title": "Đồng bộ nhanh từ 1 endpoint đã cấu hình",
+            "btn.upload_excel": "⬆ Upload Excel",
+            "btn.upload_excel_title": "Hiện vùng kéo thả Function List (upload Excel tay)",
+            "btn.upload_collapse": "▴ Thu gọn upload",
+            "btn.upload_collapse_title": "Thu gọn vùng upload (ưu tiên Đồng bộ)",
+            "btn.layout_edit": "🔧 Chỉnh thứ tự",
+            "btn.layout_edit_title": "Bật/tắt drag-drop chỉnh thứ tự section",
+            "btn.layout_reset": "↺ Mặc định",
+            "btn.layout_reset_title": "Khôi phục thứ tự mặc định",
+            "btn.custom_dash": "➕ Dashboard",
+            "btn.custom_dash_title": "Tạo dashboard chart mới (wizard hoặc chat)",
             "btn.lang": "VI",
             "btn.lang_title": "Ngôn ngữ hiện tại: Tiếng Việt — bấm để chuyển sang English",
             "card.total": "Tổng chức năng",
@@ -97,8 +124,35 @@
             "nav.dq": "Data Quality",
             "nav.anomaly": "Anomalies",
             "btn.settings": "⚙️ Settings",
+            "btn.settings_title": "Settings: module order, thresholds, aging WIP, digest, reminder…",
             "btn.export_pdf": "📄 Export PDF",
+            "btn.export_pdf_title": "Export weekly PDF report (client-side)",
             "btn.export_issues": "📊 Export issues",
+            "btn.export_issues_title": "Export one Excel with all issue types",
+            "btn.export_weekly_mom": "📋 Export weekly MoM",
+            "btn.export_weekly_mom_title": "Export weekly MoM Excel (Cover + Master plan + meeting minutes + PM Dashboard)",
+            "btn.export_menu": "📤 Export ▾",
+            "btn.export_menu_title": "Export reports (PDF, issues, weekly MoM)",
+            "btn.more_menu": "⋯ More ▾",
+            "btn.more_menu_title": "More actions (dashboard, API, help, settings)",
+            "btn.present": "🎬 Present",
+            "btn.present_title": "Presentation mode (1 section at a time, ← → navigate, Esc to exit)",
+            "btn.help": "❓ Help",
+            "btn.help_title": "Global help (Ctrl+/)",
+            "btn.integrations": "🔌 API Registry",
+            "btn.integrations_title": "API Registry: configure + sync from source apps",
+            "btn.sync": "🔄 Sync ▾",
+            "btn.sync_title": "Quick sync from a configured endpoint",
+            "btn.upload_excel": "⬆ Upload Excel",
+            "btn.upload_excel_title": "Show Function List drop zone (manual Excel upload)",
+            "btn.upload_collapse": "▴ Collapse upload",
+            "btn.upload_collapse_title": "Collapse upload zone (prefer Sync)",
+            "btn.layout_edit": "🔧 Reorder",
+            "btn.layout_edit_title": "Toggle drag-drop section reorder",
+            "btn.layout_reset": "↺ Reset",
+            "btn.layout_reset_title": "Restore default section order",
+            "btn.custom_dash": "➕ Dashboard",
+            "btn.custom_dash_title": "Create a custom chart dashboard",
             "btn.lang": "EN",
             "btn.lang_title": "Current language: English — click to switch to Tiếng Việt",
             "card.total": "Total functions",
@@ -191,6 +245,8 @@
             if (!key) return;
             const attr = el.getAttribute("data-i18n-attr");
             const val = t(key);
+            // Thiếu key → giữ text HTML fallback, không lộ key thô (vd btn.xxx)
+            if (val === key) return;
             if (attr) {
                 el.setAttribute(attr, val);
             } else {
@@ -199,12 +255,18 @@
         });
         scope.querySelectorAll("[data-i18n-html]").forEach((el) => {
             const key = el.getAttribute("data-i18n-html");
-            if (key) el.innerHTML = t(key);
+            if (!key) return;
+            const val = t(key);
+            if (val === key) return;
+            el.innerHTML = val;
         });
         // Title riêng (khi data-i18n đã dùng cho textContent)
         scope.querySelectorAll("[data-i18n-title]").forEach((el) => {
             const key = el.getAttribute("data-i18n-title");
-            if (key) el.setAttribute("title", t(key));
+            if (!key) return;
+            const val = t(key);
+            if (val === key) return;
+            el.setAttribute("title", val);
         });
         // Toggle hiện ngôn ngữ ĐANG CHỌN (EN khi English, VI khi Tiếng Việt)
         const btn = document.getElementById("btnLangToggle");
