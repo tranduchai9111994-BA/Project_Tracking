@@ -1692,6 +1692,7 @@ def export_overdue(slug=None):
         g_processes = _as_list(body.get("g_process") or body.get("g_processes"))
         g_pics = _as_list(body.get("g_pic") or body.get("g_pics"))
         g_project_codes = _project_codes_from_body(body)
+        mode = (body.get("mode") or "both").strip().lower()
     else:
         filters = {
             "module": request.args.get("module"),
@@ -1702,6 +1703,7 @@ def export_overdue(slug=None):
         g_processes = _parse_multi_arg("g_process")
         g_pics = _parse_multi_arg("g_pic")
         g_project_codes = _parse_project_code_args()
+        mode = (request.args.get("mode") or "both").strip().lower()
 
     filters = {k: v for k, v in filters.items() if v}
 
@@ -1725,6 +1727,7 @@ def export_overdue(slug=None):
             overdue_list=overdue_list,
             output_dir=_project_mgr.get_export_dir(slug),
             filters=filters if filters else None,
+            mode=mode,
         )
         return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
     except Exception as e:
@@ -1768,12 +1771,14 @@ def export_stalled(slug=None):
         g_processes = _as_list(body.get("g_process") or body.get("g_processes"))
         g_pics = _as_list(body.get("g_pic") or body.get("g_pics"))
         g_project_codes = _project_codes_from_body(body)
+        mode = (body.get("mode") or "both").strip().lower()
     else:
         filters = {"module": request.args.get("module")}
         g_modules = _parse_multi_arg("g_module")
         g_processes = _parse_multi_arg("g_process")
         g_pics = _parse_multi_arg("g_pic")
         g_project_codes = _parse_project_code_args()
+        mode = (request.args.get("mode") or "both").strip().lower()
 
     filters = {k: v for k, v in filters.items() if v}
 
@@ -1800,6 +1805,7 @@ def export_stalled(slug=None):
             stalled_items=stalled_items,
             output_dir=_project_mgr.get_export_dir(slug),
             filters=filters if filters else None,
+            mode=mode,
         )
         return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
     except Exception as e:
@@ -2004,9 +2010,10 @@ def project_export_all_issues(slug: str):
 def export_chart_endpoint(slug):
     """
     Xuất Excel 1 chart từ metrics.
-    Query/body: chart (bắt buộc) + optional module/process/pic filters.
+    Query/body: chart (bắt buộc) + mode=summary|detail|both (default both)
+      + optional module/process/pic filters.
     Khi có filter → recompute metrics trên subset rồi export.
-    task_type: thêm sheet Chi_tiet (status theo loại việc); group_by=module|process.
+    Sheets: Tong_hop / Chi_tiet (+ Theo_nhom nếu chart có group, kèm summary).
     """
     st, err = _need_state(slug)
     if err:
@@ -2020,6 +2027,7 @@ def export_chart_endpoint(slug):
         fpics = body.get("pics") or body.get("pic") or []
         fproject_codes = _project_codes_from_body(body)
         group_by = (body.get("group_by") or "module").strip().lower()
+        mode = (body.get("mode") or "both").strip().lower()
         if isinstance(fmodules, str):
             fmodules = [x.strip() for x in fmodules.split(",") if x.strip()]
         if isinstance(fprocesses, str):
@@ -2033,6 +2041,7 @@ def export_chart_endpoint(slug):
         fpics = _parse_multi_arg("pic")
         fproject_codes = _parse_project_code_args()
         group_by = (request.args.get("group_by") or "module").strip().lower()
+        mode = (request.args.get("mode") or "both").strip().lower()
 
     if not chart:
         return jsonify({"error": "Thiếu tham số chart"}), 400
@@ -2065,8 +2074,9 @@ def export_chart_endpoint(slug):
             metrics=metrics,
             output_dir=_project_mgr.get_export_dir(slug),
             subtitle=subtitle,
-            parsed_data=data_for_export if chart == "task_type" else None,
-            group_by=group_by if chart == "task_type" else "module",
+            parsed_data=data_for_export,
+            group_by=group_by,
+            mode=mode,
         )
         return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
     except ValueError as e:

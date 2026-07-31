@@ -2382,7 +2382,7 @@
                         <option value="">Tất cả PIC</option>
                     </select>
                     <div id="filterPhaseMS" class="text-sm min-w-[150px]"></div>
-                    <button id="btnExport" onclick="exportOverdue()"
+                    <button id="btnExport" onclick="openExportModePicker(event, '', exportOverdue)"
                             class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm"
                             data-i18n="btn.export_excel">
                         📥 Xuất Excel
@@ -2423,7 +2423,7 @@
                 </div>
                 <div class="flex items-center gap-2">
                     <button onclick="openDrillDown('unassigned', {})" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1 no-print">Chi tiết</button>
-                    <button onclick="exportChartData('unassigned')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <button onclick="openExportModePicker(event, 'unassigned')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
             </div>
             <div class="overflow-x-auto">
@@ -2462,7 +2462,7 @@
                     <!-- Local Module multi-select (giống Overdue / Data Quality) -->
                     <div id="stalledModuleMS" class="text-sm min-w-[150px]"></div>
                     <button onclick="openStalledDrillDown()" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1">Chi tiết</button>
-                    <button onclick="exportStalled()"
+                    <button onclick="openExportModePicker(event, '', exportStalled)"
                             class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm"
                             title="Xuất Excel theo filter Module (+ global filter)">
                         📥 Xuất Excel
@@ -2511,7 +2511,7 @@
                 <h3 class="text-lg font-semibold text-gray-800" data-help="section-risk">⚡ Top Functions Có Điểm Rủi Ro Cao</h3>
                 <div class="flex items-center gap-2">
                     <button onclick="openDrillDown('risk', {level:'high'})" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded px-2 py-1 no-print">Chi tiết</button>
-                    <button onclick="exportChartData('risk')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <button onclick="openExportModePicker(event, 'risk')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
             </div>
             <div class="overflow-x-auto">
@@ -2691,7 +2691,7 @@
                             <button data-mo-group="both" onclick="setModuleGroupBy('both')"
                                     class="mo-group-btn px-2 py-1 border-l hover:bg-blue-50">Cả 2</button>
                 </div>
-                        <button onclick="exportChartData('module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
+                        <button onclick="openExportModePicker(event, 'module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
             </div>
                 </div>
                 <p class="chart-scope"></p>
@@ -2725,7 +2725,7 @@
                             <button data-tt-group="process" onclick="setTaskTypeGroupBy('process')"
                                     class="tt-group-btn px-2 py-1 border-l hover:bg-blue-50">Quy trình</button>
                         </div>
-                        <button onclick="exportChartData('task_type')"
+                        <button onclick="openExportModePicker(event, 'task_type')"
                                 class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1"
                                 title="Xuất Excel — summary % Closed + danh sách chức năng (status theo loại việc)">
                             📥 Xuất Excel
@@ -2749,6 +2749,7 @@
                             class="text-xs px-3 py-1 rounded border bg-blue-600 text-white border-blue-600">Module</button>
                     <button id="matrixGroupProcess" onclick="setMatrixGroupBy('process')"
                             class="text-xs px-3 py-1 rounded border bg-white text-gray-700 border-gray-300 hover:bg-gray-50">Quy trình</button>
+                    <button onclick="openExportModePicker(event, 'phase_matrix')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 ml-2" title="Xuất Excel — Tổng hợp / Chi tiết">📥</button>
                 </div>
             </div>
             <p class="chart-scope"></p>
@@ -2767,7 +2768,7 @@
                 <button class="fs-btn no-print" onclick="fullscreenChart('chartPhaseStacked')">⛶</button>
                 <div class="flex items-center justify-between gap-2 pr-8">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-phase">📊 Tiến độ theo Phase</h3>
-                    <button onclick="exportChartData('phase_stacked')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <button onclick="openExportModePicker(event, 'phase_stacked')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
                 <p class="chart-subtitle">Số function ở mỗi status, gộp theo từng phase — click để xem chi tiết</p>
                 <p class="chart-scope"></p>
@@ -2780,7 +2781,7 @@
 <section id="section-giaidoan" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-1">
                 <h3 class="text-lg font-semibold text-gray-800" data-help="section-giaidoan">📅 Tiến độ theo Giai đoạn</h3>
-                <button onclick="exportChartData('giai_doan')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                <button onclick="openExportModePicker(event, 'giai_doan')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
             </div>
             <p class="chart-subtitle">% Closed của từng phase, so sánh giữa các giai đoạn triển khai</p>
             <div class="chart-box h-72"><canvas id="chartGiaiDoan"></canvas></div>
@@ -2804,7 +2805,7 @@
                         <option value="low">Thấp &lt;50%</option>
                         <option value="overdue">Có overdue</option>
                     </select>
-                    <button onclick="exportChartData('process')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
+                    <button onclick="openExportModePicker(event, 'process')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
                 </div>
             </div>
             <p id="processScopeBanner" class="chart-scope process-scope"></p>
@@ -2835,6 +2836,7 @@
                     <div class="text-xs bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded border border-emerald-200">
                         Tổng Closed: <b id="burndownTotal">—</b>
                     </div>
+                    <button onclick="openExportModePicker(event, 'burndown')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel — Tổng hợp / Chi tiết">📥</button>
                 </div>
             </div>
             <p class="chart-scope"></p>
@@ -2899,8 +2901,8 @@
                         <button data-unit="MM" onclick="setEffortUnit('MM')"
                                 class="effort-unit-btn px-2 py-1 border-l hover:bg-blue-50">MM</button>
                     </div>
-                    <button onclick="exportChartData('effort_heatmap')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Heatmap">📥 Heatmap</button>
-                    <button onclick="exportChartData('effort_pic')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất PIC">📥 PIC</button>
+                    <button onclick="openExportModePicker(event, 'effort_heatmap')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Heatmap">📥 Heatmap</button>
+                    <button onclick="openExportModePicker(event, 'effort_pic')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất PIC">📥 PIC</button>
                 </div>
             </div>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -2959,7 +2961,7 @@
                 <h3 class="text-lg font-semibold text-gray-800" data-help="section-duration">⏱️ Phân tích Duration</h3>
                 <div class="flex items-center gap-2">
                     <button onclick="openDrillDown('duration', {})" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded px-2 py-1 no-print">Chi tiết</button>
-                    <button onclick="exportChartData('duration')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <button onclick="openExportModePicker(event, 'duration')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
             </div>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -3065,7 +3067,7 @@
                 <div>
                     <div class="flex items-center gap-2">
                         <h3 class="text-lg font-semibold text-gray-800" data-help="section-gantt">📅 Timeline (Gantt-style)</h3>
-                        <button onclick="exportChartData('module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print hidden" title="Xuất" id="ganttExportBtn">📥</button>
+                        <button onclick="openExportModePicker(event, 'module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print hidden" title="Xuất" id="ganttExportBtn">📥</button>
                     </div>
                     <p class="text-xs text-gray-500 mt-0.5">Mỗi function là 1 dòng · click function để xem chi tiết · fold/unfold nhóm</p>
                     <p class="chart-scope"></p>
@@ -3274,7 +3276,7 @@
                 <div class="min-w-0">
                     <div class="flex items-center gap-2">
                         <h3 class="text-lg font-semibold text-gray-800" data-help="section-pic">👥 Workload theo PIC (Top 15)</h3>
-                        <button onclick="exportChartData('pic_workload')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                        <button onclick="openExportModePicker(event, 'pic_workload')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                     </div>
                     <p class="chart-subtitle">Số phase-record được giao cho mỗi PIC, phân theo status</p>
                     <p class="chart-scope"></p>
@@ -3297,7 +3299,7 @@
             <div class="bg-white dashboard-card rounded-xl shadow-md p-5">
                 <div class="flex items-center justify-between gap-2">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-priority">🎯 Priority</h3>
-                    <button onclick="exportChartData('priority')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <button onclick="openExportModePicker(event, 'priority')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
                 <p class="chart-subtitle">Phân bố mức ưu tiên của toàn bộ function</p>
                 <div class="chart-box chart-box-doughnut h-64"><canvas id="chartPriority"></canvas></div>
@@ -3305,7 +3307,7 @@
             <div class="bg-white dashboard-card rounded-xl shadow-md p-5">
                 <div class="flex items-center justify-between gap-2">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-complexity">⚙️ Complexity</h3>
-                    <button onclick="exportChartData('complexity')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <button onclick="openExportModePicker(event, 'complexity')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
                 <p class="chart-subtitle">Phân bố độ phức tạp — Low/Medium/High</p>
                 <div class="chart-box chart-box-doughnut h-64"><canvas id="chartComplexity"></canvas></div>
@@ -3313,7 +3315,7 @@
             <div class="bg-white dashboard-card rounded-xl shadow-md p-5">
                 <div class="flex items-center justify-between gap-2">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-fitgap">🔍 FIT / GAP</h3>
-                    <button onclick="exportChartData('fit_gap')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <button onclick="openExportModePicker(event, 'fit_gap')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
                 <p class="chart-subtitle">Số function FIT / GAP theo từng module</p>
                 <div class="chart-box h-64"><canvas id="chartFitGap"></canvas></div>

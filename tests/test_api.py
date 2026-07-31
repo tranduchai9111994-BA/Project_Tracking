@@ -104,10 +104,10 @@ def test_stalled_endpoint(flask_client, sample_xlsx_path):
 
 
 def _count_stalled_rows_in_xlsx(resp_data: bytes) -> int:
-    """Đếm số row data trong file stalled export (header ở row 4)."""
+    """Đếm số row data trong sheet Chi_tiet (header ở row 4)."""
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(resp_data))
-    ws = wb.active
+    ws = wb["Chi_tiet"] if "Chi_tiet" in wb.sheetnames else wb.active
     n = 0
     for row in ws.iter_rows(min_row=5, values_only=True):
         first = row[0]
@@ -123,10 +123,10 @@ def _count_stalled_rows_in_xlsx(resp_data: bytes) -> int:
 
 
 def _stalled_modules_in_xlsx(resp_data: bytes) -> set[str]:
-    """Lấy set Module từ cột Module (index 3) của file stalled export."""
+    """Lấy set Module từ cột Module (index 3) của sheet Chi_tiet."""
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(resp_data))
-    ws = wb.active
+    ws = wb["Chi_tiet"] if "Chi_tiet" in wb.sheetnames else wb.active
     mods: set[str] = set()
     for row in ws.iter_rows(min_row=5, values_only=True):
         if row[0] is None:
@@ -135,7 +135,7 @@ def _stalled_modules_in_xlsx(resp_data: bytes) -> set[str]:
             int(str(row[0]))
         except (TypeError, ValueError):
             continue
-        if row[3]:
+        if len(row) > 3 and row[3]:
             mods.add(str(row[3]))
     wb.close()
     return mods
@@ -216,10 +216,10 @@ def test_export_overdue_download(flask_client, sample_xlsx_path):
 
 
 def _count_overdue_rows_in_xlsx(resp_data: bytes) -> int:
-    """Đếm số row data trong file overdue export (header ở row 4)."""
+    """Đếm số row data trong sheet Chi_tiet (header ở row 4)."""
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(resp_data))
-    ws = wb.active
+    ws = wb["Chi_tiet"] if "Chi_tiet" in wb.sheetnames else wb.active
     n = 0
     for row in ws.iter_rows(min_row=5, values_only=True):
         # Cell đầu tiên là STT — check số nguyên

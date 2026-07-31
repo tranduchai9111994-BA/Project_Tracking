@@ -3183,13 +3183,14 @@ function renderOverdueTable() {
             : `Đang xem ${start + 1}–${end}/${items.length} task trễ deadline`;
 }
 
-async function exportOverdue() {
+async function exportOverdue(mode) {
     // Task 15: Module + Phase multi-select → comma-sep (backend
     // _parse_multi_arg tự tách).
+    if (!mode) mode = "both";
     const fmArr = _msInstances.overdueModule?.getSelected?.() || [];
     const fphArr = _msInstances.overduePhase?.getSelected?.() || [];
     const fp = document.getElementById("filterPIC")?.value || "";
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ mode });
     // Local widget filter (trong section Overdue)
     if (fmArr.length) params.set("module", fmArr.join(","));
     if (fp) params.set("pic", fp);
@@ -3901,13 +3902,14 @@ window.openStalledDrillDown = openStalledDrillDown;
  * Xuất Excel Đình trệ — respect local Module filter + global filter (g_*).
  * Pattern giống exportOverdue.
  */
-async function exportStalled() {
+async function exportStalled(mode) {
     if (!currentProjectSlug) {
         showToast("⚠️ Chưa chọn project");
         return;
     }
+    if (!mode) mode = "both";
     const fmArr = _stalledSelectedModules();
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ mode });
     // Local widget filter
     if (fmArr.length) params.set("module", fmArr.join(","));
     // Global filter (header) — key g_* để không đè local
@@ -5296,29 +5298,102 @@ async function downloadFile(url, defaultName) {
 }
 
 /**
+ * Menu chọn mode xuất chart: Tổng hợp | Chi tiết | Cả hai.
+ * Dùng 1 dropdown floating dùng chung cho mọi nút 📥.
+ */
+let _exportModeMenuEl = null;
+
+function _ensureExportModeMenu() {
+    if (_exportModeMenuEl) return _exportModeMenuEl;
+    const el = document.createElement("div");
+    el.id = "exportModeMenu";
+    el.className = "hidden absolute z-50 bg-white border border-gray-200 rounded shadow-lg text-xs py-1 min-w-[140px]";
+    el.innerHTML = `
+        <button type="button" data-mode="summary"
+                class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700">Tổng hợp</button>
+        <button type="button" data-mode="detail"
+                class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700">Chi tiết</button>
+        <button type="button" data-mode="both"
+                class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700 font-medium">Cả hai</button>
+    `;
+    document.body.appendChild(el);
+    _exportModeMenuEl = el;
+    document.addEventListener("click", (ev) => {
+        if (!_exportModeMenuEl || _exportModeMenuEl.classList.contains("hidden")) return;
+        if (_exportModeMenuEl.contains(ev.target)) return;
+        if (ev.target.closest && ev.target.closest("[data-export-chart],[data-export-fn]")) return;
+        _exportModeMenuEl.classList.add("hidden");
+    });
+    return el;
+}
+
+/**
+ * Mở menu chọn mode cạnh nút.
+ * @param {Event} event
+ * @param {string} chartKey — key export-chart, hoặc "" nếu dùng customFn
+ * @param {function(string)=} customFn — optional (mode) => void cho overdue/stalled
+ */
+function openExportModePicker(event, chartKey, customFn) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const menu = _ensureExportModeMenu();
+    menu.querySelectorAll("button[data-mode]").forEach((btn) => {
+        btn.onclick = (ev) => {
+            ev.stopPropagation();
+            menu.classList.add("hidden");
+            const mode = btn.getAttribute("data-mode") || "both";
+            if (typeof customFn === "function") {
+                customFn(mode);
+            } else {
+                exportChartData(chartKey, mode);
+            }
+        };
+    });
+    const anchor = (event && event.currentTarget) || (event && event.target);
+    const rect = anchor && anchor.getBoundingClientRect
+        ? anchor.getBoundingClientRect()
+        : { left: 8, bottom: 40, right: 80 };
+    menu.classList.remove("hidden");
+    menu.style.position = "fixed";
+    menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+    menu.style.left = `${Math.round(Math.max(8, rect.right - 140))}px`;
+}
+window.openExportModePicker = openExportModePicker;
+
+/**
  * Xuất Excel cho 1 chart chính (module_overview, task_type, effort_heatmap…).
  * Dùng API /api/projects/<slug>/export-chart — áp dụng global filter hiện tại nếu có.
- * task_type: thêm group_by (Module/Quy trình) khớp toggle UI → sheet Chi_tiet status.
+ * mode: summary | detail | both (default both). Không truyền mode → mở menu chọn.
  */
-async function exportChartData(chartKey) {
+async function exportChartData(chartKey, mode) {
     if (!metricsData) {
         showToast("Chưa có dữ liệu — hãy upload file", "red");
         return;
     }
-    const params = new URLSearchParams({ chart: chartKey });
+    if (!mode) {
+        // Gọi từ onclick cũ không có event — fallback both
+        mode = "both";
+    }
+    const params = new URLSearchParams({ chart: chartKey, mode });
     // Forward global filters (param name khớp _parse_multi_arg: module/process/pic)
     if (globalFilters.modules.length) params.set("module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) params.set("process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) params.set("pic", globalFilters.pics.join(","));
     if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
-    if (chartKey === "task_type") {
-        params.set("group_by", (typeof _taskTypeGroupBy !== "undefined" && _taskTypeGroupBy) || "module");
+    if (chartKey === "task_type" || chartKey === "phase_matrix") {
+        const gb = chartKey === "task_type"
+            ? ((typeof _taskTypeGroupBy !== "undefined" && _taskTypeGroupBy) || "module")
+            : ((typeof _matrixGroupBy !== "undefined" && _matrixGroupBy) || "module");
+        params.set("group_by", gb);
     }
     await downloadFile(
         `/api/projects/${currentProjectSlug}/export-chart?${params.toString()}`,
         `Chart_${chartKey}.xlsx`
     );
 }
+window.exportChartData = exportChartData;
 
 /**
  * Xuất Report Đánh giá (audit) — scope=all|filtered.

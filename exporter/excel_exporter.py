@@ -119,225 +119,44 @@ COLUMNS = [
     ("Ghi chú", 30),
 ]
 
-
-def export_overdue_report(
-    overdue_list: list[dict[str, Any]],
-    output_dir: str = "uploads",
-    filters: Optional[dict] = None,
-) -> str:
-    """
-    Tạo file Excel chứa danh sách task trễ deadline.
-
-    Args:
-        overdue_list: Danh sách overdue items từ DashboardEngine
-        output_dir: Thư mục lưu file output
-        filters: Optional filter dict {"module": ..., "pic": ..., "phase": ...}
-
-    Returns:
-        Filepath of created .xlsx file
-    """
-    # Áp dụng filter nếu có. Task 15: chấp nhận cả single string ("A") lẫn
-    # multi comma-sep ("A,B") — module/phase multi-select. Nếu list values
-    # (dạng "A,B") → check membership; single value → giữ hành vi cũ.
-    def _norm_multi(v):
-        if not v:
-            return []
-        if isinstance(v, (list, tuple)):
-            return [str(x).strip() for x in v if str(x).strip()]
-        return [x.strip() for x in str(v).split(",") if x.strip()]
-
-    items = overdue_list
-    if filters:
-        mods = _norm_multi(filters.get("module"))
-        if mods:
-            items = [i for i in items if i.get("module") in mods]
-        if filters.get("pic"):
-            items = [i for i in items if filters["pic"] in i.get("pic", [])]
-        phases = _norm_multi(filters.get("phase"))
-        if phases:
-            items = [i for i in items if i.get("phase") in phases]
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Overdue_Report"
-
-    # === Title row ===
-    ws.merge_cells("A1:K1")
-    title_cell = ws["A1"]
-    title_cell.value = "BÁO CÁO TASK TRỄ DEADLINE"
-    title_cell.font = Font(name="Arial", bold=True, size=14, color="1F4E79")
-    title_cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 30
-
-    # === Subtitle row ===
-    ws.merge_cells("A2:K2")
-    sub_cell = ws["A2"]
-    filter_text = ""
-    if filters:
-        parts = []
-        mods = _norm_multi(filters.get("module"))
-        if mods:
-            parts.append(f"Module: {', '.join(mods)}")
-        if filters.get("pic"):
-            parts.append(f"PIC: {filters['pic']}")
-        phases = _norm_multi(filters.get("phase"))
-        if phases:
-            parts.append(f"Phase: {', '.join(phases)}")
-        filter_text = " | ".join(parts)
-    sub_cell.value = f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}" + (f"  |  Bộ lọc: {filter_text}" if filter_text else "")
-    sub_cell.font = Font(name="Arial", size=10, italic=True, color="666666")
-    sub_cell.alignment = Alignment(horizontal="center")
-
-    # === Header row (row 4) ===
-    header_row = 4
-    for col_idx, (col_name, col_width) in enumerate(COLUMNS, 1):
-        cell = ws.cell(row=header_row, column=col_idx, value=col_name)
-        cell.font = HEADER_FONT
-        cell.fill = HEADER_FILL
-        cell.alignment = HEADER_ALIGN
-        cell.border = THIN_BORDER
-        ws.column_dimensions[get_column_letter(col_idx)].width = col_width
-
-    ws.row_dimensions[header_row].height = 25
-
-    # === Data rows ===
-    for row_offset, item in enumerate(items):
-        row_idx = header_row + 1 + row_offset
-        values = [
-            row_offset + 1,
-            item.get("ma_cn", ""),
-            item.get("ten_cn", ""),
-            item.get("module", ""),
-            item.get("phase", ""),
-            item.get("end_date", ""),
-            item.get("days_overdue", 0),
-            item.get("status", ""),
-            ", ".join(item.get("pic", [])),
-            item.get("priority", ""),
-            item.get("note", ""),
-        ]
-
-        # Chọn fill theo mức trễ
-        days = item.get("days_overdue", 0)
-        if days > 7:
-            row_fill = RED_FILL
-        elif days > 3:
-            row_fill = ORANGE_FILL
-        elif days > 0:
-            row_fill = YELLOW_FILL
-        else:
-            row_fill = None
-
-        for col_idx, val in enumerate(values, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=val)
-            cell.font = BODY_FONT
-            cell.alignment = BODY_ALIGN
-            cell.border = THIN_BORDER
-            if row_fill:
-                cell.fill = row_fill
-
-    # === Summary row ===
-    summary_row = header_row + len(items) + 2
-    ws.merge_cells(f"A{summary_row}:K{summary_row}")
-    summary_cell = ws.cell(row=summary_row, column=1)
-    summary_cell.value = f"Tổng: {len(items)} task trễ deadline | Báo cáo xuất ngày {date.today().strftime('%d/%m/%Y')}"
-    summary_cell.font = Font(name="Arial", bold=True, size=10, color="1F4E79")
-
-    # === Freeze panes ===
-    ws.freeze_panes = f"A{header_row + 1}"
-
-    # === Auto-filter ===
-    last_col = get_column_letter(len(COLUMNS))
-    last_row = header_row + len(items)
-    ws.auto_filter.ref = f"A{header_row}:{last_col}{last_row}"
-
-    # === Save ===
-    os.makedirs(output_dir, exist_ok=True)
-    filename = f"Overdue_Report_{date.today().strftime('%Y%m%d')}.xlsx"
-    filepath = os.path.join(output_dir, filename)
-    wb.save(filepath)
-    wb.close()
-
-    return filepath
+EXPORT_MODES = {"summary", "detail", "both"}
 
 
-def export_stalled_report(
-    stalled_items: list[dict[str, Any]],
-    output_dir: str = "uploads",
-    filters: Optional[dict] = None,
-) -> str:
-    """
-    Tạo file Excel danh sách task bị đình trệ (kẹt giữa 2 phase).
-
-    Args:
-        stalled_items: items từ metrics.stalled_tasks
-        output_dir: thư mục lưu file
-        filters: optional {"module": "PR" | "PR,SI" | ["PR","SI"]}
-
-    Returns:
-        Filepath .xlsx
-    """
-    def _norm_multi(v):
-        if not v:
-            return []
-        if isinstance(v, (list, tuple)):
-            return [str(x).strip() for x in v if str(x).strip()]
-        return [x.strip() for x in str(v).split(",") if x.strip()]
-
-    items = list(stalled_items or [])
-    if filters:
-        mods = _norm_multi(filters.get("module"))
-        if mods:
-            items = [i for i in items if i.get("module") in mods]
-
-    columns = [
-        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
-        ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
-        ("Chờ (ngày)", 12), ("Priority", 12),
-    ]
-    data_rows = [
-        [
-            idx + 1,
-            i.get("ma_cn", ""),
-            i.get("ten_cn", ""),
-            i.get("module", ""),
-            i.get("completed_phase", ""),
-            i.get("waiting_phase", ""),
-            i.get("completed_date", ""),
-            i.get("wait_days", 0),
-            i.get("priority", ""),
-        ]
-        for idx, i in enumerate(items)
-    ]
-
-    filter_parts = []
-    if filters:
-        mods = _norm_multi(filters.get("module"))
-        if mods:
-            filter_parts.append(f"Module: {', '.join(mods)}")
-    subtitle = f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
-    if filter_parts:
-        subtitle += "  |  Bộ lọc: " + " | ".join(filter_parts)
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Dinh_Tre"
-    _write_sheet(
-        ws, "ĐÌNH TRỆ", columns, data_rows, subtitle=subtitle,
-        row_fill_fn=lambda ri, idx: _fill_by_days(items[idx].get("wait_days", 0)),
-    )
-
-    os.makedirs(output_dir, exist_ok=True)
-    filename = f"Dinh_Tre_Report_{date.today().strftime('%Y%m%d')}.xlsx"
-    filepath = os.path.join(output_dir, filename)
-    wb.save(filepath)
-    wb.close()
-    return filepath
+def _normalize_export_mode(mode: str | None) -> str:
+    m = (mode or "both").strip().lower()
+    return m if m in EXPORT_MODES else "both"
 
 
-# ======================================================================
-# V2 EXPORTS
-# ======================================================================
+def _want_summary(mode: str) -> bool:
+    return mode in ("summary", "both")
+
+
+def _want_detail(mode: str) -> bool:
+    return mode in ("detail", "both")
+
+
+class _SheetBook:
+    """Workbook helper: sheet đầu = rename active; sheet sau = create."""
+
+    def __init__(self):
+        self.wb = openpyxl.Workbook()
+        self._first = True
+
+    def sheet(self, name: str):
+        if self._first:
+            ws = self.wb.active
+            ws.title = name
+            self._first = False
+            return ws
+        return self.wb.create_sheet(name)
+
+
+def _norm_multi_filter(v) -> list[str]:
+    if not v:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return [x.strip() for x in str(v).split(",") if x.strip()]
 
 
 def _fill_by_days(days: int) -> Optional[PatternFill]:
@@ -359,6 +178,182 @@ def _fill_by_risk(score: int) -> Optional[PatternFill]:
     if score >= 30:
         return YELLOW_FILL
     return None
+
+
+def export_overdue_report(
+    overdue_list: list[dict[str, Any]],
+    output_dir: str = "uploads",
+    filters: Optional[dict] = None,
+    mode: str = "both",
+) -> str:
+    """
+    Tạo file Excel task trễ — sheet Tong_hop + Chi_tiet theo mode.
+
+    mode: summary | detail | both (default both)
+    """
+    from collections import Counter
+
+    mode = _normalize_export_mode(mode)
+    items = list(overdue_list or [])
+    if filters:
+        mods = _norm_multi_filter(filters.get("module"))
+        if mods:
+            items = [i for i in items if i.get("module") in mods]
+        if filters.get("pic"):
+            items = [i for i in items if filters["pic"] in i.get("pic", [])]
+        phases = _norm_multi_filter(filters.get("phase"))
+        if phases:
+            items = [i for i in items if i.get("phase") in phases]
+
+    filter_text = ""
+    if filters:
+        parts = []
+        mods = _norm_multi_filter(filters.get("module"))
+        if mods:
+            parts.append(f"Module: {', '.join(mods)}")
+        if filters.get("pic"):
+            parts.append(f"PIC: {filters['pic']}")
+        phases = _norm_multi_filter(filters.get("phase"))
+        if phases:
+            parts.append(f"Phase: {', '.join(phases)}")
+        filter_text = " | ".join(parts)
+    subtitle = f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+    if filter_text:
+        subtitle += f"  |  Bộ lọc: {filter_text}"
+
+    book = _SheetBook()
+    if _want_summary(mode):
+        mod_c = Counter((i.get("module") or "(blank)") for i in items)
+        ph_c = Counter((i.get("phase") or "(blank)") for i in items)
+        sum_rows = (
+            [[idx + 1, f"Module: {k}", v]
+             for idx, (k, v) in enumerate(sorted(mod_c.items(), key=lambda x: -x[1]))]
+            + [[len(mod_c) + idx + 1, f"Phase: {k}", v]
+               for idx, (k, v) in enumerate(sorted(ph_c.items(), key=lambda x: -x[1]))]
+        )
+        _write_sheet(
+            book.sheet("Tong_hop"),
+            "TỔNG HỢP OVERDUE (theo Module / Phase)",
+            [("STT", 6), ("Nhóm", 28), ("Số lượng", 12)],
+            sum_rows,
+            subtitle=subtitle,
+        )
+    if _want_detail(mode):
+        data_rows = [
+            [
+                idx + 1,
+                i.get("ma_cn", ""),
+                i.get("ten_cn", ""),
+                i.get("module", ""),
+                i.get("phase", ""),
+                i.get("end_date", ""),
+                i.get("days_overdue", 0),
+                i.get("status", ""),
+                ", ".join(i.get("pic", []) if isinstance(i.get("pic"), list) else []),
+                i.get("priority", ""),
+                i.get("note", ""),
+            ]
+            for idx, i in enumerate(items)
+        ]
+        _write_sheet(
+            book.sheet("Chi_tiet"),
+            "CHI TIẾT TASK TRỄ DEADLINE",
+            COLUMNS,
+            data_rows,
+            subtitle=subtitle,
+            row_fill_fn=lambda ri, idx: _fill_by_days(items[idx].get("days_overdue", 0)),
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filename = f"Overdue_Report_{date.today().strftime('%Y%m%d')}.xlsx"
+    filepath = os.path.join(output_dir, filename)
+    book.wb.save(filepath)
+    book.wb.close()
+    return filepath
+
+
+def export_stalled_report(
+    stalled_items: list[dict[str, Any]],
+    output_dir: str = "uploads",
+    filters: Optional[dict] = None,
+    mode: str = "both",
+) -> str:
+    """
+    Tạo file Excel đình trệ — sheet Tong_hop + Chi_tiet theo mode.
+
+    mode: summary | detail | both (default both)
+    """
+    from collections import Counter
+
+    mode = _normalize_export_mode(mode)
+    items = list(stalled_items or [])
+    if filters:
+        mods = _norm_multi_filter(filters.get("module"))
+        if mods:
+            items = [i for i in items if i.get("module") in mods]
+
+    filter_parts = []
+    if filters:
+        mods = _norm_multi_filter(filters.get("module"))
+        if mods:
+            filter_parts.append(f"Module: {', '.join(mods)}")
+    subtitle = f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+    if filter_parts:
+        subtitle += "  |  Bộ lọc: " + " | ".join(filter_parts)
+
+    book = _SheetBook()
+    if _want_summary(mode):
+        c = Counter(
+            f"{i.get('completed_phase', '')} → {i.get('waiting_phase', '')}"
+            for i in items
+        )
+        _write_sheet(
+            book.sheet("Tong_hop"),
+            "TỔNG HỢP ĐÌNH TRỆ (theo transition)",
+            [("STT", 6), ("Từ → Sang", 36), ("Số lượng", 12)],
+            [[idx + 1, k, v] for idx, (k, v) in enumerate(sorted(c.items(), key=lambda x: -x[1]))],
+            subtitle=subtitle,
+        )
+    if _want_detail(mode):
+        columns = [
+            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+            ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
+            ("Chờ (ngày)", 12), ("Priority", 12),
+        ]
+        data_rows = [
+            [
+                idx + 1,
+                i.get("ma_cn", ""),
+                i.get("ten_cn", ""),
+                i.get("module", ""),
+                i.get("completed_phase", ""),
+                i.get("waiting_phase", ""),
+                i.get("completed_date", ""),
+                i.get("wait_days", 0),
+                i.get("priority", ""),
+            ]
+            for idx, i in enumerate(items)
+        ]
+        _write_sheet(
+            book.sheet("Chi_tiet"),
+            "CHI TIẾT TASK ĐÌNH TRỆ",
+            columns,
+            data_rows,
+            subtitle=subtitle,
+            row_fill_fn=lambda ri, idx: _fill_by_days(items[idx].get("wait_days", 0)),
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
+    filename = f"Dinh_Tre_Report_{date.today().strftime('%Y%m%d')}.xlsx"
+    filepath = os.path.join(output_dir, filename)
+    book.wb.save(filepath)
+    book.wb.close()
+    return filepath
+
+
+# ======================================================================
+# V2 EXPORTS
+# ======================================================================
 
 
 def export_full_report(
@@ -1144,6 +1139,7 @@ SUPPORTED_EXPORT_CHARTS = {
     "giai_doan",
     "process",
     "duration",
+    "burndown",
 }
 
 
@@ -1180,6 +1176,60 @@ def _status_for_task_type(row, phase_names: list[str]) -> str:
     return " | ".join(statuses)
 
 
+def _func_meta(row) -> dict[str, Any]:
+    """Meta chuẩn cho sheet Chi_tiet."""
+    from analyzer.rlog_weekly import _row_rlog_id
+
+    m = row.meta or {}
+    return {
+        "ma_cn": m.get("ma_cn") or "",
+        "rlog_id": _row_rlog_id(row) or "",
+        "ten_cn": m.get("ten_cn") or "",
+        "module": m.get("module") or "",
+        "quy_trinh": m.get("quy_trinh") or "",
+        "priority": m.get("priority") or "",
+        "complexity": m.get("complexity") or "",
+        "fit_gap": m.get("fit_gap") or "",
+        "giai_doan": str(m.get("giai_doan") or ""),
+        "ma_du_an": m.get("ma_du_an") or "",
+    }
+
+
+DETAIL_META_COLUMNS: list[tuple[str, int]] = [
+    ("STT", 6),
+    ("Mã CN", 14),
+    ("Rlog ID", 14),
+    ("Tên chức năng", 40),
+    ("Module", 10),
+    ("Quy trình", 22),
+    ("Priority", 12),
+    ("Complexity", 12),
+    ("Mã dự án", 22),
+]
+
+
+def _meta_cell_values(idx: int, meta: dict[str, Any]) -> list[Any]:
+    return [
+        idx + 1,
+        meta.get("ma_cn", ""),
+        meta.get("rlog_id", ""),
+        meta.get("ten_cn", ""),
+        meta.get("module", ""),
+        meta.get("quy_trinh", ""),
+        meta.get("priority", ""),
+        meta.get("complexity", ""),
+        meta.get("ma_du_an", ""),
+    ]
+
+
+def _phase_status_map(row, phases: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for ph in phases:
+        pd = (row.phases or {}).get(ph)
+        out[ph] = _normalize_export_status(getattr(pd, "status", None) if pd else None)
+    return out
+
+
 def build_task_type_detail_rows(parsed_data) -> tuple[list[str], list[dict[str, Any]]]:
     """
     Build danh sách function × status theo loại công việc.
@@ -1187,8 +1237,6 @@ def build_task_type_detail_rows(parsed_data) -> tuple[list[str], list[dict[str, 
     Returns:
         (task_types, rows) — mỗi row: meta + statuses[task_type] = status chuẩn hóa.
     """
-    from analyzer.rlog_weekly import _row_rlog_id
-
     task_types: list[str] = []
     task_phase_map: dict[str, list[str]] = {}
     seen: set[str] = set()
@@ -1201,24 +1249,32 @@ def build_task_type_detail_rows(parsed_data) -> tuple[list[str], list[dict[str, 
 
     rows: list[dict[str, Any]] = []
     for r in getattr(parsed_data, "rows", []) or []:
-        meta = r.meta or {}
-        rlog = _row_rlog_id(r) or ""
+        meta = _func_meta(r)
         statuses = {
             tt: _status_for_task_type(r, task_phase_map.get(tt) or [])
             for tt in task_types
         }
-        rows.append({
-            "ma_cn": meta.get("ma_cn") or "",
-            "ten_cn": meta.get("ten_cn") or "",
-            "module": meta.get("module") or "",
-            "quy_trinh": meta.get("quy_trinh") or "",
-            "priority": meta.get("priority") or "",
-            "complexity": meta.get("complexity") or "",
-            "ma_du_an": meta.get("ma_du_an") or "",
-            "rlog_id": rlog,
-            "statuses": statuses,
-        })
+        rows.append({**meta, "statuses": statuses})
     return task_types, rows
+
+
+def build_phase_status_detail_rows(parsed_data) -> tuple[list[str], list[dict[str, Any]]]:
+    """Function × status từng phase (dùng cho phase_stacked / phase_matrix / …)."""
+    phases = list(getattr(parsed_data, "all_phases", None) or [])
+    if not phases:
+        phases = [pg.name for pg in (getattr(parsed_data, "phase_groups", None) or [])]
+    rows: list[dict[str, Any]] = []
+    for r in getattr(parsed_data, "rows", []) or []:
+        meta = _func_meta(r)
+        rows.append({**meta, "statuses": _phase_status_map(r, phases)})
+    return phases, rows
+
+
+def _count_by(items: list[dict], key: str) -> list[list[Any]]:
+    from collections import Counter
+
+    c = Counter((i.get(key) or "(blank)") for i in items)
+    return [[idx + 1, k, v] for idx, (k, v) in enumerate(sorted(c.items(), key=lambda x: -x[1]))]
 
 
 def export_chart(
@@ -1228,23 +1284,74 @@ def export_chart(
     subtitle: str = "",
     parsed_data=None,
     group_by: str = "module",
+    mode: str = "both",
 ) -> str:
     """
-    Xuất 1 sheet Excel cho chart cụ thể từ metrics đã compute.
+    Xuất Excel cho 1 chart.
 
-    chart: xem SUPPORTED_EXPORT_CHARTS
-    parsed_data: optional ParsedData — dùng cho sheet chi tiết (task_type).
-    group_by: "module" | "process" — nhóm summary task_type (khớp toggle UI).
+    mode: summary | detail | both (default both)
+      - Tong_hop: số liệu biểu đồ / aggregate
+      - Chi_tiet: danh sách chức năng tạo nên thống kê + tình trạng liên quan
+      - Theo_nhom: optional (task_type / phase_matrix khi có group) — kèm summary
     """
     if chart not in SUPPORTED_EXPORT_CHARTS:
         raise ValueError(f"Chart không hỗ trợ: {chart}. Hỗ trợ: {sorted(SUPPORTED_EXPORT_CHARTS)}")
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
+    mode = _normalize_export_mode(mode)
+    do_sum = _want_summary(mode)
+    do_det = _want_detail(mode)
+    book = _SheetBook()
     sub = subtitle or f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
 
+    # ------------------------------------------------------------------
+    # Helpers nội bộ ghi sheet
+    # ------------------------------------------------------------------
+    def write_summary(title: str, columns, data_rows, sheet_name: str = "Tong_hop", row_fill_fn=None):
+        if not do_sum:
+            return
+        ws = book.sheet(sheet_name)
+        _write_sheet(ws, title, columns, data_rows, subtitle=sub, row_fill_fn=row_fill_fn)
+
+    def write_detail(title: str, columns, data_rows, sheet_name: str = "Chi_tiet", row_fill_fn=None):
+        if not do_det:
+            return
+        ws = book.sheet(sheet_name)
+        _write_sheet(ws, title, columns, data_rows, subtitle=sub, row_fill_fn=row_fill_fn)
+
+    def write_group(title: str, columns, data_rows, sheet_name: str = "Theo_nhom"):
+        """Sheet nhóm — chỉ khi summary (mode summary/both)."""
+        if not do_sum:
+            return
+        ws = book.sheet(sheet_name)
+        _write_sheet(ws, title, columns, data_rows, subtitle=sub)
+
+    def detail_from_functions(
+        title: str,
+        extra_cols: list[tuple[str, int]],
+        row_builder,
+    ):
+        """Chi_tiet từ parsed_data.rows; row_builder(row, meta) → list extra values."""
+        if not do_det or parsed_data is None:
+            return
+        columns = list(DETAIL_META_COLUMNS) + list(extra_cols)
+        data_rows = []
+        for idx, r in enumerate(getattr(parsed_data, "rows", []) or []):
+            meta = _func_meta(r)
+            data_rows.append(_meta_cell_values(idx, meta) + list(row_builder(r, meta)))
+        write_detail(title, columns, data_rows)
+
+    def detail_from_items(
+        title: str,
+        columns: list[tuple[str, int]],
+        data_rows: list[list[Any]],
+        row_fill_fn=None,
+    ):
+        write_detail(title, columns, data_rows, row_fill_fn=row_fill_fn)
+
+    # ------------------------------------------------------------------
+    # Per-chart
+    # ------------------------------------------------------------------
     if chart == "effort_heatmap":
-        ws.title = "Effort_Heatmap"
         e = metrics.get("effort_analysis") or {}
         modules = e.get("modules") or []
         phases = e.get("phases") or []
@@ -1252,7 +1359,7 @@ def export_chart(
         columns = [("Module", 14)] + [(p, 12) for p in phases] + [("Tổng MH", 12)]
         data_rows = []
         for m in modules:
-            row_vals = [m]
+            row_vals: list[Any] = [m]
             total = 0.0
             for p in phases:
                 v = float((heatmap.get(m) or {}).get(p) or 0)
@@ -1260,97 +1367,135 @@ def export_chart(
                 total += v
             row_vals.append(round(total, 1))
             data_rows.append(row_vals)
-        _write_sheet(ws, "EFFORT HEATMAP — Module × Phase (MH)", columns, data_rows, subtitle=sub)
+        write_summary("EFFORT HEATMAP — Module × Phase (MH)", columns, data_rows)
+        open_tasks = e.get("open_tasks_by_pic") or []
+        detail_from_items(
+            "CHI TIẾT TASK CÓ ESTIMATE MH (chưa Closed)",
+            [
+                ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Phase", 16), ("PIC", 24), ("Status", 12),
+                ("End date", 13), ("Estimate MH", 12),
+            ],
+            [
+                [
+                    idx + 1, t.get("ma_cn", ""), t.get("ten_cn", ""), t.get("module", ""),
+                    t.get("phase", ""),
+                    ", ".join(t.get("pic") or []) if isinstance(t.get("pic"), list) else (t.get("pic") or ""),
+                    t.get("status", ""), t.get("end_date", ""), t.get("estimate_mh", ""),
+                ]
+                for idx, t in enumerate(open_tasks)
+            ],
+        )
 
     elif chart == "effort_pic":
-        ws.title = "Effort_PIC"
         e = metrics.get("effort_analysis") or {}
-        # Sheet 1: by_pic bar data
-        columns = [
-            ("STT", 6), ("PIC", 20), ("Total MH", 12),
-            ("Closed MH", 12), ("Remaining MH", 12),
-        ]
         by_pic = e.get("by_pic") or []
-        data_rows = [
-            [idx + 1, p.get("pic", ""), p.get("total_mh", 0),
-             p.get("closed_mh", 0), p.get("remaining_mh", 0)]
-            for idx, p in enumerate(by_pic)
-        ]
-        _write_sheet(ws, "EFFORT THEO PIC", columns, data_rows, subtitle=sub)
-
-        # Sheet 2: open tasks (chưa Closed/Cancelled)
-        ws2 = wb.create_sheet("Open_Tasks")
-        open_tasks = e.get("open_tasks_by_pic") or []
-        columns2 = [
-            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
-            ("Phase", 16), ("PIC", 24), ("Status", 12),
-            ("End date", 13), ("Estimate MH", 12),
-        ]
-        data_rows2 = [
+        write_summary(
+            "EFFORT THEO PIC",
             [
-                idx + 1,
-                t.get("ma_cn", ""), t.get("ten_cn", ""), t.get("module", ""),
-                t.get("phase", ""),
-                ", ".join(t.get("pic") or []) if isinstance(t.get("pic"), list) else (t.get("pic") or ""),
-                t.get("status", ""), t.get("end_date", ""), t.get("estimate_mh", ""),
-            ]
-            for idx, t in enumerate(open_tasks)
-        ]
-        _write_sheet(
-            ws2, "TASK CHƯA DONE CÓ ESTIMATE MH", columns2, data_rows2, subtitle=sub
+                ("STT", 6), ("PIC", 20), ("Total MH", 12),
+                ("Closed MH", 12), ("Remaining MH", 12),
+            ],
+            [
+                [idx + 1, p.get("pic", ""), p.get("total_mh", 0),
+                 p.get("closed_mh", 0), p.get("remaining_mh", 0)]
+                for idx, p in enumerate(by_pic)
+            ],
+        )
+        open_tasks = e.get("open_tasks_by_pic") or []
+        detail_from_items(
+            "TASK CHƯA DONE CÓ ESTIMATE MH",
+            [
+                ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Phase", 16), ("PIC", 24), ("Status", 12),
+                ("End date", 13), ("Estimate MH", 12),
+            ],
+            [
+                [
+                    idx + 1, t.get("ma_cn", ""), t.get("ten_cn", ""), t.get("module", ""),
+                    t.get("phase", ""),
+                    ", ".join(t.get("pic") or []) if isinstance(t.get("pic"), list) else (t.get("pic") or ""),
+                    t.get("status", ""), t.get("end_date", ""), t.get("estimate_mh", ""),
+                ]
+                for idx, t in enumerate(open_tasks)
+            ],
         )
 
     elif chart == "module_overview":
-        ws.title = "Module_Overview"
         items = metrics.get("module_overview") or []
-        columns = [
-            ("STT", 6), ("Module", 12), ("Số CN", 10), ("Số QT", 10),
-            ("% Progress", 12), ("Phase active", 18), ("Overdue", 10),
-        ]
-        data_rows = [
+        write_summary(
+            "TỔNG QUAN THEO MODULE",
             [
-                i.get("stt", idx + 1), i.get("module", ""), i.get("total", 0),
-                i.get("quy_trinh_count", 0), i.get("progress_pct", 0),
-                i.get("active_phase", ""), i.get("overdue_count", 0),
+                ("STT", 6), ("Module", 12), ("Số CN", 10), ("Số QT", 10),
+                ("% Progress", 12), ("Phase active", 18), ("Overdue", 10),
+            ],
+            [
+                [
+                    i.get("stt", idx + 1), i.get("module", ""), i.get("total", 0),
+                    i.get("quy_trinh_count", 0), i.get("progress_pct", 0),
+                    i.get("active_phase", ""), i.get("overdue_count", 0),
+                ]
+                for idx, i in enumerate(items)
+            ],
+        )
+        if parsed_data is not None:
+            phs, det = build_phase_status_detail_rows(parsed_data)
+            columns = list(DETAIL_META_COLUMNS) + [(p, 12) for p in phs]
+            data_rows = [
+                _meta_cell_values(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                for idx, it in enumerate(det)
             ]
-            for idx, i in enumerate(items)
-        ]
-        _write_sheet(ws, "TỔNG QUAN THEO MODULE", columns, data_rows, subtitle=sub)
+            write_detail("CHI TIẾT CHỨC NĂNG — Status theo phase", columns, data_rows)
 
     elif chart == "phase_matrix":
-        ws.title = "Phase_Matrix"
         mx = metrics.get("phase_status_matrix") or {}
         phases = mx.get("phases") or []
         modules = mx.get("modules") or []
         data = mx.get("data") or {}
-        columns = [("Module", 12)] + [(f"{p} %Closed", 12) for p in phases]
-        data_rows = []
-        for m in modules:
-            row = [m]
-            for p in phases:
-                cell = (data.get(m) or {}).get(p) or {}
-                row.append(cell.get("pct_closed", 0) if isinstance(cell, dict) else cell)
-            data_rows.append(row)
-        _write_sheet(ws, "PHASE × MODULE (% Closed)", columns, data_rows, subtitle=sub)
+        gb = (group_by or "module").strip().lower()
+        group_label = "Quy trình" if gb == "process" else "Module"
+        write_summary(
+            f"PHASE × {group_label.upper()} (% Closed)",
+            [(group_label, 18)] + [(f"{p} %Closed", 12) for p in phases],
+            [
+                [m] + [
+                    ((data.get(m) or {}).get(p) or {}).get("pct_closed", 0)
+                    if isinstance((data.get(m) or {}).get(p), dict)
+                    else ((data.get(m) or {}).get(p) or 0)
+                    for p in phases
+                ]
+                for m in modules
+            ],
+        )
+        if parsed_data is not None:
+            phs, det = build_phase_status_detail_rows(parsed_data)
+            columns = list(DETAIL_META_COLUMNS) + [(p, 12) for p in phs]
+            data_rows = [
+                _meta_cell_values(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                for idx, it in enumerate(det)
+            ]
+            write_detail("CHI TIẾT CHỨC NĂNG — Status theo phase", columns, data_rows)
 
     elif chart == "phase_stacked":
-        ws.title = "Phase_Stacked"
         d = metrics.get("phase_progress_stacked") or {}
         phases = d.get("phases") or []
         statuses = d.get("statuses") or []
         data = d.get("data") or {}
-        columns = [("Phase", 16)] + [(s, 12) for s in statuses]
-        data_rows = []
-        for ph in phases:
-            row = [ph]
-            for s in statuses:
-                row.append((data.get(ph) or {}).get(s, 0))
-            data_rows.append(row)
-        _write_sheet(ws, "TIẾN ĐỘ THEO PHASE (Status count)", columns, data_rows, subtitle=sub)
+        write_summary(
+            "TIẾN ĐỘ THEO PHASE (Status count)",
+            [("Phase", 16)] + [(s, 12) for s in statuses],
+            [[ph] + [(data.get(ph) or {}).get(s, 0) for s in statuses] for ph in phases],
+        )
+        if parsed_data is not None:
+            phs, det = build_phase_status_detail_rows(parsed_data)
+            columns = list(DETAIL_META_COLUMNS) + [(p, 12) for p in phs]
+            data_rows = [
+                _meta_cell_values(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                for idx, it in enumerate(det)
+            ]
+            write_detail("CHI TIẾT CHỨC NĂNG — Status theo phase", columns, data_rows)
 
     elif chart == "task_type":
-        # Sheet 1 — summary % Closed (giống chart bar: trung bình theo nhóm)
-        ws.title = "Tong_hop"
         d = metrics.get("progress_by_task_type") or {}
         task_types = d.get("task_types") or []
         gb = (group_by or "module").strip().lower()
@@ -1365,114 +1510,85 @@ def export_chart(
             ]
             avg = round(sum(vals) / len(vals), 2) if vals else 0
             summary_rows.append([tt, avg])
-        _write_sheet(
-            ws,
+        write_summary(
             "TIẾN ĐỘ THEO CÔNG VIỆC (% Closed trung bình)",
             [("Loại công việc", 24), ("% Closed", 12)],
             summary_rows,
-            subtitle=sub,
         )
-
-        # Sheet phụ — matrix theo Module / Quy trình (giống export cũ)
         group_label = "Quy trình" if gb == "process" else "Module"
-        ws_mat = wb.create_sheet("Theo_nhom")
-        columns_mat = [(group_label, 18)] + [(tt, 14) for tt in task_types]
-        matrix_rows = []
-        for g in groups:
-            row = [g]
-            for tt in task_types:
-                row.append((by_source.get(g) or {}).get(tt, 0))
-            matrix_rows.append(row)
-        _write_sheet(
-            ws_mat,
+        write_group(
             f"TIẾN ĐỘ THEO CÔNG VIỆC — theo {group_label} (% Closed)",
-            columns_mat,
-            matrix_rows,
-            subtitle=sub,
+            [(group_label, 18)] + [(tt, 14) for tt in task_types],
+            [
+                [g] + [(by_source.get(g) or {}).get(tt, 0) for tt in task_types]
+                for g in groups
+            ],
         )
-
-        # Sheet chính — mỗi function × status từng loại việc
-        if parsed_data is not None:
+        if do_det and parsed_data is not None:
             tt_detail, detail_items = build_task_type_detail_rows(parsed_data)
-            # Ưu tiên thứ tự task_types từ metrics; bổ sung nếu parser có thêm
             tt_cols = list(task_types) if task_types else list(tt_detail)
             for tt in tt_detail:
                 if tt not in tt_cols:
                     tt_cols.append(tt)
-            ws_det = wb.create_sheet("Chi_tiet")
-            columns_det = [
-                ("STT", 6),
-                ("Mã CN", 14),
-                ("Rlog ID", 14),
-                ("Tên chức năng", 40),
-                ("Module", 10),
-                ("Quy trình", 22),
-                ("Priority", 12),
-                ("Mã dự án", 22),
-            ] + [(tt, 14) for tt in tt_cols]
+            columns_det = list(DETAIL_META_COLUMNS) + [(tt, 14) for tt in tt_cols]
+            # DETAIL_META có Complexity; task_type cũ không có — giữ đủ meta chuẩn
             detail_rows = []
             for idx, it in enumerate(detail_items):
                 st_map = it.get("statuses") or {}
-                detail_rows.append([
-                    idx + 1,
-                    it.get("ma_cn", ""),
-                    it.get("rlog_id", ""),
-                    it.get("ten_cn", ""),
-                    it.get("module", ""),
-                    it.get("quy_trinh", ""),
-                    it.get("priority", ""),
-                    it.get("ma_du_an", ""),
-                ] + [st_map.get(tt, "") for tt in tt_cols])
-            _write_sheet(
-                ws_det,
+                detail_rows.append(
+                    _meta_cell_values(idx, it) + [st_map.get(tt, "") for tt in tt_cols]
+                )
+            write_detail(
                 "CHI TIẾT CHỨC NĂNG — Status theo loại công việc",
                 columns_det,
                 detail_rows,
-                subtitle=sub,
             )
 
     elif chart == "priority":
-        ws.title = "Priority"
-        # priority_breakdown: dict {priority: count}
         d = metrics.get("priority_breakdown") or {}
-        columns = [("STT", 6), ("Priority", 20), ("Số lượng", 12)]
-        data_rows = [
-            [idx + 1, k, v]
-            for idx, (k, v) in enumerate(sorted(d.items(), key=lambda x: -x[1]))
-        ]
-        _write_sheet(ws, "PHÂN BỐ PRIORITY", columns, data_rows, subtitle=sub)
+        write_summary(
+            "PHÂN BỐ PRIORITY",
+            [("STT", 6), ("Priority", 20), ("Số lượng", 12)],
+            [[idx + 1, k, v] for idx, (k, v) in enumerate(sorted(d.items(), key=lambda x: -x[1]))],
+        )
+        detail_from_functions(
+            "CHI TIẾT CHỨC NĂNG — theo Priority",
+            [("Priority (metric)", 14)],
+            lambda r, meta: [meta.get("priority") or "N/A"],
+        )
 
     elif chart == "complexity":
-        ws.title = "Complexity"
         d = metrics.get("complexity_breakdown") or {}
-        columns = [("STT", 6), ("Complexity", 20), ("Số lượng", 12)]
-        data_rows = [
-            [idx + 1, k, v]
-            for idx, (k, v) in enumerate(sorted(d.items(), key=lambda x: -x[1]))
-        ]
-        _write_sheet(ws, "PHÂN BỐ COMPLEXITY", columns, data_rows, subtitle=sub)
+        write_summary(
+            "PHÂN BỐ COMPLEXITY",
+            [("STT", 6), ("Complexity", 20), ("Số lượng", 12)],
+            [[idx + 1, k, v] for idx, (k, v) in enumerate(sorted(d.items(), key=lambda x: -x[1]))],
+        )
+        detail_from_functions(
+            "CHI TIẾT CHỨC NĂNG — theo Complexity",
+            [("Complexity (metric)", 16)],
+            lambda r, meta: [meta.get("complexity") or "N/A"],
+        )
 
     elif chart == "fit_gap":
-        ws.title = "FIT_GAP"
-        # fit_gap_analysis: {module: {FIT: n, GAP: n, ...}}
         d = metrics.get("fit_gap_analysis") or {}
         modules = list(d.keys())
         keys: set[str] = set()
         for m in modules:
             keys.update((d.get(m) or {}).keys())
         keys_sorted = sorted(keys)
-        columns = [("Module", 12)] + [(k, 10) for k in keys_sorted]
-        data_rows = []
-        for m in modules:
-            row = [m]
-            for k in keys_sorted:
-                row.append((d.get(m) or {}).get(k, 0))
-            data_rows.append(row)
-        _write_sheet(ws, "FIT / GAP THEO MODULE", columns, data_rows, subtitle=sub)
+        write_summary(
+            "FIT / GAP THEO MODULE",
+            [("Module", 12)] + [(k, 10) for k in keys_sorted],
+            [[m] + [(d.get(m) or {}).get(k, 0) for k in keys_sorted] for m in modules],
+        )
+        detail_from_functions(
+            "CHI TIẾT CHỨC NĂNG — FIT/GAP",
+            [("FIT/GAP", 12)],
+            lambda r, meta: [meta.get("fit_gap") or "N/A"],
+        )
 
     elif chart == "giai_doan":
-        ws.title = "Giai_Doan"
-        # giai_doan_progress: {gd: {phase: {total, closed, pct}}}
         d = metrics.get("giai_doan_progress") or {}
         giai_doans = list(d.keys())
         phases: list[str] = []
@@ -1480,8 +1596,7 @@ def export_chart(
             for p in (d.get(gd) or {}).keys():
                 if p not in phases:
                     phases.append(p)
-        columns = [("Giai đoạn", 14)] + [(f"{p} %Closed", 12) for p in phases]
-        data_rows = []
+        sum_rows = []
         for gd in giai_doans:
             row = [gd]
             cell = d.get(gd) or {}
@@ -1490,154 +1605,322 @@ def export_chart(
                 if isinstance(val, dict):
                     val = val.get("pct", val.get("pct_closed", 0))
                 row.append(val)
-            data_rows.append(row)
-        _write_sheet(ws, "TIẾN ĐỘ THEO GIAI ĐOẠN (% Closed)", columns, data_rows, subtitle=sub)
+            sum_rows.append(row)
+        write_summary(
+            "TIẾN ĐỘ THEO GIAI ĐOẠN (% Closed)",
+            [("Giai đoạn", 14)] + [(f"{p} %Closed", 12) for p in phases],
+            sum_rows,
+        )
+        if parsed_data is not None:
+            phs, det = build_phase_status_detail_rows(parsed_data)
+            columns = list(DETAIL_META_COLUMNS) + [("Giai đoạn", 14)] + [(p, 12) for p in phs]
+            data_rows = [
+                _meta_cell_values(idx, it)
+                + [it.get("giai_doan", "")]
+                + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                for idx, it in enumerate(det)
+            ]
+            write_detail("CHI TIẾT CHỨC NĂNG — Giai đoạn + Status phase", columns, data_rows)
 
     elif chart == "process":
-        ws.title = "Process"
         items = metrics.get("process_analysis") or []
-        columns = [
-            ("STT", 6), ("Quy trình", 40), ("Số CN", 10), ("% Closed", 12),
-            ("Overdue", 10), ("Modules", 24),
-        ]
-        data_rows = [
+        write_summary(
+            "PHÂN TÍCH THEO QUY TRÌNH",
             [
-                idx + 1, i.get("process", ""), i.get("total", 0),
-                i.get("pct_closed", 0), i.get("overdue", 0),
-                ", ".join(i.get("modules") or []),
+                ("STT", 6), ("Quy trình", 40), ("Số CN", 10), ("% Closed", 12),
+                ("Overdue", 10), ("Modules", 24),
+            ],
+            [
+                [
+                    idx + 1, i.get("process", ""), i.get("total", 0),
+                    i.get("pct_closed", 0), i.get("overdue", 0),
+                    ", ".join(i.get("modules") or []),
+                ]
+                for idx, i in enumerate(items)
+            ],
+        )
+        if parsed_data is not None:
+            phs, det = build_phase_status_detail_rows(parsed_data)
+            columns = list(DETAIL_META_COLUMNS) + [(p, 12) for p in phs]
+            data_rows = [
+                _meta_cell_values(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                for idx, it in enumerate(det)
             ]
-            for idx, i in enumerate(items)
-        ]
-        _write_sheet(ws, "PHÂN TÍCH THEO QUY TRÌNH", columns, data_rows, subtitle=sub)
+            write_detail("CHI TIẾT CHỨC NĂNG — theo Quy trình", columns, data_rows)
 
     elif chart == "duration":
-        ws.title = "Duration"
         d = metrics.get("duration_analysis") or {}
         items = d.get("items") or []
-        columns = [
-            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
-            ("Phase", 16), ("Start", 13), ("End", 13),
-            ("Duration (ngày)", 14), ("Loại", 12), ("Status", 12), ("PIC", 20),
-        ]
-        data_rows = [
+        from collections import Counter
+        type_c = Counter(
+            ("Elapsed" if i.get("duration_type") == "elapsed" else "Planned")
+            for i in items
+        )
+        mod_c = Counter((i.get("module") or "(blank)") for i in items)
+        write_summary(
+            "TỔNG HỢP DURATION BẤT THƯỜNG",
+            [("STT", 6), ("Nhóm", 24), ("Số lượng", 12)],
+            (
+                [[idx + 1, f"Module: {k}", v]
+                 for idx, (k, v) in enumerate(sorted(mod_c.items(), key=lambda x: -x[1]))]
+                + [[len(mod_c) + idx + 1, f"Loại: {k}", v]
+                   for idx, (k, v) in enumerate(sorted(type_c.items(), key=lambda x: -x[1]))]
+            ) if items else [],
+        )
+        detail_from_items(
+            "CHI TIẾT TASK DURATION BẤT THƯỜNG",
             [
-                idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
-                i.get("phase", ""), i.get("start_date", ""), i.get("end_date", ""),
-                i.get("duration_days", 0),
-                "Elapsed" if i.get("duration_type") == "elapsed" else "Planned",
-                i.get("status", ""),
-                ", ".join(i.get("pic") or []) if isinstance(i.get("pic"), list) else (i.get("pic") or ""),
-            ]
-            for idx, i in enumerate(items)
-        ]
-        _write_sheet(ws, "TASK DURATION BẤT THƯỜNG", columns, data_rows, subtitle=sub)
+                ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Phase", 16), ("Start", 13), ("End", 13),
+                ("Duration (ngày)", 14), ("Loại", 12), ("Status", 12), ("PIC", 20),
+            ],
+            [
+                [
+                    idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+                    i.get("phase", ""), i.get("start_date", ""), i.get("end_date", ""),
+                    i.get("duration_days", 0),
+                    "Elapsed" if i.get("duration_type") == "elapsed" else "Planned",
+                    i.get("status", ""),
+                    ", ".join(i.get("pic") or []) if isinstance(i.get("pic"), list) else (i.get("pic") or ""),
+                ]
+                for idx, i in enumerate(items)
+            ],
+        )
 
     elif chart == "overdue":
-        ws.title = "Overdue"
         items = metrics.get("overdue_list") or []
-        columns = [
-            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
-            ("Phase", 16), ("Deadline", 13), ("Số ngày trễ", 12),
-            ("Status", 12), ("PIC", 20), ("Priority", 12),
-        ]
-        data_rows = [
+        mod_rows = _count_by(items, "module")
+        ph_rows = _count_by(items, "phase")
+        write_summary(
+            "TỔNG HỢP OVERDUE (theo Module / Phase)",
+            [("STT", 6), ("Nhóm", 28), ("Số lượng", 12)],
+            (
+                [[r[0], f"Module: {r[1]}", r[2]] for r in mod_rows]
+                + [[r[0] + 1000, f"Phase: {r[1]}", r[2]] for r in ph_rows]
+            ),
+        )
+        detail_from_items(
+            "CHI TIẾT TASK TRỄ DEADLINE",
             [
-                idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
-                i.get("phase", ""), i.get("end_date", ""), i.get("days_overdue", 0),
-                i.get("status", ""),
-                ", ".join(i.get("pic") or []) if isinstance(i.get("pic"), list) else "",
-                i.get("priority", ""),
-            ]
-            for idx, i in enumerate(items)
-        ]
-        _write_sheet(
-            ws, "TASK TRỄ DEADLINE", columns, data_rows, subtitle=sub,
+                ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Phase", 16), ("Deadline", 13), ("Số ngày trễ", 12),
+                ("Status", 12), ("PIC", 20), ("Priority", 12),
+            ],
+            [
+                [
+                    idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+                    i.get("phase", ""), i.get("end_date", ""), i.get("days_overdue", 0),
+                    i.get("status", ""),
+                    ", ".join(i.get("pic") or []) if isinstance(i.get("pic"), list) else "",
+                    i.get("priority", ""),
+                ]
+                for idx, i in enumerate(items)
+            ],
             row_fill_fn=lambda ri, idx: _fill_by_days(items[idx].get("days_overdue", 0)),
         )
 
     elif chart == "pic_workload":
-        ws.title = "PIC_Workload"
         items = metrics.get("pic_workload") or []
-        columns = [
-            ("STT", 6), ("PIC", 20), ("Total tasks", 12), ("Closed", 10),
-            ("In-progress", 12), ("Overdue", 10), ("Unassigned share", 14),
-        ]
-        data_rows = []
-        for idx, i in enumerate(items):
-            # pic_workload có thể có field khác nhau — lấy linh hoạt
-            data_rows.append([
-                idx + 1,
-                i.get("pic", ""),
-                i.get("total_tasks", i.get("total", 0)),
-                i.get("closed", i.get("closed_count", "")),
-                i.get("in_progress", i.get("inprogress", "")),
-                i.get("overdue", i.get("overdue_count", "")),
-                i.get("unassigned", ""),
-            ])
-        _write_sheet(ws, "WORKLOAD THEO PIC", columns, data_rows, subtitle=sub)
+        write_summary(
+            "WORKLOAD THEO PIC",
+            [
+                ("STT", 6), ("PIC", 20), ("Total tasks", 12), ("Closed", 10),
+                ("In-progress", 12), ("Overdue", 10), ("Assigned", 10),
+            ],
+            [
+                [
+                    idx + 1,
+                    i.get("pic", ""),
+                    i.get("total_tasks", i.get("total", 0)),
+                    i.get("closed", i.get("closed_count", "")),
+                    i.get("in_progress", i.get("inprogress", "")),
+                    i.get("overdue", i.get("overdue_count", "")),
+                    i.get("assigned", ""),
+                ]
+                for idx, i in enumerate(items)
+            ],
+        )
+        # Chi tiết: mỗi function × phase × PIC
+        if do_det and parsed_data is not None:
+            detail_rows = []
+            for r in getattr(parsed_data, "rows", []) or []:
+                meta = _func_meta(r)
+                for ph, pd in (r.phases or {}).items():
+                    pics = list(getattr(pd, "pics", None) or [])
+                    if not pics:
+                        continue
+                    st = _normalize_export_status(getattr(pd, "status", None))
+                    for pic in pics:
+                        detail_rows.append([
+                            len(detail_rows) + 1,
+                            meta["ma_cn"], meta["rlog_id"], meta["ten_cn"],
+                            meta["module"], meta["quy_trinh"], meta["priority"],
+                            pic, ph, st,
+                        ])
+            write_detail(
+                "CHI TIẾT FUNCTION × PHASE × PIC",
+                [
+                    ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40),
+                    ("Module", 10), ("Quy trình", 22), ("Priority", 12),
+                    ("PIC", 18), ("Phase", 16), ("Status", 12),
+                ],
+                detail_rows,
+            )
 
     elif chart == "risk":
-        ws.title = "High_Risk"
-        # Rule V4: xuất ALL high-risk items (score >= 30), không cắt top 100
-        items = [r for r in (metrics.get("risk_scores") or []) if (r.get("risk_score") or 0) >= 30]
-        columns = [
-            ("STT", 6), ("Risk Score", 12), ("Mã CN", 14), ("Tên chức năng", 40),
-            ("Module", 10), ("Priority", 12), ("Complexity", 12), ("Risk Factors", 45),
-        ]
-        data_rows = [
+        all_risk = metrics.get("risk_scores") or []
+        items = [r for r in all_risk if (r.get("risk_score") or 0) >= 30]
+        # Tong_hop: bucket theo mức risk
+        buckets = [("Cao (≥80)", 0), ("Trung bình (50–79)", 0), ("Theo dõi (30–49)", 0)]
+        for r in items:
+            s = r.get("risk_score") or 0
+            if s >= 80:
+                buckets[0] = (buckets[0][0], buckets[0][1] + 1)
+            elif s >= 50:
+                buckets[1] = (buckets[1][0], buckets[1][1] + 1)
+            else:
+                buckets[2] = (buckets[2][0], buckets[2][1] + 1)
+        write_summary(
+            "TỔNG HỢP RISK SCORE (≥30)",
+            [("STT", 6), ("Mức rủi ro", 24), ("Số function", 12)],
+            [[idx + 1, lab, n] for idx, (lab, n) in enumerate(buckets)],
+        )
+        detail_from_items(
+            "CHI TIẾT FUNCTION RỦI RO CAO",
             [
-                idx + 1, i.get("risk_score", 0), i.get("ma_cn", ""), i.get("ten_cn", ""),
-                i.get("module", ""), i.get("priority", ""), i.get("complexity", ""),
-                " | ".join(i.get("risk_factors") or []),
-            ]
-            for idx, i in enumerate(items)
-        ]
-        _write_sheet(
-            ws, "FUNCTION RỦI RO CAO", columns, data_rows, subtitle=sub,
+                ("STT", 6), ("Risk Score", 12), ("Mã CN", 14), ("Tên chức năng", 40),
+                ("Module", 10), ("Priority", 12), ("Complexity", 12), ("Risk Factors", 45),
+            ],
+            [
+                [
+                    idx + 1, i.get("risk_score", 0), i.get("ma_cn", ""), i.get("ten_cn", ""),
+                    i.get("module", ""), i.get("priority", ""), i.get("complexity", ""),
+                    " | ".join(i.get("risk_factors") or []),
+                ]
+                for idx, i in enumerate(items)
+            ],
             row_fill_fn=lambda ri, idx: _fill_by_risk(items[idx].get("risk_score", 0)),
         )
 
     elif chart == "stalled":
-        ws.title = "Dinh_Tre"
-        items = (metrics.get("stalled_tasks") or {}).get("items") or []
-        columns = [
-            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
-            ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
-            ("Chờ (ngày)", 12), ("Priority", 12),
-        ]
-        data_rows = [
+        st = metrics.get("stalled_tasks") or {}
+        items = st.get("items") or []
+        transitions = st.get("transitions") or []
+        funnel = st.get("funnel") or []
+        sum_rows = (
+            [[idx + 1, f"Funnel Closed: {f.get('phase', '')}", f.get("closed", 0)]
+             for idx, f in enumerate(funnel)]
+            + [[idx + 100, f"Kẹt: {t.get('from', '')} → {t.get('to', '')}", t.get("count", 0)]
+               for idx, t in enumerate(transitions)]
+        )
+        write_summary(
+            "TỔNG HỢP ĐÌNH TRỆ (Funnel + Transitions)",
+            [("STT", 6), ("Nhóm", 40), ("Số lượng", 12)],
+            sum_rows,
+        )
+        detail_from_items(
+            "CHI TIẾT TASK ĐÌNH TRỆ",
             [
-                idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
-                i.get("completed_phase", ""), i.get("waiting_phase", ""),
-                i.get("completed_date", ""), i.get("wait_days", 0), i.get("priority", ""),
-            ]
-            for idx, i in enumerate(items)
-        ]
-        _write_sheet(ws, "ĐÌNH TRỆ", columns, data_rows, subtitle=sub)
+                ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
+                ("Chờ (ngày)", 12), ("Priority", 12),
+            ],
+            [
+                [
+                    idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+                    i.get("completed_phase", ""), i.get("waiting_phase", ""),
+                    i.get("completed_date", ""), i.get("wait_days", 0), i.get("priority", ""),
+                ]
+                for idx, i in enumerate(items)
+            ],
+        )
 
     elif chart == "unassigned":
-        ws.title = "Unassigned"
         items = metrics.get("unassigned_tasks") or []
-        columns = [
-            ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40), ("Module", 10),
-            ("Phase", 16), ("Status", 12), ("Priority", 12),
-            ("Deadline", 13), ("Trễ (ngày)", 12),
-        ]
-        data_rows = [
+        write_summary(
+            "TỔNG HỢP TASK CHƯA CÓ PIC",
+            [("STT", 6), ("Nhóm", 28), ("Số lượng", 12)],
+            (
+                [[r[0], f"Module: {r[1]}", r[2]] for r in _count_by(items, "module")]
+                + [[r[0] + 1000, f"Phase: {r[1]}", r[2]] for r in _count_by(items, "phase")]
+            ),
+        )
+        detail_from_items(
+            "CHI TIẾT TASK CHƯA CÓ PIC",
             [
-                idx + 1, i.get("ma_cn", ""), i.get("rlog_id", ""), i.get("ten_cn", ""),
-                i.get("module", ""), i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
-                i.get("end_date", ""), i.get("days_overdue", 0),
-            ]
-            for idx, i in enumerate(items)
-        ]
-        _write_sheet(ws, "TASK CHƯA CÓ PIC", columns, data_rows, subtitle=sub)
+                ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Phase", 16), ("Status", 12), ("Priority", 12),
+                ("Deadline", 13), ("Trễ (ngày)", 12),
+            ],
+            [
+                [
+                    idx + 1, i.get("ma_cn", ""), i.get("rlog_id", ""), i.get("ten_cn", ""),
+                    i.get("module", ""), i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
+                    i.get("end_date", ""), i.get("days_overdue", 0),
+                ]
+                for idx, i in enumerate(items)
+            ],
+        )
+
+    elif chart == "burndown":
+        bd = metrics.get("burndown_velocity") or metrics.get("burndown") or {}
+        weeks = bd.get("weeks") or []
+        closed = bd.get("closed_per_week") or []
+        cum = bd.get("cumulative") or []
+        write_summary(
+            "BURNDOWN / VELOCITY THEO TUẦN",
+            [
+                ("STT", 6), ("Tuần (Monday)", 16), ("Closed / tuần", 14),
+                ("Lũy kế", 12), ("Velocity 4w", 12),
+            ],
+            [
+                [
+                    idx + 1, weeks[idx],
+                    closed[idx] if idx < len(closed) else 0,
+                    cum[idx] if idx < len(cum) else 0,
+                    bd.get("velocity_4w", "") if idx == len(weeks) - 1 else "",
+                ]
+                for idx in range(len(weeks))
+            ],
+        )
+        # Chi tiết: mỗi closed event
+        if do_det and parsed_data is not None:
+            from analyzer.advanced_metrics import _parse_iso, _week_monday
+
+            detail_rows = []
+            scope = (bd.get("scope_phase") or "").strip()
+            for r in getattr(parsed_data, "rows", []) or []:
+                meta = _func_meta(r)
+                last_upd = _parse_iso((r.meta or {}).get("last_updated"))
+                for ph, pd in (r.phases or {}).items():
+                    if getattr(pd, "status", None) != "Closed":
+                        continue
+                    if scope and ph != scope:
+                        continue
+                    event = _parse_iso(getattr(pd, "end_date", None)) or last_upd
+                    if event is None:
+                        continue
+                    detail_rows.append(
+                        _meta_cell_values(len(detail_rows), meta)
+                        + [ph, event.isoformat(), _week_monday(event).isoformat()]
+                    )
+            write_detail(
+                "CHI TIẾT SỰ KIỆN CLOSED (burndown)",
+                list(DETAIL_META_COLUMNS) + [
+                    ("Phase", 16), ("Ngày Closed", 13), ("Tuần (Monday)", 14),
+                ],
+                detail_rows,
+            )
+
+    # Guard: mode không tạo sheet nào (không xảy ra) — tạo sheet trống
+    if book._first:
+        book.sheet("Empty")
 
     os.makedirs(output_dir, exist_ok=True)
     filename = f"Chart_{chart}_{date.today().strftime('%Y%m%d')}.xlsx"
     filepath = os.path.join(output_dir, filename)
-    wb.save(filepath)
-    wb.close()
+    book.wb.save(filepath)
+    book.wb.close()
     return filepath
 
 

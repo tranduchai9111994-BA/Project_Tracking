@@ -43,7 +43,31 @@ def test_export_chart_priority_xlsx(flask_client, sample_xlsx_path):
     assert r.status_code == 200
     assert "spreadsheet" in (r.content_type or "") or r.data[:2] == b"PK"
     wb = openpyxl.load_workbook(io.BytesIO(r.data))
-    assert len(wb.sheetnames) >= 1
+    assert "Tong_hop" in wb.sheetnames
+    assert "Chi_tiet" in wb.sheetnames
+    wb.close()
+
+
+def test_export_chart_mode_summary_one_sheet(flask_client, sample_xlsx_path):
+    """mode=summary → chỉ 1 sheet Tong_hop."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get("/api/projects/default/export-chart?chart=priority&mode=summary")
+    assert r.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    assert wb.sheetnames == ["Tong_hop"]
+    wb.close()
+
+
+def test_export_chart_pic_workload_both(flask_client, sample_xlsx_path):
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get("/api/projects/default/export-chart?chart=pic_workload&mode=both")
+    assert r.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    assert "Tong_hop" in wb.sheetnames
+    assert "Chi_tiet" in wb.sheetnames
+    headers = [c.value for c in wb["Chi_tiet"][4]]
+    assert "PIC" in headers
+    assert "Status" in headers
     wb.close()
 
 
@@ -125,6 +149,69 @@ def test_export_task_type_filter_row_count(flask_client, sample_xlsx_path):
             break
         codes.append(row[ma_idx])
     assert codes == ["PR.FR.03"]
+    wb.close()
+
+
+def test_export_chart_mode_summary_one_sheet(flask_client, sample_xlsx_path):
+    """mode=summary → chỉ sheet Tong_hop (priority không có Theo_nhom)."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get(
+        "/api/projects/default/export-chart?chart=priority&mode=summary"
+    )
+    assert r.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    assert wb.sheetnames == ["Tong_hop"]
+    wb.close()
+
+
+def test_export_chart_mode_detail_only(flask_client, sample_xlsx_path):
+    """mode=detail → chỉ sheet Chi_tiet."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get(
+        "/api/projects/default/export-chart?chart=complexity&mode=detail"
+    )
+    assert r.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    assert wb.sheetnames == ["Chi_tiet"]
+    wb.close()
+
+
+def test_export_chart_mode_both_default(flask_client, sample_xlsx_path):
+    """Default / mode=both → Tong_hop + Chi_tiet."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get(
+        "/api/projects/default/export-chart?chart=fit_gap&mode=both"
+    )
+    assert r.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    assert "Tong_hop" in wb.sheetnames
+    assert "Chi_tiet" in wb.sheetnames
+    wb.close()
+
+
+def test_export_module_overview_summary_mode(flask_client, sample_xlsx_path):
+    """module_overview + mode=summary → 1 sheet Tong_hop."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.post(
+        "/api/projects/default/export-chart",
+        json={"chart": "module_overview", "mode": "summary", "module": ["TMS"]},
+    )
+    assert r.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    assert wb.sheetnames == ["Tong_hop"]
+    wb.close()
+
+
+def test_export_task_type_summary_has_no_chi_tiet(flask_client, sample_xlsx_path):
+    """task_type mode=summary → Tong_hop (+ Theo_nhom), không Chi_tiet."""
+    _upload(flask_client, sample_xlsx_path)
+    r = flask_client.get(
+        "/api/projects/default/export-chart?chart=task_type&mode=summary"
+    )
+    assert r.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(r.data))
+    assert "Tong_hop" in wb.sheetnames
+    assert "Chi_tiet" not in wb.sheetnames
     wb.close()
 
 
