@@ -11034,14 +11034,28 @@ window.addEventListener("resize", _updateStickyHeaderVar);
 // TASK 18 — Sticky top block với auto-collapse compact mode khi scroll
 // ========================================================================
 // Hysteresis: vào compact khi Y≥ENTER, thoát compact khi Y≤LEAVE.
-// Tránh thrashing: compact giảm height → scrollY tụt → full → height tăng → Y↑ → loop.
+// Root cause thrash (video 2026-07-31): compact rút ~150–220px in-flow height
+// → browser/scroll-anchoring kéo scrollY xuống → LEAVE cũ (48) bật full →
+// height tăng → Y↑ qua ENTER → compact lại (~4 Hz). Gap ENTER−LEAVE phải
+// lớn hơn delta height; LEAVE gần top; lock ngắn sau mỗi đổi mode.
 // Manual toggle (nút 🔼/🔽) override auto tạm thời.
 
 let _stickyManualState = null;   // null = auto; "compact" | "full" = manual
 let _stickyCurrentMode = null;   // mode đã apply lần cuối
 let _stickyScrollRaf = null;
-const STICKY_COMPACT_ENTER_Y = 120;
-const STICKY_COMPACT_LEAVE_Y = 48;
+let _stickyModeLockUntil = 0;    // ignore auto flip trong lúc layout settle
+const STICKY_COMPACT_ENTER_Y = 140;
+const STICKY_COMPACT_LEAVE_Y = 4;
+const STICKY_COMPACT_LOCK_MS = 220;
+
+/** Pure helper — dùng cho smoke assert / tái hiện hysteresis. */
+function _stickyResolveModeForY(y, currentMode) {
+    const yy = y || 0;
+    if (currentMode === "compact") {
+        return yy <= STICKY_COMPACT_LEAVE_Y ? "full" : "compact";
+    }
+    return yy >= STICKY_COMPACT_ENTER_Y ? "compact" : "full";
+}
 
 function _stickyApplyMode(mode) {
     const block = document.getElementById("stickyTopBlock");
@@ -11049,10 +11063,15 @@ function _stickyApplyMode(mode) {
 
     // Mode không đổi → chỉ sync shadow, KHÔNG đọc/ghi layout (--sticky-block-h)
     if (_stickyCurrentMode === mode) {
-        block.classList.toggle("scrolled", mode === "compact" || window.scrollY > 40);
+        const wantScrolled = mode === "compact" || window.scrollY > 40;
+        if (block.classList.contains("scrolled") !== wantScrolled) {
+            block.classList.toggle("scrolled", wantScrolled);
+        }
         return;
     }
     _stickyCurrentMode = mode;
+    _stickyModeLockUntil = (typeof performance !== "undefined" ? performance.now() : Date.now())
+        + STICKY_COMPACT_LOCK_MS;
 
     const uploadBtn = document.getElementById("stickyUploadBtn");
     if (mode === "compact") {
@@ -11075,15 +11094,13 @@ function _stickyApplyMode(mode) {
 }
 
 function _stickyResolveAutoMode() {
-    const y = window.scrollY || 0;
-    if (_stickyCurrentMode === "compact") {
-        return y <= STICKY_COMPACT_LEAVE_Y ? "full" : "compact";
-    }
-    return y >= STICKY_COMPACT_ENTER_Y ? "compact" : "full";
+    return _stickyResolveModeForY(window.scrollY || 0, _stickyCurrentMode);
 }
 
 function _stickyAutoUpdate() {
     if (_stickyManualState) return;  // manual override
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (now < _stickyModeLockUntil) return;  // layout/scrollY đang settle
     _stickyApplyMode(_stickyResolveAutoMode());
 }
 
@@ -11095,6 +11112,9 @@ function _stickyOnScroll() {
         _updateFilterScrolledClass();
     });
 }
+
+// Expose resolve helper cho smoke / DevTools (không đổi API public khác)
+window._stickyResolveModeForY = _stickyResolveModeForY;
 
 window._toggleStickyCompact = function () {
     const block = document.getElementById("stickyTopBlock");

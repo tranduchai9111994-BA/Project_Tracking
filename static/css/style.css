@@ -1976,6 +1976,8 @@ body.layout-edit #btnLayoutEdit {
     transition: box-shadow 0.2s ease;
     min-height: var(--sticky-block-min-h, 0px);
     box-sizing: border-box;
+    /* Compact đổi height → browser scroll-anchoring kéo Y → thrash với hysteresis */
+    overflow-anchor: none;
 }
 html.dark .sticky-top-block { background: rgba(15, 23, 42, 0.96); }
 

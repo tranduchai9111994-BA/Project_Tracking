@@ -43,14 +43,43 @@ def style_css() -> str:
 
 
 def test_sticky_hysteresis_thresholds(dashboard_js: str):
-    """Enter/leave thresholds khác nhau → tránh thrash khi compact đổi height."""
+    """Enter/leave + lock: gap phải > delta height compact (~150–220px)."""
     enter = re.search(r"STICKY_COMPACT_ENTER_Y\s*=\s*(\d+)", dashboard_js)
     leave = re.search(r"STICKY_COMPACT_LEAVE_Y\s*=\s*(\d+)", dashboard_js)
-    assert enter and leave
-    assert int(enter.group(1)) > int(leave.group(1))
+    lock = re.search(r"STICKY_COMPACT_LOCK_MS\s*=\s*(\d+)", dashboard_js)
+    assert enter and leave and lock
+    e, lv, lk = int(enter.group(1)), int(leave.group(1)), int(lock.group(1))
+    assert e > lv
+    # LEAVE gần top — scrollY tụt sau compact không được bật full lại
+    assert lv <= 8
+    # Gap đủ lớn hơn footprint cards+filter full→compact
+    assert (e - lv) >= 100
+    assert lk >= 150
     assert "_stickyCurrentMode" in dashboard_js
+    assert "_stickyModeLockUntil" in dashboard_js
     assert "_stickyOnScroll" in dashboard_js
     assert "_stickyResolveAutoMode" in dashboard_js
+    assert "_stickyResolveModeForY" in dashboard_js
+
+
+def test_sticky_resolve_mode_hysteresis_band():
+    """Pure band: trong (LEAVE, ENTER) giữ mode hiện tại — không flip."""
+    # Inline mirror của constants + helper (tránh eval browser file).
+    enter, leave = 140, 4
+
+    def resolve(y: int, current: str | None) -> str:
+        if current == "compact":
+            return "full" if y <= leave else "compact"
+        return "compact" if y >= enter else "full"
+
+    # Oscillation giả lập sau compact (Y tụt 150→40): phải giữ compact
+    assert resolve(150, "full") == "compact"
+    assert resolve(40, "compact") == "compact"
+    assert resolve(40, "full") == "full"  # chưa từng enter
+    assert resolve(4, "compact") == "full"
+    assert resolve(0, "compact") == "full"
+    assert resolve(139, "full") == "full"
+    assert resolve(140, "full") == "compact"
 
 
 def test_sticky_css_stable_compact(style_css: str):
@@ -61,6 +90,7 @@ def test_sticky_css_stable_compact(style_css: str):
     )
     assert block
     assert "padding 0.25s" not in block.group(0)
+    assert "overflow-anchor: none" in block.group(0) or "overflow-anchor:none" in block.group(0)
 
 
 def test_sticky_block_i18n_keys(index_html: str, i18n_js: str):
