@@ -584,6 +584,7 @@ function applyDashboardResponse(data) {
 
     // P3/P4 hooks — lazy analytics + saved views + deep-link URL.
     try { if (typeof loadBurndownAndSLA === "function") setTimeout(loadBurndownAndSLA, 100); } catch (e) {}
+    try { if (typeof loadPicOverload === "function") setTimeout(loadPicOverload, 150); } catch (e) {}
     // Task 2 — FIT/GAP Dashboard: fetch riêng như SLA/Capacity vì compute nặng
     // (đi qua tất cả rows) và support aging_threshold_days configurable.
     try { if (typeof loadFitgapDashboard === "function") setTimeout(loadFitgapDashboard, 120); } catch (e) {}
@@ -7869,6 +7870,13 @@ const CHART_HELP = {
         example: "“BaoLQ31+ NhiVN” ở phase Analysis → tính 1 task cho BaoLQ31 và 1 task cho NhiVN.",
         note: "Số này lớn hơn số function vì mỗi phase tính riêng."
     },
+    "section-pic-overload": {
+        title: "🚨 PIC Overload · Đa dự án",
+        meaning: "Phát hiện PIC bị quá tải khi làm nhiều dự án cùng lúc — theo ngày / tuần / tháng.",
+        logic: "Gom mọi project: phase có Start–End giao ngày D, status ≠ Closed/Cancelled → đếm concurrent theo PIC. <b>Ngày đỏ</b> khi concurrent &gt; ngưỡng (mặc định 5). Tuần/tháng: số ngày đỏ ≥ ngưỡng hoặc tổng task-day vượt max. Badge OVERDUE+ = PIC vừa overload vừa có task overdue.",
+        example: "BaoLQ31 có 7 task active ngày 15/07 trên 3 project → ngày đỏ, hiện trong bảng Tổng.",
+        note: "Xuất Excel: Tong_hop + Chi_tiet; chọn both+fl để kèm sheet FL re-import (tô vàng PIC/Status). Ngưỡng chỉnh trong Settings."
+    },
     "section-priority": {
         title: "🎯 Priority",
         meaning: "Cơ cấu mức ưu tiên của toàn bộ function trong phạm vi đang lọc.",
@@ -8122,6 +8130,8 @@ async function loadBurndownAndSLA() {
         renderDependencySection(deps);
         renderBaselineSection(bsl);
         renderUploadHistorySection(hist);
+        // PIC Overload là cross-project — load song song, không phụ thuộc capacity
+        try { loadPicOverload(); } catch (e) {}
     } catch (err) {
         console.error("[loadBurndownAndSLA]", err);
     }
@@ -8874,6 +8884,337 @@ function renderCapacitySection(cap) {
         </table>`;
     renderPager("capacityPagerWrap", "capacity", allRows.length,
         () => renderCapacitySection(_lastCapacityData));
+}
+
+// ========================================================================
+// PIC Overload · Đa dự án
+// ========================================================================
+let _poState = { grain: "day", view: "summary", data: null, selectedPic: null };
+
+function setPicOverloadGrain(grain) {
+    _poState.grain = grain || "day";
+    document.querySelectorAll(".po-grain-btn").forEach(btn => {
+        const on = btn.getAttribute("data-po-grain") === _poState.grain;
+        btn.classList.toggle("bg-blue-600", on);
+        btn.classList.toggle("text-white", on);
+        btn.classList.toggle("hover:bg-blue-50", !on);
+    });
+    loadPicOverload();
+}
+
+function setPicOverloadView(view) {
+    _poState.view = view === "detail" ? "detail" : "summary";
+    document.querySelectorAll(".po-view-btn").forEach(btn => {
+        const on = btn.getAttribute("data-po-view") === _poState.view;
+        btn.classList.toggle("bg-blue-600", on);
+        btn.classList.toggle("text-white", on);
+        btn.classList.toggle("hover:bg-blue-50", !on);
+    });
+    const sum = document.getElementById("poSummaryWrap");
+    const det = document.getElementById("poDetailWrap");
+    if (sum) sum.classList.toggle("hidden", _poState.view !== "summary");
+    if (det) det.classList.toggle("hidden", _poState.view !== "detail");
+}
+
+async function loadPicOverload() {
+    const section = document.getElementById("section-pic-overload");
+    if (!section) return;
+    const fromEl = document.getElementById("poFrom");
+    const toEl = document.getElementById("poTo");
+    const params = new URLSearchParams();
+    params.set("grain", _poState.grain || "day");
+    if (fromEl?.value) params.set("from", fromEl.value);
+    if (toEl?.value) params.set("to", toEl.value);
+    if (_poState.selectedPic) params.set("pic", _poState.selectedPic);
+    try {
+        const r = await fetch("/api/pic-overload?" + params.toString());
+        if (!r.ok) {
+            section.classList.add("hidden");
+            return;
+        }
+        const data = await r.json();
+        _poState.data = data;
+        // Init date inputs lần đầu từ server default
+        if (fromEl && !fromEl.value && data.from) fromEl.value = data.from;
+        if (toEl && !toEl.value && data.to) toEl.value = data.to;
+        renderPicOverloadSection(data);
+    } catch (err) {
+        console.error("[loadPicOverload]", err);
+    }
+}
+
+function renderPicOverloadSection(data) {
+    const section = document.getElementById("section-pic-overload");
+    if (!section) return;
+    const byPic = data?.by_pic || [];
+    const scanned = data?.summary?.projects_scanned || 0;
+    if (scanned === 0 && byPic.length === 0) {
+        section.classList.add("hidden");
+        return;
+    }
+    section.classList.remove("hidden");
+
+    const thr = data.thresholds || {};
+    const dayMax = thr.day_max_tasks ?? 5;
+    const elMax = document.getElementById("poDayMaxLabel");
+    if (elMax) elMax.textContent = String(dayMax);
+    document.getElementById("poOverloadCount").textContent =
+        data.summary?.overload_pic_count ?? 0;
+    document.getElementById("poHighlightCount").textContent =
+        data.summary?.highlight_date_count ?? 0;
+
+    const wc = data.summary?.week_compare;
+    const badge = document.getElementById("poWeekCompareBadge");
+    if (badge) {
+        if (data.grain === "week" && wc) {
+            badge.classList.remove("hidden");
+            const sign = wc.delta > 0 ? "+" : "";
+            badge.textContent = `Tuần này ${wc.current_count} PIC · tuần trước ${wc.previous_count} (${sign}${wc.delta})`;
+        } else {
+            badge.classList.add("hidden");
+        }
+    }
+
+    _renderPoCalendar(data);
+    _renderPoSummary(data);
+    _renderPoDetail(data);
+    setPicOverloadView(_poState.view);
+
+    const empty = document.getElementById("poEmptyHint");
+    if (empty) {
+        const hasOl = (data.summary?.overload_pic_count || 0) > 0;
+        empty.classList.toggle("hidden", hasOl || byPic.length === 0);
+    }
+}
+
+function _renderPoCalendar(data) {
+    const wrap = document.getElementById("poCalendarWrap");
+    if (!wrap) return;
+    const cal = data.calendar || [];
+    const highlights = new Set(data.summary?.highlight_dates || []);
+    if (!cal.length) {
+        wrap.innerHTML = "";
+        return;
+    }
+    // Compact heatmap: chỉ hiện tối đa ~60 ô gần đây / highlight
+    const cells = cal.slice(-60);
+    wrap.innerHTML = `
+        <div class="text-xs text-gray-500 mb-1">Lịch concurrent (ô đỏ = có PIC overload ngày đó) — click lọc chi tiết</div>
+        <div class="flex flex-wrap gap-1">${cells.map(c => {
+            const red = highlights.has(c.date) || c.is_highlight;
+            const title = `${c.date}: max ${c.max_concurrent} · ${ (c.overload_pics || []).join(", ") || "OK"}`;
+            const bg = red ? "bg-red-500 text-white" :
+                (c.max_concurrent > 0 ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-400");
+            return `<button type="button" title="${escapeHtml(title)}"
+                onclick="filterPicOverloadByDate('${c.date}')"
+                class="w-8 h-8 rounded text-[10px] font-mono ${bg} hover:ring-2 ring-blue-400">${c.date.slice(8)}</button>`;
+        }).join("")}</div>`;
+}
+
+function _renderPoSummary(data) {
+    const wrap = document.getElementById("poSummaryWrap");
+    if (!wrap) return;
+    const grain = data.grain || "day";
+    let rows = (data.by_period || []).filter(r => r.is_overload);
+    if (!rows.length) {
+        // fallback: by_pic overload
+        rows = (data.by_pic || []).filter(r => r.is_overload).map(p => ({
+            pic: p.pic,
+            label: "Toàn khoảng",
+            max_concurrent: p.max_concurrent,
+            task_days: p.task_days,
+            overload_days: p.overload_days,
+            projects: p.projects,
+            highlight_dates: p.highlight_dates,
+            also_overdue: p.also_overdue,
+            is_overload: true,
+        }));
+    }
+    if (!rows.length) {
+        wrap.innerHTML = `<p class="text-xs text-gray-500">Không có PIC vượt ngưỡng. Hiển thị top PIC theo max concurrent:</p>`;
+        rows = (data.by_period || []).slice(0, 15);
+        if (!rows.length) {
+            rows = (data.by_pic || []).slice(0, 15).map(p => ({
+                pic: p.pic, label: "—", max_concurrent: p.max_concurrent,
+                task_days: p.task_days, overload_days: p.overload_days,
+                projects: p.projects, highlight_dates: p.highlight_dates,
+                also_overdue: p.also_overdue, is_overload: p.is_overload,
+            }));
+        }
+    }
+    const { pageItems } = _pageSlice("picOverload", rows);
+    wrap.innerHTML = `
+        <table class="w-full text-xs">
+            <thead class="bg-gray-100 text-gray-700">
+                <tr>
+                    <th class="px-2 py-1 text-left">PIC</th>
+                    <th class="px-2 py-1 text-left">${grain === "day" ? "Ngày/Kỳ" : "Kỳ"}</th>
+                    <th class="px-2 py-1 text-right">Max</th>
+                    <th class="px-2 py-1 text-right">Task-days</th>
+                    <th class="px-2 py-1 text-right">Ngày đỏ</th>
+                    <th class="px-2 py-1 text-left">Projects</th>
+                    <th class="px-2 py-1 text-center">Cảnh báo</th>
+                </tr>
+            </thead>
+            <tbody>${pageItems.map(r => `
+                <tr class="border-b hover:bg-blue-50 cursor-pointer ${r.is_overload ? "bg-red-50/40" : ""}"
+                    onclick="drillPicOverload('${escapeHtml(r.pic)}')">
+                    <td class="px-2 py-1 font-medium text-blue-700 underline">${escapeHtml(r.pic)}</td>
+                    <td class="px-2 py-1 font-mono">${escapeHtml(r.label || r.period || "")}</td>
+                    <td class="px-2 py-1 text-right font-bold ${r.is_overload ? "text-red-700" : ""}">${r.max_concurrent ?? 0}</td>
+                    <td class="px-2 py-1 text-right">${r.task_days ?? 0}</td>
+                    <td class="px-2 py-1 text-right">${r.overload_days ?? (r.highlight_dates || []).length}</td>
+                    <td class="px-2 py-1">${escapeHtml((r.projects || []).join(", "))}</td>
+                    <td class="px-2 py-1 text-center">
+                        ${r.is_overload ? '<span class="text-[10px] font-bold bg-red-100 text-red-700 px-2 py-0.5 rounded">OVERLOAD</span>' : ""}
+                        ${r.also_overdue ? ' <span class="text-[10px] font-bold bg-orange-100 text-orange-800 px-2 py-0.5 rounded" title="PIC vừa có task overdue vừa overload">OVERDUE+</span>' : ""}
+                    </td>
+                </tr>`).join("")}
+            </tbody>
+        </table>`;
+    renderPager("poPagerWrap", "picOverload", rows.length,
+        () => _renderPoSummary(_poState.data));
+}
+
+function _renderPoDetail(data) {
+    const wrap = document.getElementById("poDetailWrap");
+    if (!wrap) return;
+    let detail = data.detail || [];
+    if (_poState.selectedPic) {
+        detail = detail.filter(d => d.pic === _poState.selectedPic);
+    }
+    const { pageItems } = _pageSlice("picOverloadDetail", detail);
+    const hl = new Set(data.summary?.highlight_dates || []);
+    wrap.innerHTML = `
+        <div class="flex items-center justify-between mb-2 text-xs">
+            <span>${_poState.selectedPic
+                ? `Chi tiết PIC: <b>${escapeHtml(_poState.selectedPic)}</b>`
+                : "Chi tiết task (PIC overload / ngày đỏ)"}
+                — ${detail.length} dòng</span>
+            ${_poState.selectedPic
+                ? `<button type="button" class="text-blue-600 underline" onclick="clearPicOverloadDrill()">✕ Bỏ lọc PIC</button>`
+                : ""}
+        </div>
+        <table class="w-full text-xs">
+            <thead class="bg-gray-100 text-gray-700">
+                <tr>
+                    <th class="px-2 py-1 text-left">PIC</th>
+                    <th class="px-2 py-1 text-left">Ngày</th>
+                    <th class="px-2 py-1 text-left">Project</th>
+                    <th class="px-2 py-1 text-left">Mã CN</th>
+                    <th class="px-2 py-1 text-left">Phase</th>
+                    <th class="px-2 py-1 text-left">Status</th>
+                    <th class="px-2 py-1 text-center">OD?</th>
+                </tr>
+            </thead>
+            <tbody>${pageItems.map(r => `
+                <tr class="border-b hover:bg-blue-50 cursor-pointer ${hl.has(r.date) ? "bg-red-50/50" : ""}"
+                    onclick="openPicOverloadTask('${escapeHtml(r.project_slug || "")}','${escapeHtml(r.ma_cn || "")}')">
+                    <td class="px-2 py-1">${escapeHtml(r.pic)}</td>
+                    <td class="px-2 py-1 font-mono ${hl.has(r.date) ? "text-red-700 font-bold" : ""}">${escapeHtml(r.date)}</td>
+                    <td class="px-2 py-1 text-blue-700 underline">${escapeHtml(r.project_name || r.project_slug || "")}</td>
+                    <td class="px-2 py-1 font-mono">${escapeHtml(r.ma_cn)}</td>
+                    <td class="px-2 py-1">${escapeHtml(r.phase)}</td>
+                    <td class="px-2 py-1">${escapeHtml(r.status || "—")}</td>
+                    <td class="px-2 py-1 text-center">${r.is_overdue ? "⚠" : ""}</td>
+                </tr>`).join("") || `<tr><td colspan="7" class="px-2 py-3 text-gray-400 text-center">Không có dòng chi tiết</td></tr>`}
+            </tbody>
+        </table>`;
+    renderPager("poPagerWrap", "picOverloadDetail", detail.length,
+        () => _renderPoDetail(_poState.data));
+}
+
+function drillPicOverload(pic) {
+    _poState.selectedPic = pic;
+    setPicOverloadView("detail");
+    loadPicOverload();
+}
+
+function clearPicOverloadDrill() {
+    _poState.selectedPic = null;
+    loadPicOverload();
+}
+
+function filterPicOverloadByDate(isoDate) {
+    const fromEl = document.getElementById("poFrom");
+    const toEl = document.getElementById("poTo");
+    if (fromEl) fromEl.value = isoDate;
+    if (toEl) toEl.value = isoDate;
+    _poState.grain = "day";
+    setPicOverloadGrain("day");
+}
+
+async function openPicOverloadTask(projectSlug, maCn) {
+    if (!projectSlug) return;
+    // Reuse portfolio deep-link pattern
+    if (typeof Portfolio !== "undefined" && Portfolio._jumpToResult) {
+        // not exported — fall through
+    }
+    if (projectSlug !== currentProjectSlug) {
+        const sel = document.getElementById("projectSelector");
+        if (sel) {
+            sel.value = projectSlug;
+            await switchProject(projectSlug);
+        }
+    }
+    if (maCn && typeof showToast === "function") {
+        showToast(`Đã mở project · tìm ${maCn}`);
+        // Best-effort scroll/highlight giống portfolio search
+        setTimeout(() => {
+            const tables = document.querySelectorAll("#dashboard table tbody tr");
+            for (const tr of tables) {
+                if (tr.textContent.includes(maCn)) {
+                    tr.scrollIntoView({ behavior: "smooth", block: "center" });
+                    tr.classList.add("portfolio-search-highlight");
+                    setTimeout(() => tr.classList.remove("portfolio-search-highlight"), 3000);
+                    break;
+                }
+            }
+        }, 600);
+    }
+}
+
+async function exportPicOverload() {
+    const mode = window.prompt(
+        "Xuất gì?\n- summary\n- detail\n- both\n- both+fl (kèm sheet FL re-import)",
+        "both"
+    );
+    if (mode == null) return;
+    const m = mode.trim().toLowerCase();
+    const includeFl = m.includes("fl") || m === "both+fl";
+    const exportMode = includeFl ? "both" : (["summary", "detail", "both"].includes(m) ? m : "both");
+    const fromEl = document.getElementById("poFrom");
+    const toEl = document.getElementById("poTo");
+    const body = {
+        grain: _poState.grain || "day",
+        from: fromEl?.value || undefined,
+        to: toEl?.value || undefined,
+        mode: exportMode,
+        include_fl: includeFl ? 1 : 0,
+        pic: _poState.selectedPic || undefined,
+    };
+    try {
+        const resp = await fetch("/api/pic-overload/export", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            showToast("Lỗi: " + (err.error || "Không thể xuất"), "red");
+            return;
+        }
+        const blob = await resp.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objUrl;
+        a.download = `PIC_Overload_${body.grain}.xlsx`;
+        a.click();
+        URL.revokeObjectURL(objUrl);
+        showToast("Đã tải file PIC Overload");
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
 }
 
 function renderSlowHeatmapSection(slow) {
@@ -10937,6 +11278,7 @@ function _sectionShortLabel(sid) {
         "section-gantt": "Gantt", "section-duration": "Duration",
         "section-burndown": "Burndown", "section-slow": "Slow",
         "section-sla": "SLA", "section-capacity": "Capacity",
+        "section-pic-overload": "PIC Overload",
         "section-deps": "Deps", "section-baseline": "Baseline",
         "section-history": "History", "section-overdue": "Overdue",
         "section-unassigned": "Unassigned", "section-risk": "Risk",
@@ -11839,6 +12181,7 @@ const _PRESENT_LAZY_LOADERS = {
     "section-kanban":         "loadKanban",
     "section-burndown":       "loadBurndownAndSLA",
     "section-sla":            "loadBurndownAndSLA",
+    "section-pic-overload":   "loadPicOverload",
     "section-fitgap-dashboard": "loadFitgapDashboard",
     "section-function-diff":  "loadFunctionDiff",
     "section-custom-dashboards": "loadCustomDashboards",
@@ -12736,6 +13079,14 @@ window.openSettingsModal = async function (opts) {
         console.error("[openSettingsModal]", err);
         showToast("Không tải được settings: " + err.message, "red");
     }
+    // PIC Overload thresholds (global)
+    try {
+        const rPo = await fetch("/api/pic-overload/settings");
+        if (rPo.ok) {
+            const d = await rPo.json();
+            _fillPicOverloadSettings(d.settings || {});
+        }
+    } catch (e) { console.warn("[pic-overload settings]", e); }
     // Render panel Hiển thị dựa trên _chartConfigsCache hiện tại — cache đã
     // load sẵn khi vào dashboard (loadChartConfigs) nên không cần fetch lại.
     _renderVisibilityPanel();
@@ -12802,6 +13153,16 @@ function _fillSettingsForm(s) {
     }
 }
 
+function _fillPicOverloadSettings(s) {
+    const set = (id, val) => { const el = document.getElementById(id); if (el != null) el.value = val; };
+    set("setPoDayMax", s.day_max_tasks ?? 5);
+    set("setPoWeekDays", s.week_min_overload_days ?? 2);
+    set("setPoMonthDays", s.month_min_overload_days ?? 5);
+    set("setPoWeekTaskDays", s.week_max_task_days ?? 25);
+    set("setPoMonthTaskDays", s.month_max_task_days ?? 100);
+    set("setPoPhaseKw", (s.phase_keywords || []).join(", "));
+}
+
 window.saveSettings = async function () {
     if (!currentProjectSlug) return;
     const int0 = (id, def) => {
@@ -12828,11 +13189,20 @@ window.saveSettings = async function () {
         max_snapshots: int0("setRetention", 10),
         max_upload_history: int0("setRetention", 10),
     };
+    const poPayload = {
+        day_max_tasks: int0("setPoDayMax", 5),
+        week_min_overload_days: int0("setPoWeekDays", 2),
+        month_min_overload_days: int0("setPoMonthDays", 5),
+        week_max_task_days: int0("setPoWeekTaskDays", 25),
+        month_max_task_days: int0("setPoMonthTaskDays", 100),
+        phase_keywords: (document.getElementById("setPoPhaseKw")?.value || "")
+            .split(",").map(s => s.trim()).filter(Boolean),
+    };
     // Thu thập state của tab Hiển thị (bulk toggle ẩn/hiện section).
     const visMap = _collectVisibilityMap();
     try {
-        // Chạy song song: PUT settings + PUT visibility bulk
-        const [rSet, rVis] = await Promise.all([
+        // Chạy song song: PUT settings + PUT visibility bulk + PIC overload
+        const [rSet, rVis, rPo] = await Promise.all([
             fetch(`/api/projects/${currentProjectSlug}/settings`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
@@ -12845,10 +13215,20 @@ window.saveSettings = async function () {
                     body: JSON.stringify({ visibility: visMap }),
                 })
                 : Promise.resolve(null),
+            fetch("/api/pic-overload/settings", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(poPayload),
+            }),
         ]);
         if (!rSet.ok) throw new Error(await rSet.text());
         const s = await rSet.json();
         _fillSettingsForm(s);
+        if (rPo && rPo.ok) {
+            const d = await rPo.json();
+            _fillPicOverloadSettings(d.settings || {});
+            try { loadPicOverload(); } catch (e) {}
+        }
         // Cập nhật cache chart_configs từ response bulk visibility (nếu có) và
         // apply ngay lập tức lên DOM — không reload trang, giữ nguyên filter.
         if (rVis && rVis.ok) {
@@ -13066,6 +13446,7 @@ const _VISIBILITY_GROUPS = [
             { id: "section-effort",           label: "Heatmap Effort",           desc: "Heatmap MH theo Module × Phase" },
             { id: "section-slow",             label: "Heatmap Slow",             desc: "Heatmap function chậm theo module" },
             { id: "section-capacity",         label: "Capacity",                 desc: "So sánh capacity vs load thực tế của PIC" },
+            { id: "section-pic-overload",     label: "PIC Overload · Đa dự án",  desc: "Phát hiện PIC overload theo ngày/tuần/tháng trên mọi dự án" },
             { id: "section-baseline",         label: "Baseline Variance",        desc: "Chênh lệch baseline vs actual date" },
         ],
     },
