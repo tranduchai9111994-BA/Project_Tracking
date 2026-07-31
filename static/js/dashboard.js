@@ -8083,7 +8083,7 @@ function toggleSidebar() {
 // ========================================================================
 
 const SIDEBAR_GROUP_ALL = "__all__";
-const SIDEBAR_GROUPS_STORAGE_KEY = "ihrp_sidebar_groups_v1";
+const SIDEBAR_GROUPS_STORAGE_KEY = "ihrp_sidebar_groups_v2";
 const SIDEBAR_ACTIVE_GROUP_KEY = "ihrp_sidebar_active_group";
 
 /** Section luôn hiện (không thuộc filter nhóm) — global filter. */
@@ -8094,6 +8094,9 @@ const _SIDEBAR_GROUP_ALWAYS_VISIBLE = new Set([
 /**
  * Default membership — map section id → nhóm.
  * Tracking / Forecast / Chất lượng / Phân tích / Chiều PM / Quản trị.
+ *
+ * Trong Tracking: tiến độ tổng thể trước, cảnh báo/vấn đề sau
+ * (vào dự án → nhìn % tiến độ → rồi mới drill trễ/thiếu PIC).
  */
 const DEFAULT_SIDEBAR_GROUP_DEFS = [
     {
@@ -8101,10 +8104,12 @@ const DEFAULT_SIDEBAR_GROUP_DEFS = [
         name_vi: "Tracking",
         name_en: "Tracking",
         sections: [
-            "section-summary", "section-rlog", "section-overdue",
-            "section-unassigned", "section-stalled", "section-aging-wip",
-            "section-sla", "section-module", "section-tasktype",
-            "section-matrix", "section-phase", "section-giaidoan",
+            "section-summary",
+            "section-module", "section-tasktype", "section-matrix",
+            "section-phase", "section-giaidoan",
+            "section-rlog",
+            "section-overdue", "section-unassigned", "section-stalled",
+            "section-aging-wip", "section-sla",
         ],
     },
     {
@@ -8153,6 +8158,57 @@ const DEFAULT_SIDEBAR_GROUP_DEFS = [
             "section-compare", "section-custom-dashboards", "section-history",
         ],
     },
+];
+
+/**
+ * Thứ tự DOM mặc định khi chưa có section_order.json (và khi ↺ Mặc định).
+ * Progress charts trước → timeline/forecast → issues → phân tích → PM/admin.
+ */
+const DEFAULT_SECTION_DOM_ORDER = [
+    "section-summary",
+    "section-globalfilter",
+    // Tiến độ tổng thể
+    "grid:section-module+section-tasktype",
+    "section-matrix",
+    "grid:section-phase",
+    "section-giaidoan",
+    "section-gantt",
+    "section-forecast-gantt",
+    "section-forecast-manpower",
+    "section-gantt-calendar",
+    "section-burndown",
+    "section-rlog",
+    // Vấn đề / cảnh báo
+    "section-overdue",
+    "section-unassigned",
+    "section-stalled",
+    "section-risk",
+    "section-aging-wip",
+    "section-sla",
+    "section-dataquality",
+    "section-anomaly",
+    // Phân tích sâu
+    "section-process",
+    "section-capacity",
+    "section-pic-overload",
+    "section-baseline",
+    "section-effort",
+    "section-duration",
+    "section-slow",
+    "section-deps",
+    "section-kanban",
+    "section-pic",
+    "section-priority",
+    "section-fitgap-dashboard",
+    "section-function-diff",
+    "section-my-bookmarks",
+    // PM + quản trị
+    "section-pm",
+    "section-digest",
+    "section-my-digests",
+    "section-compare",
+    "section-custom-dashboards",
+    "section-history",
 ];
 
 let _sidebarGroupsState = null;       // { groups: [...] }
@@ -12916,7 +12972,7 @@ function applySectionOrderToDom(order) {
     });
 }
 
-/** Load custom order từ backend + apply nếu có. */
+/** Load custom order từ backend + apply nếu có. Không có → áp DEFAULT (tiến độ trước). */
 async function loadSectionOrder() {
     if (!currentProjectSlug) return;
     // Snapshot HTML gốc lần đầu tiên (cho reset)
@@ -12926,16 +12982,21 @@ async function loadSectionOrder() {
     }
     try {
         const r = await fetch(_apiUrl("section-order"));
-        if (!r.ok) return;
+        if (!r.ok) {
+            applySectionOrderToDom(DEFAULT_SECTION_DOM_ORDER);
+            return;
+        }
         const data = await r.json();
         if (Array.isArray(data.order) && data.order.length) {
             applySectionOrderToDom(data.order);
-            // Show nút reset khi có custom order
             const btnReset = document.getElementById("btnLayoutReset");
             if (btnReset) btnReset.classList.remove("hidden");
+        } else {
+            applySectionOrderToDom(DEFAULT_SECTION_DOM_ORDER);
         }
     } catch (err) {
         console.error("[loadSectionOrder]", err);
+        applySectionOrderToDom(DEFAULT_SECTION_DOM_ORDER);
     }
 }
 
@@ -13008,23 +13069,19 @@ function _destroySortable() {
     }
 }
 
-/** Reset về default HTML (xoá custom order) — cảnh báo trước, quản trị cuối. */
+/** Reset về default (tiến độ tổng thể trước, cảnh báo sau). */
 window.resetSectionOrder = async function () {
-    if (!confirm("Khôi phục thứ tự mặc định (cảnh báo trước)?")) return;
+    if (!confirm("Khôi phục thứ tự mặc định (tiến độ tổng thể trước → rồi vấn đề/trễ)?")) return;
     try {
         const r = await fetch(_apiUrl("section-order/reset"), { method: "POST" });
         if (!r.ok) throw new Error(await r.text());
-        // Restore HTML gốc từ snapshot
-        if (_originalDashboardHtml !== null) {
-            const dash = document.getElementById("dashboard");
-            if (dash) {
-                // Note: không reload innerHTML để tránh mất Chart.js instances.
-                // Thay vào đó → reload page giữ scroll top.
-                location.reload();
-                return;
-            }
-        }
-        location.reload();
+        applySectionOrderToDom(DEFAULT_SECTION_DOM_ORDER);
+        const btnReset = document.getElementById("btnLayoutReset");
+        if (btnReset) btnReset.classList.add("hidden");
+        showToast("Đã khôi phục thứ tự: tiến độ trước, vấn đề sau");
+        // Rebuild sidebar link order if helper exists
+        if (typeof _sgApplyNavOrder === "function") _sgApplyNavOrder();
+        else if (typeof renderSidebarGroups === "function") renderSidebarGroups();
     } catch (err) {
         console.error("[resetSectionOrder]", err);
         showToast("Reset thất bại: " + err.message, "red");

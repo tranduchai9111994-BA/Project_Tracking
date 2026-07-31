@@ -13,17 +13,17 @@ Ngoài ra có các thành phần UX toàn cục: sidebar nav, search bar, dark m
 - 🔍 Drill-down modal — click cell/segment/row biểu đồ → hiện table function chi tiết, sort/lọc, xuất Excel riêng
 - 📱 Chart responsive — dùng CSS clamp() để scale mượt theo viewport, resize handler cho window
 
-### Default section order (UX — cảnh báo trước)
+### Default section order (UX — tiến độ trước)
 
 Thứ tự DOM + sidebar mặc định (khi project **chưa** có `section_order.json`).
-Đã save order → giữ nguyên; nút **↺ Mặc định** xoá custom order và reload về layout này.
+Đã save order → giữ nguyên; nút **↺ Mặc định** xoá custom order và áp layout này.
 
 | Nhóm | Sections |
 |------|----------|
-| **A — Gần đầu / Cảnh báo** | summary (+ global filter sticky) → **rlog** → overdue → unassigned → stalled → risk → aging-wip → sla → dataquality |
-| **B — Tiến độ** | module + tasktype → matrix → phase → giaidoan → process → burndown → capacity → baseline → effort → duration → slow → deps |
-| **C — Timeline / chi tiết** | gantt → gantt-calendar → kanban → pic → priority → fitgap-dashboard → function-diff → my-bookmarks |
-| **D — Quản trị** | compare → digest → my-digests → custom-dashboards → history |
+| **A — Tiến độ tổng thể** | summary (+ global filter) → module + tasktype → matrix → phase → giaidoan → gantt → forecast UAT/Golive → forecast manpower → gantt-calendar → burndown → rlog |
+| **B — Vấn đề / cảnh báo** | overdue → unassigned → stalled → risk → aging-wip → sla → dataquality |
+| **C — Phân tích sâu** | process → capacity → pic-overload → baseline → effort → duration → slow → deps → kanban → pic → priority → fitgap → function-diff → bookmarks |
+| **D — Chiều PM / Quản trị** | pm → digest → my-digests → compare → custom-dashboards → history |
 
 ---
 

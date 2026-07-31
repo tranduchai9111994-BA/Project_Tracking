@@ -353,10 +353,10 @@ digests, capacity, saved-views, section-order, module-order, pic-roles, phase-al
 overview, matrix, process tiles, gantt, export). Default alphabetical.
 Chi tiết schema: [`DATA_MODEL.md`](DATA_MODEL.md#module_orderjson--thứ-tự-module-toàn-dashboard).
 
-Default section order (khi chưa có `section_order.json`): summary → **rlog** →
-cảnh báo (overdue → unassigned → stalled → risk → aging-wip → sla → dataquality),
-rồi tiến độ / timeline, quản trị cuối (compare → digest → history). Chi tiết:
-[`DASHBOARD_SPEC.md`](DASHBOARD_SPEC.md#default-section-order-ux--cảnh-báo-trước).
+Default section order (khi chưa có `section_order.json`): summary → **tiến độ tổng thể**
+(module / tasktype / matrix / phase / giaidoan / gantt / forecast) → rlog →
+cảnh báo (overdue → unassigned → stalled → …), rồi phân tích sâu / PM / quản trị.
+Chi tiết: [`DASHBOARD_SPEC.md`](DASHBOARD_SPEC.md#default-section-order-ux--tiến-độ-trước).
 
 **Public token admin:** `GET/POST/DELETE .../public-tokens`, `GET .../public-scopes`.
 

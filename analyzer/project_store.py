@@ -239,14 +239,12 @@ def upsert_saved_view(project_dir: str, view: dict) -> list[dict]:
 # Đã save → giữ nguyên order cũ (không migrate phá layout user).
 # Reset API xoá file → FE reload về HTML default mới.
 #
-# DEFAULT (HTML templates/index.html, sau sticky summary+filter):
-#   A gần đầu:   rlog (coded tuần / plan tuần tới), rồi cảnh báo:
-#                overdue, unassigned, stalled, risk, aging-wip, sla, dataquality
-#   B tiến độ:   module+tasktype, matrix, phase, giaidoan, process,
-#                burndown, capacity, baseline, effort, duration, slow, deps
-#   C chi tiết:  gantt, gantt-calendar, kanban, pic, priority, fitgap,
-#                function-diff, my-bookmarks
-#   D quản trị:  compare, digest, my-digests, custom-dashboards, history
+# DEFAULT (FE DEFAULT_SECTION_DOM_ORDER — tiến độ tổng thể trước):
+#   A tiến độ:   module+tasktype, matrix, phase, giaidoan, gantt, forecast*,
+#                burndown, rlog
+#   B cảnh báo:  overdue, unassigned, stalled, risk, aging-wip, sla, dataquality
+#   C phân tích: process, capacity, pic-overload, baseline, effort, …
+#   D PM/admin:  pm, digest, compare, history
 # ------------------------------------------------------------------
 
 def load_section_order(project_dir: str) -> list[str]:
