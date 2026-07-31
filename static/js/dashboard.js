@@ -13,6 +13,10 @@
 // STATE
 // ========================================================================
 let metricsData = null;
+/** Monotonic gen — bỏ qua response /dashboard cũ nếu đã có load mới hơn (race sau sync). */
+let _dashboardLoadGen = 0;
+/** Token cache-bust cho lazy API (DQ/aging/gantt/…) trong cửa sổ sau sync. */
+let _cacheBustToken = null;
 let snapshotsData = [];
 let currentCompareResult = null;
 let chartInstances = {};
@@ -397,6 +401,7 @@ async function switchProject(slug) {
 
 /** Nếu project hiện tại đã có file trên server → load dashboard. */
 async function tryLoadDashboardForCurrent(preserveFilters = false, opts = {}) {
+    const gen = ++_dashboardLoadGen;
     try {
         // Reset filters khi switch project (trừ trường hợp refresh cùng project)
         if (!preserveFilters) {
@@ -410,7 +415,7 @@ async function tryLoadDashboardForCurrent(preserveFilters = false, opts = {}) {
             }
         }
         const url = _buildDashboardUrl({
-            cacheBust: !!(opts && opts.cacheBust),
+            cacheBust: !!(opts && opts.cacheBust) || !!_cacheBustToken,
         });
         let data;
         try {
@@ -421,16 +426,19 @@ async function tryLoadDashboardForCurrent(preserveFilters = false, opts = {}) {
         } catch (e) {
             // 404 = project chưa có data — im lặng, hiện upload zone
             if (e && e.status === 404) {
-                syncUploadZoneVisibility(false);
+                if (gen === _dashboardLoadGen) syncUploadZoneVisibility(false);
                 return;
             }
             throw e;
         }
+        // Race: filter fetch / sync refresh khác đã apply mới hơn → bỏ response cũ
+        if (gen !== _dashboardLoadGen) return;
         applyDashboardResponse(data);
         if (!preserveFilters) {
             showToast(`Đã tải project: ${data.project.name}`);
         }
     } catch (err) {
+        if (gen !== _dashboardLoadGen) return;
         console.warn("Không load được dashboard project:", err);
         if (err && err.message) showToast(err.message, "red");
     }
@@ -1097,13 +1105,20 @@ async function onGlobalFilterChange() {
 }
 
 async function _doGlobalFilterFetch() {
+    const gen = ++_dashboardLoadGen;
     try {
         // b9: reset matrix cache khi filter đổi — nếu user đang xem mode
         // process, sẽ auto re-fetch qua renderPhaseMatrix; nếu mode module
         // → dùng data mới từ /dashboard.
         _matrixCache = null;
-        const url = _buildDashboardUrl();
-        const data = await apiJson(url);
+        const url = _buildDashboardUrl({
+            cacheBust: !!_cacheBustToken,
+        });
+        const data = await apiJson(url, {
+            cache: "no-store",
+            headers: { "Cache-Control": "no-cache" },
+        });
+        if (gen !== _dashboardLoadGen) return;
         applyDashboardResponse(data);
         // Nếu user đang ở mode process, refetch matrix với filter mới.
         if (_matrixGroupBy === "process") {
@@ -1118,6 +1133,7 @@ async function _doGlobalFilterFetch() {
             }
         }
     } catch (e) {
+        if (gen !== _dashboardLoadGen) return;
         showToast(e.message || "Lỗi mạng", "red");
     }
 }
@@ -7742,7 +7758,16 @@ function _buildFilterQuery() {
     if (globalFilters.processes.length) p.set("process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) p.set("pic", globalFilters.pics.join(","));
     if (globalFilters.projectCodes.length) p.set("g_project", globalFilters.projectCodes.join(","));
+    // Sau sync: bust cache trình duyệt cho lazy section (DQ / aging / …)
+    if (_cacheBustToken) p.set("_", _cacheBustToken);
     return p.toString();
+}
+
+/** Gắn `?_=` / `&_=` khi đang trong cửa sổ refresh sau sync. */
+function _appendCacheBust(url) {
+    if (!_cacheBustToken || !url) return url;
+    const sep = String(url).includes("?") ? "&" : "?";
+    return `${url}${sep}_=${encodeURIComponent(_cacheBustToken)}`;
 }
 
 function renderBurndownSection(bd) {
@@ -7877,7 +7902,8 @@ async function loadFitgapDashboard() {
     if (globalFilters.projectCodes.length) qs.set("g_project", globalFilters.projectCodes.join(","));
 
     try {
-        const url = `/api/projects/${currentProjectSlug}/fitgap-analytics?${qs.toString()}`;
+        let url = `/api/projects/${currentProjectSlug}/fitgap-analytics?${qs.toString()}`;
+        url = _appendCacheBust(url);
         const r = await fetch(url);
         if (!r.ok) {
             console.warn("[fitgap] fetch failed", r.status);
@@ -8121,7 +8147,8 @@ async function loadFunctionDiff() {
     const sel = document.getElementById("fdiffVsSelect");
     const vs = sel ? (sel.value || "previous") : "previous";
     try {
-        const url = `/api/projects/${currentProjectSlug}/function-diff?vs=${encodeURIComponent(vs)}`;
+        let url = `/api/projects/${currentProjectSlug}/function-diff?vs=${encodeURIComponent(vs)}`;
+        url = _appendCacheBust(url);
         const r = await fetch(url);
         const section = document.getElementById("section-function-diff");
         if (!section) return;
@@ -8985,6 +9012,7 @@ async function loadKanban() {
 
     const role = document.getElementById("kanbanFilterRole")?.value;
     if (role) params.set("role", role);
+    if (_cacheBustToken) params.set("_", _cacheBustToken);
     try {
         const r = await fetch(_apiUrl("kanban") + "?" + params.toString());
         if (!r.ok) return;
@@ -14744,18 +14772,75 @@ function _applySyncHeaderOptimistic(syncData) {
 }
 
 /**
- * Sau sync thành công: cập nhật header ngay + reload metrics + mọi section
- * lazy (DQ / aging / gantt…) với cache-bust.
+ * Reset trang 1 cho bảng list (stalled/overdue/…) — tránh giữ page cũ
+ * trên dataset mới sau sync.
+ */
+function _resetListPagesAfterSync() {
+    const keys = [
+        "overdue", "unassigned", "duration", "stalled", "risk",
+        "sla", "capacity", "slow", "deps", "baseline", "fitgap", "fdiff",
+    ];
+    for (const k of keys) {
+        if (pageState[k]) pageState[k].page = 1;
+    }
+    try { if (typeof _dqState !== "undefined" && _dqState) _dqState.page = 1; } catch (_) {}
+    try { if (typeof _agingState !== "undefined" && _agingState) _agingState.page = 1; } catch (_) {}
+}
+
+/**
+ * Xóa cache FE của section lazy — nếu refetch lỗi, UI không giữ items cũ
+ * tưởng là data mới.
+ */
+function _clearLazySectionCaches() {
+    try {
+        if (typeof _dqState !== "undefined" && _dqState) {
+            _dqState.issues = [];
+            _dqState.summary = null;
+        }
+    } catch (_) { /* ignore */ }
+    try {
+        if (typeof _agingState !== "undefined" && _agingState) {
+            _agingState.items = [];
+            _agingState.summary = null;
+        }
+    } catch (_) { /* ignore */ }
+    try { _lastFdiffData = null; } catch (_) { /* ignore */ }
+    try { if (typeof _lastFitgapData !== "undefined") _lastFitgapData = null; } catch (_) { /* ignore */ }
+}
+
+/**
+ * Sau sync thành công: cập nhật header ngay + reload metrics (gồm stalled
+ * trong payload) + mọi section lazy (DQ / aging / gantt / fitgap / fdiff…)
+ * với cache-bust. Hủy filter-fetch đang debounce để tránh response cũ đè
+ * metricsData.stalled_tasks mới.
  */
 async function _refreshAfterSync(syncData) {
     _applySyncHeaderOptimistic(syncData);
+
+    // Hủy debounce filter — response cũ không được apply sau sync
+    if (_filterFetchTimer) {
+        clearTimeout(_filterFetchTimer);
+        _filterFetchTimer = null;
+    }
+
+    _cacheBustToken = String(Date.now());
+    _resetListPagesAfterSync();
+    _clearLazySectionCaches();
+
     // Reset tracker presentation lazy-load để lần present sau cũng fetch mới
     try {
         if (typeof _presentState !== "undefined" && _presentState) {
             _presentState.loaded = new Set();
         }
     } catch (_) { /* ignore */ }
+
     await tryLoadDashboardForCurrent(true, { cacheBust: true });
+
+    // Giữ token đủ lâu để setTimeout lazy trong applyDashboardResponse
+    // (burndown 100ms / fitgap 120 / fdiff 150 / kanban 500) kịp gắn `?_=`
+    setTimeout(() => {
+        _cacheBustToken = null;
+    }, 2500);
 }
 window._refreshAfterSync = _refreshAfterSync;
 
