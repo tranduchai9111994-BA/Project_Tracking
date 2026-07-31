@@ -2,16 +2,23 @@
 Shared unassigned / missing-PIC helpers.
 
 Rule nghiệp vụ:
-  Phase sau chỉ bắt buộc có PIC (+ deadline nếu cùng chiều) khi phase
-  liền trước trong chuỗi đã Closed. Phase đầu: flag khi đang in-scope
-  (có status hoặc Start/End) mà thiếu PIC — không flag nếu hoàn toàn blank.
+  Flag thiếu PIC (+ deadline nếu cùng chiều) khi ALL:
+  1. Phase in-scope (chưa Closed/Cancelled + có status hoặc Start/End)
+  2. Predecessor gate: phase liền trước Closed (phase đầu: luôn tới lượt)
+  3. Start đã đến (start <= today). Không có Start: chỉ khi End <= today
+     hoặc status đang làm (Open / Assigned / In-progress).
+  Không flag khi Start còn ở tương lai.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from parser.excel_parser import FunctionRow, PhaseData
 from analyzer.overdue import is_done_status
+
+# Status coi là "đang làm" khi thiếu Start — fallback cho start gate.
+_ACTIVE_NO_START_STATUSES = frozenset({"open", "assigned", "in-progress"})
 
 
 def is_phase_in_scope(pd: PhaseData) -> bool:
@@ -19,6 +26,22 @@ def is_phase_in_scope(pd: PhaseData) -> bool:
     if is_done_status(pd.status):
         return False
     return bool(pd.status) or pd.start_date is not None or pd.end_date is not None
+
+
+def has_phase_start_arrived(pd: PhaseData, today: date) -> bool:
+    """
+    True nếu đã tới thời điểm cần bắt buộc có PIC / deadline.
+
+    - Có Start → ``start <= today`` (Start tương lai → False).
+    - Không có Start → End đã đến (``end <= today``) hoặc status
+      Open / Assigned / In-progress.
+    """
+    if pd.start_date is not None:
+        return pd.start_date <= today
+    if pd.end_date is not None and pd.end_date <= today:
+        return True
+    st = (pd.status or "").strip().lower()
+    return st in _ACTIVE_NO_START_STATUSES
 
 
 def _is_closed_status(status: Optional[str]) -> bool:
@@ -60,13 +83,16 @@ def is_unassigned_phase(
     phase_name: str,
     pd: PhaseData,
     phase_order: list[str],
+    today: date | None = None,
 ) -> bool:
-    """True nếu phase thiếu PIC và đã tới lượt (predecessor Closed / phase đầu)."""
+    """True nếu thiếu PIC + in-scope + predecessor Closed + Start đã đến."""
     if pd.pics:
         return False
     if not is_phase_in_scope(pd):
         return False
-    return is_predecessor_closed(row, phase_name, phase_order)
+    if not is_predecessor_closed(row, phase_name, phase_order):
+        return False
+    return has_phase_start_arrived(pd, today or date.today())
 
 
 def is_missing_deadline_phase(
@@ -75,13 +101,14 @@ def is_missing_deadline_phase(
     pd: PhaseData,
     phase_order: list[str],
     *,
+    today: date | None = None,
     require_active_status: bool = True,
 ) -> bool:
     """
-    Thiếu End/deadline khi phase đã tới lượt.
+    Thiếu End/deadline khi phase đã tới lượt và Start đã đến.
 
     Mặc định giữ DQ cũ: chỉ khi status thuộc Open/Assigned/In-progress/
-    Resolved/Pending (WIP) — cộng thêm gate predecessor Closed.
+    Resolved/Pending (WIP) — cộng thêm gate predecessor Closed + Start.
     """
     if pd.end_date is not None:
         return False
@@ -93,4 +120,6 @@ def is_missing_deadline_phase(
             return False
     elif not is_phase_in_scope(pd):
         return False
-    return is_predecessor_closed(row, phase_name, phase_order)
+    if not is_predecessor_closed(row, phase_name, phase_order):
+        return False
+    return has_phase_start_arrived(pd, today or date.today())

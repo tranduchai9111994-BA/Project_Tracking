@@ -388,14 +388,15 @@ const HELP_CONTENT = {
     "unassigned": {
         category: "Danh sách vấn đề",
         title: "Unassigned Tasks (chưa có PIC)",
-        purpose: "Phase đã tới lượt (phase trước Closed, hoặc là phase đầu đang in-scope) nhưng chưa gán PIC. Không báo Dev/Config khi Analysis chưa xong.",
+        purpose: "Phase đã tới Start và tới lượt (phase trước Closed, hoặc phase đầu in-scope) nhưng chưa gán PIC. Không báo khi Start còn tương lai; không báo Dev/Config khi Analysis chưa xong.",
         steps: [
             "Sort: overdue trước, sau đó Must-have trước",
             "Xuất Excel gửi PM để phân công",
         ],
-        example: "Analysis Closed + Dev thiếu PIC → vào list. Analysis còn Open + Dev trống PIC → không báo.",
+        example: "Analysis Closed + Dev Start đã qua thiếu PIC → vào list. Dev Start tháng sau → không báo dù trống PIC.",
         tips: [
-            "Tới lượt = phase liền trước Closed (phase đầu: đang in-scope)",
+            "Tới lượt = phase liền trước Closed + Start đã đến",
+            "Không có Start: End đã đến hoặc status Open/Assigned/In-progress",
             "In-scope = chưa Closed/Cancelled + có status hoặc Start/End",
             "Fill row: đỏ = đã overdue nhưng vẫn chưa PIC",
         ],

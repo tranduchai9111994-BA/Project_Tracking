@@ -472,7 +472,7 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
     """Phase thiếu PIC khi đã tới lượt → dedupe theo ma_cn.
 
     Đồng bộ ``analyzer.unassigned.is_unassigned_phase`` (in-scope + predecessor
-    Closed). Card summary và drill cùng rule → count khớp.
+    Closed + Start đã đến). Card summary và drill cùng rule → count khớp.
     """
     module = filters.get("module", "")
     phase_f = filters.get("phase", "")
@@ -484,7 +484,9 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
         for phase_name, pd in row.phases.items():
             if phase_f and phase_name != phase_f:
                 continue
-            if not is_unassigned_phase(row, phase_name, pd, phase_order):
+            if not is_unassigned_phase(
+                row, phase_name, pd, phase_order, today,
+            ):
                 continue
             records.append(_row_to_dict(
                 row, phase_name=phase_name, today=today,

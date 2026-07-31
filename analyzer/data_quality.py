@@ -15,8 +15,7 @@ from typing import Any
 from parser.excel_parser import ParsedData, FunctionRow, VALID_STATUSES
 from analyzer.unassigned import (
     is_missing_deadline_phase,
-    is_predecessor_closed,
-    is_phase_in_scope,
+    is_unassigned_phase,
 )
 
 
@@ -149,7 +148,10 @@ def _has_planned_dates(pd) -> bool:
     return bool(pd.start_date or pd.end_date)
 
 
-def compute_data_quality(data: ParsedData) -> dict[str, Any]:
+def compute_data_quality(
+    data: ParsedData,
+    today: date | None = None,
+) -> dict[str, Any]:
     """
     Quét toàn bộ ParsedData → trả về:
       {
@@ -166,6 +168,7 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
         }
       }
     """
+    today = today or date.today()
     issues: list[dict[str, Any]] = []
 
     # === 1. Detect trùng Mã CN (làm 1 pass để nhóm) ===
@@ -279,9 +282,10 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
                     "suggestion": ISSUE_META["closed_no_end"]["suggestion"],
                 })
 
-            # WIP thiếu End — cùng gate predecessor Closed với Unassigned
+            # WIP thiếu End — cùng gate predecessor + Start với Unassigned
             if is_missing_deadline_phase(
-                row, phase_name, pd, phase_order, require_active_status=True,
+                row, phase_name, pd, phase_order,
+                today=today, require_active_status=True,
             ):
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
@@ -293,19 +297,15 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
                     "suggestion": ISSUE_META["missing_deadline"]["suggestion"],
                 })
 
-            # Blank PIC — in-scope + đã tới lượt (predecessor Closed)
-            if (
-                is_phase_in_scope(pd)
-                and not pd.pics
-                and is_predecessor_closed(row, phase_name, phase_order)
-            ):
+            # Blank PIC — cùng rule Unassigned (pred Closed + Start đã đến)
+            if is_unassigned_phase(row, phase_name, pd, phase_order, today):
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
                     "module": module, "phase": phase_name,
                     "code": "blank_pic",
                     "severity": ISSUE_META["blank_pic"]["severity"],
                     "label": ISSUE_META["blank_pic"]["label"],
-                    "detail": f"Phase '{phase_name}' đã tới lượt nhưng chưa gán PIC",
+                    "detail": f"Phase '{phase_name}' đã tới Start nhưng chưa gán PIC",
                     "suggestion": ISSUE_META["blank_pic"]["suggestion"],
                 })
 
@@ -412,14 +412,18 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
     }
 
 
-def count_missing_deadlines(data: ParsedData) -> tuple[int, int]:
+def count_missing_deadlines(
+    data: ParsedData,
+    today: date | None = None,
+) -> tuple[int, int]:
     """Đếm function/phase thiếu End khi đang làm — dùng cho summary card.
 
-    Cùng gate predecessor Closed với Unassigned.
+    Cùng gate predecessor Closed + Start đã đến với Unassigned.
 
     Returns:
         (function_count, phase_records) — function dedupe theo ma_cn (fallback row_num).
     """
+    today = today or date.today()
     func_keys: set[str] = set()
     records = 0
     for row in data.rows:
@@ -432,7 +436,8 @@ def count_missing_deadlines(data: ParsedData) -> tuple[int, int]:
         func_hit = False
         for phase_name, pd in row.phases.items():
             if is_missing_deadline_phase(
-                row, phase_name, pd, phase_order, require_active_status=True,
+                row, phase_name, pd, phase_order,
+                today=today, require_active_status=True,
             ):
                 records += 1
                 func_hit = True

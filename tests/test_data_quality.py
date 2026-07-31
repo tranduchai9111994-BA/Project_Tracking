@@ -83,10 +83,18 @@ def test_missing_deadline_in_progress_no_end():
 
 
 def test_missing_deadline_all_active_statuses():
-    """Open / Assigned / Resolved / Pending thiếu End đều flag."""
-    for st in ("Open", "Assigned", "Resolved", "Pending"):
+    """Open/Assigned (không Start) và Resolved/Pending (có Start đã đến) thiếu End → flag."""
+    today = date(2026, 7, 31)
+    for st in ("Open", "Assigned"):
         r = _mk_row(phases={"Dev": PhaseData(status=st, end_date=None, pics=["A"])})
-        out = compute_data_quality(_mk_data([r]))
+        out = compute_data_quality(_mk_data([r]), today=today)
+        assert "missing_deadline" in [i["code"] for i in out["issues"]], st
+    # Resolved/Pending không thuộc fallback no-Start → cần Start đã đến
+    for st in ("Resolved", "Pending"):
+        r = _mk_row(phases={"Dev": PhaseData(
+            status=st, start_date=date(2026, 7, 1), end_date=None, pics=["A"],
+        )})
+        out = compute_data_quality(_mk_data([r]), today=today)
         assert "missing_deadline" in [i["code"] for i in out["issues"]], st
 
 
@@ -127,6 +135,34 @@ def test_missing_deadline_respects_predecessor_gate():
     })
     out2 = compute_data_quality(_mk_data([r2]))
     assert "missing_deadline" in [i["code"] for i in out2["issues"]]
+
+
+def test_blank_pic_and_deadline_respect_start_gate():
+    """Start tương lai → không blank_pic / missing_deadline dù pred Closed."""
+    today = date(2026, 7, 31)
+    future = date(2026, 8, 15)
+    r = _mk_row(phases={
+        "Analysis": PhaseData(status="Closed", end_date=date(2026, 7, 1), pics=["A"]),
+        "Dev": PhaseData(
+            status="Open", start_date=future, end_date=None, pics=[],
+        ),
+    })
+    out = compute_data_quality(_mk_data([r]), today=today)
+    codes = [i["code"] for i in out["issues"]]
+    assert "blank_pic" not in codes
+    assert "missing_deadline" not in codes
+
+    past = date(2026, 7, 20)
+    r2 = _mk_row(phases={
+        "Analysis": PhaseData(status="Closed", end_date=date(2026, 7, 1), pics=["A"]),
+        "Dev": PhaseData(
+            status="Open", start_date=past, end_date=None, pics=[],
+        ),
+    })
+    out2 = compute_data_quality(_mk_data([r2]), today=today)
+    codes2 = [i["code"] for i in out2["issues"]]
+    assert "blank_pic" in codes2
+    assert "missing_deadline" in codes2
 
 
 

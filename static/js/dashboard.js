@@ -7523,9 +7523,9 @@ const CHART_HELP = {
     },
     "section-unassigned": {
         title: "🚨 Task chưa có PIC phụ trách",
-        meaning: "Phase đã tới lượt nhưng chưa có người chịu trách nhiệm — nguồn chậm tiến độ phổ biến.",
-        logic: "Flag phase thiếu PIC chỉ khi: (1) phase in-scope (chưa Closed/Cancelled + có status hoặc Start/End), và (2) phase liền trước trong Function List đã Closed. Phase đầu không cần predecessor. Không báo Dev/Config khi Analysis chưa Closed.",
-        example: "Analysis Closed → Dev Open không PIC → vào list. Analysis còn In-progress → Dev trống PIC không vào list.",
+        meaning: "Phase đã tới ngày Start và tới lượt nhưng chưa có người chịu trách nhiệm — nguồn chậm tiến độ phổ biến.",
+        logic: "Flag thiếu PIC khi ALL: (1) phase in-scope (chưa Closed/Cancelled + có status hoặc Start/End), (2) phase liền trước đã Closed (phase đầu không cần predecessor), (3) Start đã đến (start ≤ today). Không có Start: chỉ flag nếu End ≤ today hoặc status Open/Assigned/In-progress. Không báo khi Start còn tương lai; không báo Dev/Config khi Analysis chưa Closed.",
+        example: "Analysis Closed + Dev Start đã qua + không PIC → vào list. Dev có Start tháng sau → không vào list dù thiếu PIC.",
         note: "Dòng đỏ = chưa PIC và đã trễ; cam = chưa PIC và Must-have. Card Summary đếm function unique khớp bảng này."
     },
     "section-duration": {

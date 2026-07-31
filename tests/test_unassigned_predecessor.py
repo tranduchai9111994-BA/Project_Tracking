@@ -1,10 +1,9 @@
-"""Tests cho rule Unassigned: chỉ bắt PIC khi phase trước Closed."""
+"""Tests cho rule Unassigned: predecessor Closed + Start đã đến."""
 from datetime import date, timedelta
-
-import pytest
 
 from analyzer.dashboard_engine import DashboardEngine
 from analyzer.unassigned import (
+    has_phase_start_arrived,
     is_predecessor_closed,
     is_unassigned_phase,
 )
@@ -46,13 +45,17 @@ def _parsed(rows: list[FunctionRow], order: list[str] | None = None) -> ParsedDa
     )
 
 
+def _ua(row: FunctionRow, phase: str) -> bool:
+    return is_unassigned_phase(row, phase, row.phases[phase], ORDER, TODAY)
+
+
 def test_analysis_closed_dev_no_pic_flags():
-    """Analysis Closed + Dev no PIC → flag."""
+    """Analysis Closed + Dev no PIC (status Open, không Start) → flag."""
     row = _row({
         "Analysis": _pd("Closed", ["A"], end_off=-10),
         "Dev": _pd("Open", []),
     })
-    assert is_unassigned_phase(row, "Dev", row.phases["Dev"], ORDER) is True
+    assert _ua(row, "Dev") is True
 
 
 def test_analysis_not_closed_dev_no_pic_no_flag():
@@ -61,13 +64,13 @@ def test_analysis_not_closed_dev_no_pic_no_flag():
         "Analysis": _pd("In-progress", ["A"], end_off=5),
         "Dev": _pd("Open", []),
     })
-    assert is_unassigned_phase(row, "Dev", row.phases["Dev"], ORDER) is False
+    assert _ua(row, "Dev") is False
 
     row2 = _row({
         "Analysis": _pd("In-progress", ["A"]),
         "Dev": _pd(None, [], end_off=3),  # có End nhưng Analysis chưa xong
     })
-    assert is_unassigned_phase(row2, "Dev", row2.phases["Dev"], ORDER) is False
+    assert _ua(row2, "Dev") is False
 
 
 def test_dev_closed_config_no_pic_flags():
@@ -77,9 +80,7 @@ def test_dev_closed_config_no_pic_flags():
         "Dev": _pd("Closed", ["B"]),
         "Config Local": _pd("Open", []),
     })
-    assert is_unassigned_phase(
-        row, "Config Local", row.phases["Config Local"], ORDER,
-    ) is True
+    assert _ua(row, "Config Local") is True
 
 
 def test_dev_not_closed_config_no_pic_no_flag():
@@ -89,9 +90,7 @@ def test_dev_not_closed_config_no_pic_no_flag():
         "Dev": _pd("In-progress", ["B"]),
         "Config Local": _pd(None, [], end_off=10),
     })
-    assert is_unassigned_phase(
-        row, "Config Local", row.phases["Config Local"], ORDER,
-    ) is False
+    assert _ua(row, "Config Local") is False
 
 
 def test_first_phase_in_scope_no_pic_flags():
@@ -100,7 +99,7 @@ def test_first_phase_in_scope_no_pic_flags():
         "Analysis": _pd("Open", []),
         "Dev": _pd(None, []),
     })
-    assert is_unassigned_phase(row, "Analysis", row.phases["Analysis"], ORDER) is True
+    assert _ua(row, "Analysis") is True
 
 
 def test_first_phase_blank_no_flag():
@@ -109,7 +108,7 @@ def test_first_phase_blank_no_flag():
         "Analysis": _pd(None, []),
         "Dev": _pd(None, []),
     })
-    assert is_unassigned_phase(row, "Analysis", row.phases["Analysis"], ORDER) is False
+    assert _ua(row, "Analysis") is False
 
 
 def test_predecessor_cancelled_does_not_unlock():
@@ -119,11 +118,64 @@ def test_predecessor_cancelled_does_not_unlock():
         "Dev": _pd("Open", []),
     })
     assert is_predecessor_closed(row, "Dev", ORDER) is False
-    assert is_unassigned_phase(row, "Dev", row.phases["Dev"], ORDER) is False
+    assert _ua(row, "Dev") is False
+
+
+def test_start_future_no_pic_no_flag():
+    """Start tương lai + thiếu PIC + predecessor Closed → không flag."""
+    row = _row({
+        "Analysis": _pd("Closed", ["A"], end_off=-10),
+        "Dev": _pd(None, [], start_off=5, end_off=20),
+    })
+    assert has_phase_start_arrived(row.phases["Dev"], TODAY) is False
+    assert _ua(row, "Dev") is False
+
+    # Status Open nhưng Start còn tương lai → vẫn không flag
+    row2 = _row({
+        "Analysis": _pd("Closed", ["A"], end_off=-10),
+        "Dev": _pd("Open", [], start_off=3, end_off=15),
+    })
+    assert _ua(row2, "Dev") is False
+
+
+def test_start_past_or_today_no_pic_flags():
+    """Start past/today + thiếu PIC + predecessor Closed → flag."""
+    row = _row({
+        "Analysis": _pd("Closed", ["A"], end_off=-10),
+        "Dev": _pd(None, [], start_off=-2, end_off=10),
+    })
+    assert has_phase_start_arrived(row.phases["Dev"], TODAY) is True
+    assert _ua(row, "Dev") is True
+
+    row_today = _row({
+        "Analysis": _pd("Closed", ["A"], end_off=-10),
+        "Dev": _pd(None, [], start_off=0, end_off=14),
+    })
+    assert _ua(row_today, "Dev") is True
+
+
+def test_no_start_future_end_only_no_flag():
+    """Không Start + chỉ có End tương lai (không status đang làm) → không flag."""
+    row = _row({
+        "Analysis": _pd("Closed", ["A"], end_off=-10),
+        "Dev": _pd(None, [], end_off=14),
+    })
+    assert has_phase_start_arrived(row.phases["Dev"], TODAY) is False
+    assert _ua(row, "Dev") is False
+
+
+def test_no_start_past_end_flags():
+    """Không Start + End đã đến + thiếu PIC → flag."""
+    row = _row({
+        "Analysis": _pd("Closed", ["A"], end_off=-10),
+        "Dev": _pd(None, [], end_off=-1),
+    })
+    assert has_phase_start_arrived(row.phases["Dev"], TODAY) is True
+    assert _ua(row, "Dev") is True
 
 
 def test_engine_summary_and_list_match_gate():
-    """DashboardEngine summary/list chỉ giữ case Analysis Closed + Dev no PIC."""
+    """DashboardEngine summary/list chỉ giữ case đã tới Start + pred Closed."""
     data = _parsed([
         _row({
             "Analysis": _pd("Closed", ["A"]),
@@ -143,6 +195,10 @@ def test_engine_summary_and_list_match_gate():
             "Dev": _pd("In-progress", ["B"]),
             "Config Local": _pd(None, [], end_off=2),
         }, ma_cn="CFG.SKIP"),
+        _row({
+            "Analysis": _pd("Closed", ["A"]),
+            "Dev": _pd(None, [], start_off=10, end_off=20),
+        }, ma_cn="FUTURE.01"),
     ])
     m = DashboardEngine(today=TODAY).compute_all(data)
     phases = {(i["ma_cn"], i["phase"]) for i in m["unassigned_tasks"]}
@@ -150,6 +206,7 @@ def test_engine_summary_and_list_match_gate():
     assert ("CFG.01", "Config Local") in phases
     assert ("SKIP.01", "Dev") not in phases
     assert ("CFG.SKIP", "Config Local") not in phases
+    assert ("FUTURE.01", "Dev") not in phases
     assert m["summary"]["unassigned_count"] == 2
     assert m["summary"]["unassigned_records"] == 2
 

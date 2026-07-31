@@ -168,7 +168,7 @@ class DashboardEngine:
             last_phase_pct = 0
 
         # ==== Unassigned: đếm function unique VÀ phase-level ====
-        # Gate: in-scope + thiếu PIC + phase trước đã Closed (xem analyzer.unassigned).
+        # Gate: in-scope + thiếu PIC + predecessor Closed + Start đã đến.
         from analyzer.unassigned import is_unassigned_phase
         phase_order = data.all_phases
         unassigned_functions = 0
@@ -176,7 +176,9 @@ class DashboardEngine:
         for r in data.rows:
             func_has_unassigned = False
             for phase_name, pd in r.phases.items():
-                if is_unassigned_phase(r, phase_name, pd, phase_order):
+                if is_unassigned_phase(
+                    r, phase_name, pd, phase_order, self.today,
+                ):
                     unassigned_records += 1
                     func_has_unassigned = True
             if func_has_unassigned:
@@ -646,9 +648,9 @@ class DashboardEngine:
         """
         Danh sách phase thiếu PIC khi đã tới lượt.
 
-        Tới lượt = phase in-scope (chưa Closed/Cancelled + có status/Start/End)
-        VÀ phase liền trước trong ``data.all_phases`` đã Closed (phase đầu
-        không cần predecessor). Tránh flag oan Dev/Config khi Analysis chưa xong.
+        Tới lượt = in-scope + predecessor Closed (phase đầu: không cần pred)
+        + Start đã đến (không Start: End đã đến hoặc status Open/Assigned/
+        In-progress). Không flag khi Start còn tương lai.
         """
         from analyzer.unassigned import is_unassigned_phase
         from analyzer.rlog_weekly import _row_rlog_id
@@ -658,7 +660,9 @@ class DashboardEngine:
         for r in data.rows:
             rlog_id = _row_rlog_id(r) or ""
             for phase_name, pd in r.phases.items():
-                if not is_unassigned_phase(r, phase_name, pd, phase_order):
+                if not is_unassigned_phase(
+                    r, phase_name, pd, phase_order, self.today,
+                ):
                     continue
                 results.append({
                     "ma_cn": r.meta.get("ma_cn", ""),
