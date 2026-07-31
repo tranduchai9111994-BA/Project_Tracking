@@ -165,10 +165,11 @@ def _collect_week_plan(
     limit: int = _WEEK_PLAN_LIMIT,
 ) -> list[dict]:
     """
-    Công việc gợi ý trong tuần ISO:
+    Công việc gợi ý trong tuần ISO (đủ dùng PM, không flood overlap dài):
       - Phase chưa Closed/Cancelled
-      - Sau normalize/swap Start–End: End nằm trong tuần, HOẶC Start–End giao tuần
-    Ưu tiên: End trong tuần → Start trong tuần → chỉ overlap dài.
+      - Sau normalize/swap Start–End: End nằm trong tuần HOẶC Start nằm trong tuần
+      - Không lấy phase chỉ "giao tuần" dài (overlap-only) — gây trùng A/B và đầy limit
+    Ưu tiên: End trong tuần → Start trong tuần.
     """
     if parsed_data is None:
         return []
@@ -182,26 +183,23 @@ def _collect_week_plan(
             if st in ("Closed", "Cancelled"):
                 continue
             s, e, swapped = _normalize_date_pair(pd.start_date, pd.end_date)
-            if not _ranges_overlap(s, e, week_start, week_end):
-                continue
             end_in = e is not None and week_start <= e <= week_end
             start_in = s is not None and week_start <= s <= week_end
-            if end_in:
-                priority = 0
-            elif start_in:
-                priority = 1
-            else:
-                priority = 2
+            if not end_in and not start_in:
+                continue
+            priority = 0 if end_in else 1
             label = f"[{phase_name}] {ma} — {ten}".strip(" —")
             if not ma and not ten:
                 label = f"[{phase_name}]"
+            pics = ", ".join(pd.pics or [])
+            note = (("swap Start↔End; " if swapped else "") + (pd.note or "")).strip()
             items.append({
                 "ten": label,
-                "pic": ", ".join(pd.pics or []) or NA,
+                "pic": pics,
                 "from": _fmt_date(s),
                 "to": _fmt_date(e),
                 "status": st,
-                "note": (("swap Start↔End; " if swapped else "") + (pd.note or ""))[:80].rstrip("; "),
+                "note": note[:80].rstrip("; "),
                 "module": module,
                 "phase": phase_name,
                 "priority": priority,
@@ -217,10 +215,62 @@ def _collect_week_plan(
     return out
 
 
-def _build_master_rows(metrics: dict, parsed_data) -> list[dict]:
+def _phase_dates_from_rows(
+    parsed_data,
+    module: str,
+    phase: str,
+    today: Optional[date] = None,
+) -> tuple[Optional[date], Optional[date], int]:
+    """
+    Min Start / max End sau swap từng function; bỏ outlier năm.
+    Returns: (start, end, n_dated).
+    """
+    from analyzer.gantt_calendar import _is_outlier_date
+
+    starts: list[date] = []
+    ends: list[date] = []
+    if parsed_data is None:
+        return None, None, 0
+    for r in parsed_data.rows:
+        if (r.meta.get("module") or "") != module:
+            continue
+        pd = (r.phases or {}).get(phase)
+        if not pd:
+            continue
+        ps, pe, _ = _normalize_date_pair(pd.start_date, pd.end_date)
+        if ps and not _is_outlier_date(ps, today):
+            starts.append(ps)
+        if pe and not _is_outlier_date(pe, today):
+            ends.append(pe)
+    return (
+        min(starts) if starts else None,
+        max(ends) if ends else None,
+        len(starts) + len(ends),
+    )
+
+
+def _format_phase_status(pct: Any, top_status: str) -> str:
+    """Tránh chữ dư kiểu 'Closed · 100.0% Closed'."""
+    if pct is not None and pct != "":
+        try:
+            pct_f = float(pct)
+            pct_txt = f"{pct_f:g}% Closed"
+        except (TypeError, ValueError):
+            pct_txt = f"{pct}% Closed"
+        if top_status and top_status not in ("Closed", "—"):
+            return f"{top_status} · {pct_txt}"
+        return pct_txt
+    return top_status or ""
+
+
+def _build_master_rows(
+    metrics: dict,
+    parsed_data,
+    today: Optional[date] = None,
+) -> list[dict]:
     """
     WBS-like: mỗi Module 1 dòng cha + mỗi Phase có date 1 dòng con.
-    Dữ liệu từ timeline_data (+ bổ sung PIC/status từ ParsedData nếu có).
+    % / n từ timeline_data; Start–End ưu tiên aggregate từ ParsedData (đã swap).
     """
     timeline = (metrics or {}).get("timeline_data") or {}
     modules = timeline.get("modules") or []
@@ -230,7 +280,6 @@ def _build_master_rows(metrics: dict, parsed_data) -> list[dict]:
         modules = list(parsed_data.all_modules or [])
         phases = list(parsed_data.all_phases or [])
 
-    # PIC / status tổng hợp theo (module, phase) từ FL
     pic_map: dict[tuple[str, str], list[str]] = {}
     status_map: dict[tuple[str, str], dict[str, int]] = {}
     if parsed_data is not None:
@@ -251,32 +300,18 @@ def _build_master_rows(metrics: dict, parsed_data) -> list[dict]:
     stt_mod = 0
     for module in modules:
         mod_data = data.get(module) or {}
-        # Aggregate module dates
         mod_starts: list[date] = []
         mod_ends: list[date] = []
         phase_children: list[dict] = []
         for ph in phases:
             cell = mod_data.get(ph) or {}
-            s, e, _ = _normalize_date_pair(cell.get("start"), cell.get("end"))
+            s, e, n_dated = _phase_dates_from_rows(parsed_data, module, ph, today)
             if s is None and e is None:
-                # fallback từ parsed rows nếu timeline thiếu
-                if parsed_data is not None:
-                    starts, ends = [], []
-                    for r in parsed_data.rows:
-                        if (r.meta.get("module") or "") != module:
-                            continue
-                        pd = (r.phases or {}).get(ph)
-                        if not pd:
-                            continue
-                        ps, pe, _ = _normalize_date_pair(pd.start_date, pd.end_date)
-                        if ps:
-                            starts.append(ps)
-                        if pe:
-                            ends.append(pe)
-                    s = min(starts) if starts else None
-                    e = max(ends) if ends else None
-                if s is None and e is None:
-                    continue
+                s, e, _ = _normalize_date_pair(cell.get("start"), cell.get("end"))
+            if s is None and e is None and not cell:
+                continue
+            if s is None and e is None and not (cell.get("total") or cell.get("pct_closed") is not None):
+                continue
             if s:
                 mod_starts.append(s)
             if e:
@@ -287,15 +322,14 @@ def _build_master_rows(metrics: dict, parsed_data) -> list[dict]:
             if pct is None and total:
                 pct = round(100.0 * int(closed or 0) / int(total), 1)
             counts = status_map.get((module, ph)) or {}
-            # Tình trạng: status phổ biến nhất, kèm % Closed nếu có
-            top_status = ""
-            if counts:
-                top_status = max(counts.items(), key=lambda kv: kv[1])[0]
-            if pct is not None:
-                status_txt = f"{top_status or '—'} · {pct}% Closed"
-            else:
-                status_txt = top_status or ""
+            top_status = max(counts.items(), key=lambda kv: kv[1])[0] if counts else ""
+            status_txt = _format_phase_status(pct, top_status)
             pics = pic_map.get((module, ph)) or []
+            note_bits = []
+            if total:
+                note_bits.append(f"n={total}")
+            elif n_dated:
+                note_bits.append(f"dated={n_dated}")
             phase_children.append({
                 "level": 1,
                 "name": f"    {ph}",
@@ -303,14 +337,13 @@ def _build_master_rows(metrics: dict, parsed_data) -> list[dict]:
                 "pic_kdg": ", ".join(pics[:4]) if pics else "",
                 "start": s,
                 "end": e,
-                "note": f"n={total}" if total else "",
+                "note": " · ".join(note_bits),
                 "pct": pct if pct is not None else "",
             })
 
         if not phase_children and not mod_starts and not mod_ends:
             continue
         stt_mod += 1
-        # Module overview % nếu có
         mod_ov = None
         for m in (metrics or {}).get("module_overview") or []:
             if (m.get("module") or m.get("label")) == module:
@@ -330,7 +363,9 @@ def _build_master_rows(metrics: dict, parsed_data) -> list[dict]:
             "level": 0,
             "stt": str(stt_mod),
             "name": module,
-            "status": f"{mod_pct}% Closed" if mod_pct is not None else "",
+            "status": f"{mod_pct:g}% Closed" if isinstance(mod_pct, (int, float)) else (
+                f"{mod_pct}% Closed" if mod_pct is not None else ""
+            ),
             "pic_kdg": "",
             "start": min(mod_starts) if mod_starts else None,
             "end": max(mod_ends) if mod_ends else None,
@@ -386,10 +421,11 @@ def _write_cover(
         cell.border = THIN_BORDER
     ws.merge_cells("D8:G8")
 
+    # Thứ tự TOC = thứ tự sheet thật (sau Cover Page)
     toc = [
+        ("Master plan", "WBS Module × Phase (Start–End + % Closed từ Function List)"),
+        ("Gantt", "Timeline tuần quanh ngày xuất (ô tô màu theo kế hoạch)"),
         (meeting_sheet_name, f"Họp định kỳ dự án — {week_label}"),
-        ("Master plan", "WBS Module × Phase (Start–End từ Function List)"),
-        ("Gantt", "Timeline tuần (ô tô màu theo kế hoạch)"),
         ("PM Dashboard", "Tóm tắt metrics + biểu đồ Excel"),
     ]
     for i, (sheet, subject) in enumerate(toc):
@@ -407,7 +443,7 @@ def _write_cover(
             ws.cell(row=r, column=c).border = THIN_BORDER
 
 
-def _write_master_plan(wb, metrics: dict, parsed_data) -> None:
+def _write_master_plan(wb, metrics: dict, parsed_data, today: Optional[date] = None) -> None:
     """Master plan: WBS Module × Phase từ timeline Function List."""
     ws = wb.create_sheet("Master plan")
     widths = {
@@ -450,7 +486,7 @@ def _write_master_plan(wb, metrics: dict, parsed_data) -> None:
             cell.alignment = HEADER_ALIGN
             cell.border = THIN_BORDER
 
-    master_rows = _build_master_rows(metrics, parsed_data)
+    master_rows = _build_master_rows(metrics, parsed_data, today=today)
     if not master_rows:
         ws["B4"] = ""
         ws["C4"] = (
@@ -472,9 +508,9 @@ def _write_master_plan(wb, metrics: dict, parsed_data) -> None:
         ws.cell(row=row, column=4, value=item.get("status", ""))
         ws.cell(row=row, column=5, value="")  # FIS — không có trong FL
         ws.cell(row=row, column=6, value=item.get("pic_kdg", ""))
-        # v1.0 = LU cùng nguồn FL (không có baseline riêng)
-        ws.cell(row=row, column=7, value=_fmt_date(item.get("start")))
-        ws.cell(row=row, column=8, value=_fmt_date(item.get("end")))
+        # v1.0 để trống (baseline PM điền); LU = mốc Start/End hiện tại từ FL
+        ws.cell(row=row, column=7, value="")
+        ws.cell(row=row, column=8, value="")
         ws.cell(row=row, column=9, value=_fmt_date(item.get("start")))
         ws.cell(row=row, column=10, value=_fmt_date(item.get("end")))
         ws.cell(row=row, column=11, value=item.get("note", ""))
@@ -491,8 +527,8 @@ def _write_master_plan(wb, metrics: dict, parsed_data) -> None:
     ws.cell(
         row=row + 1, column=2,
         value=(
-            "Nguồn: Function List (timeline Module × Phase). "
-            "PIC FIS trống (không có trong FL). Cột v1.0 = LU cùng mốc Start/End hiện tại."
+            "Nguồn: Function List (Module × Phase, Start–End đã swap nếu From>To). "
+            "PIC FIS trống. Kế hoạch LU = mốc hiện tại; v1.0 để PM điền baseline."
         ),
     )
     ws.cell(row=row + 1, column=2).font = NOTE_FONT
@@ -515,42 +551,62 @@ def _iter_weeks(start: date, end: date) -> list[tuple[date, date, str]]:
 
 
 def _write_gantt_sheet(wb, metrics: dict, parsed_data, today: date) -> None:
-    """Sheet Gantt: hàng = Module × Phase; cột = tuần; tô màu nếu giao khoảng."""
+    """Sheet Gantt: hàng = Module × Phase giao cửa sổ; cột = tuần cố định quanh today."""
     ws = wb.create_sheet("Gantt")
-    master_rows = [r for r in _build_master_rows(metrics, parsed_data) if r.get("start") or r.get("end")]
-    if not master_rows:
+    # Cửa sổ cố định quanh today — dễ đọc, không kéo từ Dec/2025
+    min_d = today - timedelta(weeks=6)
+    max_d = today + timedelta(weeks=14)
+    weeks = _iter_weeks(min_d, max_d)
+    win_start, win_end = weeks[0][0], weeks[-1][1]
+
+    all_rows = _build_master_rows(metrics, parsed_data, today=today)
+    # Chỉ giữ hàng giao cửa sổ (module cha giữ nếu còn child)
+    visible: list[dict] = []
+    i = 0
+    while i < len(all_rows):
+        item = all_rows[i]
+        if item.get("level") == 0:
+            children = []
+            j = i + 1
+            while j < len(all_rows) and all_rows[j].get("level") == 1:
+                ch = all_rows[j]
+                s, e, _ = _normalize_date_pair(ch.get("start"), ch.get("end"))
+                if _ranges_overlap(s, e, win_start, win_end):
+                    children.append(ch)
+                j += 1
+            s0, e0, _ = _normalize_date_pair(item.get("start"), item.get("end"))
+            if children or _ranges_overlap(s0, e0, win_start, win_end):
+                visible.append(item)
+                visible.extend(children)
+            i = j
+        else:
+            s, e, _ = _normalize_date_pair(item.get("start"), item.get("end"))
+            if _ranges_overlap(s, e, win_start, win_end):
+                visible.append(item)
+            i += 1
+
+    if not visible:
         ws["A1"] = "Gantt"
         ws["A1"].font = TITLE_FONT
-        ws["A3"] = "N/A — không có Start/End để vẽ Gantt."
+        ws["A3"] = (
+            f"N/A — không có Module/Phase giao cửa sổ "
+            f"{win_start.strftime('%d/%m/%Y')}–{win_end.strftime('%d/%m/%Y')}."
+        )
         ws["A3"].font = NOTE_FONT
         return
 
-    dates: list[date] = []
-    for r in master_rows:
-        s, e, _ = _normalize_date_pair(r.get("start"), r.get("end"))
-        if s:
-            dates.append(s)
-        if e:
-            dates.append(e)
-    dates.append(today)
-    min_d, max_d = min(dates), max(dates)
-    # Giới hạn span ~ 26 tuần quanh today nếu quá dài
-    if (max_d - min_d).days > 26 * 7:
-        min_d = max(min_d, today - timedelta(weeks=8))
-        max_d = min(max_d, today + timedelta(weeks=18))
-        if min_d > max_d:
-            min_d, max_d = today - timedelta(weeks=4), today + timedelta(weeks=8)
-
-    weeks = _iter_weeks(min_d, max_d)
     ws.column_dimensions["A"].width = 8
     ws.column_dimensions["B"].width = 36
     ws.column_dimensions["C"].width = 12
     ws.column_dimensions["D"].width = 12
     for i in range(len(weeks)):
-        ws.column_dimensions[get_column_letter(5 + i)].width = 5
+        ws.column_dimensions[get_column_letter(5 + i)].width = 5.5
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4 + max(len(weeks), 1))
-    ws["A1"] = f"GANTT — Module × Phase theo tuần (xuất {today.strftime('%d/%m/%Y')})"
+    ws["A1"] = (
+        f"GANTT — Module × Phase theo tuần "
+        f"({win_start.strftime('%d/%m')}–{win_end.strftime('%d/%m/%Y')}, xuất {today.strftime('%d/%m/%Y')})"
+    )
     ws["A1"].font = TITLE_FONT
     ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
 
@@ -563,7 +619,7 @@ def _write_gantt_sheet(wb, metrics: dict, parsed_data, today: date) -> None:
         cell.border = THIN_BORDER
 
     today_week = _week_range(today)[0]
-    for ri, item in enumerate(master_rows):
+    for ri, item in enumerate(visible):
         row = 4 + ri
         s, e, _ = _normalize_date_pair(item.get("start"), item.get("end"))
         vals = [item.get("stt", ""), item.get("name", ""), _fmt_date(s), _fmt_date(e)]
@@ -577,21 +633,24 @@ def _write_gantt_sheet(wb, metrics: dict, parsed_data, today: date) -> None:
         for wi, (ws_d, we_d, _) in enumerate(weeks):
             cell = ws.cell(row=row, column=5 + wi, value="")
             cell.border = THIN_BORDER
+            has_bar = False
             if s is not None or e is not None:
                 if _ranges_overlap(s, e, ws_d, we_d):
                     cell.fill = GANTT_FILL
-            if ws_d == today_week:
-                if cell.fill is None or cell.fill.fgColor is None or cell.fill.fgColor.rgb in (None, "00000000"):
-                    cell.fill = GANTT_TODAY_FILL
-                # đánh dấu tuần hiện tại trên header đã có; body: nếu vừa gantt vừa today giữ gantt
+                    has_bar = True
+            if ws_d == today_week and not has_bar:
+                cell.fill = GANTT_TODAY_FILL
 
-    note_row = 4 + len(master_rows) + 1
+    note_row = 4 + len(visible) + 1
     ws.cell(
         row=note_row, column=1,
-        value="Ô xanh = khoảng Start–End giao tuần. Cột cam nhạt = tuần hiện tại (khi không có bar).",
+        value=(
+            "Ô xanh = Start–End giao tuần. Cam = tuần hiện tại (không bar). "
+            "Chỉ hiện hàng giao cửa sổ ±6…+14 tuần quanh ngày xuất."
+        ),
     )
     ws.cell(row=note_row, column=1).font = NOTE_FONT
-    ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=4)
+    ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=6)
 
 
 def _write_mom_sheet(
@@ -887,7 +946,7 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
 
     row += 1
     # --- 3. Phase progress + chart data ---
-    row = _block_title(ws, row, "3. TIẾN ĐỘ THEO PHASE (% Closed)", n_cols=10)
+    row = _block_title(ws, row, "3. TIẾN ĐỘ THEO PHASE (% Closed trên status đã fill)", n_cols=10)
     stacked = metrics.get("phase_progress_stacked") or {}
     phases = list(stacked.get("phases") or [])
     statuses = list(stacked.get("statuses") or [])
@@ -908,13 +967,14 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
         row += 1
         phase_chart_start = row
         phase_rows_tmp = []
+        # Giữ thứ tự phase pipeline gốc; % = Closed / (tổng status ≠ Blank)
+        status_keys = [s for s in statuses if s != "(Blank)"]
         for ph in phases:
             counts = pdata.get(ph) or {}
             closed = int(counts.get("Closed", 0) or 0)
-            total = sum(int(counts.get(s, 0) or 0) for s in statuses)
+            total = sum(int(counts.get(s, 0) or 0) for s in status_keys)
             pct = round(closed / total * 100, 1) if total > 0 else 0.0
             phase_rows_tmp.append((ph, pct, closed, total))
-        phase_rows_tmp.sort(key=lambda x: -x[1])
         for ph, pct, closed, total in phase_rows_tmp:
             vals = [ph, pct, closed, total]
             for c, v in enumerate(vals, 1):
@@ -931,7 +991,7 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
         if phase_chart_start and phase_chart_end >= phase_chart_start:
             chart = BarChart()
             chart.type = "col"
-            chart.title = "% Closed theo Phase"
+            chart.title = "% Closed theo Phase (đã fill status)"
             chart.y_axis.title = "%"
             chart.x_axis.title = None
             data_ref = Reference(ws, min_col=2, min_row=phase_chart_start - 1, max_row=phase_chart_end)
@@ -983,19 +1043,19 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
                 ws.cell(row=row, column=6).fill = ORANGE_FILL if od < 5 else RED_FILL
             row += 1
         mod_chart_end = row - 1
-        # Chart: overdue by module (top 12)
-        chart_n = min(12, mod_chart_end - mod_chart_start + 1)
+        # Chart: tiến độ % theo module (overdue thường gần 0 → chart trống)
+        chart_n = mod_chart_end - mod_chart_start + 1
         if chart_n > 0:
             chart = BarChart()
             chart.type = "bar"
-            chart.title = "Số function trễ theo Module (top)"
+            chart.title = "Tiến độ % theo Module"
             data_ref = Reference(
-                ws, min_col=6, min_row=mod_chart_start - 1,
-                max_row=mod_chart_start + chart_n - 1,
+                ws, min_col=4, min_row=mod_chart_start - 1,
+                max_row=mod_chart_end,
             )
             cats = Reference(
                 ws, min_col=2, min_row=mod_chart_start,
-                max_row=mod_chart_start + chart_n - 1,
+                max_row=mod_chart_end,
             )
             chart.add_data(data_ref, titles_from_data=True)
             chart.set_categories(cats)
@@ -1061,16 +1121,17 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
             chart.height = 8
             ws.add_chart(chart, "I" + str(pic_chart_start - 1))
 
-    # Optional small pie: Closed vs còn lại từ summary nếu có overall
-    # (chỉ khi có overall_progress_pct số)
+    # Pie tiến độ chung — data range chỉ 2 dòng số (không gồm title)
     pct = summary.get("overall_progress_pct")
     if isinstance(pct, (int, float)):
         pie_row = row + 2
         ws.cell(row=pie_row, column=1, value="Phân bổ tiến độ chung").font = SECTION_FONT
+        closed_pct = round(float(pct), 1)
+        remain_pct = round(max(0.0, 100.0 - closed_pct), 1)
         ws.cell(row=pie_row + 1, column=1, value="Đã Closed (ước lượng %)")
-        ws.cell(row=pie_row + 1, column=2, value=float(pct))
+        ws.cell(row=pie_row + 1, column=2, value=closed_pct)
         ws.cell(row=pie_row + 2, column=1, value="Còn lại")
-        ws.cell(row=pie_row + 2, column=2, value=max(0.0, 100.0 - float(pct)))
+        ws.cell(row=pie_row + 2, column=2, value=remain_pct)
         for r in (pie_row + 1, pie_row + 2):
             for c in (1, 2):
                 ws.cell(row=r, column=c).border = THIN_BORDER
@@ -1078,7 +1139,7 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
         pie = PieChart()
         pie.title = "Tiến độ chung (%)"
         labels = Reference(ws, min_col=1, min_row=pie_row + 1, max_row=pie_row + 2)
-        data = Reference(ws, min_col=2, min_row=pie_row, max_row=pie_row + 2)
+        data = Reference(ws, min_col=2, min_row=pie_row + 1, max_row=pie_row + 2)
         pie.add_data(data, titles_from_data=False)
         pie.set_categories(labels)
         pie.dataLabels = DataLabelList()
@@ -1092,7 +1153,7 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
     ws.cell(
         row=row, column=1,
         value=(
-            "Biểu đồ: % Closed theo phase · Overdue theo module · Top PIC · Pie tiến độ chung. "
+            "Biểu đồ: % Closed theo phase · Tiến độ % theo module · Top PIC · Pie tiến độ chung. "
             "Chi tiết sâu: Xuất vấn đề / Full Report / chart export riêng."
         ),
     )
@@ -1132,7 +1193,7 @@ def export_weekly_mom(
     wb.remove(wb.active)
 
     _write_cover(wb, code, week_label, meeting_sheet, today)
-    _write_master_plan(wb, metrics or {}, parsed_data)
+    _write_master_plan(wb, metrics or {}, parsed_data, today=today)
     _write_gantt_sheet(wb, metrics or {}, parsed_data, today)
     _write_mom_sheet(wb, meeting_sheet, week_label, today, metrics or {}, parsed_data)
     _write_pm_dashboard(wb, metrics or {}, today, week_label)
