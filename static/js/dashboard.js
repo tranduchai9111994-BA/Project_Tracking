@@ -2087,6 +2087,7 @@ function renderDashboard() {
 
     // T21: Data Quality panel (lazy fetch — không block render chính)
     _safe("dataQuality", loadDataQuality);
+    _safe("colPickers", () => { if (typeof initAllColumnPickers === "function") initAllColumnPickers(); });
 
     // T22: Aging WIP tracking
     _safe("agingWip", loadAgingWip);
@@ -3179,6 +3180,8 @@ function renderOverdueTable() {
     }).join("");
 
     renderPager("overdueShowMoreWrap", "overdue", items.length, () => renderOverdueTable());
+    try { applyColumnVisibility("overdue"); } catch (e) {}
+
     document.getElementById("overdueCount").textContent =
         items.length === 0
             ? "Không có task trễ"
@@ -3294,6 +3297,8 @@ function renderRlogWeekly() {
             </tr>`).join("")
             : `<tr><td colspan="6" class="px-2 py-3 text-center text-gray-400">Không có Rlog kế hoạch tuần tới</td></tr>`;
     }
+    try { applyColumnVisibility("rlogCoded"); } catch (e) {}
+    try { applyColumnVisibility("rlogPlan"); } catch (e) {}
 
     const canvas = document.getElementById("chartRlogWeekly");
     if (canvas && typeof Chart !== "undefined") {
@@ -3835,6 +3840,7 @@ function renderUnassignedSection() {
     }).join("");
 
     renderPager("unassignedShowMoreWrap", "unassigned", items.length, () => renderUnassignedSection());
+    try { applyColumnVisibility("unassigned"); } catch (e) {}
     document.getElementById("unassignedCount").textContent =
         `Đang xem ${start + 1}–${end}/${total} task chưa có PIC`;
 }
@@ -4200,6 +4206,7 @@ function renderStalledTable(selectedOverride) {
     }).join("");
 
     renderPager("stalledShowMoreWrap", "stalled", items.length, () => renderStalledTable(selected));
+    try { applyColumnVisibility("stalled"); } catch (e) {}
     const cnt = document.getElementById("stalledCount");
     if (cnt) {
         const totalAll = metricsData?.stalled_tasks?.items_total
@@ -13197,6 +13204,7 @@ function _dqRenderTable() {
             ✅ Không có issue nào phù hợp filter. Dữ liệu clean!
         </td></tr>`;
         const pager = document.getElementById("dqPagerWrap");
+    try { applyColumnVisibility("dq"); } catch (e) {}
         if (pager) pager.innerHTML = "";
         return;
     }
@@ -18253,3 +18261,175 @@ async function exportForecastGantt() {
     await downloadFile("/api/forecast-gantt/export?" + params.toString(), "Forecast_Gantt.xlsx");
 }
 window.exportForecastGantt = exportForecastGantt;
+
+// ========================================================================
+// COLUMN PICKER — ẩn/hiện cột bảng, localStorage per table id
+// Không ảnh hưởng export (server-side vẫn đủ cột).
+// Mount: <div data-col-picker="overdue" data-col-table="#section-overdue table">
+// Header th cần data-col="code"; data-col-locked="1" = luôn hiện.
+// ========================================================================
+const COL_PICKER_STORAGE_KEY = "ihrp_table_cols_v1";
+const _colPickerMounted = new Set();
+
+function _colPickerLoadAll() {
+    try {
+        return JSON.parse(localStorage.getItem(COL_PICKER_STORAGE_KEY) || "{}") || {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function _colPickerSave(tableId, hidden) {
+    const all = _colPickerLoadAll();
+    all[tableId] = Array.isArray(hidden) ? hidden : [];
+    try {
+        localStorage.setItem(COL_PICKER_STORAGE_KEY, JSON.stringify(all));
+    } catch (e) { /* localStorage disabled */ }
+}
+
+function _colPickerHidden(tableId) {
+    const all = _colPickerLoadAll();
+    return Array.isArray(all[tableId]) ? all[tableId] : [];
+}
+
+function _resolveColTable(host) {
+    const sel = host.getAttribute("data-col-table");
+    if (!sel) return null;
+    let el = document.querySelector(sel);
+    if (!el) return null;
+    if (el.tagName === "TABLE") return el;
+    return el.closest("table");
+}
+
+function applyColumnVisibility(tableId, tableEl) {
+    if (!tableEl) {
+        const host = document.querySelector(`[data-col-picker="${tableId}"]`);
+        if (host) tableEl = _resolveColTable(host);
+    }
+    if (!tableEl) return;
+    const hidden = new Set(_colPickerHidden(tableId));
+    const ths = tableEl.querySelectorAll("thead th");
+    const colIndex = [];
+    ths.forEach((th, i) => {
+        const col = th.getAttribute("data-col");
+        if (!col) {
+            colIndex.push(null);
+            return;
+        }
+        colIndex.push(col);
+        const locked = th.getAttribute("data-col-locked") === "1";
+        const hide = !locked && hidden.has(col);
+        th.classList.toggle("col-picker-hidden", hide);
+        th.style.display = hide ? "none" : "";
+    });
+    tableEl.querySelectorAll("tbody tr").forEach(tr => {
+        Array.from(tr.children).forEach((td, i) => {
+            const col = colIndex[i];
+            if (!col) return;
+            const th = ths[i];
+            const locked = th && th.getAttribute("data-col-locked") === "1";
+            const hide = !locked && hidden.has(col);
+            td.classList.toggle("col-picker-hidden", hide);
+            td.style.display = hide ? "none" : "";
+        });
+    });
+}
+window.applyColumnVisibility = applyColumnVisibility;
+
+function _colPickerRebuildPanel(host, tableId, tableEl) {
+    const panel = host.querySelector(".col-picker-panel");
+    if (!panel) return;
+    const hidden = new Set(_colPickerHidden(tableId));
+    const ths = tableEl.querySelectorAll("thead th[data-col]");
+    const items = [];
+    ths.forEach(th => {
+        const col = th.getAttribute("data-col");
+        const locked = th.getAttribute("data-col-locked") === "1";
+        if (locked) return;
+        let label = (th.textContent || col).trim();
+        if (!label || label === "👁") label = col;
+        const checked = !hidden.has(col);
+        items.push(
+            `<label class="col-picker-item">`
+            + `<input type="checkbox" data-col-toggle="${escapeHtml(col)}" ${checked ? "checked" : ""}>`
+            + `<span>${escapeHtml(label)}</span></label>`
+        );
+    });
+    panel.innerHTML = items.length
+        ? items.join("") + `<button type="button" class="col-picker-reset">↺ Mặc định</button>`
+        : `<div class="text-xs text-gray-500 px-2 py-1">Không có cột tuỳ chọn</div>`;
+
+    panel.querySelectorAll("input[data-col-toggle]").forEach(inp => {
+        inp.addEventListener("change", () => {
+            const next = [];
+            panel.querySelectorAll("input[data-col-toggle]").forEach(x => {
+                if (!x.checked) next.push(x.getAttribute("data-col-toggle"));
+            });
+            _colPickerSave(tableId, next);
+            applyColumnVisibility(tableId, tableEl);
+        });
+    });
+    const reset = panel.querySelector(".col-picker-reset");
+    if (reset) {
+        reset.addEventListener("click", () => {
+            _colPickerSave(tableId, []);
+            _colPickerRebuildPanel(host, tableId, tableEl);
+            applyColumnVisibility(tableId, tableEl);
+        });
+    }
+}
+
+function mountColumnPicker(host) {
+    if (!host || host.dataset.colPickerReady === "1") return;
+    const tableId = host.getAttribute("data-col-picker");
+    if (!tableId) return;
+    const tableEl = _resolveColTable(host);
+    if (!tableEl) return;
+
+    host.dataset.colPickerReady = "1";
+    host.classList.add("col-picker");
+    host.innerHTML =
+        `<button type="button" class="col-picker-btn" title="Ẩn/hiện cột" aria-haspopup="true">Cột ▾</button>`
+        + `<div class="col-picker-panel hidden" role="menu"></div>`;
+
+    const btn = host.querySelector(".col-picker-btn");
+    const panel = host.querySelector(".col-picker-panel");
+    btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        document.querySelectorAll(".col-picker-panel").forEach(p => {
+            if (p !== panel) p.classList.add("hidden");
+        });
+        const opening = panel.classList.contains("hidden");
+        if (opening) {
+            _colPickerRebuildPanel(host, tableId, tableEl);
+            panel.classList.remove("hidden");
+        } else {
+            panel.classList.add("hidden");
+        }
+    });
+    applyColumnVisibility(tableId, tableEl);
+    _colPickerMounted.add(tableId);
+}
+
+function initAllColumnPickers() {
+    document.querySelectorAll("[data-col-picker]").forEach(host => {
+        try { mountColumnPicker(host); } catch (e) {
+            console.warn("[col-picker]", e);
+        }
+    });
+}
+window.initAllColumnPickers = initAllColumnPickers;
+
+document.addEventListener("click", (e) => {
+    if (e.target.closest && e.target.closest(".col-picker")) return;
+    document.querySelectorAll(".col-picker-panel").forEach(p => p.classList.add("hidden"));
+});
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+        try { initAllColumnPickers(); } catch (e) {}
+    });
+} else {
+    try { initAllColumnPickers(); } catch (e) {}
+}
+

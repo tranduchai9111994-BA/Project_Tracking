@@ -2329,3 +2329,31 @@ html.dark .fg-gantt-ruler { background: #1e293b; }
 html.dark .fg-gantt-label { border-color: #334155; }
 html.dark .fg-gantt-ruler, html.dark .fg-gantt-row { border-color: #334155; }
 html.dark .fg-gantt-tick { color: #94a3b8; }
+
+/* ---- Column picker ---- */
+.col-picker { position: relative; display: inline-block; }
+.col-picker-btn {
+  font-size: 0.75rem; padding: 0.25rem 0.55rem; border: 1px solid #cbd5e1;
+  border-radius: 0.375rem; background: #fff; color: #334155; cursor: pointer;
+}
+.col-picker-btn:hover { background: #f8fafc; }
+.col-picker-panel {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 40;
+  min-width: 180px; max-height: 280px; overflow-y: auto;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 0.5rem;
+  box-shadow: 0 8px 24px rgba(15,23,42,.15); padding: 0.4rem;
+}
+.col-picker-item {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.3rem 0.4rem; font-size: 0.75rem; cursor: pointer; border-radius: 0.25rem;
+}
+.col-picker-item:hover { background: #f1f5f9; }
+.col-picker-reset {
+  display: block; width: 100%; margin-top: 0.35rem; padding: 0.3rem;
+  font-size: 0.7rem; border: none; background: #f8fafc; color: #64748b;
+  border-top: 1px solid #e2e8f0; cursor: pointer;
+}
+html.dark .col-picker-btn { background: #1e293b; color: #e2e8f0; border-color: #475569; }
+html.dark .col-picker-panel { background: #1e293b; border-color: #475569; color: #e2e8f0; }
+html.dark .col-picker-item:hover { background: #334155; }
+th.col-picker-hidden, td.col-picker-hidden { display: none !important; }

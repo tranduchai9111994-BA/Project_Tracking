@@ -2471,16 +2471,17 @@
                     <div>
                         <h4 class="text-sm font-semibold text-emerald-800 mb-2 flex items-center gap-2 flex-wrap">
                             ✅ Rlog coded tuần này <span id="rlogCodedLabel" class="font-normal text-gray-500"></span>
-</h4>
+                            <span data-col-picker="rlogCoded" data-col-table="#rlogCodedBody" class="no-print"></span>
+                        </h4>
                         <div class="overflow-x-auto max-h-72 overflow-y-auto border rounded">
                             <table class="w-full text-xs">
                                 <thead class="bg-emerald-700 text-white sticky top-0">
                                     <tr>
-                                        <th class="px-2 py-1.5 text-left">Mã CN</th>
-                                        <th class="px-2 py-1.5 text-left">RlogID</th>
-                                        <th class="px-2 py-1.5 text-left">Module</th>
-                                        <th class="px-2 py-1.5 text-left">PIC</th>
-                                        <th class="px-2 py-1.5 text-left">Closed</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="code">Mã CN</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="rlog">RlogID</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="module">Module</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="pic">PIC</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="closed">Closed</th>
                                     </tr>
                                 </thead>
                                 <tbody id="rlogCodedBody"></tbody>
@@ -2490,17 +2491,18 @@
                     <div>
                         <h4 class="text-sm font-semibold text-sky-800 mb-2 flex items-center gap-2 flex-wrap">
                             📅 Kế hoạch code tuần tới <span id="rlogPlanLabel" class="font-normal text-gray-500"></span>
-</h4>
+                            <span data-col-picker="rlogPlan" data-col-table="#rlogPlanBody" class="no-print"></span>
+                        </h4>
                         <div class="overflow-x-auto max-h-72 overflow-y-auto border rounded">
                             <table class="w-full text-xs">
                                 <thead class="bg-sky-700 text-white sticky top-0">
                                     <tr>
-                                        <th class="px-2 py-1.5 text-left">Mã CN</th>
-                                        <th class="px-2 py-1.5 text-left">RlogID</th>
-                                        <th class="px-2 py-1.5 text-left">Module</th>
-                                        <th class="px-2 py-1.5 text-left">PIC</th>
-                                        <th class="px-2 py-1.5 text-left">Deadline</th>
-                                        <th class="px-2 py-1.5 text-left">Status</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="code">Mã CN</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="rlog">RlogID</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="module">Module</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="pic">PIC</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="deadline">Deadline</th>
+                                        <th class="px-2 py-1.5 text-left" data-col="status">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody id="rlogPlanBody"></tbody>
@@ -2708,7 +2710,8 @@
                         <option value="">Tất cả PIC</option>
                     </select>
                     <div id="filterPhaseMS" class="text-sm min-w-[150px]"></div>
-<button id="btnExport" onclick="openExportModePicker(event, '', exportOverdue)"
+                    <div data-col-picker="overdue" data-col-table="#section-overdue table"></div>
+                    <button id="btnExport" onclick="openExportModePicker(event, '', exportOverdue)"
                             class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm"
                             data-i18n="btn.export_excel">
                         📥 Xuất Excel
@@ -2719,17 +2722,17 @@
                     <table class="w-full text-sm">
                         <thead>
                         <tr class="bg-red-800 text-white">
-                            <th class="px-2 py-2">#</th>
-                            <th class="px-2 py-2 text-left" data-i18n="th.code">Mã CN</th>
-                            <th class="px-2 py-2 text-left" data-i18n="th.name">Tên chức năng</th>
-                            <th class="px-2 py-2" data-i18n="th.module">Module</th>
-                            <th class="px-2 py-2" data-i18n="th.phase">Phase</th>
-                            <th class="px-2 py-2" data-i18n="th.deadline">Deadline</th>
-                            <th class="px-2 py-2" data-i18n="th.days_late">Ngày trễ</th>
-                            <th class="px-2 py-2" data-i18n="th.status">Status</th>
-                            <th class="px-2 py-2 text-left" data-i18n="th.pic">PIC</th>
-                            <th class="px-2 py-2" data-i18n="th.priority">Priority</th>
-                            <th class="px-2 py-2" title="Xem chi tiết">👁</th>
+                            <th class="px-2 py-2" data-col="idx" data-col-locked="1">#</th>
+                            <th class="px-2 py-2 text-left" data-col="code" data-i18n="th.code">Mã CN</th>
+                            <th class="px-2 py-2 text-left" data-col="name" data-i18n="th.name">Tên chức năng</th>
+                            <th class="px-2 py-2" data-col="module" data-i18n="th.module">Module</th>
+                            <th class="px-2 py-2" data-col="phase" data-i18n="th.phase">Phase</th>
+                            <th class="px-2 py-2" data-col="deadline" data-i18n="th.deadline">Deadline</th>
+                            <th class="px-2 py-2" data-col="days" data-i18n="th.days_late">Ngày trễ</th>
+                            <th class="px-2 py-2" data-col="status" data-i18n="th.status">Status</th>
+                            <th class="px-2 py-2 text-left" data-col="pic" data-i18n="th.pic">PIC</th>
+                            <th class="px-2 py-2" data-col="priority" data-i18n="th.priority">Priority</th>
+                            <th class="px-2 py-2" data-col="view" data-col-locked="1" title="Xem chi tiết">👁</th>
                             </tr>
                         </thead>
                     <tbody id="overdueTable"></tbody>
@@ -2748,7 +2751,8 @@
                     <p class="text-xs text-gray-500 mt-0.5">Chỉ báo thiếu PIC khi đã tới Start + phase liền trước Closed (không có Start: End đã đến hoặc đang Open/Assigned/In-progress).</p>
                 </div>
                 <div class="flex items-center gap-2">
-<button onclick="openDrillDown('unassigned', {})" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1 no-print">Chi tiết</button>
+                    <div data-col-picker="unassigned" data-col-table="#section-unassigned table"></div>
+                    <button onclick="openDrillDown('unassigned', {})" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1 no-print">Chi tiết</button>
                     <button onclick="openExportModePicker(event, 'unassigned')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
             </div>
@@ -2756,17 +2760,17 @@
                 <table class="w-full text-sm">
                     <thead>
                         <tr class="bg-orange-700 text-white">
-                            <th class="px-2 py-2">#</th>
-                            <th class="px-2 py-2 text-left">Mã CN</th>
-                            <th class="px-2 py-2 text-left">Rlog ID</th>
-                            <th class="px-2 py-2 text-left">Tên chức năng</th>
-                            <th class="px-2 py-2">Module</th>
-                            <th class="px-2 py-2">Phase</th>
-                            <th class="px-2 py-2">Status</th>
-                            <th class="px-2 py-2">Priority</th>
-                            <th class="px-2 py-2">Deadline</th>
-                            <th class="px-2 py-2">Trễ</th>
-                            <th class="px-2 py-2" title="Xem chi tiết">👁</th>
+                            <th class="px-2 py-2" data-col="idx" data-col-locked="1">#</th>
+                            <th class="px-2 py-2 text-left" data-col="code">Mã CN</th>
+                            <th class="px-2 py-2 text-left" data-col="rlog">Rlog ID</th>
+                            <th class="px-2 py-2 text-left" data-col="name">Tên chức năng</th>
+                            <th class="px-2 py-2" data-col="module">Module</th>
+                            <th class="px-2 py-2" data-col="phase">Phase</th>
+                            <th class="px-2 py-2" data-col="status">Status</th>
+                            <th class="px-2 py-2" data-col="priority">Priority</th>
+                            <th class="px-2 py-2" data-col="deadline">Deadline</th>
+                            <th class="px-2 py-2" data-col="late">Trễ</th>
+                            <th class="px-2 py-2" data-col="view" data-col-locked="1" title="Xem chi tiết">👁</th>
                         </tr>
                     </thead>
                     <tbody id="unassignedTable"></tbody>
@@ -2787,7 +2791,8 @@
                 <div class="flex items-center gap-2 flex-wrap no-print">
                     <!-- Local Module multi-select (giống Overdue / Data Quality) -->
                     <div id="stalledModuleMS" class="text-sm min-w-[150px]"></div>
-<button onclick="openStalledDrillDown()" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1">Chi tiết</button>
+                    <div data-col-picker="stalled" data-col-table="#section-stalled table"></div>
+                    <button onclick="openStalledDrillDown()" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1">Chi tiết</button>
                     <button onclick="openExportModePicker(event, '', exportStalled)"
                             class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm"
                             title="Xuất Excel theo filter Module (+ global filter)">
@@ -2811,16 +2816,16 @@
                 <table class="w-full text-sm">
                     <thead>
                         <tr class="bg-slate-700 text-white">
-                            <th class="px-2 py-2">#</th>
-                            <th class="px-2 py-2 text-left">Mã CN</th>
-                            <th class="px-2 py-2 text-left">Tên CN</th>
-                            <th class="px-2 py-2">Module</th>
-                            <th class="px-2 py-2">Phase đã xong</th>
-                            <th class="px-2 py-2">Phase chờ</th>
-                            <th class="px-2 py-2">Xong ngày</th>
-                            <th class="px-2 py-2">Chờ (ngày)</th>
-                            <th class="px-2 py-2">Priority</th>
-                            <th class="px-2 py-2" title="Xem chi tiết">👁</th>
+                            <th class="px-2 py-2" data-col="idx" data-col-locked="1">#</th>
+                            <th class="px-2 py-2 text-left" data-col="code">Mã CN</th>
+                            <th class="px-2 py-2 text-left" data-col="name">Tên CN</th>
+                            <th class="px-2 py-2" data-col="module">Module</th>
+                            <th class="px-2 py-2" data-col="done_phase">Phase đã xong</th>
+                            <th class="px-2 py-2" data-col="wait_phase">Phase chờ</th>
+                            <th class="px-2 py-2" data-col="done_date">Xong ngày</th>
+                            <th class="px-2 py-2" data-col="wait_days">Chờ (ngày)</th>
+                            <th class="px-2 py-2" data-col="priority">Priority</th>
+                            <th class="px-2 py-2" data-col="view" data-col-locked="1" title="Xem chi tiết">👁</th>
                         </tr>
                     </thead>
                         <tbody id="stalledTable"></tbody>
@@ -2968,7 +2973,8 @@
                     <select id="dqCodeFilter" class="text-sm border rounded px-2 py-1">
                         <option value="all">Tất cả loại</option>
                     </select>
-<button onclick="exportDataQuality()"
+                    <div data-col-picker="dq" data-col-table="#section-dataquality table"></div>
+                    <button onclick="exportDataQuality()"
                             class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
                         📥 Xuất Excel
                     </button>
@@ -2983,14 +2989,14 @@
                 <table class="w-full text-sm">
                     <thead class="bg-gray-100 text-gray-700">
                         <tr>
-                            <th class="px-2 py-2 text-left">Row</th>
-                            <th class="px-2 py-2 text-left">Mã CN</th>
-                            <th class="px-2 py-2 text-left">Tên chức năng</th>
-                            <th class="px-2 py-2 text-left">Module</th>
-                            <th class="px-2 py-2 text-left">Phase</th>
-                            <th class="px-2 py-2 text-left">Issue</th>
-                            <th class="px-2 py-2 text-left">Chi tiết</th>
-                            <th class="px-2 py-2 text-left">Gợi ý</th>
+                            <th class="px-2 py-2 text-left" data-col="row">Row</th>
+                            <th class="px-2 py-2 text-left" data-col="code">Mã CN</th>
+                            <th class="px-2 py-2 text-left" data-col="name">Tên chức năng</th>
+                            <th class="px-2 py-2 text-left" data-col="module">Module</th>
+                            <th class="px-2 py-2 text-left" data-col="phase">Phase</th>
+                            <th class="px-2 py-2 text-left" data-col="issue">Issue</th>
+                            <th class="px-2 py-2 text-left" data-col="detail">Chi tiết</th>
+                            <th class="px-2 py-2 text-left" data-col="hint">Gợi ý</th>
                         </tr>
                     </thead>
                     <tbody id="dqTable"></tbody>
