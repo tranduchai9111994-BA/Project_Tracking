@@ -259,7 +259,7 @@ Chi tiết schema JSON → [`DATA_MODEL.md`](DATA_MODEL.md).
 |--------|--------|
 | **`.env` credentials** | Username/password/token/API key theo prefix integration. Không lưu trong `integrations.json`. |
 | **Admin localhost-only** | `lan_security.install_admin_guard`: POST/PUT/DELETE `/api/*` (trừ export) chỉ từ `127.0.0.1` / `::1` (hoặc `IHRP_LAN_ADMIN_ALLOW`). |
-| **LAN bind** | Mặc định `0.0.0.0:5000`; `IHRP_BIND_LOCAL_ONLY=1` → chỉ localhost. LAN client: GET dashboard + export. |
+| **LAN bind** | Mặc định `127.0.0.1:5000` (solo-safe). Mở LAN: `IHRP_LAN=1` hoặc `IHRP_BIND_LOCAL_ONLY=0` → `0.0.0.0`. Helper: `lan_security.resolve_bind_host`. |
 | **Public API tokens** | `pub_<40 hex>`, lưu SHA-256; scope ACL; rate limit 60 req/60s/token; CORS GET. |
 | **verify_ssl** | Per-integration `auth.verify_ssl` (default `true`). Tắt chỉ khi cert nội bộ thiếu CA. |
 | **Access log** | `.project_store/access.log` — LAN + admin deny events. |

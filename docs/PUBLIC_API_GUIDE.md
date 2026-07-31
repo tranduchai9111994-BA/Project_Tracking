@@ -3,6 +3,8 @@
 > **Mục đích:** cho phép PM/BA/khách hàng nhúng biểu đồ hoặc lấy dữ liệu iHRP
 > Tracker từ bên ngoài (Confluence, Word, email, portal riêng, dashboard 3rd-party)
 > mà **không cần đăng nhập app chính**.
+>
+> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Có 3 kiểu tiêu thụ:
 
@@ -12,15 +14,19 @@ Có 3 kiểu tiêu thụ:
 | **iframe** | `/embed/<slug>/<chart_id>?token=...` | HTML chart (Chart.js) | Confluence / Notion / trang web / Wordpress |
 | **PNG snapshot** | `/public/api/v1/projects/<slug>/charts/<chart_id>/image?...` | Ảnh PNG | Word document / email / báo cáo tĩnh |
 
-> Task 2A (bản này) mới ship **REST** + **Token CRUD**. Iframe + PNG snapshot
-> ship trong Task 2B (Playwright), tab UI ship trong Task 2C.
+> **Đã ship đủ Task 2A + 2B + 2C:** REST + token CRUD + rate limit; iframe +
+> PNG (Playwright optional); tab **🌐 Public API** trong ⚙️ Cài đặt (tạo token,
+> copy snippet REST/iframe/PNG).
 
 ---
 
 ## 1. Cấp phát token
 
 ### Bước 1 — Tạo token
-UI (Task 2C) sẽ có form; hiện dev có thể dùng `curl`:
+
+**Khuyến nghị:** ⚙️ Cài đặt → tab **🌐 Public API** → tạo token + copy snippet.
+
+Hoặc `curl`:
 
 ```bash
 curl -X POST http://localhost:5000/api/projects/<slug>/public-tokens \
@@ -104,16 +110,18 @@ privilege.
 
 Gửi token theo 1 trong 2 cách:
 
-**Header (khuyến nghị cho backend script):**
+**Header (khuyến nghị — ưu tiên dùng):**
 ```
 X-API-Key: pub_a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
 ```
 
-**Query param (bắt buộc cho iframe / img):**
+**Query param (chỉ khi bắt buộc — iframe / `<img>`):**
 ```
 ?token=pub_a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
 ```
 
+> Tip: ưu tiên header `X-API-Key`; tránh share / log URL có `?token=` (browser
+> history, proxy access log, screenshot chat).
 Server verify:
 1. Token đúng format (bắt đầu `pub_`).
 2. SHA-256 hash khớp với 1 entry trong `.project_store/<slug>/public_tokens.json`.

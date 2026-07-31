@@ -1,5 +1,7 @@
 # LAN Deploy Guide — Chia sẻ dashboard trong công ty
 
+> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md) mục Auth & security.
+
 **T34 Task 2** — App được thiết kế cho mô hình "1 máy chủ, nhiều máy view":
 - Máy của bạn = server (chạy `start.bat`).
 - Đồng nghiệp cùng LAN mở URL LAN → xem dashboard read-only.
@@ -10,19 +12,39 @@
 
 ## 1. Kiểm tra nhanh (5 phút setup)
 
-### Bước 1 — Khởi động server
+### Bước 1 — Khởi động server (mặc định LOCAL-ONLY)
 
-Chạy `start.bat`. Console sẽ in:
+Chạy `start.bat`. **Mặc định bind `127.0.0.1`** — chỉ máy bạn truy cập được
+(an toàn cho solo). Console:
 
 ```
 ============================================================
   Server: http://localhost:5000
-  LAN URL: http://192.168.1.5:5000  (đồng nghiệp cùng LAN dùng URL này)
-  ADMIN MUTATIONS (upload, config) chỉ mở từ http://localhost:5000
+  Bind: 127.0.0.1 (LOCAL-ONLY, mac dinh) — LAN khong truy cap.
+  Mo LAN: set IHRP_LAN=1  (hoac IHRP_BIND_LOCAL_ONLY=0) roi chay lai.
 ============================================================
 ```
 
-### Bước 2 — Cấu hình Firewall Windows (1 lần duy nhất)
+### Bước 1b — Mở LAN (khi cần chia sẻ trong công ty)
+
+```bat
+set IHRP_LAN=1
+start.bat
+```
+
+(hoặc `set IHRP_BIND_LOCAL_ONLY=0`). Console sẽ in LAN URL + cảnh báo:
+
+```
+============================================================
+  Server: http://localhost:5000
+  Bind: 0.0.0.0 (LAN mode)
+  LAN URL: http://192.168.1.5:5000  (đồng nghiệp cùng LAN dùng URL này)
+  ADMIN MUTATIONS (upload, config) chỉ mở từ http://localhost:5000
+  [CANH BAO] Dashboard GET mo tren LAN — KHONG dung WiFi cong cong.
+============================================================
+```
+
+### Bước 2 — Cấu hình Firewall Windows (1 lần duy nhất, chỉ khi đã mở LAN)
 
 Mặc định Windows Firewall block port 5000 từ máy khác. Chạy PowerShell
 **as Administrator**:
@@ -55,10 +77,18 @@ Nếu:
 
 ### Layer 1 — Bind interface
 
-`app.py::app.run(host="0.0.0.0")` — mặc định bind mọi interface (LAN + localhost).
-Muốn local-only (không cho ai truy cập):
-- Đặt biến môi trường `set IHRP_BIND_LOCAL_ONLY=1` trước khi chạy `start.bat`
-- HOẶC sửa `app.py` dòng `host="0.0.0.0"` thành `host="127.0.0.1"`.
+**Mặc định `127.0.0.1`** (solo-safe). App đọc ENV qua
+`analyzer.lan_security.resolve_bind_host()`:
+
+| ENV | Host |
+|-----|------|
+| (không set) | `127.0.0.1` |
+| `IHRP_BIND_LOCAL_ONLY=1` | `127.0.0.1` (thắng cả `IHRP_LAN`) |
+| `IHRP_BIND_LOCAL_ONLY=0` | `0.0.0.0` |
+| `IHRP_LAN=1` | `0.0.0.0` |
+
+Khi bind `0.0.0.0`, console in cảnh báo tiếng Việt: GET dashboard mở trên
+LAN — không dùng WiFi công cộng.
 
 ### Layer 2 — Admin guard middleware (`@localhost_only`)
 
@@ -122,11 +152,12 @@ Confluence, email), dùng Public API token (`/public/api/v1/*`) — xem
 
 | Biến | Giá trị | Ý nghĩa |
 |------|---------|---------|
-| `IHRP_LAN_ADMIN_ALLOW` | `192.168.1.10,10.0.0.5` | Cho phép admin từ IP cụ thể (VD máy của PM) ngoài localhost. Comma-separated. |
-| `IHRP_DISABLE_ADMIN_GUARD` | `1` | Tắt admin guard hoàn toàn (KHÔNG khuyến khích — chỉ debug). |
+| `IHRP_LAN` | `1` | **Mở LAN** — bind `0.0.0.0:5000` (đồng nghiệp cùng mạng xem được). |
+| `IHRP_BIND_LOCAL_ONLY` | `1` (mặc định hành vi) / `0` | `1` → luôn `127.0.0.1`. `0` → mở LAN. Không set = localhost. |
+| `IHRP_LAN_ADMIN_ALLOW` | `192.168.1.10,10.0.0.5` | Whitelist IP cụ thể được admin ngoài localhost. **Không dùng `*` / subnet.** Mặc định rỗng. |
+| `IHRP_DISABLE_ADMIN_GUARD` | `1` | Tắt admin guard hoàn toàn. **NGUY HIỂM trên LAN — chỉ debug local.** Mặc định không set (guard BẬT). |
 | `IHRP_DISABLE_ACCESS_LOG` | `1` | Tắt access log (tiết kiệm disk). |
 | `IHRP_ACCESS_LOG` | absolute path | Custom path cho log (default `.project_store/access.log`). |
-| `IHRP_BIND_LOCAL_ONLY` | `1` | (script `start.bat` reader) — không in URL LAN. |
 
 ---
 
@@ -145,11 +176,12 @@ mkcert 192.168.1.5 localhost 127.0.0.1
 # → sinh 2 file: 192.168.1.5+2.pem + 192.168.1.5+2-key.pem
 ```
 
-Sửa `app.py::app.run(...)` thành:
+Sửa `app.py::app.run(...)` (khi đã `IHRP_LAN=1`) thêm `ssl_context`:
 
 ```python
+# host vẫn do resolve_bind_host() quyết định (0.0.0.0 khi IHRP_LAN=1)
 app.run(
-    host="0.0.0.0",
+    host=bind_host,
     port=5000,
     ssl_context=("192.168.1.5+2.pem", "192.168.1.5+2-key.pem"),
 )
@@ -178,10 +210,11 @@ Sau khi setup, gửi các URL này cho từng nhóm dùng:
 ### "Không truy cập được từ máy khác dù cùng LAN"
 
 Check theo thứ tự:
-1. `netstat -an | findstr :5000` — verify server đang LISTEN trên `0.0.0.0:5000`.
-2. `ping <IP_may_chu>` từ máy client — verify network reachable.
-3. Firewall Windows máy chủ — chạy lệnh section 1.2 hoặc tạm tắt firewall để test.
-4. Router/switch có isolate client không? (VD Guest WiFi thường block LAN-to-LAN).
+1. Đã bật LAN chưa? Cần `set IHRP_LAN=1` (hoặc `IHRP_BIND_LOCAL_ONLY=0`) rồi restart — mặc định chỉ listen `127.0.0.1`.
+2. `netstat -an | findstr :5000` — verify server đang LISTEN trên `0.0.0.0:5000` (không phải `127.0.0.1:5000`).
+3. `ping <IP_may_chu>` từ máy client — verify network reachable.
+4. Firewall Windows máy chủ — chạy lệnh section 1 bước 2 hoặc tạm tắt firewall để test.
+5. Router/switch có isolate client không? (VD Guest WiFi thường block LAN-to-LAN).
 
 ### "Máy chủ mất kết nối liên tục"
 

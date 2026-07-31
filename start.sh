@@ -25,11 +25,29 @@ pip install -r requirements.txt -q
 # Tạo thư mục uploads
 mkdir -p uploads
 
+# Bind: mặc định 127.0.0.1. Mở LAN: export IHRP_LAN=1 (hoặc IHRP_BIND_LOCAL_ONLY=0)
+BIND_HOST="127.0.0.1"
+case "${IHRP_BIND_LOCAL_ONLY:-}" in
+  0|false|no|off) BIND_HOST="0.0.0.0" ;;
+  1|true|yes|on)  BIND_HOST="127.0.0.1" ;;
+  *)
+    case "${IHRP_LAN:-}" in
+      1|true|yes|on) BIND_HOST="0.0.0.0" ;;
+    esac
+    ;;
+esac
+
 # Chạy app
 echo "[3/3] Đang khởi động server..."
 echo ""
 echo "============================================"
+echo "  Listen: ${BIND_HOST}:5000"
 echo "  Mở trình duyệt tại: http://localhost:5000"
+if [ "$BIND_HOST" = "0.0.0.0" ]; then
+  echo "  [CẢNH BÁO] Bind LAN — không dùng WiFi công cộng."
+else
+  echo "  LOCAL-ONLY (mặc định). Mở LAN: export IHRP_LAN=1"
+fi
 echo "  Nhấn Ctrl+C để dừng server"
 echo "============================================"
 echo ""

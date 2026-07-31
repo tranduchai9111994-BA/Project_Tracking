@@ -25,6 +25,42 @@ from analyzer import lan_security as ls
 
 
 # ==========================================================================
+# Unit — resolve_bind_host (solo-safe default)
+# ==========================================================================
+
+class TestResolveBindHost:
+    def test_default_localhost(self):
+        assert ls.resolve_bind_host({}) == "127.0.0.1"
+
+    def test_bind_local_only_explicit_on(self):
+        assert ls.resolve_bind_host({"IHRP_BIND_LOCAL_ONLY": "1"}) == "127.0.0.1"
+        assert ls.resolve_bind_host({"IHRP_BIND_LOCAL_ONLY": "true"}) == "127.0.0.1"
+
+    def test_bind_local_only_explicit_off_opens_lan(self):
+        assert ls.resolve_bind_host({"IHRP_BIND_LOCAL_ONLY": "0"}) == "0.0.0.0"
+        assert ls.resolve_bind_host({"IHRP_BIND_LOCAL_ONLY": "false"}) == "0.0.0.0"
+
+    def test_ihrp_lan_opens_lan(self):
+        assert ls.resolve_bind_host({"IHRP_LAN": "1"}) == "0.0.0.0"
+        assert ls.resolve_bind_host({"IHRP_LAN": "yes"}) == "0.0.0.0"
+
+    def test_bind_local_only_wins_over_lan(self):
+        """IHRP_BIND_LOCAL_ONLY=1 luôn thắng IHRP_LAN=1."""
+        assert ls.resolve_bind_host({
+            "IHRP_LAN": "1",
+            "IHRP_BIND_LOCAL_ONLY": "1",
+        }) == "127.0.0.1"
+
+    def test_lan_with_bind_unset(self):
+        assert ls.resolve_bind_host({"IHRP_LAN": "1", "IHRP_BIND_LOCAL_ONLY": ""}) == "0.0.0.0"
+
+    def test_whitespace_and_case(self, monkeypatch):
+        monkeypatch.setenv("IHRP_LAN", "  ON  ")
+        monkeypatch.delenv("IHRP_BIND_LOCAL_ONLY", raising=False)
+        assert ls.resolve_bind_host() == "0.0.0.0"
+
+
+# ==========================================================================
 # Unit — is_localhost_request
 # ==========================================================================
 

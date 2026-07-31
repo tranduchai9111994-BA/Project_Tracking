@@ -44,11 +44,41 @@ from flask import Flask, g, jsonify, request
 
 _LOCALHOST_IPS = {"127.0.0.1", "::1", "localhost"}
 
+_ENV_TRUTHY = {"1", "true", "yes", "on"}
+_ENV_FALSY = {"0", "false", "no", "off"}
+
+
+def resolve_bind_host(environ: Optional[dict] = None) -> str:
+    """
+    Quyết định host bind cho Flask (solo-safe by default).
+
+    Convention:
+      - Mặc định → ``127.0.0.1`` (chỉ máy local).
+      - Mở LAN ``0.0.0.0`` khi ``IHRP_BIND_LOCAL_ONLY=0`` hoặc ``IHRP_LAN=1``.
+      - ``IHRP_BIND_LOCAL_ONLY=1`` luôn thắng (localhost), kể cả khi ``IHRP_LAN=1``.
+
+    Không đọc từ file — chỉ ENV (để test dễ monkeypatch / truyền dict).
+    """
+    env = environ if environ is not None else os.environ
+    bind_local = (env.get("IHRP_BIND_LOCAL_ONLY") or "").strip().lower()
+    lan = (env.get("IHRP_LAN") or "").strip().lower()
+
+    if bind_local in _ENV_TRUTHY:
+        return "127.0.0.1"
+    if bind_local in _ENV_FALSY:
+        return "0.0.0.0"
+    if lan in _ENV_TRUTHY:
+        return "0.0.0.0"
+    return "127.0.0.1"
+
 
 def _extra_allow_list() -> set[str]:
     """
     ENV `IHRP_LAN_ADMIN_ALLOW="192.168.1.10,192.168.1.20"` — cho phép
     admin từ IP cụ thể ngoài localhost. Rỗng → không mở rộng.
+
+    Cảnh báo: KHÔNG dùng ``*`` / subnet / ``0.0.0.0`` — chỉ IP cụ thể.
+    Mặc định rỗng (không mở rộng admin).
     """
     raw = os.environ.get("IHRP_LAN_ADMIN_ALLOW", "").strip()
     if not raw:

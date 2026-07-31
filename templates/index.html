@@ -876,6 +876,7 @@
                         Cấp token cho bên thứ 3 (partner, khách hàng, Confluence, Word, email) truy cập
                         dashboard read-only qua REST / iframe / PNG. Chi tiết xem
                         <code class="text-[11px] bg-slate-200 dark:bg-slate-600 px-1 rounded">docs/PUBLIC_API_GUIDE.md</code>.
+                        <span class="block mt-1 text-amber-700 dark:text-amber-300">Ưu tiên header <code class="text-[11px]">X-API-Key</code>; tránh share URL có <code class="text-[11px]">?token=</code>.</span>
                     </p>
 
                     <!-- Token list -->
@@ -972,7 +973,9 @@
                         </button>
                     </div>
                     <p class="text-xs text-gray-500 mb-3">
-                        Đồng nghiệp cùng LAN có thể xem dashboard qua URL LAN.
+                        Đồng nghiệp cùng LAN có thể xem dashboard qua URL LAN
+                        <strong>sau khi</strong> bật <code class="text-[11px] bg-slate-200 dark:bg-slate-600 px-1 rounded">IHRP_LAN=1</code>
+                        (mặc định chỉ localhost).
                         <strong class="text-red-600">Admin (upload, sửa config) chỉ mở từ máy chủ (localhost).</strong>
                         Chi tiết xem <code class="text-[11px] bg-slate-200 dark:bg-slate-600 px-1 rounded">docs/LAN_DEPLOY_GUIDE.md</code>.
                     </p>

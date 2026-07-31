@@ -118,22 +118,29 @@ echo.
 echo ============================================================
 echo   Server: %APP_URL%
 
-REM T34 Task 2 — Auto-detect LAN IP de dong nghiep cung LAN co the truy cap.
-REM Loc IPv4 dau tien (bo IPv6). Neu tim thay -> in cong khai URL LAN.
-REM Neu user muon private mode (chi localhost) -> set IHRP_BIND_LOCAL_ONLY=1
-REM va sua host="0.0.0.0" trong app.py thanh host="127.0.0.1".
-if not defined IHRP_BIND_LOCAL_ONLY (
+REM Bind host: mac dinh LOCAL-ONLY (127.0.0.1) — an toan cho solo.
+REM Mo LAN (0.0.0.0): set IHRP_LAN=1  HOAC  set IHRP_BIND_LOCAL_ONLY=0
+REM IHRP_BIND_LOCAL_ONLY=1 luon thang (localhost), ke ca khi IHRP_LAN=1.
+set BIND_LAN=0
+if /I "%IHRP_LAN%"=="1" set BIND_LAN=1
+if /I "%IHRP_BIND_LOCAL_ONLY%"=="0" set BIND_LAN=1
+if /I "%IHRP_BIND_LOCAL_ONLY%"=="1" set BIND_LAN=0
+
+if "!BIND_LAN!"=="1" (
     for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /R "IPv4"') do (
         for /f "tokens=* delims= " %%b in ("%%a") do (
             if not defined LAN_IP set LAN_IP=%%b
         )
     )
+    echo   Bind: 0.0.0.0 ^(LAN mode^)
     if defined LAN_IP (
         echo   LAN URL: http://!LAN_IP!:%PORT%  ^(dong nghiep cung LAN dung URL nay^)
         echo   ADMIN MUTATIONS ^(upload, config^) chi mo tu http://localhost:%PORT%
     )
+    echo   [CANH BAO] Dashboard GET mo tren LAN — KHONG dung WiFi cong cong.
 ) else (
-    echo   LOCAL-ONLY mode ^(IHRP_BIND_LOCAL_ONLY=1^) — LAN khong truy cap duoc.
+    echo   Bind: 127.0.0.1 ^(LOCAL-ONLY, mac dinh^) — LAN khong truy cap.
+    echo   Mo LAN: set IHRP_LAN=1  ^(hoac IHRP_BIND_LOCAL_ONLY=0^) roi chay lai.
 )
 
 echo   Nhan Ctrl+C de dung server
