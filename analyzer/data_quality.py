@@ -67,7 +67,7 @@ ISSUE_META: dict[str, dict[str, str]] = {
     "phase_overlap": {
         "severity": "medium",
         "label": "Phase overlap ngày",
-        "suggestion": "Điều chỉnh Start/End để 2 phase không chồng lịch (trừ khi cố ý song song).",
+        "suggestion": "Điều chỉnh Start/End để 2 phase không chồng lịch.",
     },
     # U11 — Estimate MH lệch so với duration (ngày làm việc ≈ duration*8h)
     "estimate_vs_duration": {
@@ -77,6 +77,12 @@ ISSUE_META: dict[str, dict[str, str]] = {
     },
 }
 
+# Cặp phase được phép chạy song song trùng ngày — không flag phase_overlap.
+# Key = frozenset 2 tên đã normalize (lowercase, collapse whitespace).
+PARALLEL_PHASE_PAIRS: frozenset[frozenset[str]] = frozenset({
+    frozenset({"config local", "config uat"}),
+})
+
 # Codes được gộp vào card «Bất thường» (đo được, dedupe ma_cn).
 ANOMALY_CODES = frozenset({
     "phase_overlap",
@@ -84,6 +90,17 @@ ANOMALY_CODES = frozenset({
     "end_before_start",
     "duplicate_ma_cn",
 })
+
+
+def _norm_phase_name(name: str) -> str:
+    """Chuẩn hóa tên phase để so khớp linh hoạt (case/whitespace)."""
+    return " ".join(str(name).strip().lower().split())
+
+
+def _is_allowed_parallel(phase_a: str, phase_b: str) -> bool:
+    """True nếu cặp phase nằm trong whitelist song song hợp lệ."""
+    pair = frozenset({_norm_phase_name(phase_a), _norm_phase_name(phase_b)})
+    return pair in PARALLEL_PHASE_PAIRS
 
 
 def _norm_status(s: Any) -> str:
@@ -311,6 +328,9 @@ def compute_data_quality(data: ParsedData) -> dict[str, Any]:
             for j in range(i + 1, len(phase_items)):
                 n1, p1 = phase_items[i]
                 n2, p2 = phase_items[j]
+                # Config Local ↔ Config UAT được phép song song — bỏ qua
+                if _is_allowed_parallel(n1, n2):
+                    continue
                 # Overlap inclusive: start1 <= end2 AND start2 <= end1
                 if p1.start_date <= p2.end_date and p2.start_date <= p1.end_date:
                     issues.append({

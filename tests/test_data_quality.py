@@ -250,6 +250,54 @@ def test_phase_no_overlap_adjacent():
     assert "phase_overlap" not in [i["code"] for i in out["issues"]]
 
 
+def test_phase_overlap_config_local_uat_allowed():
+    """Config Local ↔ Config UAT trùng ngày → không flag (song song hợp lệ)."""
+    r = _mk_row(phases={
+        "Config Local": PhaseData(
+            start_date=date(2026, 7, 12), end_date=date(2026, 7, 12),
+            status="Closed", pics=["A"],
+        ),
+        "Config UAT": PhaseData(
+            start_date=date(2026, 7, 12), end_date=date(2026, 7, 12),
+            status="Closed", pics=["B"],
+        ),
+    })
+    out = compute_data_quality(_mk_data([r]))
+    assert "phase_overlap" not in [i["code"] for i in out["issues"]]
+
+
+def test_phase_overlap_config_local_uat_case_insensitive():
+    """Biến thể case/whitespace của Config Local/UAT cũng được bỏ qua."""
+    r = _mk_row(phases={
+        "config  local": PhaseData(
+            start_date=date(2026, 7, 12), end_date=date(2026, 7, 13),
+            status="In-progress", pics=["A"],
+        ),
+        "CONFIG UAT": PhaseData(
+            start_date=date(2026, 7, 12), end_date=date(2026, 7, 13),
+            status="In-progress", pics=["B"],
+        ),
+    })
+    out = compute_data_quality(_mk_data([r]))
+    assert "phase_overlap" not in [i["code"] for i in out["issues"]]
+
+
+def test_phase_overlap_analysis_dev_still_flagged():
+    """Analysis ↔ Dev chồng ngày → vẫn flag phase_overlap."""
+    r = _mk_row(phases={
+        "Analysis": PhaseData(
+            start_date=date(2026, 1, 1), end_date=date(2026, 1, 20),
+            status="Closed", pics=["A"],
+        ),
+        "Dev": PhaseData(
+            start_date=date(2026, 1, 10), end_date=date(2026, 2, 1),
+            status="In-progress", pics=["B"],
+        ),
+    })
+    out = compute_data_quality(_mk_data([r]))
+    assert "phase_overlap" in [i["code"] for i in out["issues"]]
+
+
 def test_estimate_vs_duration_flagged():
     """Estimate 800 MH trên 2 ngày → ratio > 3x → flag."""
     r = _mk_row(phases={
