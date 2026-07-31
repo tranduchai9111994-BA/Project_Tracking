@@ -1,11 +1,10 @@
 """
 Schema mẫu Function List cho export re-import.
 
-Quyết định cột ghi chú (mẫu DanhSachFunction_2026-07-31.xlsx):
-  - Ưu tiên meta ``Remark`` / ``Ghi chú`` (đã có trong template nguồn).
-  - Không thêm cột ``Ghi chú Tracker`` — nguồn import có thể reject cột lạ.
-  - Phase ``*- Note`` chỉ tô nhẹ khi phase đó dính issue; ghi chú tracker
-    gom vào Remark.
+Schema map cột (mẫu DanhSachFunction):
+  - Meta ``Remark`` / ``Ghi chú`` giữ nguyên từ nguồn — export không ghi note tracker.
+  - Không thêm cột lạ (nguồn import có thể reject).
+  - Highlight: vàng = PIC/Status cần sửa; xanh = date chain auto-fill.
 
 File lưu per-project:
   uploads/projects/<slug>/fl_export_template.xlsx
@@ -81,8 +80,8 @@ def _find_note_column(
     headers: dict[str, int],
 ) -> dict[str, Any]:
     """
-    Chọn cột note tracker — ưu tiên Remark/Ghi chú meta có sẵn.
-    Không tạo cột mới.
+    Phát hiện cột Remark/Ghi chú có sẵn (schema review) — không tạo cột mới.
+    Export re-import không ghi text vào cột này.
     """
     remark_col = meta_columns.get("remark")
     if remark_col:
@@ -113,7 +112,7 @@ def _find_note_column(
         "header": None,
         "col": None,
         "added_column": False,
-        "hint": "Không có cột Remark/Ghi chú — chỉ highlight ô cần sửa, không thêm cột lạ.",
+        "hint": "Không có cột Remark/Ghi chú — export chỉ highlight ô cần sửa, không thêm cột lạ.",
     }
 
 
@@ -338,7 +337,7 @@ def build_review_payload(
         "tip": (
             "Hệ thống đã tự map theo auto-detect. Ô xanh = khớp chắc; "
             "vàng = nên review. Kéo header → slot để sửa. "
-            "Ghi chú tracker ghi vào cột Remark/Ghi chú có sẵn — không thêm cột lạ."
+            "Export re-import chỉ tô màu PIC/Status/date — không ghi note vào Remark."
         ),
     }
 

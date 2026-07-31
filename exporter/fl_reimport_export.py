@@ -4,25 +4,25 @@ Xuất Function List re-import — chỉ các CN dính issue.
 Nguồn issue: overdue / unassigned / stalled / anomalies (+ missing_deadline nếu có).
 Định dạng cột theo schema mẫu (fl_export_schema) hoặc header ParsedData hiện tại.
 
-Highlight:
-  - Vàng: PIC/Status cần sửa; Remark ghi chú tracker
+Chỉ 1 sheet ``Function List`` (import được luôn) — không sheet hướng dẫn.
+Không ghi text note / Remark tracker; chỉ tô màu:
+  - Vàng: PIC/Status bất thường / cần sửa
   - Xanh nhạt: From/Start auto-fill = To/End phase trước + 1 ngày làm việc (bỏ T7/CN)
 
-Ghi chú tracker: ghi vào cột Remark/Ghi chú có sẵn — không thêm cột lạ.
+Text ô (PIC/Status/tên…): 1 dòng — bỏ ``\\n`` thừa, không wrap.
 """
 from __future__ import annotations
 
 import os
-from collections import defaultdict
+import re
 from datetime import date, datetime
 from typing import Any, Optional
 
 import openpyxl
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 
 from exporter.excel_exporter import (
-    BODY_ALIGN,
     BODY_FONT,
     HEADER_ALIGN,
     HEADER_FILL,
@@ -31,15 +31,16 @@ from exporter.excel_exporter import (
 )
 from exporter.fl_export_schema import (
     next_business_day,
-    phase_end_attr,
-    phase_start_attr,
     resolve_export_schema,
 )
 from parser.excel_parser import FunctionRow, ParsedData, PhaseData, VALID_STATUSES
 
 YELLOW_FILL = PatternFill(start_color="FFF59D", end_color="FFF59D", fill_type="solid")
 BLUE_FILL = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
-NOTE_PREFIX = "[Tracker]"
+# Body: 1 dòng — không wrap (tránh PIC/Status/tên bị xuống dòng xấu khi import)
+FL_BODY_ALIGN = Alignment(vertical="center", wrap_text=False)
+_NL_RE = re.compile(r"[\r\n\u2028\u2029]+")
+_MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
 
 
 # ------------------------------------------------------------------
@@ -298,19 +299,13 @@ def _pic_status_header_map(
     return out
 
 
-def _remark_header(schema: dict, data: ParsedData, headers: list[str]) -> Optional[str]:
-    note = schema.get("note_column") or {}
-    if note.get("header"):
-        return note["header"]
-    if data.meta_columns.get("remark"):
-        return _inv_headers(data).get(data.meta_columns["remark"])
-    for h in headers:
-        hl = h.lower()
-        if " - " in h:
-            continue
-        if "remark" in hl or "ghi chú" in hl or "ghi chu" in hl:
-            return h
-    return None
+def _flatten_cell_text(val: Any) -> Any:
+    """Chuỗi 1 dòng: bỏ xuống dòng / khoảng trắng thừa (PIC, Status, tên…)."""
+    if not isinstance(val, str):
+        return val
+    s = _NL_RE.sub(" ", val)
+    s = _MULTI_SPACE_RE.sub(" ", s).strip()
+    return s
 
 
 def _needs_status_yellow(status: Any) -> bool:
@@ -403,6 +398,7 @@ def export_fl_reimport(
 ) -> str:
     """
     Xuất workbook 1 sheet Function List — chỉ row trong ``hits``.
+    Chỉ tô màu (vàng/xanh); không sheet hướng dẫn, không ghi Remark tracker.
 
     Returns: filepath
     """
@@ -421,7 +417,6 @@ def export_fl_reimport(
         if not schema.get("headers"):
             headers = [h for h in src_headers if h]
 
-    remark_h = _remark_header(schema, data, headers)
     col_map = _pic_status_header_map(data, headers, schema)
     phase_order = list(data.all_phases) or [pg.name for pg in data.phase_groups]
 
@@ -444,22 +439,6 @@ def export_fl_reimport(
         cell.border = THIN_BORDER
         ws.column_dimensions[get_column_letter(col)].width = min(28, max(10, len(h) + 2))
 
-    # Legend row comment ở sheet 2 nhỏ
-    legend = wb.create_sheet("Huong_dan", 0)
-    legend["A1"] = "Xuất FL re-import — hướng dẫn"
-    legend["A1"].font = Font(name="Arial", bold=True, size=12, color="1F4E79")
-    legend["A3"] = "Vàng"
-    legend["B3"] = "Ô PIC/Status cần sửa (hoặc Remark lưu ý Tracker)"
-    legend["A3"].fill = YELLOW_FILL
-    legend["A4"] = "Xanh nhạt"
-    legend["B4"] = "From/Start auto-fill = To phase trước + 1 ngày làm việc (bỏ T7/CN)"
-    legend["A4"].fill = BLUE_FILL
-    legend["A6"] = "Ghi chú Tracker ghi vào cột Remark/Ghi chú có sẵn — không thêm cột lạ."
-    legend["A7"] = "Xóa/chỉnh prefix [Tracker] trong Remark trước khi import nếu nguồn không cần."
-    legend["A8"] = f"Số function xuất: {len(hits)}"
-    legend.column_dimensions["A"].width = 14
-    legend.column_dimensions["B"].width = 70
-
     out_row = 2
     for ma in sorted(hits.keys()):
         row = rows_by_ma.get(ma)
@@ -474,25 +453,6 @@ def export_fl_reimport(
             source_values=src_vals,
         )
 
-        # Append tracker note vào Remark
-        if remark_h and hit.get("notes"):
-            # Dedup notes giữ thứ tự
-            seen = set()
-            uniq = []
-            for n in hit["notes"]:
-                if n not in seen:
-                    seen.add(n)
-                    uniq.append(n)
-            add = f"{NOTE_PREFIX} " + "; ".join(uniq)
-            cur = values.get(remark_h) or ""
-            if isinstance(cur, datetime):
-                cur = cur.isoformat()
-            cur_s = str(cur).strip() if cur else ""
-            if NOTE_PREFIX in cur_s:
-                values[remark_h] = cur_s  # đã có
-            else:
-                values[remark_h] = f"{cur_s} | {add}".strip(" |") if cur_s else add
-
         yellow_pic = hit.get("yellow_pic") or set()
         yellow_status = hit.get("yellow_status") or set()
 
@@ -502,9 +462,10 @@ def export_fl_reimport(
                 val = format_fl_date(val)
             elif isinstance(val, datetime):
                 val = format_fl_date(val.date())
-            cell = ws.cell(out_row, col, val if val is not None else "")
+            val = _flatten_cell_text(val if val is not None else "")
+            cell = ws.cell(out_row, col, val)
             cell.font = BODY_FONT
-            cell.alignment = BODY_ALIGN
+            cell.alignment = FL_BODY_ALIGN
             cell.border = THIN_BORDER
 
             info = col_map.get(h)
@@ -523,8 +484,6 @@ def export_fl_reimport(
                     fill = YELLOW_FILL  # vẫn tô khi flagged dù có giá trị (stalled)
                 elif kind == "status" and ph in yellow_status:
                     fill = YELLOW_FILL
-            if remark_h and h == remark_h and hit.get("notes"):
-                fill = YELLOW_FILL
             if fill:
                 cell.fill = fill
 

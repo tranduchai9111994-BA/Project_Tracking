@@ -172,8 +172,7 @@ def test_export_fl_reimport_highlights_and_date_chain(tmp_path, parsed_data, sam
     )
     assert os.path.isfile(out)
     wb = openpyxl.load_workbook(out)
-    assert "Function List" in wb.sheetnames
-    assert "Huong_dan" in wb.sheetnames
+    assert wb.sheetnames == ["Function List"]  # không sheet hướng dẫn
     ws = wb["Function List"]
     headers = [c.value for c in ws[1]]
     assert "Mã CN" in headers
@@ -185,12 +184,18 @@ def test_export_fl_reimport_highlights_and_date_chain(tmp_path, parsed_data, sam
         mas.append(str(ws.cell(r, ma_idx).value or ""))
     assert set(mas) == {"TMS.FR.02", "HR.FR.05"}
 
+    # Không ghi [Tracker] vào Remark (nếu có cột)
+    if "Remark" in headers:
+        remark_col = headers.index("Remark") + 1
+        for r in range(2, ws.max_row + 1):
+            rv = str(ws.cell(r, remark_col).value or "")
+            assert "[Tracker]" not in rv
+
     # HR.FR.05: Dev Start auto-fill xanh
     dev_start_h = "Dev - Start"
     assert dev_start_h in headers
     ds_col = headers.index(dev_start_h) + 1
     pic_col = headers.index("Dev - PIC") + 1
-    status_col = headers.index("Dev - Status") + 1
 
     hr_row = None
     for r in range(2, ws.max_row + 1):
@@ -203,6 +208,7 @@ def test_export_fl_reimport_highlights_and_date_chain(tmp_path, parsed_data, sam
     assert start_cell.value  # filled
     assert start_cell.fill.fgColor.rgb in ("00DDEBF7", "DDEBF7") or \
         start_cell.fill.start_color.rgb in ("00DDEBF7", "DDEBF7")
+    assert start_cell.alignment.wrap_text is not True
 
     pic_cell = ws.cell(hr_row, pic_col)
     # PIC trống + unassigned → vàng
@@ -214,6 +220,13 @@ def test_export_fl_reimport_highlights_and_date_chain(tmp_path, parsed_data, sam
     expected = format_fl_date(next_business_day(row.phases["Analysis"].end_date))
     assert start_cell.value == expected
     wb.close()
+
+
+def test_flatten_cell_text_collapses_newlines():
+    from exporter.fl_reimport_export import _flatten_cell_text
+    assert _flatten_cell_text("CuongNM129;\n\nTungTT83") == "CuongNM129; TungTT83"
+    assert _flatten_cell_text("A\r\nB") == "A B"
+    assert _flatten_cell_text(12) == 12
 
 
 def test_export_fl_endpoint(flask_client, sample_xlsx_path):
