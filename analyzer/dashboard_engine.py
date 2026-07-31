@@ -60,6 +60,8 @@ class DashboardEngine:
             "slow_heatmap": self._slow_heatmap(data),
             "dependency_blockers": self._dependency_blockers(data),
             "baseline_variance": self._baseline_variance(data),
+            # Rlog coded tuần này + kế hoạch tuần tới
+            "rlog_weekly": self._rlog_weekly(data),
         }
 
     # ------------------------------------------------------------------
@@ -1141,6 +1143,11 @@ class DashboardEngine:
     def _baseline_variance(self, data: ParsedData) -> dict:
         from analyzer.advanced_metrics import compute_baseline_variance
         return compute_baseline_variance(data)
+
+    def _rlog_weekly(self, data: ParsedData) -> dict:
+        """Rlog coded tuần này + kế hoạch Dev tuần tới (ISO week)."""
+        from analyzer.rlog_weekly import compute_rlog_weekly
+        return compute_rlog_weekly(data, today=self.today)
 
     # ==================================================================
     # ============  END V2 ADDITIONS  ==================================

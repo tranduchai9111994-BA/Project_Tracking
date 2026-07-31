@@ -2022,6 +2022,7 @@ function renderDashboard() {
     _safe("giaiDoan", renderGiaiDoanChart);
     _safe("filters", populateFilters);
     _safe("overdue", renderOverdueTable);
+    _safe("rlogWeekly", renderRlogWeekly);
 
     // V2 sections
     _safe("unassigned", renderUnassignedSection);
@@ -3155,6 +3156,116 @@ async function exportOverdue() {
     if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
     if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
     await downloadFile(`/api/projects/${currentProjectSlug}/export-overdue?` + params.toString(), "Overdue_Report.xlsx");
+}
+
+
+// ========================================================================
+// Rlog coded tuần này + kế hoạch tuần tới (từ metrics.rlog_weekly)
+// ========================================================================
+function _rlogFmtDate(iso) {
+    if (!iso) return "—";
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : escapeHtml(iso);
+}
+
+function renderRlogWeekly() {
+    const sec = document.getElementById("section-rlog");
+    if (!sec || !metricsData) return;
+    const rw = metricsData.rlog_weekly;
+    if (!rw) {
+        sec.classList.add("hidden");
+        return;
+    }
+    sec.classList.remove("hidden");
+
+    const coded = rw.rlog_coded_this_week || { count: 0, items: [] };
+    const plan = rw.rlog_plan_next_week || { count: 0, items: [] };
+    const week = rw.week || {};
+    const next = rw.next_week || {};
+
+    const helpEl = document.getElementById("rlogDefinitionHelp");
+    if (helpEl) helpEl.textContent = rw.definition || "";
+
+    const scopeEl = document.getElementById("rlogWeekScope");
+    if (scopeEl) {
+        const scopeLbl = rw.rlog_scope === "with_rlog_id"
+            ? "Chỉ function có RlogID"
+            : "Toàn bộ function (không có RlogID trong file)";
+        scopeEl.textContent =
+            `Tuần ${week.iso_week_label || ""} (${_rlogFmtDate(week.monday_iso)}–${_rlogFmtDate(week.sunday_iso)})` +
+            ` · Tuần tới ${next.iso_week_label || ""} (${_rlogFmtDate(next.monday_iso)}–${_rlogFmtDate(next.sunday_iso)})` +
+            ` · Scope: ${scopeLbl}`;
+    }
+
+    const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setTxt("rlogCodedCount", String(coded.count || 0));
+    setTxt("rlogPlanCount", String(plan.count || 0));
+    setTxt("rlogCodedLabel", week.iso_week_label ? `(${week.iso_week_label})` : "");
+    setTxt("rlogPlanLabel", next.iso_week_label ? `(${next.iso_week_label})` : "");
+
+    const codedBody = document.getElementById("rlogCodedBody");
+    if (codedBody) {
+        const items = coded.items || [];
+        codedBody.innerHTML = items.length
+            ? items.map(it => `<tr class="border-b hover:bg-emerald-50/50">
+                <td class="px-2 py-1.5 font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}</td>
+                <td class="px-2 py-1.5">${escapeHtml(it.rlog_id || "—")}</td>
+                <td class="px-2 py-1.5">${escapeHtml(it.module || "")}</td>
+                <td class="px-2 py-1.5">${escapeHtml((it.pic || []).join(", "))}</td>
+                <td class="px-2 py-1.5 whitespace-nowrap">${_rlogFmtDate(it.closed_date || it.end_date)}</td>
+            </tr>`).join("")
+            : `<tr><td colspan="5" class="px-2 py-3 text-center text-gray-400">Không có Rlog coded trong tuần này</td></tr>`;
+    }
+
+    const planBody = document.getElementById("rlogPlanBody");
+    if (planBody) {
+        const items = plan.items || [];
+        planBody.innerHTML = items.length
+            ? items.map(it => `<tr class="border-b hover:bg-sky-50/50">
+                <td class="px-2 py-1.5 font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}</td>
+                <td class="px-2 py-1.5">${escapeHtml(it.rlog_id || "—")}</td>
+                <td class="px-2 py-1.5">${escapeHtml(it.module || "")}</td>
+                <td class="px-2 py-1.5">${escapeHtml((it.pic || []).join(", "))}</td>
+                <td class="px-2 py-1.5 whitespace-nowrap">${_rlogFmtDate(it.end_date)}</td>
+                <td class="px-2 py-1.5">${escapeHtml(it.status || "—")}</td>
+            </tr>`).join("")
+            : `<tr><td colspan="6" class="px-2 py-3 text-center text-gray-400">Không có Rlog kế hoạch tuần tới</td></tr>`;
+    }
+
+    const canvas = document.getElementById("chartRlogWeekly");
+    if (canvas && typeof Chart !== "undefined") {
+        if (chartInstances.chartRlogWeekly) {
+            try { chartInstances.chartRlogWeekly.destroy(); } catch (_) {}
+            delete chartInstances.chartRlogWeekly;
+        }
+        chartInstances.chartRlogWeekly = new Chart(canvas, {
+            type: "bar",
+            data: {
+                labels: [
+                    `Coded ${week.iso_week_label || "tuần này"}`,
+                    `Plan ${next.iso_week_label || "tuần tới"}`,
+                ],
+                datasets: [{
+                    label: "Số Rlog",
+                    data: [coded.count || 0, plan.count || 0],
+                    backgroundColor: ["#059669", "#0284c7"],
+                    borderRadius: 4,
+                    maxBarThickness: 48,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { callbacks: { label: (ctx) => ` ${ctx.parsed.y} Rlog` } },
+                },
+                scales: {
+                    y: { beginAtZero: true, ticks: { precision: 0 } },
+                },
+            },
+        });
+    }
 }
 
 
@@ -10366,6 +10477,7 @@ function _sectionShortLabel(sid) {
     const map = {
         "section-module": "Module", "section-tasktype": "Task type",
         "section-matrix": "Matrix", "section-phase": "Phase",
+        "section-rlog": "Rlog tuần",
         "section-pic": "PIC", "section-effort": "Effort",
         "section-priority": "Priority/Complexity/GAP",
         "section-fitgap-dashboard": "FIT/GAP",
@@ -12453,6 +12565,7 @@ const _VISIBILITY_GROUPS = [
             { id: "section-summary",  label: "Summary cards",         desc: "Các thẻ KPI tổng quan trên đầu trang" },
             { id: "section-module",   label: "Module Overview",       desc: "Bảng tổng quan theo Module/Quy trình" },
             { id: "section-matrix",   label: "Matrix Phase × Module", desc: "Ma trận số function theo Phase × Module/Quy trình" },
+            { id: "section-rlog",     label: "Rlog tuần",             desc: "Rlog coded tuần này + kế hoạch code tuần tới" },
             { id: "section-tasktype", label: "Task Type Progress",    desc: "Tiến độ theo loại công việc (Phân tích/Dev/Test/UAT/Golive)" },
             { id: "section-phase",    label: "Tiến độ theo Phase",    desc: "Stacked bar tiến độ status của từng phase" },
         ],

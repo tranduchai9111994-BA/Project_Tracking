@@ -86,6 +86,7 @@
     <!-- Nhóm B: Tổng quan tiến độ -->
     <a href="#section-module">Module</a>
     <a href="#section-tasktype">Công việc</a>
+    <a href="#section-rlog" data-i18n="nav.rlog">Rlog tuần</a>
     <a href="#section-matrix">Phase Matrix</a>
     <a href="#section-phase">Phase Stack</a>
     <a href="#section-giaidoan">Giai đoạn</a>
@@ -3146,6 +3147,73 @@
                 </div>
             </div>
         </div>
+
+        </section>
+
+        
+
+<!-- Rlog coded tuần này + kế hoạch tuần tới -->
+        <section id="section-rlog" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex items-start justify-between gap-3 flex-wrap mb-3">
+                <div class="min-w-0">
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-rlog" data-i18n="section.rlog_title">🧾 Rlog coded tuần này &amp; kế hoạch tuần tới</h3>
+                    <p class="chart-subtitle" id="rlogDefinitionHelp">Rlog = function có RlogID; coded = Dev Closed trong tuần ISO hiện tại.</p>
+                    <p class="chart-scope" id="rlogWeekScope"></p>
+                </div>
+                <div class="flex items-center gap-3 no-print shrink-0">
+                    <div class="text-center px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200">
+                        <div class="text-2xl font-bold text-emerald-700" id="rlogCodedCount">0</div>
+                        <div class="text-[10px] text-emerald-800 uppercase tracking-wide">Coded tuần này</div>
+                    </div>
+                    <div class="text-center px-3 py-1.5 rounded-lg bg-sky-50 border border-sky-200">
+                        <div class="text-2xl font-bold text-sky-700" id="rlogPlanCount">0</div>
+                        <div class="text-[10px] text-sky-800 uppercase tracking-wide">Kế hoạch tuần tới</div>
+                    </div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+                <div class="lg:col-span-1">
+                    <div class="chart-box h-48"><canvas id="chartRlogWeekly"></canvas></div>
+                </div>
+                <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <h4 class="text-sm font-semibold text-emerald-800 mb-2">✅ Rlog coded tuần này <span id="rlogCodedLabel" class="font-normal text-gray-500"></span></h4>
+                        <div class="overflow-x-auto max-h-72 overflow-y-auto border rounded">
+                            <table class="w-full text-xs">
+                                <thead class="bg-emerald-700 text-white sticky top-0">
+                                    <tr>
+                                        <th class="px-2 py-1.5 text-left">Mã CN</th>
+                                        <th class="px-2 py-1.5 text-left">RlogID</th>
+                                        <th class="px-2 py-1.5 text-left">Module</th>
+                                        <th class="px-2 py-1.5 text-left">PIC</th>
+                                        <th class="px-2 py-1.5 text-left">Closed</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rlogCodedBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-sm font-semibold text-sky-800 mb-2">📅 Kế hoạch code tuần tới <span id="rlogPlanLabel" class="font-normal text-gray-500"></span></h4>
+                        <div class="overflow-x-auto max-h-72 overflow-y-auto border rounded">
+                            <table class="w-full text-xs">
+                                <thead class="bg-sky-700 text-white sticky top-0">
+                                    <tr>
+                                        <th class="px-2 py-1.5 text-left">Mã CN</th>
+                                        <th class="px-2 py-1.5 text-left">RlogID</th>
+                                        <th class="px-2 py-1.5 text-left">Module</th>
+                                        <th class="px-2 py-1.5 text-left">PIC</th>
+                                        <th class="px-2 py-1.5 text-left">Deadline</th>
+                                        <th class="px-2 py-1.5 text-left">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rlogPlanBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
 
         
 

@@ -226,6 +226,22 @@ const HELP_CONTENT = {
             "Baseline không tự lưu — user phải set explicit tại thời điểm bắt đầu dự án",
         ],
     },
+    "section-rlog": {
+        category: "Tiến độ & Timeline",
+        title: "Rlog coded tuần này & kế hoạch tuần tới",
+        purpose: "Theo dõi số Rlog (request/release log) được code xong trong tuần ISO hiện tại và danh sách sẽ code tuần tới.",
+        steps: [
+            "Rlog = function có giá trị RlogID (cột phase auto-detect chứa 'Rlog', thường Analysis - RlogID)",
+            "Coded tuần này = phase Dev Closed và End date nằm trong tuần ISO (Mon–Sun)",
+            "Kế hoạch tuần tới = Dev chưa Closed/Cancelled, deadline hoặc Start–End giao tuần sau",
+            "Nếu file không có RlogID → fallback đếm mọi function (subtitle ghi rõ)",
+        ],
+        example: "Tuần W31 coded 5 Rlog; tuần tới plan 4 Rlog Dev End trong W32 → PM ưu tiên assign PIC.",
+        tips: [
+            "Tôn trọng Global Filter (Module / Quy trình / PIC / Mã dự án)",
+            "Snapshot sync thiếu cột RlogID sẽ fallback sang 'mọi function'",
+        ],
+    },
 
     // ==================== PHÂN TÍCH CHUYÊN SÂU ====================
     "tasktype": {
