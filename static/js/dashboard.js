@@ -2996,18 +2996,20 @@ function renderGiaiDoanChart() {
         borderRadius: 3,
     }));
     createChart(ctx, "bar", { labels: phases, datasets }, {
-        layout: { padding: { top: 24 } },
+        layout: { padding: { top: 28 } },
         plugins: {
             legend: {
                 position: "top",
                 align: "start",
-                // Bug 9 fix: label chồng lên nhau khi có > 2 giai đoạn.
-                // Tăng padding + boxWidth để mỗi item có đủ chỗ; usePointStyle
-                // cho legend gọn hơn, không dùng hình chữ nhật dài.
+                // Legend "Giai đoạn N" hay dính chữ khi usePointStyle + padding hẹp
+                // (điểm màu item sau đè lên text item trước). Dùng box chữ nhật
+                // nhỏ + padding/boxPadding rộng để khoảng cách ổn định.
                 labels: {
-                    usePointStyle: true,
-                    boxWidth: 8,
-                    padding: 16,
+                    usePointStyle: false,
+                    boxWidth: 12,
+                    boxHeight: 12,
+                    boxPadding: 8,
+                    padding: 24,
                     font: { size: 11 },
                 },
             },
