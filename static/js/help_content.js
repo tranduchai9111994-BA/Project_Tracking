@@ -529,14 +529,16 @@ const HELP_CONTENT = {
     "kanban": {
         category: "Tùy chỉnh",
         title: "Kanban (theo tuần)",
-        purpose: "Kanban view function theo tuần: cột = 'Tuần trước' / 'Tuần này' / 'Tuần sau' / 'Xa hơn', card = function.",
+        purpose: "Kanban view function theo tuần: cột = trạng thái tuần (Chưa làm / Đang làm / Quá hạn / …), card = function.",
         steps: [
-            "Tự động group theo end_date của phase active",
-            "Kéo thả (chưa hỗ trợ) — chỉ để visualize",
+            "Tự động group theo ngữ cảnh tuần (overdue / in-progress / next week…)",
+            "Filter local Module/Process/PIC/Role — AND với global filter phía trên",
+            "Badge «Đang lọc» phản ánh local filter đang áp",
         ],
-        example: "Nhìn Kanban thấy tuần này có 15 function cần close → tập trung xử lý.",
+        example: "Global Module=8 selected, local Module=HR → board chỉ còn card HR.",
         tips: [
             "Kanban dùng data đã upload — không sync realtime với external tool",
+            "Local filter không UNION với global — chọn HR sẽ không còn thẻ PR/TMS",
         ],
     },
     "history": {

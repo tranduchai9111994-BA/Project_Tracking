@@ -10545,30 +10545,107 @@ let _kanbanRoleMap = {};   // {pic: role}
 let _kanbanAllPics = [];   // list unique PIC từ backend
 let _kanbanAllRoles = [];
 
+/**
+ * AND global + local filter cho cùng 1 chiều (Module / Process / PIC).
+ * Trước đây Kanban dùng UNION → chọn local Module=HR vẫn gửi kèm mọi
+ * module global → board vẫn hiện PR/TMS/… (bug).
+ *
+ * Quy tắc (giống export Data Quality):
+ *   - cả 2 có giá trị → giao (intersection)
+ *   - giao rỗng → local thắng (user chọn local ngoài global scope)
+ *   - chỉ 1 phía → dùng phía đó
+ *   - cả 2 rỗng → [] (= không filter chiều đó)
+ */
+function _kanbanAndCombine(globalArr, localArr) {
+    const g = (globalArr || []).map(x => String(x || "").trim()).filter(Boolean);
+    const l = (localArr || []).map(x => String(x || "").trim()).filter(Boolean);
+    if (l.length && g.length) {
+        const gSet = new Set(g);
+        const inter = l.filter(x => gSet.has(x));
+        return inter.length ? inter : l;
+    }
+    if (l.length) return l;
+    if (g.length) return g;
+    return [];
+}
+
+/** Đọc local filter Kanban hiện tại (Module/Process/PIC/Role/search). */
+function _kanbanLocalFilters() {
+    return {
+        modules: _msInstances.kanbanModule?.getSelected?.() || [],
+        processes: _msInstances.kanbanProcess?.getSelected?.() || [],
+        pic: (document.getElementById("kanbanFilterPic")?.value || "").trim(),
+        role: (document.getElementById("kanbanFilterRole")?.value || "").trim(),
+        search: (document.getElementById("kanbanSearch")?.value || "").trim(),
+    };
+}
+
+/** Badge «Đang lọc» — phản ánh local Module/Process/PIC/Role (không đụng global bar). */
+function _updateKanbanScopeBanner() {
+    const el = document.getElementById("kanbanScopeBanner");
+    if (!el) return;
+    const loc = _kanbanLocalFilters();
+    const fmt = (arr, maxShow) => {
+        const n = maxShow == null ? 3 : maxShow;
+        return arr.length <= n
+            ? arr.join(", ")
+            : `${arr.slice(0, n).join(", ")} +${arr.length - n}`;
+    };
+    const parts = [];
+    const mods = (loc.modules || []).map(m => String(m || "").trim()).filter(Boolean);
+    const procs = (loc.processes || []).map(p => String(p || "").trim()).filter(Boolean);
+    if (mods.length) parts.push(`Module=${fmt(mods)}`);
+    if (procs.length) {
+        const short = typeof _shortProcessCode === "function"
+            ? procs.map(_shortProcessCode) : procs;
+        parts.push(`Quy trình=${fmt(short, 2)}`);
+    }
+    if (loc.pic) parts.push(`PIC=${loc.pic}`);
+    if (loc.role) parts.push(`Role=${loc.role}`);
+    if (loc.search) parts.push(`Search="${loc.search}"`);
+
+    if (!parts.length) {
+        el.innerHTML = "📂 Section: toàn bộ (chưa lọc cục bộ) — vẫn áp global filter phía trên";
+        el.className = "chart-scope kanban-scope";
+        el.setAttribute("title", "Lọc cục bộ Kanban (Module/Process/PIC/Role) AND với global filter");
+        return;
+    }
+    el.innerHTML = `🔍 Đang lọc: <b>${escapeHtml(parts.join(" · "))}</b> <span class="text-gray-400">(lọc cục bộ ∩ global)</span>`;
+    el.className = "chart-scope kanban-scope active";
+    el.setAttribute("title", `Lọc cục bộ Kanban: ${parts.join(" · ")} — AND với global filter`);
+}
+
 async function loadKanban() {
     if (!currentProjectSlug) return;
     const params = new URLSearchParams();
     params.set("week_offset", String(_kanbanWeekOffset));
-    const q = document.getElementById("kanbanSearch")?.value?.trim();
-    if (q) params.set("search", q);
 
-    // Merge global filter (top bar) + local Kanban filter — nếu 2 nguồn cùng
-    // set 1 field, hợp union (comma-sep). Backend _parse_multi_arg đã tách
-    // được đa giá trị.
-    // Task 15: Module + Quy trình đã đổi sang multi-select → đọc từ
-    // _msInstances.kanbanModule / .kanbanProcess (array).
-    const mergeArray = (globalArr, localArr, paramName) => {
-        const combined = new Set([...(globalArr || []), ...(localArr || [])].filter(Boolean));
-        if (combined.size) params.set(paramName, [...combined].join(","));
+    const loc = _kanbanLocalFilters();
+    if (loc.search) params.set("search", loc.search);
+
+    // AND global (top bar) ∩ local Kanban — không UNION.
+    // Task 15: Module + Quy trình multi-select → _msInstances.kanban*.
+    const setParam = (name, values) => {
+        if (values && values.length) params.set(name, values.join(","));
     };
-    mergeArray(globalFilters?.modules,   _msInstances.kanbanModule?.getSelected?.()  || [], "module");
-    mergeArray(globalFilters?.processes, _msInstances.kanbanProcess?.getSelected?.() || [], "process");
-    const localPic = document.getElementById("kanbanFilterPic")?.value?.trim();
-    mergeArray(globalFilters?.pics, localPic ? [localPic] : [], "pic");
-    mergeArray(globalFilters?.projectCodes, [], "g_project");
+    setParam("module", _kanbanAndCombine(
+        globalFilters?.modules,
+        loc.modules,
+    ));
+    setParam("process", _kanbanAndCombine(
+        globalFilters?.processes,
+        loc.processes,
+    ));
+    setParam("pic", _kanbanAndCombine(
+        globalFilters?.pics,
+        loc.pic ? [loc.pic] : [],
+    ));
+    // Project code chỉ có global (Kanban chưa có local project filter)
+    if (globalFilters?.projectCodes?.length) {
+        params.set("g_project", globalFilters.projectCodes.join(","));
+    }
 
-    const role = document.getElementById("kanbanFilterRole")?.value;
-    if (role) params.set("role", role);
+    if (loc.role) params.set("role", loc.role);
     if (_cacheBustToken) params.set("_", _cacheBustToken);
     try {
         const r = await fetch(_apiUrl("kanban") + "?" + params.toString());
