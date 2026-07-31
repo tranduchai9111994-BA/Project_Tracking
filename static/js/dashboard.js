@@ -3187,6 +3187,22 @@ async function exportOverdue() {
 }
 
 
+/**
+ * Xuất Excel Rlog coded tuần này + kế hoạch tuần tới.
+ * Tôn trọng global filter (module/process/pic/project) giống section đang xem.
+ */
+async function exportRlogWeekly() {
+    if (!currentProjectSlug) {
+        showToast("⚠️ Chưa chọn project");
+        return;
+    }
+    const qs = (typeof _buildFilterQuery === "function") ? _buildFilterQuery() : "";
+    const url = `/api/projects/${currentProjectSlug}/export-rlog-weekly${qs ? "?" + qs : ""}`;
+    await downloadFile(url, "Rlog_Weekly.xlsx");
+}
+window.exportRlogWeekly = exportRlogWeekly;
+
+
 // ========================================================================
 // Rlog coded tuần này + kế hoạch tuần tới (từ metrics.rlog_weekly)
 // ========================================================================
@@ -12083,6 +12099,9 @@ const _CMD_ACTIONS = [
     { id: "act.export-overdue", label: "📥 Xuất Excel Overdue", kind: "action",
       run: () => { if (typeof exportOverdue === "function") exportOverdue();
                    else showToast("Chưa sẵn sàng"); } },
+    { id: "act.export-rlog", label: "📥 Xuất Excel Rlog tuần", kind: "action",
+      run: () => { if (typeof exportRlogWeekly === "function") exportRlogWeekly();
+                   else showToast("Chưa sẵn sàng"); } },
     { id: "act.export-dq", label: "🩺 Xuất Excel Data Quality", kind: "action",
       run: () => exportDataQuality() },
     { id: "act.export-aging", label: "⏳ Xuất Excel Aging WIP", kind: "action",
@@ -12611,9 +12630,9 @@ const _VISIBILITY_GROUPS = [
         name: "📊 Tổng quan",
         items: [
             { id: "section-summary",  label: "Summary cards",         desc: "Các thẻ KPI tổng quan trên đầu trang" },
+            { id: "section-rlog",     label: "Rlog tuần",             desc: "Rlog coded tuần này + kế hoạch code tuần tới" },
             { id: "section-module",   label: "Module Overview",       desc: "Bảng tổng quan theo Module/Quy trình" },
             { id: "section-matrix",   label: "Matrix Phase × Module", desc: "Ma trận số function theo Phase × Module/Quy trình" },
-            { id: "section-rlog",     label: "Rlog tuần",             desc: "Rlog coded tuần này + kế hoạch code tuần tới" },
             { id: "section-tasktype", label: "Task Type Progress",    desc: "Tiến độ theo loại công việc (Phân tích/Dev/Test/UAT/Golive)" },
             { id: "section-phase",    label: "Tiến độ theo Phase",    desc: "Stacked bar tiến độ status của từng phase" },
         ],

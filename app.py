@@ -3479,6 +3479,76 @@ def project_export_data_quality(slug: str):
     return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
 
 
+@app.route("/api/projects/<slug>/export-rlog-weekly", methods=["GET", "POST"])
+def project_export_rlog_weekly(slug: str):
+    """
+    Xuất Excel Rlog coded tuần này + kế hoạch tuần tới.
+
+    Tôn trọng global filter (module / process / pic / g_project) giống section
+    đang xem. Payload reuse analyzer.rlog_weekly.compute_rlog_weekly.
+    """
+    from analyzer.rlog_weekly import compute_rlog_weekly
+    from exporter.rlog_exporter import export_rlog_weekly_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+
+    # POST body có thể gửi filter; GET dùng query params.
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+
+        def _as_list(val) -> list[str]:
+            if not val:
+                return []
+            if isinstance(val, list):
+                out: list[str] = []
+                for it in val:
+                    out.extend(_as_list(it))
+                return out
+            return [x.strip() for x in str(val).split(",") if x.strip()]
+
+        modules = _as_list(
+            body.get("module") or body.get("g_module") or body.get("g_modules")
+        )
+        processes = _as_list(
+            body.get("process") or body.get("g_process") or body.get("g_processes")
+        )
+        pics = _as_list(body.get("pic") or body.get("g_pic") or body.get("g_pics"))
+        project_codes = _project_codes_from_body(body)
+        if modules or processes or pics or project_codes:
+            data = _filter_parsed_data(
+                state["data"],
+                modules=modules,
+                processes=processes,
+                pics=pics,
+                project_codes=project_codes,
+            )
+        else:
+            data = state["data"]
+    else:
+        data = _filtered_data_from_request(state)
+
+    try:
+        # Đồng bộ today với DashboardEngine (metrics.rlog_weekly trên UI)
+        payload = compute_rlog_weekly(data, today=DashboardEngine().today)
+        project = _project_mgr.get_project(slug)
+        subtitle = (
+            f"Project: {project.name if project else slug} | "
+            f"Ngày: {date.today().strftime('%d/%m/%Y')}"
+        )
+        filepath = export_rlog_weekly_report(
+            payload,
+            output_dir=_project_mgr.get_export_dir(slug),
+            subtitle=subtitle,
+        )
+        return send_file(
+            filepath, as_attachment=True, download_name=os.path.basename(filepath)
+        )
+    except Exception as e:
+        return jsonify({"error": f"Lỗi khi xuất Rlog weekly: {str(e)}"}), 500
+
+
 # ==========================================================================
 # Kanban (Task 10 — Kanban theo tuần)
 # ==========================================================================

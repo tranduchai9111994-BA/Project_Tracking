@@ -20,7 +20,7 @@ Thứ tự DOM + sidebar mặc định (khi project **chưa** có `section_order
 
 | Nhóm | Sections |
 |------|----------|
-| **A — Cảnh báo** | summary (+ global filter sticky) → overdue → unassigned → stalled → risk → aging-wip → sla → dataquality |
+| **A — Gần đầu / Cảnh báo** | summary (+ global filter sticky) → **rlog** → overdue → unassigned → stalled → risk → aging-wip → sla → dataquality |
 | **B — Tiến độ** | module + tasktype → matrix → phase → giaidoan → process → burndown → capacity → baseline → effort → duration → slow → deps |
 | **C — Timeline / chi tiết** | gantt → gantt-calendar → kanban → pic → priority → fitgap-dashboard → function-diff → my-bookmarks |
 | **D — Quản trị** | compare → digest → my-digests → custom-dashboards → history |

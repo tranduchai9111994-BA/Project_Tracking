@@ -240,7 +240,8 @@ def upsert_saved_view(project_dir: str, view: dict) -> list[dict]:
 # Reset API xoá file → FE reload về HTML default mới.
 #
 # DEFAULT (HTML templates/index.html, sau sticky summary+filter):
-#   A cảnh báo: overdue, unassigned, stalled, risk, aging-wip, sla, dataquality
+#   A gần đầu:   rlog (coded tuần / plan tuần tới), rồi cảnh báo:
+#                overdue, unassigned, stalled, risk, aging-wip, sla, dataquality
 #   B tiến độ:   module+tasktype, matrix, phase, giaidoan, process,
 #                burndown, capacity, baseline, effort, duration, slow, deps
 #   C chi tiết:  gantt, gantt-calendar, kanban, pic, priority, fitgap,
