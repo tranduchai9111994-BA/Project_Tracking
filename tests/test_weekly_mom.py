@@ -148,6 +148,8 @@ def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
     assert cover["B10"].value == "Gantt"
     assert cover["B11"].value == mom_name
     assert cover["B12"].value == "PM Dashboard"
+    # Presentation: header TOC xanh #0070C0
+    assert "0070C0" in str(cover["B8"].fill.fgColor.rgb or "").upper()
 
     mp = wb["Master plan"]
     assert mp["B2"].value == "STT"
@@ -159,9 +161,14 @@ def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
     assert mp["I4"].value or mp["J4"].value
     assert mp["G4"].value in (None, "")
     assert mp["H4"].value in (None, "")
+    assert "0070C0" in str(mp["B2"].fill.fgColor.rgb or "").upper()
+    assert mp.column_dimensions["C"].width >= 40
 
     gantt = wb["Gantt"]
     assert "GANTT" in str(gantt["A1"].value).upper()
+    assert gantt["B2"].value  # legend
+    # Cột tuần đủ rộng để đọc Wxx
+    assert (gantt.column_dimensions["E"].width or 0) >= 6.5
 
     mom = wb[mom_name]
     assert "Ngày" in str(mom["B2"].value)
@@ -170,6 +177,11 @@ def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
     assert mom["H8"].value == "Tình trạng"
     assert mom["B9"].value == "A"
     assert "KẾ HOẠCH TUẦN NÀY" in str(mom["C9"].value)
+    assert "0070C0" in str(mom["B8"].fill.fgColor.rgb or "").upper()
+    # Wrap tên CN
+    assert mom.column_dimensions["C"].width >= 40
+    assert mom["C10"].alignment.wrap_text is True or mom["C9"].alignment.wrap_text is True
+
 
     # Section B tuần tới tồn tại
     found_b = False
