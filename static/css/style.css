@@ -2311,6 +2311,22 @@ html.dark .hdr-menu-item:hover {
 }
 .fg-gantt-tick.fg-today { background: #dbeafe; color: #1d4ed8; }
 .fg-gantt-row .fg-gantt-track { min-height: 32px; }
+.fg-gantt-row-parent { background: #f8fafc; font-weight: 600; }
+.fg-gantt-row-parent .fg-gantt-label {
+  display: flex; align-items: center; gap: 4px; white-space: nowrap;
+}
+.fg-fold-btn {
+  flex: 0 0 auto; width: 16px; height: 16px; padding: 0; border: none;
+  background: transparent; color: #64748b; font-size: 9px; line-height: 1;
+  cursor: pointer; border-radius: 2px;
+}
+.fg-fold-btn:hover { background: #e2e8f0; color: #334155; }
+.fg-proj-name { overflow: hidden; text-overflow: ellipsis; }
+.fg-gantt-row-child .fg-gantt-track { min-height: 28px; }
+.fg-gantt-label-child {
+  padding-left: 18px; font-weight: 400; color: #475569;
+}
+.fg-tree-prefix { color: #94a3b8; margin-right: 2px; }
 .fg-marker {
   position: absolute; top: 8px; width: 16px; height: 16px; border-radius: 50%;
   color: #fff; font-size: 9px; font-weight: 700; line-height: 16px; text-align: center;
@@ -2322,6 +2338,7 @@ html.dark .hdr-menu-item:hover {
   z-index: 1;
 }
 .fg-bar-hi { opacity: .88; box-shadow: 0 0 0 1px rgba(255,255,255,.6); }
+.fg-bar-summary { background: #94a3b8; opacity: .4; height: 10px; top: 11px; }
 .fg-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #475569; }
 .fg-legend i {
   display: inline-block; width: 14px; height: 8px; border-radius: 2px; margin-right: 4px;
@@ -2339,6 +2356,11 @@ html.dark .fg-gantt-ruler { background: #1e293b; }
 html.dark .fg-gantt-label { border-color: #334155; }
 html.dark .fg-gantt-ruler, html.dark .fg-gantt-row { border-color: #334155; }
 html.dark .fg-gantt-tick { color: #94a3b8; }
+html.dark .fg-gantt-row-parent { background: #1e293b; }
+html.dark .fg-gantt-label-child { color: #94a3b8; }
+html.dark .fg-fold-btn { color: #94a3b8; }
+html.dark .fg-fold-btn:hover { background: #334155; color: #e2e8f0; }
+html.dark .fg-bar-summary { background: #64748b; }
 html.dark .fg-assess-ok { background: #064e3b; color: #a7f3d0; border-color: #047857; }
 html.dark .fg-assess-warn { background: #78350f; color: #fde68a; border-color: #b45309; }
 html.dark .fg-assess-risk { background: #7f1d1d; color: #fecaca; border-color: #b91c1c; }

@@ -18245,8 +18245,9 @@ window._archOne = _archOne;
 // ========================================================================
 const _fgState = {
     data: null,
-    rowMode: "project", // project | milestone
+    rowMode: "project", // project = tree project→milestone | milestone = flat
     selectedSlugs: null, // null = chưa init → mặc định current project
+    folded: {}, // slug → true = ẩn hàng milestone con
 };
 
 const _FG_MS_COLORS = {
@@ -18456,6 +18457,36 @@ function _fgBarHtml(m, info, months, cellW, tipExtra) {
     return html;
 }
 
+/** Union span của mọi milestone trong 1 project — bar tổng trên hàng cha. */
+function _fgProjectSpanUnion(proj, milestones) {
+    let lo = null, hi = null, month = null;
+    for (const m of milestones || []) {
+        const info = (proj.milestones || {})[m.id] || {};
+        const s = info.span_start || info.month;
+        const e = info.span_end || info.month;
+        if (s && (lo == null || s < lo)) lo = s;
+        if (e && (hi == null || e > hi)) hi = e;
+        if (info.month && (month == null || info.month > month)) month = info.month;
+    }
+    return { span_start: lo, span_end: hi, month };
+}
+
+function _fgSummaryBarHtml(info, months, cellW, title) {
+    const span = _fgSpanIndices(months, info);
+    if (!span) return "";
+    const left = span.i0 * cellW + 3;
+    const width = Math.max(cellW - 6, (span.i1 - span.i0 + 1) * cellW - 6);
+    return `<div class="fg-bar fg-bar-summary" style="left:${left}px;width:${width}px" `
+        + `title="${escapeHtml(title || "")}"></div>`;
+}
+
+function toggleFgProjectFold(slug) {
+    if (!slug) return;
+    _fgState.folded[slug] = !_fgState.folded[slug];
+    if (_fgState.data) _renderFgGanttByProject(_fgState.data);
+}
+window.toggleFgProjectFold = toggleFgProjectFold;
+
 function _renderFgGanttByProject(data) {
     const wrap = document.getElementById("fgGanttWrap");
     if (!wrap) return;
@@ -18466,7 +18497,8 @@ function _renderFgGanttByProject(data) {
         wrap.innerHTML = "";
         return;
     }
-    const labelW = 160;
+    // Label rộng hơn để indent milestone con
+    const labelW = 200;
     const cellW = 56;
     const today = new Date();
     const todayMk = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
@@ -18483,14 +18515,32 @@ function _renderFgGanttByProject(data) {
     html += `</div></div>`;
 
     for (const proj of projects) {
-        html += `<div class="fg-gantt-row"><div class="fg-gantt-label" title="${escapeHtml(proj.slug)}">`
-             + `${escapeHtml(proj.name || proj.slug)}</div>`;
+        const slug = proj.slug || proj.name || "";
+        const folded = !!_fgState.folded[slug];
+        const union = _fgProjectSpanUnion(proj, milestones);
+        const sumTitle = `${proj.name || slug}: ${_fgFmtMonth(union.span_start) || "?"}→`
+            + `${_fgFmtMonth(union.span_end) || "?"}`;
+        html += `<div class="fg-gantt-row fg-gantt-row-parent"${folded ? ' data-folded="true"' : ""}>`
+             + `<div class="fg-gantt-label" title="${escapeHtml(slug)}">`
+             + `<button type="button" class="fg-fold-btn" aria-label="Thu gọn/mở rộng" `
+             + `data-fg-slug="${escapeHtml(slug)}" `
+             + `onclick="toggleFgProjectFold(this.dataset.fgSlug)">${folded ? "▶" : "▼"}</button>`
+             + `<span class="fg-proj-name">${escapeHtml(proj.name || slug)}</span></div>`;
         html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
-        for (const m of milestones) {
-            const info = (proj.milestones || {})[m.id] || {};
-            html += _fgBarHtml(m, info, months, cellW);
-        }
+        html += _fgSummaryBarHtml(union, months, cellW, sumTitle);
         html += `</div></div>`;
+
+        if (!folded) {
+            for (const m of milestones) {
+                const info = (proj.milestones || {})[m.id] || {};
+                html += `<div class="fg-gantt-row fg-gantt-row-child">`
+                     + `<div class="fg-gantt-label fg-gantt-label-child" title="${escapeHtml(m.label)}">`
+                     + `<span class="fg-tree-prefix">└</span> ${escapeHtml(m.label)}</div>`;
+                html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
+                html += _fgBarHtml(m, info, months, cellW);
+                html += `</div></div>`;
+            }
+        }
     }
     html += `</div>`;
     html += `<div class="fg-legend mt-2">` + milestones.map(m =>

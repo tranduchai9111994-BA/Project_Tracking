@@ -36,3 +36,9 @@ def test_forecast_section_present():
     assert "Đánh giá lý do hợp lý" in js
     assert "_fgAssessmentHtml" in js
     assert "fg-assess" in js
+    # Rows=Project: tree project → milestone indent 1 cấp
+    assert "fg-gantt-row-child" in js
+    assert "fg-gantt-label-child" in js
+    assert "_fgProjectSpanUnion" in js
+    assert "toggleFgProjectFold" in js
+    assert "fg-bar-summary" in js
