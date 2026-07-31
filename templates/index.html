@@ -73,7 +73,17 @@
 <button type="button" id="btnToggleSidebar" class="sidebar-toggle-btn no-print hidden"
         title="Ẩn/hiện menu section" aria-expanded="true" aria-controls="sidebarNav">◀</button>
 <nav id="sidebarNav" class="sidebar-nav no-print hidden">
-    <!-- Nhóm A: Cảnh báo (+ Rlog tuần sát đầu — quan trọng cho PM) -->
+    <!-- Toolbar lọc nhóm dashboard (All + nhóm tuỳ chỉnh, VI/EN) -->
+    <div class="sidebar-group-toolbar no-print">
+        <select id="sidebarGroupSelect" class="sidebar-group-select"
+                data-i18n-title="sg.select_title"
+                title="Lọc theo nhóm dashboard"
+                aria-label="Nhóm dashboard"></select>
+        <button type="button" id="btnEditSidebarGroups" class="sidebar-group-edit-btn"
+                data-i18n-title="sg.edit_title" title="Hiệu chỉnh nhóm">⚙</button>
+    </div>
+    <div id="sidebarNavLinks" class="sidebar-nav-links">
+    <!-- Tracking / Forecast / … membership do JS map; thứ tự link giữ nguyên -->
     <a href="#section-summary" data-i18n="nav.summary">Summary</a>
     <a href="#section-pm" data-i18n="nav.pm">Chiều PM</a>
     <a href="#section-rlog" data-i18n="nav.rlog">Rlog tuần</a>
@@ -85,7 +95,6 @@
     <a href="#section-sla" data-i18n="nav.sla">SLA</a>
     <a href="#section-dataquality" data-i18n="nav.dq">Data Quality</a>
     <a href="#section-anomaly" data-i18n="nav.anomaly">Bất thường</a>
-    <!-- Nhóm B: Tổng quan tiến độ -->
     <a href="#section-module">Module</a>
     <a href="#section-tasktype">Công việc</a>
     <a href="#section-matrix">Phase Matrix</a>
@@ -100,7 +109,6 @@
     <a href="#section-duration">Duration</a>
     <a href="#section-slow">PIC chậm</a>
     <a href="#section-deps">Dependency</a>
-    <!-- Nhóm C: Timeline & chi tiết -->
     <a href="#section-gantt">Timeline</a>
     <a href="#section-gantt-calendar">Gantt Calendar</a>
     <a href="#section-kanban">Kanban</a>
@@ -109,13 +117,34 @@
     <a href="#section-fitgap-dashboard">FIT/GAP</a>
     <a href="#section-function-diff">Diff</a>
     <a href="#section-my-bookmarks">Bookmarks</a>
-    <!-- Nhóm D: Quản trị -->
     <a href="#section-compare">So sánh</a>
     <a href="#section-digest">Weekly Digest</a>
     <a href="#section-my-digests">Digest lưu trữ</a>
     <a href="#section-custom-dashboards">Dashboard tuỳ chỉnh</a>
     <a href="#section-history">Upload history</a>
+    </div>
 </nav>
+
+<!-- Modal hiệu chỉnh nhóm dashboard sidebar -->
+<div id="sidebarGroupsModal" class="fixed inset-0 z-[70] hidden items-center justify-center bg-black/40 no-print" role="dialog" aria-modal="true" aria-labelledby="sidebarGroupsModalTitle">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-[min(720px,94vw)] max-h-[88vh] flex flex-col">
+        <div class="flex items-center justify-between gap-2 px-4 py-3 border-b dark:border-slate-600">
+            <h3 id="sidebarGroupsModalTitle" class="text-sm font-semibold text-gray-800 dark:text-gray-100" data-i18n="sg.modal_title">Hiệu chỉnh nhóm dashboard</h3>
+            <div class="flex items-center gap-2">
+                <button type="button" id="btnSidebarGroupsReset" class="text-xs px-2 py-1 rounded border border-slate-300 dark:border-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700" data-i18n="sg.reset">↺ Mặc định</button>
+                <button type="button" id="btnSidebarGroupsClose" class="text-lg leading-none px-2 text-gray-500 hover:text-gray-800" aria-label="Đóng">×</button>
+            </div>
+        </div>
+        <div id="sidebarGroupsEditor" class="overflow-y-auto px-4 py-3 space-y-3 text-xs flex-1"></div>
+        <div class="flex items-center justify-between gap-2 px-4 py-3 border-t dark:border-slate-600">
+            <button type="button" id="btnSidebarGroupsAdd" class="text-xs px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600" data-i18n="sg.add">➕ Thêm nhóm</button>
+            <div class="flex gap-2">
+                <button type="button" id="btnSidebarGroupsCancel" class="text-xs px-3 py-1.5 rounded border border-slate-300 dark:border-slate-500" data-i18n="sg.cancel">Hủy</button>
+                <button type="button" id="btnSidebarGroupsSave" class="text-xs px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700" data-i18n="sg.save">Lưu</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- ============ HEADER ============ -->
 <header class="app-header bg-gradient-to-r from-blue-800 to-blue-600 text-white shadow-lg no-print sticky top-0 z-30">

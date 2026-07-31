@@ -150,6 +150,55 @@ html.dark .table-striped tbody tr:nth-child(even) { background-color: rgba(148, 
     transition: transform 0.2s ease, opacity 0.2s ease;
 }
 html.dark .sidebar-nav { background: rgba(30, 41, 59, 0.95); }
+.sidebar-group-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 2px 4px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+    margin-bottom: 2px;
+}
+.sidebar-group-select {
+    flex: 1;
+    min-width: 0;
+    max-width: 132px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 4px;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #f8fafc;
+    color: #1e293b;
+    cursor: pointer;
+}
+html.dark .sidebar-group-select {
+    background: #0f172a;
+    border-color: #475569;
+    color: #e2e8f0;
+}
+.sidebar-group-edit-btn {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #f1f5f9;
+    font-size: 12px;
+    cursor: pointer;
+    line-height: 1;
+}
+.sidebar-group-edit-btn:hover { background: #dbeafe; }
+html.dark .sidebar-group-edit-btn {
+    background: #1e293b;
+    border-color: #475569;
+    color: #e2e8f0;
+}
+.sidebar-nav-links {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
 .sidebar-nav a {
     display: block;
     padding: 6px 10px;
@@ -168,6 +217,11 @@ html.dark .sidebar-nav a { color: #e2e8f0; }
     color: #1d4ed8;
 }
 html.dark .sidebar-nav a:hover { background: #1e40af; color: white; }
+
+/* Lọc nhóm — tách biệt .hidden (visibility/data) và .collapsed (user thu sidebar) */
+.group-filtered-out {
+    display: none !important;
+}
 
 /* Collapse: giữ translateY(-50%) + trượt sang trái — tách biệt class .hidden (chưa có data) */
 .sidebar-nav.collapsed {

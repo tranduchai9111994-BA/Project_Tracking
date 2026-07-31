@@ -7806,6 +7806,7 @@ function showSidebarChrome() {
     if (btn) btn.classList.remove("hidden");
     applySidebarCollapsed(isSidebarCollapsed());
     attachSectionHelp();
+    if (typeof applySidebarGroupFilter === "function") applySidebarGroupFilter();
 }
 
 /** Click nút toggle → đảo trạng thái + persist. */
@@ -7814,6 +7815,584 @@ function toggleSidebar() {
     localStorage.setItem(SIDEBAR_COLLAPSE_KEY, collapsed ? "1" : "0");
     applySidebarCollapsed(collapsed);
 }
+
+// ========================================================================
+// SIDEBAR GROUPS — lọc All / nhóm + hiệu chỉnh membership (localStorage)
+// Compose với chart-config visibility (.hidden / data-user-hidden) qua
+// class riêng `.group-filtered-out` — không đè thứ tự / visibility cũ.
+// ========================================================================
+
+const SIDEBAR_GROUP_ALL = "__all__";
+const SIDEBAR_GROUPS_STORAGE_KEY = "ihrp_sidebar_groups_v1";
+const SIDEBAR_ACTIVE_GROUP_KEY = "ihrp_sidebar_active_group";
+
+/** Section luôn hiện (không thuộc filter nhóm) — global filter. */
+const _SIDEBAR_GROUP_ALWAYS_VISIBLE = new Set([
+    "section-globalfilter",
+]);
+
+/**
+ * Default membership — map section id → nhóm.
+ * Tracking / Forecast / Chất lượng / Phân tích / Chiều PM / Quản trị.
+ */
+const DEFAULT_SIDEBAR_GROUP_DEFS = [
+    {
+        id: "tracking",
+        name_vi: "Tracking",
+        name_en: "Tracking",
+        sections: [
+            "section-summary", "section-rlog", "section-overdue",
+            "section-unassigned", "section-stalled", "section-aging-wip",
+            "section-sla", "section-module", "section-tasktype",
+            "section-matrix", "section-phase", "section-giaidoan",
+        ],
+    },
+    {
+        id: "forecast",
+        name_vi: "Forecast",
+        name_en: "Forecast",
+        sections: [
+            "section-gantt", "section-gantt-calendar", "section-burndown",
+            "section-capacity", "section-pic-overload", "section-baseline",
+            "section-duration",
+        ],
+    },
+    {
+        id: "quality",
+        name_vi: "Chất lượng",
+        name_en: "Quality",
+        sections: [
+            "section-dataquality", "section-anomaly", "section-risk",
+        ],
+    },
+    {
+        id: "analysis",
+        name_vi: "Phân tích",
+        name_en: "Analysis",
+        sections: [
+            "section-process", "section-pic", "section-priority",
+            "section-fitgap-dashboard", "section-effort", "section-slow",
+            "section-deps", "section-function-diff", "section-kanban",
+            "section-my-bookmarks",
+        ],
+    },
+    {
+        id: "pm",
+        name_vi: "Chiều PM",
+        name_en: "PM dimension",
+        sections: [
+            "section-pm", "section-digest", "section-my-digests",
+        ],
+    },
+    {
+        id: "admin",
+        name_vi: "Quản trị",
+        name_en: "Administration",
+        sections: [
+            "section-compare", "section-custom-dashboards", "section-history",
+        ],
+    },
+];
+
+let _sidebarGroupsState = null;       // { groups: [...] }
+let _sidebarActiveGroup = SIDEBAR_GROUP_ALL;
+let _sidebarGroupsEditDraft = null;   // draft khi mở modal
+let _sidebarGroupsSortables = [];
+
+function _sgT(key, fallback) {
+    if (typeof I18n !== "undefined" && I18n.t) {
+        const v = I18n.t(key);
+        if (v && v !== key) return v;
+    }
+    return fallback;
+}
+
+function _sgLang() {
+    if (typeof I18n !== "undefined" && I18n.getLang) return I18n.getLang();
+    return "vi";
+}
+
+function _cloneSidebarGroups(defs) {
+    return defs.map(g => ({
+        id: g.id,
+        name_vi: g.name_vi,
+        name_en: g.name_en,
+        sections: Array.isArray(g.sections) ? g.sections.slice() : [],
+    }));
+}
+
+function getDefaultSidebarGroups() {
+    return { groups: _cloneSidebarGroups(DEFAULT_SIDEBAR_GROUP_DEFS) };
+}
+
+/** Expose cho smoke test / debug. */
+window.DEFAULT_SIDEBAR_GROUP_DEFS = DEFAULT_SIDEBAR_GROUP_DEFS;
+window.getDefaultSidebarGroups = getDefaultSidebarGroups;
+window.SIDEBAR_GROUP_ALL = SIDEBAR_GROUP_ALL;
+
+function _loadSidebarGroupsState() {
+    try {
+        const raw = localStorage.getItem(SIDEBAR_GROUPS_STORAGE_KEY);
+        if (!raw) return getDefaultSidebarGroups();
+        const parsed = JSON.parse(raw);
+        if (!parsed || !Array.isArray(parsed.groups) || !parsed.groups.length) {
+            return getDefaultSidebarGroups();
+        }
+        // Sanitize tối thiểu
+        const groups = parsed.groups
+            .filter(g => g && typeof g.id === "string" && g.id !== SIDEBAR_GROUP_ALL)
+            .map(g => ({
+                id: String(g.id),
+                name_vi: String(g.name_vi || g.name || g.id),
+                name_en: String(g.name_en || g.name || g.id),
+                sections: Array.isArray(g.sections)
+                    ? g.sections.map(String).filter(s => s.startsWith("section-"))
+                    : [],
+            }));
+        return groups.length ? { groups } : getDefaultSidebarGroups();
+    } catch (e) {
+        return getDefaultSidebarGroups();
+    }
+}
+
+function _saveSidebarGroupsState(state) {
+    try {
+        localStorage.setItem(SIDEBAR_GROUPS_STORAGE_KEY, JSON.stringify(state));
+    } catch (e) { /* localStorage disabled */ }
+}
+
+function _loadSidebarActiveGroup() {
+    try {
+        return localStorage.getItem(SIDEBAR_ACTIVE_GROUP_KEY) || SIDEBAR_GROUP_ALL;
+    } catch (e) {
+        return SIDEBAR_GROUP_ALL;
+    }
+}
+
+function _saveSidebarActiveGroup(id) {
+    try {
+        localStorage.setItem(SIDEBAR_ACTIVE_GROUP_KEY, id);
+    } catch (e) { /* ignore */ }
+}
+
+function _ensureSidebarGroupsState() {
+    if (!_sidebarGroupsState) _sidebarGroupsState = _loadSidebarGroupsState();
+    return _sidebarGroupsState;
+}
+
+/** sectionId → groupId */
+function buildSidebarSectionMembership(state) {
+    const map = {};
+    const st = state || _ensureSidebarGroupsState();
+    (st.groups || []).forEach(g => {
+        (g.sections || []).forEach(sid => { map[sid] = g.id; });
+    });
+    return map;
+}
+window.buildSidebarSectionMembership = buildSidebarSectionMembership;
+
+function _groupDisplayName(g) {
+    if (!g) return "";
+    return _sgLang() === "en" ? (g.name_en || g.name_vi || g.id) : (g.name_vi || g.name_en || g.id);
+}
+
+function _sectionLabelForGroups(sid) {
+    const a = document.querySelector(`#sidebarNav a[href="#${sid}"]`);
+    if (a && a.textContent.trim()) return a.textContent.trim();
+    if (typeof _sectionShortLabel === "function") return _sectionShortLabel(sid);
+    return sid.replace(/^section-/, "");
+}
+
+/** Rebuild <select> options theo state + i18n. */
+function refreshSidebarGroupSelect() {
+    const sel = document.getElementById("sidebarGroupSelect");
+    if (!sel) return;
+    const st = _ensureSidebarGroupsState();
+    const active = _sidebarActiveGroup;
+    // Validate active còn tồn tại
+    const validIds = new Set([SIDEBAR_GROUP_ALL, ...st.groups.map(g => g.id)]);
+    if (!validIds.has(active)) {
+        _sidebarActiveGroup = SIDEBAR_GROUP_ALL;
+        _saveSidebarActiveGroup(SIDEBAR_GROUP_ALL);
+    }
+    const cur = _sidebarActiveGroup;
+    sel.innerHTML = "";
+    const optAll = document.createElement("option");
+    optAll.value = SIDEBAR_GROUP_ALL;
+    optAll.textContent = _sgT("sg.all", "Tất cả");
+    sel.appendChild(optAll);
+    st.groups.forEach(g => {
+        const opt = document.createElement("option");
+        opt.value = g.id;
+        opt.textContent = _groupDisplayName(g);
+        sel.appendChild(opt);
+    });
+    sel.value = cur;
+}
+
+/**
+ * Áp filter nhóm lên sidebar links + main sections.
+ * Không đụng .hidden / data-user-hidden — chỉ toggle .group-filtered-out.
+ */
+function applySidebarGroupFilter() {
+    const st = _ensureSidebarGroupsState();
+    const active = _sidebarActiveGroup;
+    const membership = buildSidebarSectionMembership(st);
+    const isAll = active === SIDEBAR_GROUP_ALL;
+
+    // Sidebar links
+    document.querySelectorAll('#sidebarNav a[href^="#section-"]').forEach(a => {
+        const sid = (a.getAttribute("href") || "").slice(1);
+        const show = isAll || membership[sid] === active;
+        a.classList.toggle("group-filtered-out", !show);
+    });
+
+    // Main content sections
+    document.querySelectorAll('#dashboard [id^="section-"]').forEach(el => {
+        const sid = el.id;
+        if (_SIDEBAR_GROUP_ALWAYS_VISIBLE.has(sid)) {
+            el.classList.remove("group-filtered-out");
+            return;
+        }
+        if (sid === "section-summary-header") {
+            const show = isAll || membership["section-summary"] === active;
+            el.classList.toggle("group-filtered-out", !show);
+            return;
+        }
+        if (isAll) {
+            el.classList.remove("group-filtered-out");
+            return;
+        }
+        // Chỉ hiện nếu membership khớp nhóm đang chọn
+        const gid = membership[sid];
+        el.classList.toggle("group-filtered-out", gid !== active);
+    });
+
+    // Grid wrapper không có id section: ẩn nếu mọi con section đều filtered
+    document.querySelectorAll("#dashboard > section.grid, #dashboard > .grid").forEach(grid => {
+        if (grid.id && grid.id.startsWith("section-")) return;
+        const kids = grid.querySelectorAll(":scope > [id^='section-']");
+        if (!kids.length) return;
+        const anyShow = Array.from(kids).some(k => !k.classList.contains("group-filtered-out"));
+        grid.classList.toggle("group-filtered-out", !anyShow);
+    });
+
+    refreshSidebarGroupSelect();
+}
+window.applySidebarGroupFilter = applySidebarGroupFilter;
+
+function setSidebarActiveGroup(groupId) {
+    const st = _ensureSidebarGroupsState();
+    const ok = groupId === SIDEBAR_GROUP_ALL
+        || st.groups.some(g => g.id === groupId);
+    _sidebarActiveGroup = ok ? groupId : SIDEBAR_GROUP_ALL;
+    _saveSidebarActiveGroup(_sidebarActiveGroup);
+    applySidebarGroupFilter();
+    // Scroll tới section đầu tiên còn hiện trong nhóm
+    if (_sidebarActiveGroup !== SIDEBAR_GROUP_ALL) {
+        const g = st.groups.find(x => x.id === _sidebarActiveGroup);
+        const first = (g && g.sections || []).find(sid => {
+            const el = document.getElementById(sid);
+            return el && !el.classList.contains("hidden")
+                && el.getAttribute("data-hidden") !== "true"
+                && el.dataset.userHidden !== "1";
+        });
+        if (first) {
+            const el = document.getElementById(first);
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+    }
+}
+window.setSidebarActiveGroup = setSidebarActiveGroup;
+
+function resetSidebarGroupsToDefault() {
+    _sidebarGroupsState = getDefaultSidebarGroups();
+    _saveSidebarGroupsState(_sidebarGroupsState);
+    _sidebarActiveGroup = SIDEBAR_GROUP_ALL;
+    _saveSidebarActiveGroup(SIDEBAR_GROUP_ALL);
+    applySidebarGroupFilter();
+}
+window.resetSidebarGroupsToDefault = resetSidebarGroupsToDefault;
+
+function _destroySidebarGroupsSortables() {
+    _sidebarGroupsSortables.forEach(s => {
+        try { s.destroy(); } catch (e) { /* ignore */ }
+    });
+    _sidebarGroupsSortables = [];
+}
+
+function _renderSidebarGroupsEditor() {
+    const wrap = document.getElementById("sidebarGroupsEditor");
+    if (!wrap || !_sidebarGroupsEditDraft) return;
+    _destroySidebarGroupsSortables();
+    const draft = _sidebarGroupsEditDraft;
+    const moveLabel = _sgT("sg.move", "Chuyển nhóm");
+    const delLabel = _sgT("sg.delete", "Xóa nhóm");
+    const emptyLabel = _sgT("sg.empty", "Chưa có dashboard");
+    const nameVi = _sgT("sg.name_vi", "Tên (VI)");
+    const nameEn = _sgT("sg.name_en", "Tên (EN)");
+
+    wrap.innerHTML = draft.groups.map((g, gi) => {
+        const rows = (g.sections || []).map(sid => {
+            const opts = draft.groups.map(og =>
+                `<option value="${escapeAttr(og.id)}" ${og.id === g.id ? "selected" : ""}>${escapeHtml(_groupDisplayName(og))}</option>`
+            ).join("");
+            return `<li class="sg-section-row flex items-center gap-2 py-0.5 px-1 rounded hover:bg-slate-50 dark:hover:bg-slate-700/50"
+                        data-section-id="${escapeAttr(sid)}" draggable="false">
+                <span class="sg-drag cursor-grab text-slate-400 select-none" title="Kéo">⠿</span>
+                <span class="flex-1 truncate">${escapeHtml(_sectionLabelForGroups(sid))}</span>
+                <label class="sr-only">${escapeHtml(moveLabel)}</label>
+                <select class="sg-move text-[10px] border rounded px-1 py-0.5 dark:bg-slate-800 dark:border-slate-600"
+                        data-section-id="${escapeAttr(sid)}" title="${escapeAttr(moveLabel)}">${opts}</select>
+            </li>`;
+        }).join("");
+        return `<div class="sg-group-block border rounded-lg p-2 dark:border-slate-600 bg-white/80 dark:bg-slate-900/40" data-group-id="${escapeAttr(g.id)}">
+            <div class="flex flex-wrap items-end gap-2 mb-2">
+                <label class="flex flex-col gap-0.5 flex-1 min-w-[120px]">
+                    <span class="text-[10px] text-slate-500">${escapeHtml(nameVi)}</span>
+                    <input type="text" class="sg-name-vi border rounded px-1.5 py-1 text-xs dark:bg-slate-800 dark:border-slate-600"
+                           value="${escapeAttr(g.name_vi)}" data-group-id="${escapeAttr(g.id)}">
+                </label>
+                <label class="flex flex-col gap-0.5 flex-1 min-w-[120px]">
+                    <span class="text-[10px] text-slate-500">${escapeHtml(nameEn)}</span>
+                    <input type="text" class="sg-name-en border rounded px-1.5 py-1 text-xs dark:bg-slate-800 dark:border-slate-600"
+                           value="${escapeAttr(g.name_en)}" data-group-id="${escapeAttr(g.id)}">
+                </label>
+                <button type="button" class="sg-del text-[10px] px-2 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50"
+                        data-group-id="${escapeAttr(g.id)}" ${draft.groups.length <= 1 ? "disabled" : ""}>${escapeHtml(delLabel)}</button>
+            </div>
+            <ul class="sg-section-list space-y-0.5 min-h-[28px] border border-dashed rounded p-1 dark:border-slate-600"
+                data-group-id="${escapeAttr(g.id)}">
+                ${rows || `<li class="text-slate-400 px-1 py-1 sg-empty">${escapeHtml(emptyLabel)}</li>`}
+            </ul>
+        </div>`;
+    }).join("");
+
+    // Wire rename
+    wrap.querySelectorAll(".sg-name-vi").forEach(inp => {
+        inp.addEventListener("input", () => {
+            const g = draft.groups.find(x => x.id === inp.dataset.groupId);
+            if (g) g.name_vi = inp.value;
+        });
+    });
+    wrap.querySelectorAll(".sg-name-en").forEach(inp => {
+        inp.addEventListener("input", () => {
+            const g = draft.groups.find(x => x.id === inp.dataset.groupId);
+            if (g) g.name_en = inp.value;
+        });
+    });
+    // Delete group
+    wrap.querySelectorAll(".sg-del").forEach(btn => {
+        btn.addEventListener("click", () => {
+            if (draft.groups.length <= 1) return;
+            if (!confirm(_sgT("sg.confirm_delete", "Xóa nhóm này? Dashboard sẽ chuyển sang nhóm đầu tiên."))) return;
+            const gid = btn.dataset.groupId;
+            const idx = draft.groups.findIndex(x => x.id === gid);
+            if (idx < 0) return;
+            const removed = draft.groups.splice(idx, 1)[0];
+            const fallback = draft.groups[0];
+            (removed.sections || []).forEach(sid => {
+                if (!fallback.sections.includes(sid)) fallback.sections.push(sid);
+            });
+            _renderSidebarGroupsEditor();
+        });
+    });
+    // Move via dropdown
+    wrap.querySelectorAll(".sg-move").forEach(sel => {
+        sel.addEventListener("change", () => {
+            const sid = sel.dataset.sectionId;
+            const toId = sel.value;
+            _sgMoveSectionInDraft(sid, toId);
+            _renderSidebarGroupsEditor();
+        });
+    });
+    // Drag-drop giữa các list (SortableJS)
+    if (typeof Sortable !== "undefined") {
+        wrap.querySelectorAll(".sg-section-list").forEach(list => {
+            const s = Sortable.create(list, {
+                group: "sidebar-group-sections",
+                animation: 150,
+                handle: ".sg-drag",
+                draggable: ".sg-section-row",
+                onAdd: (evt) => {
+                    const sid = evt.item && evt.item.dataset.sectionId;
+                    const toId = list.dataset.groupId;
+                    if (sid && toId) {
+                        _sgMoveSectionInDraft(sid, toId, evt.newIndex);
+                        // Bỏ placeholder empty
+                        list.querySelectorAll(".sg-empty").forEach(e => e.remove());
+                    }
+                },
+                onUpdate: () => {
+                    _sgSyncDraftOrderFromDom();
+                },
+            });
+            _sidebarGroupsSortables.push(s);
+        });
+    }
+}
+
+function _sgMoveSectionInDraft(sid, toGroupId, insertIndex) {
+    const draft = _sidebarGroupsEditDraft;
+    if (!draft) return;
+    draft.groups.forEach(g => {
+        g.sections = (g.sections || []).filter(x => x !== sid);
+    });
+    const target = draft.groups.find(g => g.id === toGroupId);
+    if (!target) return;
+    if (typeof insertIndex === "number" && insertIndex >= 0 && insertIndex <= target.sections.length) {
+        target.sections.splice(insertIndex, 0, sid);
+    } else {
+        target.sections.push(sid);
+    }
+}
+
+function _sgSyncDraftOrderFromDom() {
+    const draft = _sidebarGroupsEditDraft;
+    if (!draft) return;
+    document.querySelectorAll("#sidebarGroupsEditor .sg-section-list").forEach(list => {
+        const gid = list.dataset.groupId;
+        const g = draft.groups.find(x => x.id === gid);
+        if (!g) return;
+        g.sections = Array.from(list.querySelectorAll(".sg-section-row"))
+            .map(li => li.dataset.sectionId)
+            .filter(Boolean);
+    });
+}
+
+function openSidebarGroupsEditor() {
+    const modal = document.getElementById("sidebarGroupsModal");
+    if (!modal) return;
+    _sidebarGroupsEditDraft = {
+        groups: _cloneSidebarGroups(_ensureSidebarGroupsState().groups),
+    };
+    // Bổ sung section sidebar chưa có membership → nhóm cuối
+    const membership = buildSidebarSectionMembership(_sidebarGroupsEditDraft);
+    const orphan = [];
+    document.querySelectorAll('#sidebarNav a[href^="#section-"]').forEach(a => {
+        const sid = (a.getAttribute("href") || "").slice(1);
+        if (sid && !membership[sid]) orphan.push(sid);
+    });
+    if (orphan.length && _sidebarGroupsEditDraft.groups.length) {
+        const last = _sidebarGroupsEditDraft.groups[_sidebarGroupsEditDraft.groups.length - 1];
+        orphan.forEach(sid => {
+            if (!last.sections.includes(sid)) last.sections.push(sid);
+        });
+    }
+    _renderSidebarGroupsEditor();
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    if (typeof I18n !== "undefined" && I18n.applyI18n) I18n.applyI18n(modal);
+}
+
+function closeSidebarGroupsEditor() {
+    const modal = document.getElementById("sidebarGroupsModal");
+    if (modal) {
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+    }
+    _destroySidebarGroupsSortables();
+    _sidebarGroupsEditDraft = null;
+}
+
+function _sgAddGroupInDraft() {
+    if (!_sidebarGroupsEditDraft) return;
+    const base = "group_" + Date.now().toString(36);
+    _sidebarGroupsEditDraft.groups.push({
+        id: base,
+        name_vi: _sgT("sg.new_group", "Nhóm mới"),
+        name_en: _sgT("sg.new_group_en", "New group"),
+        sections: [],
+    });
+    _renderSidebarGroupsEditor();
+}
+
+function _sgSaveDraft() {
+    if (!_sidebarGroupsEditDraft) return;
+    _sgSyncDraftOrderFromDom();
+    // Đọc lại tên từ input (phòng input chưa blur)
+    document.querySelectorAll("#sidebarGroupsEditor .sg-name-vi").forEach(inp => {
+        const g = _sidebarGroupsEditDraft.groups.find(x => x.id === inp.dataset.groupId);
+        if (g) g.name_vi = (inp.value || "").trim() || g.id;
+    });
+    document.querySelectorAll("#sidebarGroupsEditor .sg-name-en").forEach(inp => {
+        const g = _sidebarGroupsEditDraft.groups.find(x => x.id === inp.dataset.groupId);
+        if (g) g.name_en = (inp.value || "").trim() || g.id;
+    });
+    _sidebarGroupsState = {
+        groups: _cloneSidebarGroups(_sidebarGroupsEditDraft.groups),
+    };
+    _saveSidebarGroupsState(_sidebarGroupsState);
+    // Nếu active group bị xoá → All
+    if (_sidebarActiveGroup !== SIDEBAR_GROUP_ALL
+        && !_sidebarGroupsState.groups.some(g => g.id === _sidebarActiveGroup)) {
+        _sidebarActiveGroup = SIDEBAR_GROUP_ALL;
+        _saveSidebarActiveGroup(SIDEBAR_GROUP_ALL);
+    }
+    closeSidebarGroupsEditor();
+    applySidebarGroupFilter();
+    showToast(_sgT("sg.toast_saved", "Đã lưu nhóm dashboard"));
+}
+
+function initSidebarGroups() {
+    _sidebarGroupsState = _loadSidebarGroupsState();
+    _sidebarActiveGroup = _loadSidebarActiveGroup();
+    // Validate active
+    const ids = new Set([SIDEBAR_GROUP_ALL, ..._sidebarGroupsState.groups.map(g => g.id)]);
+    if (!ids.has(_sidebarActiveGroup)) _sidebarActiveGroup = SIDEBAR_GROUP_ALL;
+
+    const sel = document.getElementById("sidebarGroupSelect");
+    if (sel && !sel.dataset.sgWired) {
+        sel.dataset.sgWired = "1";
+        sel.addEventListener("change", () => setSidebarActiveGroup(sel.value));
+    }
+    const btnEdit = document.getElementById("btnEditSidebarGroups");
+    if (btnEdit && !btnEdit.dataset.sgWired) {
+        btnEdit.dataset.sgWired = "1";
+        btnEdit.addEventListener("click", openSidebarGroupsEditor);
+    }
+    const btnClose = document.getElementById("btnSidebarGroupsClose");
+    const btnCancel = document.getElementById("btnSidebarGroupsCancel");
+    const btnSave = document.getElementById("btnSidebarGroupsSave");
+    const btnAdd = document.getElementById("btnSidebarGroupsAdd");
+    const btnReset = document.getElementById("btnSidebarGroupsReset");
+    if (btnClose && !btnClose.dataset.sgWired) {
+        btnClose.dataset.sgWired = "1";
+        btnClose.addEventListener("click", closeSidebarGroupsEditor);
+    }
+    if (btnCancel && !btnCancel.dataset.sgWired) {
+        btnCancel.dataset.sgWired = "1";
+        btnCancel.addEventListener("click", closeSidebarGroupsEditor);
+    }
+    if (btnSave && !btnSave.dataset.sgWired) {
+        btnSave.dataset.sgWired = "1";
+        btnSave.addEventListener("click", _sgSaveDraft);
+    }
+    if (btnAdd && !btnAdd.dataset.sgWired) {
+        btnAdd.dataset.sgWired = "1";
+        btnAdd.addEventListener("click", _sgAddGroupInDraft);
+    }
+    if (btnReset && !btnReset.dataset.sgWired) {
+        btnReset.dataset.sgWired = "1";
+        btnReset.addEventListener("click", () => {
+            if (!confirm(_sgT("sg.confirm_reset", "Khôi phục nhóm + phân bổ mặc định?"))) return;
+            _sidebarGroupsEditDraft = getDefaultSidebarGroups();
+            _renderSidebarGroupsEditor();
+            showToast(_sgT("sg.toast_reset", "Đã khôi phục nhóm mặc định"), "blue");
+        });
+    }
+    const modal = document.getElementById("sidebarGroupsModal");
+    if (modal && !modal.dataset.sgWired) {
+        modal.dataset.sgWired = "1";
+        modal.addEventListener("click", (e) => {
+            if (e.target === modal) closeSidebarGroupsEditor();
+        });
+    }
+
+    refreshSidebarGroupSelect();
+    applySidebarGroupFilter();
+}
+window.initSidebarGroups = initSidebarGroups;
 
 // ========================================================================
 // CHART HELP (Task 2) — nút "?" mỗi section + popover giải thích
@@ -8077,6 +8656,7 @@ function initSidebarAndHelp() {
 
     applySidebarCollapsed(isSidebarCollapsed());
     attachSectionHelp();
+    if (typeof initSidebarGroups === "function") initSidebarGroups();
 }
 
 if (document.readyState === "loading") {
@@ -11179,6 +11759,8 @@ function applyChartConfigsToDom(viewOverride = null) {
     if (typeof attachUnifiedSectionHelp === "function") {
         attachUnifiedSectionHelp();
     }
+    // Re-apply group filter (class riêng, compose với visibility)
+    if (typeof applySidebarGroupFilter === "function") applySidebarGroupFilter();
 }
 
 /** Snapshot title HTML không gồm nút help (tránh restore ra nút chết listener). */
@@ -11925,6 +12507,12 @@ window.onLangChanged = function (_lang) {
             setUploadZoneCollapsed(isUploadZoneCollapsed(), { persist: false });
         } catch (_) { /* ignore */ }
     }
+    // Sidebar groups: tên nhóm VI/EN + nút modal
+    if (typeof refreshSidebarGroupSelect === "function") refreshSidebarGroupSelect();
+    if (typeof _sidebarGroupsEditDraft !== "undefined" && _sidebarGroupsEditDraft
+        && typeof _renderSidebarGroupsEditor === "function") {
+        _renderSidebarGroupsEditor();
+    }
 };
 
 
@@ -12140,6 +12728,8 @@ function _presentCollectSections() {
         if (el.classList.contains("hidden")) return;
         // Bỏ qua các section đang bị chart-config ẩn (data-hidden="true")
         if (el.getAttribute("data-hidden") === "true") return;
+        // Bỏ qua section bị lọc nhóm sidebar
+        if (el.classList.contains("group-filtered-out")) return;
         out.push(el.id);
     });
     return out;
@@ -13556,6 +14146,7 @@ function _applyVisibilityMapping(map) {
         }
     }
     if (typeof _renderHiddenSectionPills === "function") _renderHiddenSectionPills();
+    if (typeof applySidebarGroupFilter === "function") applySidebarGroupFilter();
 }
 
 
