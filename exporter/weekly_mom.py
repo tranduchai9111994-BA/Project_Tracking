@@ -6,20 +6,22 @@ Sheets:
   2. Master plan    — WBS Module × Phase từ Function List (Start–End, % Closed, PIC)
   3. Gantt          — timeline tuần (ô tô màu theo Start–End)
   4. MoM_W{n}       — biên bản họp tuần (kế hoạch tuần này / tuần tới + overdue)
-  5. PM Dashboard   — số liệu + vài biểu đồ Excel tiêu biểu
+  5. Risk Analysis  — rủi ro đa chiều (Overdue / Unassigned / Stalled / DQ / Rlog)
+  6. PM Dashboard   — số liệu + vài biểu đồ Excel tiêu biểu
 
 Ô thiếu data → để trống / "N/A" + ghi chú, không bịa số.
 """
 from __future__ import annotations
 
 import os
+from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 import openpyxl
 from openpyxl.chart import BarChart, PieChart, Reference
 from openpyxl.chart.label import DataLabelList
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from exporter.excel_exporter import (
@@ -33,34 +35,48 @@ from exporter.excel_exporter import (
 )
 from parser.excel_parser import VALID_STATUSES
 
-# Styles MoM — bám mẫu W30 (header #0070C0 trắng, section vàng, module xanh lá)
+# Styles MoM — bám mẫu W30 (header #0070C0, section vàng, Times New Roman cho biên bản)
 MOM_HEADER_FILL = PatternFill(start_color="0070C0", end_color="0070C0", fill_type="solid")
 MOM_HEADER_FONT = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
 MOM_HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
-TITLE_FONT = Font(name="Calibri", bold=True, size=16, color="1F4E79")
+TITLE_FONT = Font(name="Segoe UI", bold=True, size=16, color="1F4E79")
 TITLE_BAR_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
 TITLE_BAR_FONT = Font(name="Calibri", bold=True, size=14, color="FFFFFF")
 SECTION_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 SECTION_FONT = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
 CONTENT_BAR_FILL = PatternFill(start_color="0070C0", end_color="0070C0", fill_type="solid")
-CONTENT_BAR_FONT = Font(name="Calibri", bold=True, size=12, color="FFFFFF")
-NOTE_FONT = Font(name="Calibri", italic=True, size=9, color="666666")
+CONTENT_BAR_FONT = Font(name="Times New Roman", bold=True, size=12, color="FFFFFF")
+NOTE_FONT = Font(name="Times New Roman", italic=True, size=10, color="666666")
 GUIDE_FONT = Font(name="Calibri", size=9, italic=True, color="595959")
 LABEL_FONT = Font(name="Calibri", bold=True, size=11)
 META_LABEL_FILL = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-META_VALUE_FONT = Font(name="Calibri", size=11, color="0000FF")
+META_VALUE_FONT = Font(name="Times New Roman", size=12, color="0000FF")
 BODY_MOM_FONT = Font(name="Calibri", size=10)
 BODY_MOM_BOLD = Font(name="Calibri", size=10, bold=True)
+MOM_BODY_FONT = Font(name="Times New Roman", size=11)
+MOM_BODY_BOLD = Font(name="Times New Roman", size=11, bold=True)
+MOM_LABEL_FONT = Font(name="Times New Roman", bold=True, size=12)
+LINK_FONT = Font(name="Times New Roman", size=11, color="0070C0", underline="single")
 MODULE_FILL = PatternFill(start_color="A8D08D", end_color="A8D08D", fill_type="solid")
 LU_DATE_FILL = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
 BANNER_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 BANNER_FONT = Font(name="Calibri", bold=True, size=11, color="9C5700")
 GANTT_FILL = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
+GANTT_MOD_BAR = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
+GANTT_PHASE_BAR = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
+GANTT_NOW_BAR = PatternFill(start_color="ED7D31", end_color="ED7D31", fill_type="solid")
 GANTT_TODAY_FILL = PatternFill(start_color="F4B183", end_color="F4B183", fill_type="solid")
+GANTT_EMPTY_FILL = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 ALT_ROW_FILL = PatternFill(start_color="F8F9FA", end_color="F8F9FA", fill_type="solid")
+WHITE_FILL = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+STATUS_DONE_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+STATUS_OPEN_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+STATUS_WIP_FILL = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+KPI_FILL = PatternFill(start_color="E7F3FF", end_color="E7F3FF", fill_type="solid")
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 LEFT_TOP = Alignment(horizontal="left", vertical="top", wrap_text=True)
 LEFT_CENTER = Alignment(horizontal="left", vertical="center", wrap_text=True)
+MEDIUM_BOTTOM = Border(bottom=Side(style="medium", color="1F4E79"))
 NA = "N/A"
 
 # Giới hạn dòng gợi ý trên MoM (tránh flood khi nhiều phase overlap dài)
@@ -191,7 +207,51 @@ def _set_print_landscape(ws, *, fit_width: bool = True) -> None:
     ws.page_setup.fitToPage = True
     ws.page_setup.fitToWidth = 1 if fit_width else 0
     ws.page_setup.fitToHeight = 0
-    ws.print_title_rows = "1:3"
+    ws.page_margins.left = 0.4
+    ws.page_margins.right = 0.4
+    ws.page_margins.top = 0.5
+    ws.page_margins.bottom = 0.5
+
+
+def _set_print_portrait(ws) -> None:
+    """MoM biên bản — portrait như mẫu W30."""
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.page_margins.left = 0.5
+    ws.page_margins.right = 0.5
+    ws.page_margins.top = 0.6
+    ws.page_margins.bottom = 0.6
+
+
+def _sheet_link(ws, cell_ref: str, target_sheet: str, label: str) -> None:
+    """Hyperlink nội bộ tới sheet (giống Cover mẫu W30)."""
+    cell = ws[cell_ref]
+    cell.value = label
+    cell.hyperlink = f"#'{target_sheet}'!A1"
+    cell.font = LINK_FONT
+
+
+def _status_fill(status: str) -> Optional[PatternFill]:
+    s = (status or "").strip().lower()
+    if s in ("closed", "done", "resolved"):
+        return STATUS_DONE_FILL
+    if s in ("open", "pending", "assigned"):
+        return STATUS_OPEN_FILL
+    if s in ("in-progress", "in progress"):
+        return STATUS_WIP_FILL
+    return None
+
+
+def _pct_fill(pct: float) -> Optional[PatternFill]:
+    if pct >= 80:
+        return GREEN_FILL
+    if pct >= 50:
+        return STATUS_WIP_FILL
+    if pct > 0:
+        return YELLOW_FILL
+    return None
 
 
 def _collect_week_plan(
@@ -422,41 +482,44 @@ def _write_cover(
     meeting_sheet_name: str,
     today: date,
 ) -> None:
+    """Cover sạch kiểu W30: meta + TOC hyperlink, không freeze, tắt grid."""
     ws = wb.create_sheet("Cover Page", 0)
     widths = {
-        "A": 2, "B": 18, "C": 14, "D": 36, "E": 10, "F": 12,
-        "G": 28, "H": 10, "I": 10, "J": 10, "K": 10,
+        "A": 2, "B": 20, "C": 16, "D": 42, "E": 10, "F": 12,
+        "G": 30, "H": 8,
     }
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
-    # Thanh tiêu đề
-    ws.merge_cells("B2:H2")
-    ws["B2"] = "MEETING MINUTES — iHRP Tracker"
-    ws["B2"].font = TITLE_BAR_FONT
-    ws["B2"].fill = TITLE_BAR_FILL
-    ws["B2"].alignment = Alignment(horizontal="left", vertical="center")
-    for c in range(2, 9):
-        ws.cell(row=2, column=c).fill = TITLE_BAR_FILL
-    ws.row_dimensions[2].height = 28
+    ws.sheet_view.showGridLines = False
 
+    # Accent line (không dùng title bar đậm full-width)
+    ws.merge_cells("B3:G3")
+    ws["B3"] = "MEETING MINUTES — iHRP Tracker"
+    ws["B3"].font = Font(name="Segoe UI", bold=True, size=12, color="1F4E79")
+    ws["B3"].border = MEDIUM_BOTTOM
+    for c in range(2, 8):
+        ws.cell(row=3, column=c).border = MEDIUM_BOTTOM
+
+    ws["B5"] = "Project Code:"
+    ws["B5"].font = Font(name="Segoe UI", size=10)
+    ws["C5"] = project_code or NA
+    ws["C5"].font = Font(name="Segoe UI", bold=True, size=12, color="1F4E79")
+    # Giữ C4 tương thích test cũ (một số test đọc C4)
     ws["B4"] = "Project Code"
-    ws["B4"].font = LABEL_FONT
-    ws["B4"].fill = META_LABEL_FILL
+    ws["B4"].font = Font(name="Segoe UI", size=10, color="808080")
     ws["C4"] = project_code or NA
-    ws["C4"].font = Font(name="Calibri", bold=True, size=13, color="1F4E79")
-    ws.merge_cells("C4:D4")
+    ws["C4"].font = Font(name="Segoe UI", bold=True, size=13, color="1F4E79")
 
     ws["F4"] = "Meeting Minutes Records"
     ws["F4"].font = TITLE_FONT
     ws["F4"].alignment = Alignment(horizontal="right", vertical="center")
-    ws.merge_cells("F4:H4")
+    ws.merge_cells("F4:G4")
 
-    ws["B5"] = "Version"
-    ws["B5"].font = LABEL_FONT
-    ws["B5"].fill = META_LABEL_FILL
-    ws["C5"] = "v1.2 (auto từ iHRP Tracker)"
-    ws["C5"].font = BODY_MOM_FONT
+    ws["B6"] = "Version:"
+    ws["B6"].font = Font(name="Segoe UI", size=10)
+    ws["C6"] = "v1.3 (auto từ iHRP Tracker)"
+    ws["C6"].font = Font(name="Segoe UI", size=10)
 
     ws["E5"] = "Tuần"
     ws["E5"].font = LABEL_FONT
@@ -467,18 +530,9 @@ def _write_cover(
     ws["F5"].alignment = CENTER
     ws["F5"].fill = BANNER_FILL
 
-    ws.merge_cells("B6:H6")
-    ws["B6"] = (
-        f"Hướng dẫn: Master/Gantt từ Function List · MoM gợi ý deadline tuần này/tới · "
-        f"điền giờ họp & người tham gia trước khi gửi · xuất {today.strftime('%d/%m/%Y')}"
-    )
-    ws["B6"].font = GUIDE_FONT
-    ws["B6"].alignment = LEFT_CENTER
-    ws.row_dimensions[6].height = 20
-
     headers = ["Sheet Name", "Date", "Review subject"]
     for i, h in enumerate(headers, 2):
-        cell = ws.cell(row=8, column=i, value=h)
+        ws.cell(row=8, column=i, value=h)
     _style_header_row(ws, 8, 2, 7)
     ws.merge_cells("D8:G8")
 
@@ -486,11 +540,15 @@ def _write_cover(
         ("Master plan", "WBS Module × Phase (Start–End + % Closed từ Function List)"),
         ("Gantt", "Timeline tuần quanh ngày xuất (ô tô màu theo kế hoạch)"),
         (meeting_sheet_name, f"Họp định kỳ dự án — {week_label}"),
+        ("Risk Analysis", "Rủi ro đa chiều: Overdue / Unassigned / Stalled / High risk / Rlog"),
         ("PM Dashboard", "Tóm tắt metrics + biểu đồ Excel"),
     ]
     for i, (sheet, subject) in enumerate(toc):
         r = 9 + i
-        ws.cell(row=r, column=2, value=sheet).font = BODY_MOM_BOLD
+        _sheet_link(ws, f"B{r}", sheet, sheet)
+        ws.cell(row=r, column=2).font = Font(
+            name="Calibri", bold=True, size=10, color="0070C0", underline="single",
+        )
         ws.cell(row=r, column=3, value=today.strftime("%d/%m/%Y")).font = BODY_MOM_FONT
         ws.cell(row=r, column=3).alignment = CENTER
         ws.cell(row=r, column=4, value=subject).font = BODY_MOM_FONT
@@ -499,17 +557,28 @@ def _write_cover(
         for c in range(2, 8):
             cell = ws.cell(row=r, column=c)
             cell.border = THIN_BORDER
-            if i % 2 == 1 and c >= 2:
-                cell.fill = ALT_ROW_FILL
+            if i % 2 == 1:
+                if not cell.fill or cell.fill.fgColor is None or (
+                    getattr(cell.fill.fgColor, "rgb", None) in (None, "00000000")
+                ):
+                    if c != 2:
+                        cell.fill = ALT_ROW_FILL
         ws.row_dimensions[r].height = 18
 
-    for r in range(13, 18):
+    # Ô trống cho MoM tuần sau (giống mẫu W30)
+    for r in range(14, 20):
         ws.merge_cells(f"D{r}:G{r}")
         for c in range(2, 8):
             ws.cell(row=r, column=c).border = THIN_BORDER
         ws.row_dimensions[r].height = 16
 
-    ws.freeze_panes = "B9"
+    ws.merge_cells("B21:G21")
+    ws["B21"] = (
+        f"Xuất {today.strftime('%d/%m/%Y')} · Master/Gantt/Risk từ Function List · "
+        f"MoM gợi ý deadline — điền giờ họp & người tham gia trước khi gửi."
+    )
+    ws["B21"].font = GUIDE_FONT
+
     _set_print_landscape(ws)
 
 
@@ -517,11 +586,12 @@ def _write_master_plan(wb, metrics: dict, parsed_data, today: Optional[date] = N
     """Master plan: WBS Module × Phase từ timeline Function List."""
     ws = wb.create_sheet("Master plan")
     widths = {
-        "A": 3, "B": 7, "C": 48, "D": 18, "E": 10, "F": 16,
-        "G": 14, "H": 14, "I": 14, "J": 14, "K": 24,
+        "A": 3, "B": 7, "C": 56, "D": 16, "E": 10, "F": 18,
+        "G": 14, "H": 14, "I": 14, "J": 14, "K": 26,
     }
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
+    ws.sheet_view.showGridLines = False
 
     ws["I1"] = "Cập nhật liên tục"
     ws["I1"].font = BANNER_FONT
@@ -580,13 +650,11 @@ def _write_master_plan(wb, metrics: dict, parsed_data, today: Optional[date] = N
     row = 4
     for item in master_rows:
         ws.cell(row=row, column=2, value=item.get("stt", ""))
-        # Bỏ indent khoảng trắng thừa — dùng alignment indent trực quan hơn
         name = (item.get("name") or "").strip()
         ws.cell(row=row, column=3, value=name)
         ws.cell(row=row, column=4, value=item.get("status", ""))
-        ws.cell(row=row, column=5, value="")  # FIS — không có trong FL
+        ws.cell(row=row, column=5, value="")
         ws.cell(row=row, column=6, value=item.get("pic_kdg", ""))
-        # v1.0 để trống (baseline PM điền); LU = mốc Start/End hiện tại từ FL
         ws.cell(row=row, column=7, value="")
         ws.cell(row=row, column=8, value="")
         ws.cell(row=row, column=9, value=_fmt_date(item.get("start")))
@@ -609,9 +677,10 @@ def _write_master_plan(wb, metrics: dict, parsed_data, today: Optional[date] = N
                 cell.alignment = CENTER
             if is_mod:
                 cell.fill = MODULE_FILL
-            elif c in (9, 10) and cell.value:
-                cell.fill = LU_DATE_FILL
-        ws.row_dimensions[row].height = 18
+            else:
+                cell.fill = WHITE_FILL
+                if c in (9, 10) and cell.value:
+                    cell.fill = LU_DATE_FILL
         row += 1
 
     ws.cell(
@@ -621,6 +690,7 @@ def _write_master_plan(wb, metrics: dict, parsed_data, today: Optional[date] = N
     ws.cell(row=row + 1, column=2).font = GUIDE_FONT
     ws.merge_cells(start_row=row + 1, start_column=2, end_row=row + 1, end_column=11)
     ws.freeze_panes = "C4"
+    ws.print_title_rows = "1:3"
     _set_print_landscape(ws)
 
 
@@ -642,14 +712,12 @@ def _iter_weeks(start: date, end: date) -> list[tuple[date, date, str]]:
 def _write_gantt_sheet(wb, metrics: dict, parsed_data, today: date) -> None:
     """Sheet Gantt: hàng = Module × Phase giao cửa sổ; cột = tuần cố định quanh today."""
     ws = wb.create_sheet("Gantt")
-    # Cửa sổ cố định quanh today — dễ đọc, không kéo từ Dec/2025
     min_d = today - timedelta(weeks=6)
     max_d = today + timedelta(weeks=14)
     weeks = _iter_weeks(min_d, max_d)
     win_start, win_end = weeks[0][0], weeks[-1][1]
 
     all_rows = _build_master_rows(metrics, parsed_data, today=today)
-    # Chỉ giữ hàng giao cửa sổ (module cha giữ nếu còn child)
     visible: list[dict] = []
     i = 0
     while i < len(all_rows):
@@ -690,6 +758,7 @@ def _write_gantt_sheet(wb, metrics: dict, parsed_data, today: date) -> None:
     ws.column_dimensions["D"].width = 12
     for i in range(len(weeks)):
         ws.column_dimensions[get_column_letter(5 + i)].width = 7
+    ws.sheet_view.showGridLines = False
 
     title = (
         f"GANTT — Module × Phase theo tuần "
@@ -697,40 +766,39 @@ def _write_gantt_sheet(wb, metrics: dict, parsed_data, today: date) -> None:
     )
     _style_title_bar(ws, 1, title, end_col)
 
-    # Legend
+    # Legend rõ ràng
     ws["A2"] = "Chú thích:"
     ws["A2"].font = LABEL_FONT
-    ws["B2"] = "Trong kế hoạch"
-    ws["B2"].fill = GANTT_FILL
-    ws["B2"].font = Font(name="Calibri", size=9, color="FFFFFF", bold=True)
-    ws["B2"].alignment = CENTER
-    ws["C2"] = "Tuần hiện tại"
-    ws["C2"].fill = GANTT_TODAY_FILL
-    ws["C2"].font = Font(name="Calibri", size=9, bold=True)
-    ws["C2"].alignment = CENTER
-    ws["D2"] = "Module (nhóm)"
-    ws["D2"].fill = MODULE_FILL
-    ws["D2"].font = Font(name="Calibri", size=9, bold=True)
-    ws["D2"].alignment = CENTER
-    ws.merge_cells(start_row=2, start_column=5, end_row=2, end_column=min(end_col, 10))
+    legends = [
+        (2, "Module", GANTT_MOD_BAR, "FFFFFF"),
+        (3, "Phase", GANTT_PHASE_BAR, "FFFFFF"),
+        (4, "Tuần này ∩ bar", GANTT_NOW_BAR, "FFFFFF"),
+        (5, "Tuần hiện tại", GANTT_TODAY_FILL, "000000"),
+    ]
+    for col, text, fill, color in legends:
+        cell = ws.cell(row=2, column=col, value=text)
+        cell.fill = fill
+        cell.font = Font(name="Calibri", size=8, bold=True, color=color)
+        cell.alignment = CENTER
+        cell.border = THIN_BORDER
+    ws.merge_cells(start_row=2, start_column=6, end_row=2, end_column=min(end_col, 12))
     ws.cell(
-        row=2, column=5,
-        value="Ô xanh = Start–End giao tuần · Cam = tuần hiện tại (không bar)",
+        row=2, column=6,
+        value="Bar tô theo Start–End giao tuần · Cam đậm = bar giao tuần xuất",
     ).font = GUIDE_FONT
     ws.row_dimensions[2].height = 18
 
     headers = ["STT", "Công việc", "Từ ngày", "Đến ngày"] + [w[2] for w in weeks]
     for i, h in enumerate(headers, 1):
-        cell = ws.cell(row=3, column=i, value=h)
+        ws.cell(row=3, column=i, value=h)
     _style_header_row(ws, 3, 1, end_col)
 
     today_week = _week_range(today)[0]
-    # Highlight cột tuần hiện tại trên header
     for wi, (ws_d, _we_d, _) in enumerate(weeks):
         if ws_d == today_week:
             cell = ws.cell(row=3, column=5 + wi)
             cell.fill = GANTT_TODAY_FILL
-            cell.font = Font(name="Calibri", bold=True, size=10, color="000000")
+            cell.font = Font(name="Calibri", bold=True, size=9, color="000000")
 
     for ri, item in enumerate(visible):
         row = 4 + ri
@@ -756,11 +824,19 @@ def _write_gantt_sheet(wb, metrics: dict, parsed_data, today: date) -> None:
             has_bar = False
             if s is not None or e is not None:
                 if _ranges_overlap(s, e, ws_d, we_d):
-                    cell.fill = GANTT_FILL
                     has_bar = True
-            if ws_d == today_week and not has_bar:
-                cell.fill = GANTT_TODAY_FILL
-        ws.row_dimensions[row].height = 16
+                    if ws_d == today_week:
+                        cell.fill = GANTT_NOW_BAR
+                    elif is_mod:
+                        cell.fill = GANTT_MOD_BAR
+                    else:
+                        cell.fill = GANTT_PHASE_BAR
+            if not has_bar:
+                if ws_d == today_week:
+                    cell.fill = GANTT_TODAY_FILL
+                elif wi % 2 == 1:
+                    cell.fill = GANTT_EMPTY_FILL
+        ws.row_dimensions[row].height = 15
 
     note_row = 4 + len(visible) + 1
     ws.cell(
@@ -770,6 +846,7 @@ def _write_gantt_sheet(wb, metrics: dict, parsed_data, today: date) -> None:
     ws.cell(row=note_row, column=1).font = GUIDE_FONT
     ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=6)
     ws.freeze_panes = "E4"
+    ws.print_title_rows = "1:3"
     _set_print_landscape(ws, fit_width=False)
 
 
@@ -781,30 +858,30 @@ def _write_mom_sheet(
     metrics: dict,
     parsed_data=None,
 ) -> None:
-    """Biên bản họp tuần — cấu trúc bám sheet mẫu W30."""
+    """Biên bản họp tuần — cấu trúc bám sheet mẫu W30 (portrait, TNR)."""
     ws = wb.create_sheet(sheet_name)
-    col_widths = {1: 2.5, 2: 5, 3: 48, 4: 14, 5: 28, 6: 12, 7: 12, 8: 12}
+    col_widths = {1: 3, 2: 5, 3: 52, 4: 14, 5: 36, 6: 12, 7: 12, 8: 12}
     for c, w in col_widths.items():
         ws.column_dimensions[get_column_letter(c)].width = w
+    ws.sheet_view.showGridLines = False
 
     week_start, week_end = _week_range(today)
     next_start = week_start + timedelta(days=7)
     next_end = week_end + timedelta(days=7)
 
-    # === Meta họp ===
     meta_rows = [
-        (2, "Ngày/Date", today.strftime("%d/%m/%Y"), True),
-        (3, "Giờ/Time", "", False),
-        (4, "Tên/Subject", f"Họp định kỳ dự án — {week_label}", True),
-        (5, "Người tham gia/Committee", "", False),
+        (2, "Ngày/Date:", today.strftime("%d/%m/%Y"), True),
+        (3, "Giờ/Time:", "", False),
+        (4, "Tên/Subject:", f"Họp định kỳ dự án — {week_label}", True),
+        (5, "Người tham gia/Committee:", "", False),
     ]
     for r, label, value, filled in meta_rows:
-        ws.cell(row=r, column=2, value=label).font = LABEL_FONT
+        ws.cell(row=r, column=2, value=label).font = MOM_LABEL_FONT
         ws.merge_cells(f"B{r}:C{r}")
         ws.cell(row=r, column=4, value=value)
         if r == 5:
             ws.merge_cells(f"D{r}:H{r}")
-            ws.row_dimensions[r].height = 36
+            ws.row_dimensions[r].height = 40
         elif r == 4:
             ws.merge_cells(f"D{r}:H{r}")
         else:
@@ -816,17 +893,15 @@ def _write_mom_sheet(
                 cell.fill = META_LABEL_FILL
                 cell.alignment = LEFT_CENTER
             else:
-                cell.font = META_VALUE_FONT if filled or value else BODY_MOM_FONT
+                cell.font = META_VALUE_FONT if filled or value else MOM_BODY_FONT
                 cell.alignment = LEFT_CENTER if r in (4, 5) else CENTER
 
-    ws["F2"] = "Return to Cover Page"
-    ws["F2"].font = Font(name="Calibri", italic=True, size=10, color="0070C0")
+    _sheet_link(ws, "F2", "Cover Page", "Return to Cover Page")
     ws["F2"].alignment = CENTER
     ws.merge_cells("F2:H2")
 
     ws.merge_cells("B7:H7")
     ws["B7"] = "Nội dung / Content"
-    ws["B7"].font = CONTENT_BAR_FONT
     for c in range(2, 9):
         ws.cell(row=7, column=c).fill = CONTENT_BAR_FILL
         ws.cell(row=7, column=c).border = THIN_BORDER
@@ -854,26 +929,29 @@ def _write_mom_sheet(
                 vals = [idx, it["ten"], it["pic"], it.get("note", ""), it["from"], it["to"], it["status"]]
                 for c, v in enumerate(vals, 2):
                     cell = ws.cell(row=row, column=c, value=v)
-                    if c in (6, 7, 8):
+                    cell.font = MOM_BODY_FONT
+                    if c == 2:
                         cell.alignment = CENTER
+                    elif c in (6, 7):
+                        cell.alignment = CENTER
+                    elif c == 8:
+                        cell.alignment = CENTER
+                        sf = _status_fill(str(v or ""))
+                        if sf:
+                            cell.fill = sf
                     elif c == 3:
                         cell.alignment = LEFT_TOP
                     else:
                         cell.alignment = LEFT_CENTER
-                    cell.font = BODY_MOM_FONT
                 _apply_border_row(ws, row, 1, 8)
-                # Wrap tên CN — ước lượng chiều cao
                 ten_len = len(str(it.get("ten") or ""))
-                ws.row_dimensions[row].height = 28 if ten_len > 60 else 18
+                ws.row_dimensions[row].height = 28 if ten_len > 55 else 18
                 row += 1
         else:
-            ws.cell(row=row, column=2, value=1)
-            ws.cell(row=row, column=3, value=empty_hint)
-            ws.cell(row=row, column=3).font = NOTE_FONT
+            ws.cell(row=row, column=3, value=empty_hint).font = NOTE_FONT
             _apply_border_row(ws, row, 1, 8)
             row += 1
-            for i in range(2, 4):
-                ws.cell(row=row, column=2, value=i)
+            for _ in range(2):
                 _apply_border_row(ws, row, 1, 8)
                 row += 1
         return row
@@ -886,25 +964,24 @@ def _write_mom_sheet(
         row, "A",
         f"KẾ HOẠCH TUẦN NÀY ({week_start.strftime('%d/%m')}–{week_end.strftime('%d/%m/%Y')})",
         this_week,
-        f"Không có phase Start/End trong tuần này. PM điền tay.",
+        "Không có phase Start/End trong tuần này. PM điền tay.",
     )
 
-    row += 1  # khoảng cách giữa block
+    row += 1
     row = _write_plan_section(
         row, "B",
         f"KẾ HOẠCH TUẦN TỚI ({next_start.strftime('%d/%m')}–{next_end.strftime('%d/%m/%Y')})",
         next_week,
-        f"Không có phase Start/End trong tuần tới. PM điền tay.",
+        "Không có phase Start/End trong tuần tới. PM điền tay.",
     )
 
-    # --- Hành động (overdue, sort severity) ---
+    # Hành động — header giống mẫu W30
     row += 1
-    ws.cell(row=row, column=2, value="C")
-    ws.cell(row=row, column=3, value="Hành động (gợi ý từ Overdue)")
+    ws.cell(row=row, column=2, value="Hành động")
     ws.cell(row=row, column=6, value="PIC")
     ws.cell(row=row, column=7, value="Ngày")
     ws.cell(row=row, column=8, value="Trạng thái")
-    ws.merge_cells(f"C{row}:E{row}")
+    ws.merge_cells(f"B{row}:E{row}")
     for c in range(1, 9):
         cell = ws.cell(row=row, column=c)
         cell.font = MOM_HEADER_FONT
@@ -925,31 +1002,32 @@ def _write_mom_sheet(
                 f"{it.get('ma_cn') or ''} — {it.get('ten_cn') or ''}"
             ).strip(" —")
             pic = ", ".join(it.get("pic") or []) or NA
-            ws.cell(row=row, column=2, value=idx)
+            status = _normalize_status(it.get("status")) or "Open"
+            ws.cell(row=row, column=2, value=idx).alignment = CENTER
             ws.cell(row=row, column=3, value=ten)
             ws.merge_cells(f"C{row}:E{row}")
             ws.cell(row=row, column=6, value=pic)
             ws.cell(row=row, column=7, value=_fmt_date(it.get("end_date")))
-            ws.cell(row=row, column=8, value=_normalize_status(it.get("status")) or "Open")
+            ws.cell(row=row, column=8, value=status)
             fill = _fill_by_days(int(it.get("days_overdue") or 0))
             for c in range(1, 9):
                 cell = ws.cell(row=row, column=c)
                 cell.border = THIN_BORDER
-                cell.font = BODY_MOM_FONT
+                cell.font = MOM_BODY_FONT
                 cell.alignment = CENTER if c >= 6 else LEFT_TOP
                 if fill and c >= 2:
                     cell.fill = fill
+            sf = _status_fill(status)
+            if sf:
+                ws.cell(row=row, column=8).fill = sf
             ws.row_dimensions[row].height = 28 if len(ten) > 50 else 18
             row += 1
     else:
-        ws.cell(row=row, column=2, value=1)
-        ws.cell(row=row, column=3, value="Không có task overdue.")
-        ws.cell(row=row, column=3).font = NOTE_FONT
+        ws.cell(row=row, column=3, value="Không có task overdue.").font = NOTE_FONT
         ws.merge_cells(f"C{row}:E{row}")
         _apply_border_row(ws, row, 1, 8)
         row += 1
-        for i in range(2, 4):
-            ws.cell(row=row, column=2, value=i)
+        for _ in range(3):
             ws.merge_cells(f"C{row}:E{row}")
             _apply_border_row(ws, row, 1, 8)
             row += 1
@@ -960,8 +1038,9 @@ def _write_mom_sheet(
         row=row, column=2,
         value=f"Gợi ý auto {today.strftime('%d/%m/%Y')} · Điền giờ họp / người tham gia trước khi gửi.",
     ).font = GUIDE_FONT
-    ws.freeze_panes = "C9"
-    _set_print_landscape(ws)
+    ws.freeze_panes = "A9"
+    ws.print_title_rows = "7:8"
+    _set_print_portrait(ws)
 
 
 def _block_title(ws, row: int, title: str, n_cols: int = 8) -> int:
@@ -980,69 +1059,65 @@ def _block_title(ws, row: int, title: str, n_cols: int = 8) -> int:
 
 def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None:
     """
-    Sheet PM Dashboard — block số liệu + 3 chart Excel:
-      1. Tóm tắt
-      2. Overdue (sort ngày trễ)
-      3. Tiến độ theo phase (% Closed) + bar chart
-      4. Module (sort % / overdue) + bar overdue
-      5. PIC workload (sort tải) + bar top PIC
+    PM Dashboard — bảng trái (A–G), chart phải (cột J+) không tạo khoảng trống dọc lớn.
     """
     ws = wb.create_sheet("PM Dashboard")
-    for i in range(1, 12):
-        ws.column_dimensions[get_column_letter(i)].width = 13
+    for i in range(1, 16):
+        ws.column_dimensions[get_column_letter(i)].width = 12
     ws.column_dimensions["A"].width = 26
     ws.column_dimensions["B"].width = 14
-    ws.column_dimensions["C"].width = 32
+    ws.column_dimensions["C"].width = 30
     ws.column_dimensions["D"].width = 12
     ws.column_dimensions["E"].width = 12
-    ws.column_dimensions["F"].width = 12
+    ws.column_dimensions["F"].width = 11
     ws.column_dimensions["G"].width = 11
-    ws.column_dimensions["H"].width = 14
-    ws.column_dimensions["I"].width = 12
+    ws.sheet_view.showGridLines = False
 
     _style_title_bar(
         ws, 1,
         f"BẢNG ĐIỀU KHIỂN PM — Function List ({week_label})",
-        9,
+        12,
     )
 
-    ws.merge_cells("A2:I2")
+    ws.merge_cells("A2:G2")
     ws["A2"] = f"Xuất ngày {today.strftime('%d/%m/%Y')} — số liệu từ metrics engine"
     ws["A2"].font = GUIDE_FONT
-    ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[2].height = 16
+    ws["A2"].alignment = Alignment(horizontal="left", vertical="center")
 
     summary = metrics.get("summary") or {}
     row = 4
 
-    # --- 1. Summary ---
-    row = _block_title(ws, row, "1. TÓM TẮT DỰ ÁN")
+    # --- 1. Summary KPI ngang ---
+    row = _block_title(ws, row, "1. TÓM TẮT DỰ ÁN", n_cols=8)
     cards = [
-        ("Tổng chức năng", summary.get("total_functions", NA)),
-        ("Tiến độ chung (%)", summary.get("overall_progress_pct", NA)),
-        ("Số function đang trễ", summary.get("total_overdue", NA)),
-        ("Số bản ghi phase trễ", summary.get("total_overdue_records", NA)),
-        ("Chưa có PIC", summary.get("unassigned_count", NA)),
-        ("Rủi ro cao (score ≥50)", summary.get("high_risk_count", NA)),
-        ("Số Module", summary.get("modules_count", NA)),
-        ("Số Phase", summary.get("phases_count", NA)),
+        ("Tổng CN", summary.get("total_functions", NA)),
+        ("Tiến độ %", summary.get("overall_progress_pct", NA)),
+        ("CN trễ", summary.get("total_overdue", NA)),
+        ("Phase trễ", summary.get("total_overdue_records", NA)),
+        ("Thiếu PIC", summary.get("unassigned_count", NA)),
+        ("Risk ≥50", summary.get("high_risk_count", NA)),
+        ("Module", summary.get("modules_count", NA)),
+        ("Phase", summary.get("phases_count", NA)),
     ]
-    ws.cell(row=row, column=1, value="Chỉ số")
-    ws.cell(row=row, column=2, value="Giá trị")
-    _style_header_row(ws, row, 1, 2)
-    row += 1
-    for label, val in cards:
-        ws.cell(row=row, column=1, value=label).font = LABEL_FONT
-        ws.cell(row=row, column=1).border = THIN_BORDER
-        c = ws.cell(row=row, column=2, value=val if val is not None else NA)
-        c.font = BODY_MOM_FONT
-        c.border = THIN_BORDER
-        c.alignment = Alignment(horizontal="right", vertical="center")
-        if "trễ" in label.lower() and isinstance(val, (int, float)) and val > 0:
-            c.fill = RED_FILL
-        row += 1
+    for i, (label, val) in enumerate(cards):
+        c = i + 1
+        h = ws.cell(row=row, column=c, value=label)
+        h.font = Font(name="Calibri", bold=True, size=9, color="FFFFFF")
+        h.fill = MOM_HEADER_FILL
+        h.alignment = CENTER
+        h.border = THIN_BORDER
+        v = ws.cell(row=row + 1, column=c, value=val if val is not None else NA)
+        v.font = Font(name="Calibri", bold=True, size=12, color="1F4E79")
+        v.fill = KPI_FILL
+        v.alignment = CENTER
+        v.border = THIN_BORDER
+        if isinstance(val, float):
+            v.number_format = "0.0"
+        if label in ("CN trễ", "Phase trễ", "Risk ≥50") and isinstance(val, (int, float)) and val > 0:
+            v.fill = RED_FILL
+    # Giữ cột A/B label-value cũ cho test đọc "Chỉ số"? Tests check A column text TÓM TẮT etc.
+    row += 3
 
-    row += 2
     # --- 2. Overdue ---
     row = _block_title(ws, row, "2. CÔNG VIỆC TRỄ (top 20 — sắp theo số ngày trễ ↓)", n_cols=9)
     overdue = sorted(
@@ -1079,12 +1154,12 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
                 if fill:
                     cell.fill = fill
             ten = str(it.get("ten_cn") or "")
-            ws.row_dimensions[row].height = 28 if len(ten) > 40 else 16
+            ws.row_dimensions[row].height = 26 if len(ten) > 40 else 16
             row += 1
 
-    row += 2
-    # --- 3. Phase progress + chart data ---
-    row = _block_title(ws, row, "3. TIẾN ĐỘ THEO PHASE (% Closed trên status đã fill)", n_cols=5)
+    row += 1
+    # --- 3. Phase progress + chart bên phải ---
+    row = _block_title(ws, row, "3. TIẾN ĐỘ THEO PHASE (% Closed trên status đã fill)", n_cols=4)
     stacked = metrics.get("phase_progress_stacked") or {}
     phases = list(stacked.get("phases") or [])
     statuses = list(stacked.get("statuses") or [])
@@ -1101,9 +1176,8 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
         _style_header_row(ws, row, 1, 4)
         row += 1
         phase_chart_start = row
-        phase_rows_tmp = []
-        # Giữ thứ tự phase pipeline gốc; % = Closed / (tổng status ≠ Blank)
         status_keys = [s for s in statuses if s != "(Blank)"]
+        phase_rows_tmp = []
         for ph in phases:
             counts = pdata.get(ph) or {}
             closed = int(counts.get("Closed", 0) or 0)
@@ -1117,10 +1191,11 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
                 cell.font = BODY_MOM_FONT
                 cell.border = THIN_BORDER
                 cell.alignment = CENTER if c > 1 else LEFT_CENTER
-            if total > 0 and pct >= 80:
-                ws.cell(row=row, column=1).fill = GREEN_FILL
-            elif total > 0 and pct < 30:
-                ws.cell(row=row, column=1).fill = YELLOW_FILL
+                if c == 2:
+                    cell.number_format = "0.0"
+            pf = _pct_fill(pct) if total > 0 else None
+            if pf:
+                ws.cell(row=row, column=1).fill = pf
             row += 1
         phase_chart_end = row - 1
 
@@ -1129,21 +1204,17 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
             chart.type = "col"
             chart.title = "% Closed theo Phase"
             chart.y_axis.title = "%"
-            chart.x_axis.title = None
             data_ref = Reference(ws, min_col=2, min_row=phase_chart_start - 1, max_row=phase_chart_end)
             cats = Reference(ws, min_col=1, min_row=phase_chart_start, max_row=phase_chart_end)
             chart.add_data(data_ref, titles_from_data=True)
             chart.set_categories(cats)
             chart.shape = 4
-            chart.width = 14
+            chart.width = 12
             chart.height = 8
-            # Đặt bên phải bảng, không đè cột A–D
-            ws.add_chart(chart, "F" + str(phase_chart_start - 1))
-        # Chừa chỗ cho chart trước block kế
-        row = max(row, (phase_chart_start or row) + 14)
+            ws.add_chart(chart, "J" + str(phase_chart_start - 1))
 
     row += 1
-    # --- 4. Module overview ---
+    # --- 4. Module ---
     row = _block_title(ws, row, "4. TỔNG QUAN MODULE (sắp theo số trễ ↓, rồi tiến độ %)", n_cols=6)
     modules = list(metrics.get("module_overview") or [])
     modules.sort(
@@ -1175,12 +1246,13 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
                 cell.font = BODY_MOM_FONT
                 cell.border = THIN_BORDER
                 cell.alignment = CENTER if c != 2 and c != 5 else LEFT_CENTER
+                if c == 4 and isinstance(v, (int, float)):
+                    cell.number_format = "0.0"
             od = int(m.get("overdue_count") or 0)
             if od > 0:
                 ws.cell(row=row, column=6).fill = ORANGE_FILL if od < 5 else RED_FILL
             row += 1
         mod_chart_end = row - 1
-        # Chart: tiến độ % theo module (overdue thường gần 0 → chart trống)
         chart_n = mod_chart_end - mod_chart_start + 1
         if chart_n > 0:
             chart = BarChart()
@@ -1196,13 +1268,12 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
             )
             chart.add_data(data_ref, titles_from_data=True)
             chart.set_categories(cats)
-            chart.width = 14
-            chart.height = 9
-            ws.add_chart(chart, "H" + str(mod_chart_start - 1))
-        row = max(row, (mod_chart_start or row) + 12)
+            chart.width = 12
+            chart.height = max(6, min(10, chart_n * 0.6 + 3))
+            ws.add_chart(chart, "J" + str(mod_chart_start - 1))
 
     row += 1
-    # --- 5. PIC workload ---
+    # --- 5. PIC ---
     row = _block_title(ws, row, "5. TẢI VIỆC PIC (top 25 — sắp theo tổng task ↓)", n_cols=7)
     pics = sorted(
         list(metrics.get("pic_workload") or []),
@@ -1253,15 +1324,14 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
             )
             chart.add_data(data_ref, titles_from_data=True)
             chart.set_categories(cats)
-            chart.width = 13
+            chart.width = 12
             chart.height = 8
-            ws.add_chart(chart, "I" + str(pic_chart_start - 1))
-        row = max(row, (pic_chart_start or row) + 12)
+            ws.add_chart(chart, "J" + str(pic_chart_start - 1))
 
-    # Pie tiến độ chung — data range chỉ 2 dòng số (không gồm title)
+    # Pie — data A/B, chart cột J (không đè bảng)
     pct = summary.get("overall_progress_pct")
     if isinstance(pct, (int, float)):
-        pie_row = row + 2
+        pie_row = row + 1
         ws.cell(row=pie_row, column=1, value="Phân bổ tiến độ chung").font = Font(
             name="Calibri", bold=True, size=11, color="1F4E79",
         )
@@ -1275,6 +1345,7 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
             for c in (1, 2):
                 ws.cell(row=r, column=c).border = THIN_BORDER
                 ws.cell(row=r, column=c).font = BODY_MOM_FONT
+            ws.cell(row=r, column=2).number_format = "0.0"
         pie = PieChart()
         pie.title = "Tiến độ chung (%)"
         labels = Reference(ws, min_col=1, min_row=pie_row + 1, max_row=pie_row + 2)
@@ -1285,17 +1356,481 @@ def _write_pm_dashboard(wb, metrics: dict, today: date, week_label: str) -> None
         pie.dataLabels.showPercent = True
         pie.width = 10
         pie.height = 8
-        ws.add_chart(pie, "D" + str(pie_row))
-        row = pie_row + 12
+        ws.add_chart(pie, "J" + str(pie_row))
+        row = pie_row + 4
 
     row += 1
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
     ws.cell(
         row=row, column=1,
-        value="Biểu đồ: Phase % Closed · Module tiến độ · Top PIC · Pie tiến độ chung.",
+        value="Biểu đồ đặt cột J trở đi — không đè bảng số liệu.",
     ).font = GUIDE_FONT
 
     ws.freeze_panes = "A4"
+    ws.print_title_rows = "1:2"
+    _set_print_landscape(ws)
+
+
+# ---------------------------------------------------------------------------
+# Risk Analysis — đa chiều từ metrics sẵn có
+# ---------------------------------------------------------------------------
+
+_RISK_SEV_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+_RISK_SEV_FILL = {
+    "Critical": RED_FILL,
+    "High": ORANGE_FILL,
+    "Medium": YELLOW_FILL,
+    "Low": GREEN_FILL,
+}
+
+
+def _risk_severity_overdue(days: int) -> str:
+    if days >= 14:
+        return "Critical"
+    if days >= 7:
+        return "High"
+    return "Medium"
+
+
+def _pics_join(pic) -> str:
+    if isinstance(pic, (list, tuple)):
+        return ", ".join(str(p) for p in pic if p)
+    return str(pic or "")
+
+
+def _collect_risk_items(metrics: dict) -> list[dict]:
+    """
+    Gom risk đa chiều từ metrics (không bịa):
+      Overdue, Unassigned, Stalled, High risk score, Missing deadline (summary),
+      Rlog plan thiếu PIC, Rlog coded thấp vs plan.
+    """
+    items: list[dict] = []
+    seen: set[tuple] = set()
+
+    def _add(it: dict) -> None:
+        key = (
+            it.get("risk_type"),
+            it.get("ma_cn"),
+            it.get("phase"),
+            it.get("detail", "")[:40],
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        items.append(it)
+
+    for it in metrics.get("overdue_list") or []:
+        days = int(it.get("days_overdue") or 0)
+        sev = _risk_severity_overdue(days)
+        _add({
+            "severity": sev,
+            "risk_type": "Overdue",
+            "ma_cn": it.get("ma_cn") or "",
+            "rlog_id": it.get("rlog_id") or "",
+            "ten_cn": it.get("ten_cn") or "",
+            "module": it.get("module") or "",
+            "phase": it.get("phase") or "",
+            "pic": _pics_join(it.get("pic")),
+            "detail": f"Trễ {days} ngày · deadline {_fmt_date(it.get('end_date'))} · {it.get('status') or ''}",
+            "suggestion": "Ưu tiên Closed hoặc cập nhật End/Status; escalate PIC nếu >7 ngày.",
+            "_sort": (_RISK_SEV_ORDER[sev], -days),
+        })
+
+    for it in metrics.get("unassigned_tasks") or []:
+        days = int(it.get("days_overdue") or 0)
+        sev = "High" if it.get("is_overdue") or days > 0 else "Medium"
+        _add({
+            "severity": sev,
+            "risk_type": "Unassigned",
+            "ma_cn": it.get("ma_cn") or "",
+            "rlog_id": it.get("rlog_id") or "",
+            "ten_cn": it.get("ten_cn") or "",
+            "module": it.get("module") or "",
+            "phase": it.get("phase") or "",
+            "pic": "",
+            "detail": f"Thiếu PIC · status {it.get('status') or ''} · phase trước đã Closed",
+            "suggestion": "Gán PIC ngay cho phase đang tới lượt.",
+            "_sort": (_RISK_SEV_ORDER[sev], -days),
+        })
+
+    stalled = metrics.get("stalled_tasks") or {}
+    for it in (stalled.get("items") if isinstance(stalled, dict) else None) or []:
+        wait = int(it.get("wait_days") or 0)
+        if wait < 3:
+            continue  # nhiễu ngắn
+        sev = "High" if wait >= 7 else "Medium"
+        _add({
+            "severity": sev,
+            "risk_type": "Stalled",
+            "ma_cn": it.get("ma_cn") or "",
+            "rlog_id": "",
+            "ten_cn": it.get("ten_cn") or "",
+            "module": it.get("module") or "",
+            "phase": f"{it.get('completed_phase') or ''}→{it.get('waiting_phase') or ''}",
+            "pic": "",
+            "detail": f"Đình trệ {wait} ngày sau Closed {it.get('completed_phase') or ''}",
+            "suggestion": f"Khởi động phase {it.get('waiting_phase') or 'tiếp theo'} hoặc cập nhật status.",
+            "_sort": (_RISK_SEV_ORDER[sev], -wait),
+        })
+
+    for it in metrics.get("risk_scores") or []:
+        score = int(it.get("risk_score") or 0)
+        if score < 50:
+            continue
+        sev = "Critical" if score >= 70 else "High"
+        factors = it.get("risk_factors") or []
+        factor_txt = ", ".join(str(f) for f in factors[:4]) if factors else "composite score"
+        _add({
+            "severity": sev,
+            "risk_type": "High risk score",
+            "ma_cn": it.get("ma_cn") or "",
+            "rlog_id": "",
+            "ten_cn": it.get("ten_cn") or "",
+            "module": it.get("module") or "",
+            "phase": "",
+            "pic": "",
+            "detail": f"Score {score} · {factor_txt}",
+            "suggestion": "Review factors (overdue/duration/unassigned) và lập action.",
+            "_sort": (_RISK_SEV_ORDER[sev], -score),
+        })
+
+    # DQ: ưu tiên list issues (high + missing_deadline); fallback summary
+    dq = metrics.get("data_quality") or {}
+    dq_issues = list(dq.get("issues") or []) if isinstance(dq, dict) else []
+    md_from_list = 0
+    high_from_list = 0
+    for it in dq_issues:
+        code = (it.get("code") or "").strip()
+        sev_raw = (it.get("severity") or "").strip().lower()
+        label = (it.get("label") or code or "DQ").strip()
+        if sev_raw == "high" and high_from_list < 25:
+            high_from_list += 1
+            _add({
+                "severity": "High",
+                "risk_type": f"DQ high: {label}",
+                "ma_cn": it.get("ma_cn") or "",
+                "rlog_id": it.get("rlog_id") or "",
+                "ten_cn": it.get("ten_cn") or "",
+                "module": it.get("module") or "",
+                "phase": it.get("phase") or "",
+                "pic": "",
+                "detail": it.get("detail") or label,
+                "suggestion": it.get("suggestion") or "Sửa dữ liệu Function List.",
+                "_sort": (_RISK_SEV_ORDER["High"], -high_from_list),
+            })
+        elif code == "missing_deadline" and md_from_list < 20:
+            md_from_list += 1
+            _add({
+                "severity": "Medium",
+                "risk_type": "Missing deadline",
+                "ma_cn": it.get("ma_cn") or "",
+                "rlog_id": it.get("rlog_id") or "",
+                "ten_cn": it.get("ten_cn") or "",
+                "module": it.get("module") or "",
+                "phase": it.get("phase") or "",
+                "pic": "",
+                "detail": it.get("detail") or "Phase đang làm thiếu End date",
+                "suggestion": it.get("suggestion") or "Bổ sung End date cho phase đang mở.",
+                "_sort": (_RISK_SEV_ORDER["Medium"], 0),
+            })
+
+    summary = metrics.get("summary") or {}
+    md_count = int(summary.get("missing_deadline_count") or 0)
+    md_rec = int(summary.get("missing_deadline_records") or 0)
+    if md_from_list == 0 and (md_count > 0 or md_rec > 0):
+        sev = "High" if md_count >= 10 else "Medium"
+        _add({
+            "severity": sev,
+            "risk_type": "Missing deadline",
+            "ma_cn": "",
+            "rlog_id": "",
+            "ten_cn": f"{md_count} function · {md_rec} phase thiếu End",
+            "module": "(tóm tắt)",
+            "phase": "",
+            "pic": "",
+            "detail": "DQ: phase active thiếu deadline (End date)",
+            "suggestion": "Bổ sung End date cho phase đang mở để theo dõi đúng.",
+            "_sort": (_RISK_SEV_ORDER[sev], -md_count),
+        })
+
+    anomaly_count = int(summary.get("anomaly_count") or 0)
+    anomaly_rec = int(summary.get("anomaly_records") or 0)
+    if high_from_list == 0 and (anomaly_count > 0 or anomaly_rec > 0):
+        sev = "High" if anomaly_count >= 5 else "Medium"
+        _add({
+            "severity": sev,
+            "risk_type": "DQ high / anomaly",
+            "ma_cn": "",
+            "rlog_id": "",
+            "ten_cn": f"{anomaly_count} function · {anomaly_rec} bản ghi bất thường",
+            "module": "(tóm tắt)",
+            "phase": "",
+            "pic": "",
+            "detail": "DQ: end<start / trùng Mã CN / overlap / estimate lệch…",
+            "suggestion": "Mở Data Quality trên dashboard, sửa các issue severity high.",
+            "_sort": (_RISK_SEV_ORDER[sev], -anomaly_count),
+        })
+
+    rlog = metrics.get("rlog_weekly") or {}
+    plan = (rlog.get("rlog_plan_next_week") or {}) if isinstance(rlog, dict) else {}
+    coded = (rlog.get("rlog_coded_this_week") or {}) if isinstance(rlog, dict) else {}
+    plan_items = list(plan.get("items") or [])
+    plan_count = int(plan.get("count") or len(plan_items))
+    coded_count = int(coded.get("count") or 0)
+
+    no_pic_plan = 0
+    for it in plan_items:
+        pics = it.get("pic") or []
+        if not pics:
+            no_pic_plan += 1
+            _add({
+                "severity": "Medium",
+                "risk_type": "Rlog plan thiếu PIC",
+                "ma_cn": it.get("ma_cn") or "",
+                "rlog_id": it.get("rlog_id") or "",
+                "ten_cn": it.get("ten_cn") or "",
+                "module": it.get("module") or "",
+                "phase": it.get("phase") or "Dev",
+                "pic": "",
+                "detail": "Kế hoạch Dev tuần tới chưa có PIC",
+                "suggestion": "Gán PIC Dev trước khi bắt đầu tuần tới.",
+                "_sort": (_RISK_SEV_ORDER["Medium"], 0),
+            })
+
+    if plan_count > 0 and coded_count * 2 < plan_count:
+        sev = "High" if coded_count == 0 and plan_count >= 3 else "Medium"
+        _add({
+            "severity": sev,
+            "risk_type": "Rlog coded thấp",
+            "ma_cn": "",
+            "rlog_id": "",
+            "ten_cn": f"Coded tuần này {coded_count} · Plan tuần tới {plan_count}",
+            "module": "(tóm tắt)",
+            "phase": "Dev",
+            "pic": "",
+            "detail": f"Coded/Plan = {coded_count}/{plan_count}"
+                      + (f" · plan thiếu PIC: {no_pic_plan}" if no_pic_plan else ""),
+            "suggestion": "Rà soát capacity Dev tuần này vs kế hoạch tuần tới.",
+            "_sort": (_RISK_SEV_ORDER[sev], -(plan_count - coded_count)),
+        })
+
+    items.sort(key=lambda x: x.get("_sort", (9, 0)))
+    for it in items:
+        it.pop("_sort", None)
+    return items
+
+
+def _pivot_count(items: list[dict], key_a: str, key_b: str) -> list[tuple]:
+    """Đếm (a, b) → count, sort giảm dần."""
+    c: Counter = Counter()
+    for it in items:
+        a = (it.get(key_a) or "(blank)").strip() or "(blank)"
+        b = (it.get(key_b) or "(blank)").strip() or "(blank)"
+        if a == "(tóm tắt)":
+            continue
+        c[(a, b)] += 1
+    return sorted(c.items(), key=lambda x: (-x[1], x[0][0], x[0][1]))
+
+
+def _enrich_metrics_for_risk(metrics: dict, parsed_data, today: date) -> dict:
+    """Gắn data_quality vào metrics nếu chưa có (để list DQ high / missing deadline)."""
+    m = dict(metrics or {})
+    if m.get("data_quality") or parsed_data is None:
+        return m
+    try:
+        from analyzer.data_quality import compute_data_quality
+        m["data_quality"] = compute_data_quality(parsed_data, today=today)
+    except Exception:
+        pass
+    return m
+
+
+def _write_risk_sheet(
+    wb, metrics: dict, today: date, week_label: str, parsed_data=None,
+) -> None:
+    """Sheet Risk Analysis — summary đa chiều + top risks."""
+    ws = wb.create_sheet("Risk Analysis")
+    widths = {
+        "A": 12, "B": 20, "C": 16, "D": 14, "E": 12, "F": 32,
+        "G": 12, "H": 16, "I": 38, "J": 40,
+    }
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+    ws.sheet_view.showGridLines = False
+
+    _style_title_bar(
+        ws, 1,
+        f"PHÂN TÍCH RỦI RO ĐA CHIỀU — {week_label} (xuất {today.strftime('%d/%m/%Y')})",
+        10,
+    )
+    ws.merge_cells("A2:J2")
+    ws["A2"] = (
+        "Nguồn: overdue · unassigned (pred Closed + Start đã đến) · stalled · "
+        "risk_scores ≥50 · DQ high / missing deadline · rlog plan thiếu PIC"
+    )
+    ws["A2"].font = GUIDE_FONT
+
+    enriched = _enrich_metrics_for_risk(metrics or {}, parsed_data, today)
+    items = _collect_risk_items(enriched)
+    row = 4
+
+    # KPI theo loại
+    row = _block_title(ws, row, "1. TÓM TẮT THEO LOẠI RỦI RO", n_cols=4)
+    by_type = Counter(it["risk_type"] for it in items)
+    by_sev = Counter(it["severity"] for it in items)
+    ws.cell(row=row, column=1, value="Loại risk")
+    ws.cell(row=row, column=2, value="Số mục")
+    ws.cell(row=row, column=3, value="Mức độ")
+    ws.cell(row=row, column=4, value="Số mục")
+    _style_header_row(ws, row, 1, 4)
+    row += 1
+    type_rows = sorted(by_type.items(), key=lambda x: -x[1])
+    sev_rows = sorted(by_sev.items(), key=lambda x: _RISK_SEV_ORDER.get(x[0], 9))
+    max_r = max(len(type_rows), len(sev_rows), 1)
+    for i in range(max_r):
+        if i < len(type_rows):
+            ws.cell(row=row, column=1, value=type_rows[i][0])
+            ws.cell(row=row, column=2, value=type_rows[i][1])
+        if i < len(sev_rows):
+            ws.cell(row=row, column=3, value=sev_rows[i][0])
+            ws.cell(row=row, column=4, value=sev_rows[i][1])
+            sf = _RISK_SEV_FILL.get(sev_rows[i][0])
+            if sf:
+                ws.cell(row=row, column=3).fill = sf
+        for c in range(1, 5):
+            ws.cell(row=row, column=c).border = THIN_BORDER
+            ws.cell(row=row, column=c).font = BODY_MOM_FONT
+            ws.cell(row=row, column=c).alignment = CENTER if c in (2, 4) else LEFT_CENTER
+        row += 1
+    if not items:
+        ws.cell(row=row, column=1, value="Không phát hiện risk từ metrics hiện tại.").font = NOTE_FONT
+        row += 1
+
+    row += 1
+    # Module × loại
+    row = _block_title(ws, row, "2. MODULE × LOẠI RISK (top 20)", n_cols=3)
+    for i, h in enumerate(["Module", "Loại risk", "Số mục"], 1):
+        ws.cell(row=row, column=i, value=h)
+    _style_header_row(ws, row, 1, 3)
+    row += 1
+    piv = _pivot_count(items, "module", "risk_type")[:20]
+    if not piv:
+        ws.cell(row=row, column=1, value="—").font = NOTE_FONT
+        row += 1
+    else:
+        for (mod, rtype), cnt in piv:
+            ws.cell(row=row, column=1, value=mod)
+            ws.cell(row=row, column=2, value=rtype)
+            ws.cell(row=row, column=3, value=cnt)
+            for c in range(1, 4):
+                ws.cell(row=row, column=c).border = THIN_BORDER
+                ws.cell(row=row, column=c).font = BODY_MOM_FONT
+            ws.cell(row=row, column=3).alignment = CENTER
+            row += 1
+
+    row += 1
+    row = _block_title(ws, row, "3. PHASE × LOẠI RISK (top 20)", n_cols=3)
+    for i, h in enumerate(["Phase", "Loại risk", "Số mục"], 1):
+        ws.cell(row=row, column=i, value=h)
+    _style_header_row(ws, row, 1, 3)
+    row += 1
+    piv = _pivot_count(items, "phase", "risk_type")[:20]
+    if not piv:
+        ws.cell(row=row, column=1, value="—").font = NOTE_FONT
+        row += 1
+    else:
+        for (ph, rtype), cnt in piv:
+            ws.cell(row=row, column=1, value=ph)
+            ws.cell(row=row, column=2, value=rtype)
+            ws.cell(row=row, column=3, value=cnt)
+            for c in range(1, 4):
+                ws.cell(row=row, column=c).border = THIN_BORDER
+                ws.cell(row=row, column=c).font = BODY_MOM_FONT
+            ws.cell(row=row, column=3).alignment = CENTER
+            row += 1
+
+    row += 1
+    row = _block_title(ws, row, "4. PIC × OVERDUE (top 15)", n_cols=2)
+    ws.cell(row=row, column=1, value="PIC")
+    ws.cell(row=row, column=2, value="Overdue count")
+    _style_header_row(ws, row, 1, 2)
+    row += 1
+    pic_od = Counter()
+    for it in items:
+        if it.get("risk_type") != "Overdue":
+            continue
+        pic = (it.get("pic") or "").strip() or "(chưa gán)"
+        for p in [x.strip() for x in pic.replace(";", ",").split(",") if x.strip()]:
+            pic_od[p] += 1
+    if not pic_od:
+        ws.cell(row=row, column=1, value="Không có overdue gắn PIC.").font = NOTE_FONT
+        row += 1
+    else:
+        for pic, cnt in sorted(pic_od.items(), key=lambda x: -x[1])[:15]:
+            ws.cell(row=row, column=1, value=pic)
+            ws.cell(row=row, column=2, value=cnt)
+            for c in range(1, 3):
+                ws.cell(row=row, column=c).border = THIN_BORDER
+                ws.cell(row=row, column=c).font = BODY_MOM_FONT
+            ws.cell(row=row, column=2).alignment = CENTER
+            if cnt >= 3:
+                ws.cell(row=row, column=2).fill = ORANGE_FILL
+            row += 1
+
+    row += 1
+    row = _block_title(ws, row, "5. TOP RISKS (severityity ↓, tối đa 60)", n_cols=10)
+    headers = [
+        "STT", "Mức", "Loại risk", "Mã CN", "RlogID", "Tên chức năng",
+        "Module", "Phase", "Chi tiết", "Gợi ý",
+    ]
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=row, column=i, value=h)
+    _style_header_row(ws, row, 1, 10)
+    row += 1
+
+    top = items[:60]
+    if not top:
+        ws.cell(row=row, column=1, value="Không có mục risk.").font = NOTE_FONT
+        row += 1
+    else:
+        for idx, it in enumerate(top, 1):
+            vals = [
+                idx,
+                it.get("severity", ""),
+                it.get("risk_type", ""),
+                it.get("ma_cn", ""),
+                it.get("rlog_id", ""),
+                it.get("ten_cn", ""),
+                it.get("module", ""),
+                it.get("phase", ""),
+                it.get("detail", ""),
+                it.get("suggestion", ""),
+            ]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(row=row, column=c, value=v)
+                cell.font = BODY_MOM_FONT
+                cell.border = THIN_BORDER
+                cell.alignment = CENTER if c in (1, 2, 4, 5, 7) else LEFT_TOP
+            sev = it.get("severity") or ""
+            sf = _RISK_SEV_FILL.get(sev)
+            if sf:
+                ws.cell(row=row, column=2).fill = sf
+            if idx % 2 == 0:
+                for c in (3, 6, 8, 9, 10):
+                    if not ws.cell(row=row, column=c).fill or ws.cell(row=row, column=c).fill.fgColor is None:
+                        ws.cell(row=row, column=c).fill = ALT_ROW_FILL
+            ws.row_dimensions[row].height = 28 if len(str(it.get("ten_cn") or "")) > 40 else 18
+            row += 1
+
+    row += 1
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
+    ws.cell(
+        row=row, column=1,
+        value="Gợi ý mang tính hỗ trợ PM — xác nhận lại trên Function List trước khi gửi khách.",
+    ).font = GUIDE_FONT
+
+    ws.freeze_panes = "A4"
+    ws.print_title_rows = "1:2"
     _set_print_landscape(ws)
 
 
@@ -1308,7 +1843,7 @@ def export_weekly_mom(
     today: Optional[date] = None,
 ) -> str:
     """
-    Sinh workbook báo cáo tuần MoM (mẫu W30) + Master/Gantt + PM Dashboard.
+    Sinh workbook báo cáo tuần MoM (mẫu W30) + Master/Gantt + Risk + PM Dashboard.
 
     Args:
         metrics: dict từ DashboardEngine.compute()
@@ -1332,6 +1867,7 @@ def export_weekly_mom(
     _write_master_plan(wb, metrics or {}, parsed_data, today=today)
     _write_gantt_sheet(wb, metrics or {}, parsed_data, today)
     _write_mom_sheet(wb, meeting_sheet, week_label, today, metrics or {}, parsed_data)
+    _write_risk_sheet(wb, metrics or {}, today, week_label, parsed_data=parsed_data)
     _write_pm_dashboard(wb, metrics or {}, today, week_label)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -1339,5 +1875,4 @@ def export_weekly_mom(
     filename = f"{safe_code}_MoM_{today.year}.{week_label}.xlsx"
     filepath = os.path.join(output_dir, filename)
     wb.save(filepath)
-    wb.close()
     return filepath

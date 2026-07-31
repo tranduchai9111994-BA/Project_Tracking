@@ -7,6 +7,7 @@ import openpyxl
 
 from exporter.weekly_mom import (
     export_weekly_mom,
+    _collect_risk_items,
     _collect_week_plan,
     _fmt_date,
     _iso_week_label,
@@ -119,7 +120,7 @@ def test_collect_week_plan_next_week_not_empty_when_deadlines_exist():
 
 
 def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
-    """Workbook có Cover / Master / Gantt / MoM / PM Dashboard."""
+    """Workbook có Cover / Master / Gantt / MoM / Risk / PM Dashboard."""
     path = export_weekly_mom(
         metrics,
         str(tmp_path),
@@ -138,16 +139,21 @@ def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
     assert "Gantt" in names
     mom_name = f"MoM_{week}"
     assert mom_name in names
+    assert "Risk Analysis" in names
     assert "PM Dashboard" in names
+    # Thứ tự: Cover → Master → Gantt → MoM → Risk → PM
+    assert names.index("Risk Analysis") < names.index("PM Dashboard")
+    assert names.index(mom_name) < names.index("Risk Analysis")
 
     cover = wb["Cover Page"]
     assert cover["C4"].value == "KDG_iHRP_2026_PM"
     assert week in str(cover["F5"].value)
-    # TOC khớp thứ tự sheet: Master → Gantt → MoM → PM Dashboard
+    # TOC: Master → Gantt → MoM → Risk → PM Dashboard
     assert cover["B9"].value == "Master plan"
     assert cover["B10"].value == "Gantt"
     assert cover["B11"].value == mom_name
-    assert cover["B12"].value == "PM Dashboard"
+    assert cover["B12"].value == "Risk Analysis"
+    assert cover["B13"].value == "PM Dashboard"
     # Presentation: header TOC xanh #0070C0
     assert "0070C0" in str(cover["B8"].fill.fgColor.rgb or "").upper()
 
@@ -181,6 +187,16 @@ def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
     # Wrap tên CN
     assert mom.column_dimensions["C"].width >= 40
     assert mom["C10"].alignment.wrap_text is True or mom["C9"].alignment.wrap_text is True
+
+    risk = wb["Risk Analysis"]
+    assert "RỦI RO" in str(risk["A1"].value).upper()
+    risk_text = " ".join(
+        str(risk.cell(r, c).value or "")
+        for r in range(1, min(risk.max_row or 1, 50) + 1)
+        for c in range(1, 6)
+    )
+    assert "TOP RISKS" in risk_text.upper()
+    assert "LOẠI" in risk_text.upper() or "MODULE" in risk_text.upper()
 
 
     # Section B tuần tới tồn tại
@@ -224,6 +240,75 @@ def test_export_weekly_mom_sheets_and_headers(tmp_path, metrics, parsed_data):
         assert int(m.group(2)) - int(m.group(1)) == 1, val_f
 
     wb.close()
+
+
+def test_collect_risk_items_multi_dim():
+    """Gom Overdue / Unassigned / Stalled / DQ high / Missing deadline / Rlog."""
+    metrics = {
+        "overdue_list": [{
+            "ma_cn": "PR.01", "ten_cn": "A", "module": "PR", "phase": "Dev",
+            "days_overdue": 10, "end_date": "2026-07-20", "status": "In-progress",
+            "pic": ["NhiVN"], "rlog_id": "R1",
+        }],
+        "unassigned_tasks": [{
+            "ma_cn": "PR.02", "ten_cn": "B", "module": "PR", "phase": "Config Local",
+            "status": "Assigned", "is_overdue": False, "days_overdue": 0, "rlog_id": "",
+        }],
+        "stalled_tasks": {"items": [{
+            "ma_cn": "TMS.01", "ten_cn": "C", "module": "TMS",
+            "completed_phase": "Dev", "waiting_phase": "Config Local", "wait_days": 8,
+        }]},
+        "risk_scores": [{"ma_cn": "SI.01", "ten_cn": "D", "module": "SI",
+                         "risk_score": 72, "risk_factors": ["overdue"]}],
+        "summary": {
+            "missing_deadline_count": 0, "missing_deadline_records": 0,
+            "anomaly_count": 0, "anomaly_records": 0,
+        },
+        "data_quality": {
+            "issues": [
+                {
+                    "code": "end_before_start", "severity": "high",
+                    "label": "End date < Start date",
+                    "ma_cn": "HR.01", "ten_cn": "E", "module": "HR", "phase": "UAT",
+                    "detail": "Start>End", "suggestion": "Đổi ngày.",
+                },
+                {
+                    "code": "missing_deadline", "severity": "medium",
+                    "label": "Thiếu End",
+                    "ma_cn": "HR.02", "ten_cn": "F", "module": "HR", "phase": "Dev",
+                    "detail": "thiếu End", "suggestion": "Bổ sung End.",
+                },
+            ],
+        },
+        "rlog_weekly": {
+            "rlog_plan_next_week": {
+                "count": 2,
+                "items": [
+                    {"ma_cn": "PR.03", "ten_cn": "G", "module": "PR", "phase": "Dev",
+                     "pic": [], "rlog_id": "R9"},
+                    {"ma_cn": "PR.04", "ten_cn": "H", "module": "PR", "phase": "Dev",
+                     "pic": ["X"], "rlog_id": "R10"},
+                ],
+            },
+            "rlog_coded_this_week": {"count": 0},
+        },
+    }
+    items = _collect_risk_items(metrics)
+    types = {it["risk_type"] for it in items}
+    assert "Overdue" in types
+    assert "Unassigned" in types
+    assert "Stalled" in types
+    assert "High risk score" in types
+    assert any(t.startswith("DQ high") for t in types)
+    assert "Missing deadline" in types
+    assert "Rlog plan thiếu PIC" in types
+    # Top item severity Critical/High trước Medium
+    assert items[0]["severity"] in ("Critical", "High")
+    od = next(it for it in items if it["risk_type"] == "Overdue")
+    assert od["ma_cn"] == "PR.01"
+    assert od["rlog_id"] == "R1"
+    assert "Trễ" in od["detail"]
+    assert od["suggestion"]  # gợi ý VI
 
 
 def test_export_weekly_mom_empty_metrics_still_creates(tmp_path):
