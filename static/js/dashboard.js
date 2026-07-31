@@ -2078,7 +2078,7 @@ function renderDashboard() {
     _safe("risk", renderRiskSection);
     _safe("effort", renderEffortSection);
     _safe("process", renderProcessTreemap);
-    _safe("gantt", renderGanttTimeline);
+    _safe("gantt", () => { populateGanttLocalFilters(); renderGanttTimeline(); });
     // Gantt Calendar (Excel-style, 3-tier header) — fetch riêng qua API
     _safe("ganttCalendar", loadGanttCalendar);
 
@@ -4760,6 +4760,9 @@ function shortenProcess(name) {
 // State cho Gantt: user preference giữ giữa các re-render (đổi filter, resize…).
 // Không lưu localStorage — session-only, tránh state stuck khi user muốn reset.
 // Legacy — layout mode "vertical" removed vì render sai. Chỉ giữ horizontal.
+const GANTT_STATUS_FILTER_OPTS = [
+    "Closed", "In-progress", "Assigned", "Open", "Overdue-only",
+];
 const _ganttState = {
     zoom: "month",              // "week" | "month" | "quarter"
     layout: "horizontal",       // "horizontal" | "vertical"
@@ -4770,6 +4773,12 @@ const _ganttState = {
     groupBy: "function",
     foldedModules: new Set(),   // nhóm đang fold (chỉ áp dụng cho mode "function")
     initialized: false,         // để biết lần đầu render thì set default fold
+    // Local filters (AND với global Module/Process/PIC/project đã cascade vào timeline_data)
+    statuses: [],               // multi: Closed / In-progress / Assigned / Open / Overdue-only
+    filterPhases: [],           // multi: phase names
+    priorities: [],             // multi: priority values (ẩn MS nếu data không có)
+    openOnly: false,            // ẩn function 100% Closed
+    dateMode: "all",            // "all" | "has" | "none"
 };
 
 // Palette segment theo status — ưu tiên overdue (đỏ) trước
@@ -4824,6 +4833,175 @@ function setGanttGroupBy(groupBy) {
     });
     renderGanttTimeline();
 }
+
+/** Init / refresh local Status / Phase / Priority multi-select trên toolbar Gantt. */
+function populateGanttLocalFilters() {
+    const t = metricsData?.timeline_data || {};
+    const phases = t.phases || metricsData?.structure?.all_phases || [];
+    const priorities = _ganttCollectPriorities();
+    const onChange = () => {
+        _ganttState.statuses = _msInstances.ganttStatus?.getSelected?.() || [];
+        _ganttState.filterPhases = _msInstances.ganttPhase?.getSelected?.() || [];
+        _ganttState.priorities = _msInstances.ganttPriority?.getSelected?.() || [];
+        renderGanttTimeline();
+    };
+
+    if (!_msInstances.ganttStatus) {
+        createMultiSelect({
+            el: "#ganttStatusMS",
+            key: "ganttStatus",
+            label: "Status",
+            options: GANTT_STATUS_FILTER_OPTS.slice(),
+            selected: _ganttState.statuses,
+            allText: "Tất cả Status",
+            i18n: { label: "gantt.filter_status", allText: "gantt.all_status" },
+            onChange,
+        });
+    } else {
+        _msInstances.ganttStatus.setOptions(GANTT_STATUS_FILTER_OPTS.slice(), false);
+    }
+
+    if (!_msInstances.ganttPhase) {
+        createMultiSelect({
+            el: "#ganttPhaseMS",
+            key: "ganttPhase",
+            label: "Phase",
+            options: phases,
+            selected: _ganttState.filterPhases,
+            allText: "Tất cả Phase",
+            i18n: { label: "gantt.filter_phase", allText: "gantt.all_phase" },
+            onChange,
+        });
+    } else {
+        _msInstances.ganttPhase.setOptions(phases, false);
+    }
+
+    const priEl = document.getElementById("ganttPriorityMS");
+    if (priorities.length) {
+        if (priEl) priEl.style.display = "";
+        if (!_msInstances.ganttPriority) {
+            createMultiSelect({
+                el: "#ganttPriorityMS",
+                key: "ganttPriority",
+                label: "Priority",
+                options: priorities,
+                selected: _ganttState.priorities,
+                allText: "Tất cả Priority",
+                i18n: { label: "gantt.filter_priority", allText: "gantt.all_priority" },
+                onChange,
+            });
+        } else {
+            _msInstances.ganttPriority.setOptions(priorities, false);
+        }
+    } else if (priEl) {
+        priEl.style.display = "none";
+        _ganttState.priorities = [];
+    }
+
+    const openCb = document.getElementById("ganttOpenOnly");
+    if (openCb) openCb.checked = !!_ganttState.openOnly;
+    _syncGanttDateModeBtns();
+}
+
+function _ganttCollectPriorities() {
+    const t = metricsData?.timeline_data || {};
+    const set = new Set();
+    const scan = (map) => {
+        Object.values(map || {}).forEach(list => {
+            (list || []).forEach(f => {
+                const p = (f.priority || "").toString().trim();
+                if (p) set.add(p);
+            });
+        });
+    };
+    scan(t.functions_by_module);
+    scan(t.functions_by_process);
+    return [...set].sort();
+}
+
+function setGanttOpenOnly(checked) {
+    _ganttState.openOnly = !!checked;
+    renderGanttTimeline();
+}
+
+function setGanttDateMode(mode) {
+    if (!["all", "has", "none"].includes(mode)) return;
+    _ganttState.dateMode = mode;
+    _syncGanttDateModeBtns();
+    renderGanttTimeline();
+}
+
+function _syncGanttDateModeBtns() {
+    const mode = _ganttState.dateMode || "all";
+    document.querySelectorAll(".gantt-date-btn").forEach(b => {
+        const on = b.dataset.ganttDate === mode;
+        b.classList.toggle("bg-blue-600", on);
+        b.classList.toggle("text-white", on);
+    });
+}
+
+function _ganttFuncHasDate(f) {
+    return (f.phases || []).some(p => p.start || p.end);
+}
+
+/** Function coi là 100% Closed khi mọi phase có status đều Closed/Cancelled. */
+function _ganttFuncFullyClosed(f) {
+    const withStatus = (f.phases || []).filter(p => p.status);
+    if (!withStatus.length) return false;
+    return withStatus.every(p => p.status === "Closed" || p.status === "Cancelled");
+}
+
+function _ganttPhaseMatchesStatus(p, statuses) {
+    if (!statuses || !statuses.length) return true;
+    if (statuses.includes("Overdue-only") && p.overdue) return true;
+    const names = statuses.filter(s => s !== "Overdue-only");
+    if (!names.length) return statuses.includes("Overdue-only") ? !!p.overdue : true;
+    const st = p.status || "";
+    if (names.includes(st)) return true;
+    if (names.includes("Open") && (st === "Open" || st === "Pending")) return true;
+    return false;
+}
+
+function _ganttFuncMatchesStatus(f, statuses) {
+    if (!statuses || !statuses.length) return true;
+    if (statuses.includes("Overdue-only") && f.has_overdue) return true;
+    return (f.phases || []).some(p => _ganttPhaseMatchesStatus(p, statuses));
+}
+
+/**
+ * Áp local filter lên list function (AND với nhau).
+ * Phase filter → thu hẹp segments dùng để vẽ bar / aggregate date.
+ */
+function _ganttApplyLocalFilters(funcs) {
+    const statuses = _ganttState.statuses || [];
+    const phaseFilter = _ganttState.filterPhases || [];
+    const priorities = _ganttState.priorities || [];
+    const openOnly = !!_ganttState.openOnly;
+    const dateMode = _ganttState.dateMode || "all";
+
+    return (funcs || []).filter(f => {
+        if (priorities.length) {
+            const pr = (f.priority || "").toString().trim();
+            if (!priorities.includes(pr)) return false;
+        }
+        if (openOnly && _ganttFuncFullyClosed(f)) return false;
+        const hasDate = _ganttFuncHasDate(f);
+        if (dateMode === "has" && !hasDate) return false;
+        if (dateMode === "none" && hasDate) return false;
+        if (phaseFilter.length) {
+            if (!(f.phases || []).some(p => phaseFilter.includes(p.name))) return false;
+        }
+        if (statuses.length && !_ganttFuncMatchesStatus(f, statuses)) return false;
+        return true;
+    }).map(f => {
+        if (!phaseFilter.length) return f;
+        return {
+            ...f,
+            phases: (f.phases || []).filter(p => phaseFilter.includes(p.name)),
+        };
+    });
+}
+
 function toggleAllGanttModules() {
     const groups = _ganttGroupKeys();
     const anyFolded = groups.some(m => _ganttState.foldedModules.has(m));
@@ -4861,21 +5039,31 @@ function _updateGanttToggleAllBtn() {
  */
 function _ganttGroupedFunctions() {
     const t = metricsData?.timeline_data || {};
+    let raw;
     if (_ganttState.groupBy === "process") {
         // Prefer BE functions_by_process; fallback flatten từ functions_by_module
-        if (t.functions_by_process) return t.functions_by_process;
-        const byProc = {};
-        Object.entries(t.functions_by_module || {}).forEach(([mod, list]) => {
-            (list || []).forEach(f => {
-                const key = f.quy_trinh || "N/A";
-                if (!byProc[key]) byProc[key] = [];
-                byProc[key].push({ ...f, module: f.module || mod });
+        if (t.functions_by_process) {
+            raw = t.functions_by_process;
+        } else {
+            raw = {};
+            Object.entries(t.functions_by_module || {}).forEach(([mod, list]) => {
+                (list || []).forEach(f => {
+                    const key = f.quy_trinh || "N/A";
+                    if (!raw[key]) raw[key] = [];
+                    raw[key].push({ ...f, module: f.module || mod });
+                });
             });
-        });
-        return byProc;
+        }
+    } else {
+        // "module" hoặc "function" → group theo module
+        raw = t.functions_by_module || {};
     }
-    // "module" hoặc "function" → group theo module
-    return t.functions_by_module || {};
+    const out = {};
+    Object.entries(raw).forEach(([k, list]) => {
+        const filtered = _ganttApplyLocalFilters(list || []);
+        if (filtered.length) out[k] = filtered;
+    });
+    return out;
 }
 
 function _ganttGroupKeys() {
@@ -4922,11 +5110,15 @@ function _ganttAggregate(funcs) {
     });
     // Weighted denominator: mỗi function ứng với TOÀN BỘ phase định nghĩa
     // trong project (giống module_overview / summary.overall_progress_pct).
+    // Khi local Phase filter bật → mẫu số = số phase đang chọn (xem đúng scope lọc).
     // `functions_by_module` chỉ giữ phase user đã touch → dùng total_all_phases
     // từ metricsData.timeline_data.phases (list tất cả phase định nghĩa) làm
     // divisor chuẩn.
-    const totalAllPhases = (metricsData?.timeline_data?.phases || []).length ||
-                           (metricsData?.structure?.all_phases || []).length || 0;
+    const localPhaseN = (_ganttState.filterPhases || []).length;
+    const totalAllPhases = localPhaseN
+        || (metricsData?.timeline_data?.phases || []).length
+        || (metricsData?.structure?.all_phases || []).length
+        || 0;
     const nFuncs = (funcs || []).length;
     const weightedDenom = nFuncs * totalAllPhases;
     const closedPct = weightedDenom > 0
@@ -4958,12 +5150,17 @@ function renderGanttTimeline() {
     const funcsByGroup = _ganttGroupedFunctions();
     const groups = _ganttGroupKeys().filter(g => (funcsByGroup[g] || []).length > 0);
     const today = t.today ? new Date(t.today) : new Date();
-    const totalFuncs = t.total_functions || Object.values(funcsByGroup).reduce((s, l) => s + (l || []).length, 0);
+    const totalFuncs = Object.values(funcsByGroup).reduce((s, l) => s + (l || []).length, 0);
     const hasActiveFilter = !!(
         globalFilters.modules.length ||
         globalFilters.processes.length ||
         globalFilters.pics.length ||
-        globalFilters.projectCodes.length
+        globalFilters.projectCodes.length ||
+        (_ganttState.statuses || []).length ||
+        (_ganttState.filterPhases || []).length ||
+        (_ganttState.priorities || []).length ||
+        _ganttState.openOnly ||
+        (_ganttState.dateMode && _ganttState.dateMode !== "all")
     );
     // Label header: theo mode
     const groupLabel = _ganttState.groupBy === "process" ? "Quy trình"
@@ -5026,9 +5223,11 @@ function renderGanttTimeline() {
             });
         });
     });
+    // Có row nhưng không date (VD filter "Chưa có date") → vẫn vẽ ruler quanh today
     if (allDates.length === 0) {
-        container.innerHTML = `<div class="gantt-empty">Không có date nào để vẽ timeline.</div>`;
-        return;
+        const base = today instanceof Date && !isNaN(today) ? today : new Date();
+        allDates.push(new Date(base.getTime() - 30 * 86400000));
+        allDates.push(new Date(base.getTime() + 60 * 86400000));
     }
 
     let minDate = new Date(Math.min(...allDates));
@@ -5191,7 +5390,7 @@ function renderGanttTimeline() {
                 title="${escapeAttr((f.ma_cn||"") + " — " + (f.ten_cn||"") + " · Click xem chi tiết")}">
                 <div class="gantt-func-label">${rowLabel}</div>
                 <div class="gantt-func-track">
-                    ${segments}
+                    ${segments || `<div class="gantt-empty-track" style="left:0;padding-left:8px;color:#94a3b8;font-size:11px">(Chưa có date)</div>`}
                 </div>
             </div>`);
         });
@@ -10374,6 +10573,7 @@ function _renderKanban(data) {
 
     // Populate filter dropdowns (chỉ lần đầu)
     _kanbanEnsureFilterOptions();
+    _updateKanbanScopeBanner();
 
     const board = document.getElementById("kanbanBoard");
     if (!board) return;

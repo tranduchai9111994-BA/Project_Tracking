@@ -141,16 +141,17 @@ const HELP_CONTENT = {
     },
     "gantt": {
         category: "Tiến độ & Timeline",
-        title: "Gantt cũ (theo module)",
-        purpose: "Timeline plot mỗi module với start/end của mọi phase (thanh chồng nhau). Ưa dùng để quan sát overlap giữa modules.",
+        title: "Timeline (Gantt-style)",
+        purpose: "Timeline mỗi function/module/quy trình với start/end theo phase. Local filter Status/Phase/Priority + Chỉ còn việc mở + Có/Chưa có date (kết hợp global filter).",
         steps: [
-            "Trục Y = module, trục X = thời gian",
-            "Thanh dài = phase kéo dài, màu = phase category",
-            "Hover thanh → tooltip hiện tên function + phase + PIC",
+            "Nhóm: Module | Quy trình | Function · Scale: Tuần | Tháng | Quý",
+            "Local filter: Status (multi, gồm Overdue-only), Phase, Priority (nếu có), checkbox Chỉ còn việc mở, toggle Có date / Chưa có date",
+            "Hover thanh → tooltip; click function → drill-down chi tiết",
         ],
-        example: "Thấy Module HR và SI có Analysis chạy song song từ tháng 1 → cần allocate resource.",
+        example: "Lọc Status=In-progress + Chỉ còn việc mở để chỉ thấy bar đang làm, bỏ 100% Closed.",
         tips: [
-            "Chart cũ — Gantt Calendar (bên dưới) là bản Excel-style mới hơn, đầy đủ hơn",
+            "Global Module/Process/PIC vẫn áp trước; local filter thu hẹp thêm trên dữ liệu đã cascade",
+            "Dòng '(Chưa có date)' = nhóm/function chưa có Start–End — dùng toggle 'Chưa có date' để soi",
         ],
     },
     "gantt-calendar": {

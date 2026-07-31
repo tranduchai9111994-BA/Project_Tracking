@@ -3528,16 +3528,20 @@
                     <!-- Zoom controls -->
                     <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
                         <button data-zoom="week" onclick="setGanttZoom('week')"
-                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50">Tuần</button>
+                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50"
+                                data-i18n="gantt.week">Tuần</button>
                         <button data-zoom="month" onclick="setGanttZoom('month')"
-                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50 border-l bg-blue-600 text-white">Tháng</button>
+                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50 border-l bg-blue-600 text-white"
+                                data-i18n="gantt.month">Tháng</button>
                         <button data-zoom="quarter" onclick="setGanttZoom('quarter')"
-                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50 border-l">Quý</button>
+                                class="gantt-zoom-btn px-2 py-1 hover:bg-blue-50 border-l"
+                                data-i18n="gantt.quarter">Quý</button>
                     </div>
                     <!-- Compact label toggle: rút gọn label để timeline rộng hơn -->
                     <button onclick="toggleGanttCompact()" id="ganttCompactBtn"
                             class="text-xs bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1"
-                            title="Rút gọn cột nhãn để timeline rộng hơn (ẩn Tên chức năng, chỉ hiện Mã CN)">
+                            title="Rút gọn cột nhãn để timeline rộng hơn (ẩn Tên chức năng, chỉ hiện Mã CN)"
+                            data-i18n="gantt.compact_label">
                         ⇔ Rút gọn nhãn
                         </button>
                     <button onclick="toggleAllGanttModules()"
@@ -3545,6 +3549,29 @@
                             class="text-xs bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1">
                         📂 Mở tất cả
                     </button>
+                </div>
+            </div>
+            <!-- Local filters (combine với global Module/Process/PIC/project) -->
+            <div id="ganttLocalFilters" class="flex flex-wrap items-center gap-2 mb-3 no-print">
+                <div id="ganttStatusMS" class="text-xs min-w-[130px]"></div>
+                <div id="ganttPhaseMS" class="text-xs min-w-[130px]"></div>
+                <div id="ganttPriorityMS" class="text-xs min-w-[120px]"></div>
+                <label class="inline-flex items-center gap-1.5 text-xs cursor-pointer border border-gray-300 rounded px-2 py-1 bg-white hover:bg-gray-50"
+                       title="Ẩn function đã Closed hết (100%)">
+                    <input type="checkbox" id="ganttOpenOnly" class="w-3.5 h-3.5 accent-blue-600"
+                           onchange="setGanttOpenOnly(this.checked)" />
+                    <span data-i18n="gantt.open_only">Chỉ còn việc mở</span>
+                </label>
+                <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs" title="Lọc theo có/không có Start–End date">
+                    <button type="button" data-gantt-date="all" onclick="setGanttDateMode('all')"
+                            class="gantt-date-btn px-2 py-1 bg-blue-600 text-white"
+                            data-i18n="gantt.date_all">Tất cả</button>
+                    <button type="button" data-gantt-date="has" onclick="setGanttDateMode('has')"
+                            class="gantt-date-btn px-2 py-1 border-l hover:bg-blue-50"
+                            data-i18n="gantt.date_has">Có date</button>
+                    <button type="button" data-gantt-date="none" onclick="setGanttDateMode('none')"
+                            class="gantt-date-btn px-2 py-1 border-l hover:bg-blue-50"
+                            data-i18n="gantt.date_none">Chưa có date</button>
                 </div>
             </div>
             <!-- Legend -->
@@ -3699,6 +3726,8 @@
                     <option value="Dev">Dev</option>
                 </select>
             </div>
+            <p id="kanbanScopeBanner" class="chart-scope kanban-scope"
+               title="Lọc cục bộ Kanban AND với global filter"></p>
             <div id="kanbanBoard" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3 overflow-x-auto">
                 <!-- Columns populated by JS -->
             </div>
