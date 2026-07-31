@@ -799,7 +799,8 @@ class DashboardEngine:
 
     def _stalled_tasks(self, data: ParsedData) -> dict:
         """
-        Function bị kẹt: phase trước Closed nhưng phase sau vẫn None/Open.
+        Function bị kẹt: phase trước Closed, phase sau None/Open, và End
+        của phase chờ đã quá (end < today). Không End → không stalled.
         Bỏ qua function đã xong toàn trình (phase cuối Closed, hoặc mọi
         phase Closed/Cancelled). Kèm funnel Closed/phase + transition heatmap.
         """
@@ -829,7 +830,7 @@ class DashboardEngine:
                 curr_pd = r.phases.get(curr)
                 next_pd = r.phases.get(nxt)
 
-                if not is_stalled_transition(curr_pd, next_pd):
+                if not is_stalled_transition(curr_pd, next_pd, self.today):
                     continue
 
                 wait_days = 0

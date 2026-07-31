@@ -2,15 +2,19 @@
 Shared stalled-task helpers.
 
 Rule nghiệp vụ:
-  Kẹt giữa 2 phase = phase trước Closed, phase sau None/Open.
+  Kẹt giữa 2 phase khi ALL:
+  1. Phase trước Status = Closed
+  2. Phase sau chưa bắt đầu (None / Open / thiếu phase)
+  3. Deadline (End) của phase chờ đã quá: end < today
+     (cùng convention overdue). Không có End → không stalled
+     (tránh false positive «chưa plan» / deadline chưa tới).
   Loại khỏi stalled khi không còn việc mở:
   - Phase cuối (Golive…) Status = Closed → coi xong toàn trình
   - Hoặc mọi phase trong order đều Closed / Cancelled
-  Blank không tính done — Analysis Closed + Dev blank vẫn có thể stalled
-  (trừ khi phase cuối đã Closed).
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from parser.excel_parser import FunctionRow, PhaseData
@@ -41,11 +45,30 @@ def is_fully_closed(row: FunctionRow, phase_names: list[str]) -> bool:
     return True
 
 
+def waiting_phase_deadline_passed(
+    next_pd: Optional[PhaseData],
+    today: date,
+) -> bool:
+    """
+    True nếu phase chờ có End và End < today (đã quá hạn).
+
+    Không End / thiếu phase → False (không stalled chỉ vì predecessor Closed).
+    """
+    if next_pd is None or next_pd.end_date is None:
+        return False
+    return next_pd.end_date < today
+
+
 def is_stalled_transition(
     curr_pd: Optional[PhaseData],
     next_pd: Optional[PhaseData],
+    today: date,
 ) -> bool:
-    """Phase trước Closed và phase sau chưa bắt đầu (None/Open / thiếu phase)."""
+    """
+    Phase trước Closed, phase sau chưa bắt đầu, và End phase chờ đã quá hạn.
+    """
     curr_done = curr_pd is not None and (curr_pd.status or "").strip() == "Closed"
     next_not_started = (next_pd is None) or (next_pd.status in _NOT_STARTED)
-    return bool(curr_done and next_not_started)
+    if not (curr_done and next_not_started):
+        return False
+    return waiting_phase_deadline_passed(next_pd, today)

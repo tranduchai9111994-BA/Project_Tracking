@@ -7537,9 +7537,9 @@ const CHART_HELP = {
     },
     "section-stalled": {
         title: "🔄 Task bị đình trệ",
-        meaning: "Function bị kẹt giữa hai phase: phase trước đã xong nhưng phase sau chưa ai bắt đầu. Đã Closed hết (hoặc phase cuối Closed) thì không vào list.",
-        logic: "Với mỗi cặp phase liền nhau: phase trước Status Closed, phase sau chưa có tiến triển → tính số ngày chờ = hôm nay − ngày End của phase trước. Loại function có phase cuối Closed hoặc mọi phase Closed/Cancelled.",
-        example: "HR-045 Analysis Closed 01/07, Dev vẫn Open → chờ 27 ngày, cần escalate.",
+        meaning: "Function bị kẹt giữa hai phase: phase trước Closed, phase sau chưa bắt đầu, và End của phase chờ đã quá hạn. Deadline chưa tới / chưa có End → không hiện. Đã Closed hết (hoặc phase cuối Closed) thì bỏ qua.",
+        logic: "Với mỗi cặp phase liền nhau: pred Closed + phase sau None/Open + End phase chờ < hôm nay → vào list. Chờ (ngày) = hôm nay − End phase trước. Loại function có phase cuối Closed hoặc mọi phase Closed/Cancelled.",
+        example: "Analysis Closed, Dev Open nhưng Dev End còn tương lai → không đình trệ. Dev End đã qua mà vẫn Open → stalled.",
         note: "Chờ > 7 ngày tô cam, > 14 ngày tô đỏ. Danh sách transitions cho biết chặng chuyển giao nào tắc nhiều nhất."
     },
     "section-risk": {
@@ -12696,7 +12696,7 @@ const _VISIBILITY_GROUPS = [
         items: [
             { id: "section-overdue",     label: "Danh sách Overdue",   desc: "Bảng function trễ theo phase" },
             { id: "section-unassigned",  label: "Chưa phân công",      desc: "Bảng task chưa gán PIC" },
-            { id: "section-stalled",     label: "Task bị đình trệ",    desc: "Phase trước đã xong, phase sau chưa bắt đầu" },
+            { id: "section-stalled",     label: "Task bị đình trệ",    desc: "Pred Closed + phase chờ quá hạn End mà chưa bắt đầu" },
             { id: "section-risk",        label: "High Risk",           desc: "Function rủi ro cao (Priority × Complexity × Overdue)" },
             { id: "section-aging-wip",   label: "Aging WIP",           desc: "Task In-progress quá lâu (vượt ngưỡng ngày)" },
             { id: "section-dataquality", label: "Data Quality",        desc: "Bảng dữ liệu thiếu / không hợp lệ để dọn dẹp Excel" },

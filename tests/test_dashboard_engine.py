@@ -1,5 +1,5 @@
 """Tests cho analyzer.dashboard_engine."""
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -144,13 +144,13 @@ def test_stalled_wait_days_ignores_outlier_date(parsed_data, today):
         analysis = r.phases.get("Analysis")
         if analysis and analysis.status == "Closed":
             analysis.end_date = date_cls(1936, 3, 26)
-            # Đảm bảo phase sau chưa bắt đầu → stalled
+            # Đảm bảo phase sau chưa bắt đầu + End đã quá → stalled
             for nxt in ("Dev", "UAT"):
                 pd = r.phases.get(nxt)
                 if pd:
                     pd.status = "Open"
                     pd.start_date = None
-                    pd.end_date = None
+                    pd.end_date = today - timedelta(days=3)
             break
 
     st = DashboardEngine(today=today)._stalled_tasks(data)

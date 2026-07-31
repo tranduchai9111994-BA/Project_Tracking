@@ -64,11 +64,11 @@ def sample_xlsx_path(tmp_path):
          T - timedelta(days=40), T - timedelta(days=35), "Closed", 12, "SonHN6",
          T - timedelta(days=30), T - timedelta(days=15), "Closed", 24, "PhatTPT3",
          T - timedelta(days=10), T - timedelta(days=5), "In-progress", 24, "BaoLQ31, NhiVN", "Anh Cường"],
-        # 3: Stalled Dev + Unassigned Dev
+        # 3: Stalled Dev (End đã quá) + Unassigned Dev
         [3, "HR.FR.05", "Quản lý NS", "HR", "HR.BP.02 - Onboarding",
          "Should-have", "Low", "FIT", "2", "",
          T - timedelta(days=20), T - timedelta(days=15), "Closed", 4, "CuongNM129",
-         None, None, "Open", None, "",
+         None, T - timedelta(days=5), "Open", None, "",
          None, None, None, None, "", ""],
         # 4: Long duration đang chạy Dev
         [4, "PR.FR.03", "Đánh giá 360", "PR", "PR.BP.01 - Performance",

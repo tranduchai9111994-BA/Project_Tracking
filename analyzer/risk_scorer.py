@@ -8,7 +8,7 @@ Trọng số (theo UPGRADE_V2.md B7):
 - +10 mỗi 7 ngày overdue (cap +30)
 - +15 nếu phase active không có PIC
 - +10 nếu có phase duration bất thường (> threshold)
-- +10 nếu bị stalled (phase trước Closed, phase sau chưa bắt đầu)
+- +10 nếu bị stalled (pred Closed, phase sau chưa start, End phase chờ đã quá)
 - +5  nếu có Risk/Blocker note
 Cap tối đa 100.
 """
@@ -113,7 +113,7 @@ def compute_risk_score(
         for i in range(len(phase_names) - 1):
             curr = row.phases.get(phase_names[i])
             nxt = row.phases.get(phase_names[i + 1])
-            if is_stalled_transition(curr, nxt):
+            if is_stalled_transition(curr, nxt, today):
                 stalled = True
                 break
     if stalled:

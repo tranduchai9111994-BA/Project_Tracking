@@ -499,7 +499,8 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
 
 def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
     """
-    Function bị kẹt: phase trước Closed, phase sau None/Open.
+    Function bị kẹt: phase trước Closed, phase sau None/Open, End phase chờ
+    đã quá (end < today). Không End → không stalled.
     Bỏ qua function đã xong toàn trình (phase cuối Closed / all Closed|Cancelled).
     Optional phase = completed_phase hoặc waiting_phase.
     """
@@ -522,7 +523,7 @@ def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
                 continue
             curr_pd = row.phases.get(curr)
             next_pd = row.phases.get(nxt)
-            if not is_stalled_transition(curr_pd, next_pd):
+            if not is_stalled_transition(curr_pd, next_pd, today):
                 continue
             # Hiện phase đang chờ (waiting)
             item = _row_to_dict(row, phase_name=nxt, today=today)

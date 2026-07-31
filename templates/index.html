@@ -2454,7 +2454,10 @@
 
 <section id="section-stalled" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
-                <h3 class="text-lg font-semibold text-gray-800" data-help="section-stalled">🔄 Task bị đình trệ</h3>
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-stalled">🔄 Task bị đình trệ</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Chỉ đình trệ khi phase chờ đã quá hạn End (deadline chưa tới / chưa có End → không hiện). Đã Closed hết hoặc phase cuối Closed thì bỏ qua.</p>
+                </div>
                 <div class="flex items-center gap-2 flex-wrap no-print">
                     <!-- Local Module multi-select (giống Overdue / Data Quality) -->
                     <div id="stalledModuleMS" class="text-sm min-w-[150px]"></div>
