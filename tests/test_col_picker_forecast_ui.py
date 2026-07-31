@@ -32,3 +32,7 @@ def test_forecast_section_present():
     assert 'id="section-forecast-gantt"' in html
     assert "loadForecastGantt" in js
     assert "section-forecast-gantt" in js
+    assert "_fgBarHtml" in js
+    assert "Đánh giá lý do hợp lý" in js
+    assert "_fgAssessmentHtml" in js
+    assert "fg-assess" in js

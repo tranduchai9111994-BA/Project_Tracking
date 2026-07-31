@@ -27,9 +27,14 @@ def export_forecast_gantt(
     milestones = result.get("milestones") or []
     projects = result.get("projects") or []
 
-    headers = ["Dự án", "Slug"] + [m["label"] for m in milestones] + [
-        f"{m['label']} (nguồn)" for m in milestones
-    ]
+    n = len(milestones)
+    headers = (
+        ["Dự án", "Slug"]
+        + [m["label"] for m in milestones]
+        + [f"{m['label']} (span)" for m in milestones]
+        + [f"{m['label']} (nguồn)" for m in milestones]
+        + [f"{m['label']} — Đánh giá lý do hợp lý" for m in milestones]
+    )
     header_fill = PatternFill("solid", fgColor="1E3A5F")
     header_font = Font(color="FFFFFF", bold=True)
     for c, h in enumerate(headers, 1):
@@ -38,6 +43,12 @@ def export_forecast_gantt(
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", wrap_text=True)
 
+    assess_fills = {
+        "ok": PatternFill("solid", fgColor="D1FAE5"),
+        "warn": PatternFill("solid", fgColor="FEF3C7"),
+        "risk": PatternFill("solid", fgColor="FEE2E2"),
+    }
+
     for r_i, proj in enumerate(projects, 2):
         ws.cell(r_i, 1, proj.get("name") or "")
         ws.cell(r_i, 2, proj.get("slug") or "")
@@ -45,18 +56,27 @@ def export_forecast_gantt(
         for j, m in enumerate(milestones):
             info = ms.get(m["id"]) or {}
             ws.cell(r_i, 3 + j, info.get("month") or "")
+            span_s = info.get("span_start") or ""
+            span_e = info.get("span_end") or ""
+            span_txt = f"{span_s} → {span_e}" if (span_s or span_e) else ""
+            ws.cell(r_i, 3 + n + j, span_txt)
             src = info.get("source") or ""
             src_label = {
                 "open_max": "max End còn mở",
                 "closed_max": "max End Closed",
                 "no_date": "không có End",
             }.get(src, src)
-            ws.cell(r_i, 3 + len(milestones) + j, src_label)
+            ws.cell(r_i, 3 + 2 * n + j, src_label)
+            assess = info.get("assessment") or {}
+            cell = ws.cell(r_i, 3 + 3 * n + j, assess.get("text") or "")
+            fill = assess_fills.get(assess.get("level") or "")
+            if fill:
+                cell.fill = fill
 
     ws.column_dimensions["A"].width = 28
     ws.column_dimensions["B"].width = 16
     for col in range(3, len(headers) + 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 14
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 16
 
     # Sheet 2 — UAT / Golive theo tháng
     ws2 = wb.create_sheet("UAT_Golive")

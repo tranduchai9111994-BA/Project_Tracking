@@ -2310,25 +2310,38 @@ html.dark .hdr-menu-item:hover {
   text-align: center; padding: 6px 2px; color: #475569;
 }
 .fg-gantt-tick.fg-today { background: #dbeafe; color: #1d4ed8; }
+.fg-gantt-row .fg-gantt-track { min-height: 32px; }
 .fg-marker {
-  position: absolute; top: 5px; width: 16px; height: 16px; border-radius: 50%;
+  position: absolute; top: 8px; width: 16px; height: 16px; border-radius: 50%;
   color: #fff; font-size: 9px; font-weight: 700; line-height: 16px; text-align: center;
-  box-shadow: 0 0 0 1px rgba(255,255,255,.8);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.8); z-index: 2; pointer-events: none;
 }
-.fg-marker-hi { box-shadow: 0 0 0 2px #fff, 0 0 0 3px currentColor; }
+.fg-marker-hi { box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(15,23,42,.35); }
 .fg-bar {
-  position: absolute; top: 7px; height: 14px; border-radius: 3px; opacity: .9;
+  position: absolute; top: 9px; height: 14px; border-radius: 4px; opacity: .72;
+  z-index: 1;
 }
+.fg-bar-hi { opacity: .88; box-shadow: 0 0 0 1px rgba(255,255,255,.6); }
 .fg-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #475569; }
 .fg-legend i {
-  display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px;
+  display: inline-block; width: 14px; height: 8px; border-radius: 2px; margin-right: 4px;
   vertical-align: middle;
 }
 .fg-month-chip { margin: 2px 0; }
+.fg-assess {
+  display: inline-block; max-width: 280px; padding: 2px 7px; border-radius: 4px;
+  font-size: 11px; line-height: 1.35; border: 1px solid transparent;
+}
+.fg-assess-ok { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+.fg-assess-warn { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+.fg-assess-risk { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
 html.dark .fg-gantt-ruler { background: #1e293b; }
 html.dark .fg-gantt-label { border-color: #334155; }
 html.dark .fg-gantt-ruler, html.dark .fg-gantt-row { border-color: #334155; }
 html.dark .fg-gantt-tick { color: #94a3b8; }
+html.dark .fg-assess-ok { background: #064e3b; color: #a7f3d0; border-color: #047857; }
+html.dark .fg-assess-warn { background: #78350f; color: #fde68a; border-color: #b45309; }
+html.dark .fg-assess-risk { background: #7f1d1d; color: #fecaca; border-color: #b91c1c; }
 
 /* ---- Column picker ---- */
 .col-picker { position: relative; display: inline-block; }

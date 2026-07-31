@@ -18408,6 +18408,54 @@ function _fgMonthIndex(months, mk) {
     return (months || []).indexOf(mk);
 }
 
+/** Index span [start,end] trên ruler tháng; fallback về month nếu thiếu span. */
+function _fgSpanIndices(months, info) {
+    let i0 = _fgMonthIndex(months, info.span_start || info.month);
+    let i1 = _fgMonthIndex(months, info.span_end || info.month);
+    if (i0 < 0 && i1 < 0) {
+        const mi = _fgMonthIndex(months, info.month);
+        if (mi < 0) return null;
+        return { i0: mi, i1: mi };
+    }
+    if (i0 < 0) i0 = i1;
+    if (i1 < 0) i1 = i0;
+    if (i0 > i1) { const t = i0; i0 = i1; i1 = t; }
+    return { i0, i1 };
+}
+
+function _fgAssessmentHtml(assess) {
+    const a = assess || {};
+    const level = a.level || "risk";
+    const text = a.text || "—";
+    const cls = level === "ok" ? "fg-assess-ok"
+              : level === "warn" ? "fg-assess-warn"
+              : "fg-assess-risk";
+    return `<span class="fg-assess ${cls}" title="${escapeHtml(text)}">${escapeHtml(text)}</span>`;
+}
+
+function _fgBarHtml(m, info, months, cellW, tipExtra) {
+    const span = _fgSpanIndices(months, info);
+    if (!span) return "";
+    const color = _FG_MS_COLORS[m.id] || "#64748b";
+    const left = span.i0 * cellW + 3;
+    const width = Math.max(cellW - 6, (span.i1 - span.i0 + 1) * cellW - 6);
+    const letter = m.id === "uat" ? "U" : m.id === "golive" ? "G" : m.id.charAt(0).toUpperCase();
+    const mi = _fgMonthIndex(months, info.month);
+    const title = `${m.label}: ${_fgFmtMonth(info.span_start) || "?"}→${_fgFmtMonth(info.span_end) || "?"} · `
+        + `tháng ${_fgFmtMonth(info.month)} (${info.source || ""}) · Closed ${info.closed ?? 0}/${info.total ?? 0}`
+        + (tipExtra ? ` · ${tipExtra}` : "");
+    let html = `<div class="fg-bar${m.highlight ? " fg-bar-hi" : ""}" `
+        + `style="left:${left}px;width:${width}px;background:${color}" `
+        + `title="${escapeHtml(title)}"></div>`;
+    if (mi >= 0) {
+        const mLeft = mi * cellW + cellW / 2 - 7;
+        html += `<div class="fg-marker${m.highlight ? " fg-marker-hi" : ""}" `
+            + `style="left:${mLeft}px;background:${color}" title="${escapeHtml(title)}">`
+            + `${escapeHtml(letter)}</div>`;
+    }
+    return html;
+}
+
 function _renderFgGanttByProject(data) {
     const wrap = document.getElementById("fgGanttWrap");
     if (!wrap) return;
@@ -18440,15 +18488,7 @@ function _renderFgGanttByProject(data) {
         html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
         for (const m of milestones) {
             const info = (proj.milestones || {})[m.id] || {};
-            const idx = _fgMonthIndex(months, info.month);
-            if (idx < 0) continue;
-            const color = _FG_MS_COLORS[m.id] || "#64748b";
-            const left = idx * cellW + cellW / 2 - 7;
-            const letter = m.id === "uat" ? "U" : m.id === "golive" ? "G" : m.id.charAt(0).toUpperCase();
-            const title = `${m.label}: ${_fgFmtMonth(info.month)} (${info.source || ""}) · Closed ${info.closed}/${info.total}`;
-            html += `<div class="fg-marker${m.highlight ? " fg-marker-hi" : ""}" `
-                 + `style="left:${left}px;background:${color}" title="${escapeHtml(title)}">`
-                 + `${escapeHtml(letter)}</div>`;
+            html += _fgBarHtml(m, info, months, cellW);
         }
         html += `</div></div>`;
     }
@@ -18481,29 +18521,40 @@ function _renderFgGanttByMilestone(data) {
     html += `</div></div>`;
 
     for (const m of milestones) {
-        let maxIdx = -1;
+        const agg = (data.milestone_aggregate || {})[m.id] || {};
         const tipParts = [];
         for (const proj of projects) {
             const info = (proj.milestones || {})[m.id] || {};
-            const idx = _fgMonthIndex(months, info.month);
-            if (idx >= 0) {
-                if (idx > maxIdx) maxIdx = idx;
-                tipParts.push(`${proj.name}: ${_fgFmtMonth(info.month)}`);
+            if (info.month || info.span_start) {
+                tipParts.push(
+                    `${proj.name}: ${_fgFmtMonth(info.span_start) || "?"}→`
+                    + `${_fgFmtMonth(info.span_end) || "?"} (${_fgFmtMonth(info.month)})`
+                );
             }
+        }
+        // Ưu tiên aggregate span; fallback union từng project
+        let spanInfo = agg;
+        if (!agg.span_start && !agg.span_end && !agg.month) {
+            let lo = null, hi = null, month = null;
+            for (const proj of projects) {
+                const info = (proj.milestones || {})[m.id] || {};
+                const s = info.span_start || info.month;
+                const e = info.span_end || info.month;
+                if (s && (lo == null || s < lo)) lo = s;
+                if (e && (hi == null || e > hi)) hi = e;
+                if (info.month && (month == null || info.month > month)) month = info.month;
+            }
+            spanInfo = { span_start: lo, span_end: hi, month, closed: "", total: "" };
         }
         html += `<div class="fg-gantt-row"><div class="fg-gantt-label">${escapeHtml(m.label)}</div>`;
         html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
-        if (maxIdx >= 0) {
-            const color = _FG_MS_COLORS[m.id] || "#64748b";
-            const left = maxIdx * cellW + 4;
-            const width = cellW - 8;
-            html += `<div class="fg-bar${m.highlight ? " fg-marker-hi" : ""}" `
-                 + `style="left:${left}px;width:${width}px;background:${color}" `
-                 + `title="${escapeHtml(tipParts.join(" · "))}"></div>`;
-        }
+        html += _fgBarHtml(m, spanInfo, months, cellW, tipParts.join(" · "));
         html += `</div></div>`;
     }
     html += `</div>`;
+    html += `<div class="fg-legend mt-2">` + milestones.map(m =>
+        `<span><i style="background:${_FG_MS_COLORS[m.id] || "#64748b"}"></i>${escapeHtml(m.label)}</span>`
+    ).join("") + `</div>`;
     wrap.innerHTML = html;
 }
 
@@ -18520,36 +18571,54 @@ function _renderFgDetailTable(data) {
             const src = info.source === "open_max" ? "max End còn mở"
                       : info.source === "closed_max" ? "max End Closed"
                       : "không có End";
+            const spanTxt = (info.span_start || info.span_end)
+                ? `${_fgFmtMonth(info.span_start)} → ${_fgFmtMonth(info.span_end)}`
+                : "—";
             return `<tr>
                 <td class="px-2 py-1.5 font-medium">${escapeHtml(m.label)}</td>
                 <td class="px-2 py-1.5 text-center">${_fgFmtMonth(info.month)}</td>
+                <td class="px-2 py-1.5 text-center text-xs">${spanTxt}</td>
                 <td class="px-2 py-1.5 text-center text-xs">${info.date || "—"}</td>
                 <td class="px-2 py-1.5 text-xs">${src}</td>
                 <td class="px-2 py-1.5 text-center text-xs">${info.closed ?? 0}/${info.total ?? 0}</td>
+                <td class="px-2 py-1.5 text-xs">${_fgAssessmentHtml(info.assessment)}</td>
                 <td class="px-2 py-1.5 text-xs text-gray-500">${escapeHtml((info.phases || []).join(", ") || "—")}</td>
             </tr>`;
         }).join("");
         wrap.innerHTML = `<table class="w-full text-sm"><thead><tr class="bg-slate-700 text-white">
             <th class="px-2 py-2 text-left">Milestone</th>
             <th class="px-2 py-2">Tháng</th>
+            <th class="px-2 py-2">Span</th>
             <th class="px-2 py-2">Ngày</th>
             <th class="px-2 py-2 text-left">Nguồn</th>
             <th class="px-2 py-2">Closed/Tổng</th>
+            <th class="px-2 py-2 text-left">Đánh giá lý do hợp lý</th>
             <th class="px-2 py-2 text-left">Phase</th>
         </tr></thead><tbody>${rows}</tbody></table>`;
         return;
     }
+    // Multi-project: tháng + đánh giá ngắn dưới mỗi ô milestone
     const head = `<th class="px-2 py-2 text-left">Dự án</th>`
-        + milestones.map(m => `<th class="px-2 py-2">${escapeHtml(m.label)}</th>`).join("");
+        + milestones.map(m => `<th class="px-2 py-2">${escapeHtml(m.label)}</th>`).join("")
+        + `<th class="px-2 py-2 text-left">Đánh giá lý do hợp lý (UAT / Golive)</th>`;
     const body = projects.map(proj => {
         const ms = proj.milestones || {};
+        const uatA = (ms.uat || {}).assessment;
+        const glA = (ms.golive || {}).assessment;
+        const assessCell =
+            `<div class="flex flex-col gap-1 items-start">`
+            + `<div><span class="text-violet-700 font-medium">UAT:</span> ${_fgAssessmentHtml(uatA)}</div>`
+            + `<div><span class="text-emerald-700 font-medium">Golive:</span> ${_fgAssessmentHtml(glA)}</div>`
+            + `</div>`;
         return `<tr><td class="px-2 py-1.5 font-medium">${escapeHtml(proj.name)}</td>`
             + milestones.map(m => {
                 const info = ms[m.id] || {};
                 const cls = m.highlight ? "font-semibold text-violet-800" : "";
-                return `<td class="px-2 py-1.5 text-center ${cls}" title="${escapeHtml(info.source || "")}">`
+                const tip = `${info.source || ""} · ${(info.assessment || {}).text || ""}`;
+                return `<td class="px-2 py-1.5 text-center ${cls}" title="${escapeHtml(tip)}">`
                      + `${_fgFmtMonth(info.month)}</td>`;
-            }).join("") + `</tr>`;
+            }).join("")
+            + `<td class="px-2 py-1.5 text-xs">${assessCell}</td></tr>`;
     }).join("");
     wrap.innerHTML = `<table class="w-full text-sm"><thead><tr class="bg-slate-700 text-white">${head}</tr></thead>`
         + `<tbody>${body}</tbody></table>`;
