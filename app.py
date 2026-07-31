@@ -3105,12 +3105,29 @@ def project_integration_sync(slug: str, integration_id: str):
         persist_map=bool(persist_map),
     )
 
-    # Nếu sync ok → invalidate cache state để user thấy dữ liệu mới ở lần
-    # request /dashboard tiếp theo (tự load lại snapshot mới nhất).
-    # Multi-project routing: invalidate tất cả slug đã nhận data.
+    # Nếu sync ok → invalidate + eager-reload state từ snapshot mới nhất.
+    # Chỉ pop() rồi để /dashboard tự load dễ race: request song song (DQ /
+    # aging / gantt…) có thể nạp lại pickle cũ vào _state SAU khi pop nhưng
+    # TRƯỚC khi FE gọi /dashboard → UI giữ Sync timestamp / metrics cũ.
+    # Multi-project routing: refresh tất cả slug đã nhận data.
     if result.get("status") == "ok":
-        for s in (result.get("synced_slugs") or [slug]):
+        synced = list(result.get("synced_slugs") or [slug])
+        for s in synced:
             _state.pop(s, None)
+            loaded = _load_state_from_disk(s)
+            if loaded:
+                _state[s] = loaded
+        # Metadata để FE cập nhật header Sync ngay (không đợi parse response dashboard).
+        primary = slug if slug in synced else (synced[0] if synced else slug)
+        st_primary = _state.get(primary)
+        if st_primary:
+            ut = st_primary.get("upload_time")
+            if ut is not None and hasattr(ut, "isoformat"):
+                result["upload_time"] = ut.isoformat(timespec="seconds")
+            elif ut:
+                result["upload_time"] = str(ut)
+            result["filename"] = st_primary.get("filename")
+            result["dashboard_ready"] = True
 
     return jsonify(result)
 

@@ -327,15 +327,19 @@ def test_sync_integration_full_flow(flask_client, sample_xlsx_path, env_creds):
         os.path.join(smgr.dir, snaps[0]["filename"])
     ) - 2  # cùng lúc (cho phép lệch filesystem nhỏ)
 
-    # 5) Sau invalidate cache, /dashboard phải load snapshot sync (không stale)
-    import app as app_module
-    app_module._state.pop("default", None)
+    # 5) Sync response phải eager-reload _state — /dashboard KHÔNG cần
+    #    pop thủ công vẫn ra snapshot sync mới (upload_time + source sync:).
+    assert body.get("dashboard_ready") is True
+    assert body.get("upload_time")
+    assert body.get("filename")
     dash = flask_client.get("/api/projects/default/dashboard")
     assert dash.status_code == 200
     dj = dash.get_json()
     assert dj["metrics"]["summary"]["total_functions"] == 6
     assert dj["upload_time"]  # có timestamp từ snapshot sync
     assert (dj.get("snapshots") or [{}])[0].get("source", "").startswith("sync:")
+    # upload_time trên sync response phải khớp dashboard (cùng eager-reload)
+    assert str(dj["upload_time"]).startswith(str(body["upload_time"])[:19])
 
 
 def test_dashboard_prefers_latest_snapshot_over_stale_current(

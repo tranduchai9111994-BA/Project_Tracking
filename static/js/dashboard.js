@@ -396,7 +396,7 @@ async function switchProject(slug) {
 }
 
 /** Nếu project hiện tại đã có file trên server → load dashboard. */
-async function tryLoadDashboardForCurrent(preserveFilters = false) {
+async function tryLoadDashboardForCurrent(preserveFilters = false, opts = {}) {
     try {
         // Reset filters khi switch project (trừ trường hợp refresh cùng project)
         if (!preserveFilters) {
@@ -409,10 +409,15 @@ async function tryLoadDashboardForCurrent(preserveFilters = false) {
                 _processModuleMs.setSelected([], /*silent=*/true);
             }
         }
-        const url = _buildDashboardUrl();
+        const url = _buildDashboardUrl({
+            cacheBust: !!(opts && opts.cacheBust),
+        });
         let data;
         try {
-            data = await apiJson(url);
+            data = await apiJson(url, {
+                cache: "no-store",
+                headers: { "Cache-Control": "no-cache" },
+            });
         } catch (e) {
             // 404 = project chưa có data — im lặng, hiện upload zone
             if (e && e.status === 404) {
@@ -431,16 +436,39 @@ async function tryLoadDashboardForCurrent(preserveFilters = false) {
     }
 }
 
-function _buildDashboardUrl() {
+function _buildDashboardUrl(opts = {}) {
     const params = new URLSearchParams();
     // Comma-separated: URL gọn + backend cũng chấp nhận repeated → tương thích 2 chiều
     if (globalFilters.modules.length) params.set("module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) params.set("process", globalFilters.processes.join(","));
     if (globalFilters.pics.length) params.set("pic", globalFilters.pics.join(","));
     if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
+    // Sau sync: bust cache trình duyệt / proxy để chắc chắn nhận metrics mới
+    if (opts && opts.cacheBust) params.set("_", String(Date.now()));
     const qs = params.toString();
     return `/api/projects/${currentProjectSlug}/dashboard${qs ? "?" + qs : ""}`;
 }
+
+/**
+ * Format upload/sync timestamp từ ISO naive (không timezone) thành chuỗi vi-VN.
+ * Tránh `new Date(iso)` — một số engine coi naive ISO là UTC → lệch giờ/năm trên header.
+ */
+function formatUploadTime(iso) {
+    if (!iso) return "";
+    const m = String(iso).match(
+        /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/,
+    );
+    if (m) {
+        const sec = m[6] != null ? m[6] : "00";
+        return `${m[4]}:${m[5]}:${sec} ${parseInt(m[3], 10)}/${parseInt(m[2], 10)}/${m[1]}`;
+    }
+    try {
+        return new Date(iso).toLocaleString("vi-VN");
+    } catch (_) {
+        return String(iso);
+    }
+}
+window.formatUploadTime = formatUploadTime;
 
 /**
  * Áp response upload/dashboard vào UI + render.
@@ -487,7 +515,7 @@ function applyDashboardResponse(data) {
     });
     _step("fileInfo.uploadTime", () => {
         const el = document.getElementById("uploadTime");
-        if (el && data.upload_time) el.textContent = new Date(data.upload_time).toLocaleString("vi-VN");
+        if (el && data.upload_time) el.textContent = formatUploadTime(data.upload_time);
         // Label Upload vs Sync theo source của snapshot mới nhất
         const labelEl = document.getElementById("uploadTimeLabel");
         if (labelEl) {
@@ -14659,6 +14687,37 @@ function _syncShowResult(success, data, endpointName) {
     }
 }
 
+/** Cập nhật nhanh label Sync + timestamp trên header từ response sync. */
+function _applySyncHeaderOptimistic(syncData) {
+    if (!syncData) return;
+    const ut = syncData.upload_time
+        || syncData.snapshot_entry?.upload_time
+        || null;
+    const el = document.getElementById("uploadTime");
+    if (el && ut) el.textContent = formatUploadTime(ut);
+    const labelEl = document.getElementById("uploadTimeLabel");
+    if (labelEl) labelEl.textContent = "Sync";
+    const fn = document.getElementById("fileName");
+    if (fn && syncData.filename) fn.textContent = syncData.filename;
+    document.getElementById("fileInfo")?.classList.remove("hidden");
+}
+
+/**
+ * Sau sync thành công: cập nhật header ngay + reload metrics + mọi section
+ * lazy (DQ / aging / gantt…) với cache-bust.
+ */
+async function _refreshAfterSync(syncData) {
+    _applySyncHeaderOptimistic(syncData);
+    // Reset tracker presentation lazy-load để lần present sau cũng fetch mới
+    try {
+        if (typeof _presentState !== "undefined" && _presentState) {
+            _presentState.loaded = new Set();
+        }
+    } catch (_) { /* ignore */ }
+    await tryLoadDashboardForCurrent(true, { cacheBust: true });
+}
+window._refreshAfterSync = _refreshAfterSync;
+
 /** Sync 1 endpoint — dùng chung cho list & quick menu.
  *  Nếu endpoint có project_code_field → mở modal chọn mã trước khi sync.
  */
@@ -14714,7 +14773,7 @@ async function _integSyncEndpoint(integrationId, endpointId, opts = {}) {
                     return `${code} → ${p.slug}: ${p.rows} dòng`;
                 });
             if (synced.includes(currentProjectSlug)) {
-                await tryLoadDashboardForCurrent(true);
+                await _refreshAfterSync(data);
                 const overdue = metricsData?.summary?.total_overdue;
                 const overdueHint = (overdue != null) ? ` · overdue: ${overdue}` : "";
                 showToast(
@@ -14722,6 +14781,9 @@ async function _integSyncEndpoint(integrationId, endpointId, opts = {}) {
                     + overdueHint,
                 );
             } else {
+                // Vẫn cập nhật timestamp nếu BE trả upload_time (multi-project
+                // ghi vào project khác — header hiện tại không đổi metrics).
+                _applySyncHeaderOptimistic(data);
                 showToast(
                     reportParts.length
                         ? reportParts.join(" · ")
