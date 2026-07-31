@@ -266,6 +266,14 @@
                                 title="Xuất Excel 1 file chứa mọi loại vấn đề">
                             📊 Xuất vấn đề
                         </button>
+                        <button id="btnExportFlReimport" type="button" role="menuitem"
+                                onclick="closeHdrMenus(); exportFlReimport()"
+                                class="hdr-menu-item"
+                                data-i18n="btn.export_fl_reimport"
+                                data-i18n-title="btn.export_fl_reimport_title"
+                                title="Xuất Function List chỉ CN dính issue — tô vàng PIC/Status, date-chain, re-import được">
+                            📥 Xuất FL chỉnh sửa
+                        </button>
                         <button id="btnExportWeeklyMom" type="button" role="menuitem"
                                 onclick="closeHdrMenus(); exportWeeklyMom()"
                                 class="hdr-menu-item"
@@ -1195,6 +1203,62 @@
                         khôi phục ở phiên sau. Không mất filter/pagination hiện tại.
                     </p>
                     <div id="visibilityPanel" class="space-y-2"></div>
+                </section>
+
+
+                <!-- FL re-import template + mapping review -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40 ring-1 ring-emerald-200 dark:ring-emerald-800"
+                         id="setFlTemplateSection">
+                    <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+                        <h4 class="font-semibold text-gray-800 dark:text-gray-100">📥 Mẫu Function List (re-import)</h4>
+                        <div class="flex gap-1 flex-wrap text-xs">
+                            <button type="button" onclick="_flTplPickFile()"
+                                    class="px-2 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-semibold"
+                                    title="Upload file FL mẫu → auto-detect schema">
+                                ⬆ Upload mẫu
+                            </button>
+                            <button type="button" onclick="_flTplRefresh()"
+                                    class="px-2 py-1 border rounded hover:bg-white dark:hover:bg-slate-600 dark:border-slate-500">
+                                🔄 Reload
+                            </button>
+                            <button type="button" onclick="_flTplDelete()"
+                                    class="px-2 py-1 border border-red-300 text-red-700 rounded hover:bg-red-50 dark:border-red-700 dark:text-red-300">
+                                🗑 Xóa mẫu
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-500 mb-2">
+                        Upload file import nguồn (VD DanhSachFunction_….xlsx) → hệ thống tự nhận diện cột Meta / Phase.
+                        Review mapping (kéo header → slot hoặc chọn dropdown) → Lưu per-project.
+                        Nút <b>Xuất FL chỉnh sửa</b> dùng đúng schema này (tô vàng PIC/Status; xanh nhạt date-chain).
+                        Ghi chú Tracker ghi vào cột <b>Remark</b> có sẵn — không thêm cột lạ.
+                    </p>
+                    <input type="file" id="flTplFileInput" accept=".xlsx,.xlsm,.xls" class="hidden"
+                           onchange="_flTplOnFile(event)">
+                    <div id="flTplStatus" class="text-xs mb-2 px-2 py-1.5 rounded bg-white dark:bg-slate-800 border dark:border-slate-600 text-gray-600 dark:text-gray-300">
+                        Chưa có mẫu — dùng header FL hiện tại khi xuất.
+                    </div>
+                    <div id="flTplReviewBoard" class="hidden space-y-2">
+                        <div class="flex items-center justify-between flex-wrap gap-2">
+                            <p class="text-xs text-gray-500" id="flTplTip"></p>
+                            <button type="button" onclick="_flTplSaveMapping()"
+                                    class="text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded font-semibold">
+                                💾 Lưu mapping
+                            </button>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto">
+                            <div>
+                                <div class="text-[11px] font-semibold text-gray-500 mb-1">Headers (kéo → slot)</div>
+                                <ul id="flTplHeaderPool"
+                                    class="space-y-1 bg-white dark:bg-slate-800 border dark:border-slate-600 rounded p-2 text-xs min-h-[4rem]"></ul>
+                            </div>
+                            <div>
+                                <div class="text-[11px] font-semibold text-gray-500 mb-1">Slots (auto-map — chỉnh nếu cần)</div>
+                                <ul id="flTplSlotList"
+                                    class="space-y-1 bg-white dark:bg-slate-800 border dark:border-slate-600 rounded p-2 text-xs min-h-[4rem]"></ul>
+                            </div>
+                        </div>
+                    </div>
                 </section>
 
                 <!-- ================================================
@@ -2422,7 +2486,10 @@
                         </div>
                     </div>
                     <div>
-                        <h4 class="text-sm font-semibold text-sky-800 mb-2">📅 Kế hoạch code tuần tới <span id="rlogPlanLabel" class="font-normal text-gray-500"></span></h4>
+                        <h4 class="text-sm font-semibold text-sky-800 mb-2 flex items-center gap-2 flex-wrap">
+                            📅 Kế hoạch code tuần tới <span id="rlogPlanLabel" class="font-normal text-gray-500"></span>
+                            <span data-col-picker="rlogPlan" data-col-table="#rlogPlanBody" class="no-print"></span>
+                        </h4>
                         <div class="overflow-x-auto max-h-72 overflow-y-auto border rounded">
                             <table class="w-full text-xs">
                                 <thead class="bg-sky-700 text-white sticky top-0">

@@ -2086,6 +2086,7 @@ function renderDashboard() {
 
     // T21: Data Quality panel (lazy fetch — không block render chính)
     _safe("dataQuality", loadDataQuality);
+    _safe("colPickers", () => { if (typeof initAllColumnPickers === "function") initAllColumnPickers(); });
 
     // T22: Aging WIP tracking
     _safe("agingWip", loadAgingWip);
@@ -3178,6 +3179,7 @@ function renderOverdueTable() {
     }).join("");
 
     renderPager("overdueShowMoreWrap", "overdue", items.length, () => renderOverdueTable());
+    try { applyColumnVisibility("overdue"); } catch (e) {}
 
     document.getElementById("overdueCount").textContent =
         items.length === 0
@@ -3294,6 +3296,8 @@ function renderRlogWeekly() {
             </tr>`).join("")
             : `<tr><td colspan="6" class="px-2 py-3 text-center text-gray-400">Không có Rlog kế hoạch tuần tới</td></tr>`;
     }
+    try { applyColumnVisibility("rlogCoded"); } catch (e) {}
+    try { applyColumnVisibility("rlogPlan"); } catch (e) {}
 
     const canvas = document.getElementById("chartRlogWeekly");
     if (canvas && typeof Chart !== "undefined") {
@@ -3360,6 +3364,36 @@ async function exportAllIssues() {
     }
 }
 window.exportAllIssues = exportAllIssues;
+
+
+/** Xuất Function List re-import — chỉ CN dính overdue/unassigned/stalled/anomaly. */
+async function exportFlReimport() {
+    if (!currentProjectSlug) {
+        showToast("⚠️ Chưa chọn project");
+        return;
+    }
+    const params = new URLSearchParams();
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
+
+    const msg = (typeof I18n !== "undefined" && I18n.t)
+        ? I18n.t("toast.exporting_fl_reimport")
+        : "📥 Đang tạo FL re-import…";
+    showToast(msg);
+    try {
+        const url = `/api/projects/${currentProjectSlug}/export-fl-reimport?` + params.toString();
+        await downloadFile(url, `FL_Reimport_${currentProjectSlug}.xlsx`);
+    } catch (err) {
+        console.error("[exportFlReimport]", err);
+        const fail = (typeof I18n !== "undefined" && I18n.t)
+            ? I18n.t("toast.export_fl_reimport_fail")
+            : "❌ Lỗi khi xuất FL chỉnh sửa";
+        showToast(fail, "red");
+    }
+}
+window.exportFlReimport = exportFlReimport;
 
 
 /** Xuất báo cáo tuần MoM (mẫu W30) + sheet PM Dashboard. */
@@ -3805,6 +3839,7 @@ function renderUnassignedSection() {
     }).join("");
 
     renderPager("unassignedShowMoreWrap", "unassigned", items.length, () => renderUnassignedSection());
+    try { applyColumnVisibility("unassigned"); } catch (e) {}
     document.getElementById("unassignedCount").textContent =
         `Đang xem ${start + 1}–${end}/${total} task chưa có PIC`;
 }
@@ -4170,6 +4205,7 @@ function renderStalledTable(selectedOverride) {
     }).join("");
 
     renderPager("stalledShowMoreWrap", "stalled", items.length, () => renderStalledTable(selected));
+    try { applyColumnVisibility("stalled"); } catch (e) {}
     const cnt = document.getElementById("stalledCount");
     if (cnt) {
         const totalAll = metricsData?.stalled_tasks?.items_total
@@ -13166,6 +13202,7 @@ function _dqRenderTable() {
             ✅ Không có issue nào phù hợp filter. Dữ liệu clean!
         </td></tr>`;
         const pager = document.getElementById("dqPagerWrap");
+    try { applyColumnVisibility("dq"); } catch (e) {}
         if (pager) pager.innerHTML = "";
         return;
     }
@@ -13436,6 +13473,9 @@ const _CMD_ACTIONS = [
     { id: "act.export-all-issues", label: "📊 Xuất toàn bộ vấn đề (Excel multi-sheet)", kind: "action",
       run: () => { if (typeof exportAllIssues === "function") exportAllIssues();
                    else showToast("Chưa sẵn sàng"); } },
+    { id: "act.export-fl-reimport", label: "📥 Xuất FL chỉnh sửa (re-import)", kind: "action",
+      run: () => { if (typeof exportFlReimport === "function") exportFlReimport();
+                   else showToast("Chưa sẵn sàng"); } },
     { id: "act.export-overdue", label: "📥 Xuất Excel Overdue", kind: "action",
       run: () => { if (typeof exportOverdue === "function") exportOverdue();
                    else showToast("Chưa sẵn sàng"); } },
@@ -13686,6 +13726,8 @@ window.openSettingsModal = async function (opts) {
     _lanRefresh().catch(err => console.warn("[lan load]", err));
     // T-AA — load archive settings + snapshot list
     _archRefresh().catch(err => console.warn("[archive load]", err));
+    // FL re-import template
+    _flTplRefresh().catch(err => console.warn("[fl-template load]", err));
     // Thứ tự Module
     _modOrderRefresh().catch(err => console.warn("[module-order load]", err));
     modal.classList.remove("hidden");
@@ -17502,6 +17544,230 @@ window.attachUnifiedSectionHelp = attachUnifiedSectionHelp;
 
 
 // ========================================================================
+// FL re-import template — upload mẫu + review mapping (Settings)
+// ========================================================================
+const _flTplState = {
+    slots: [],          // [{id, label, header, confidence, group}]
+    headers: [],        // [{header, group}]
+    assignments: {},    // slot_id → header
+    schema: null,
+};
+
+async function _flTplRefresh() {
+    if (!currentProjectSlug) return;
+    const status = document.getElementById("flTplStatus");
+    const board = document.getElementById("flTplReviewBoard");
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/fl-export-template`);
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        if (d.has_template && d.schema) {
+            if (status) {
+                const fn = d.schema.source_filename || d.template_file || "fl_export_template.xlsx";
+                const nSlots = (d.schema.slots || []).length;
+                const note = (d.schema.note_column || {}).header || "(không có Remark)";
+                status.textContent = `✅ Đã lưu mẫu: ${fn} · ${nSlots} slot · note → ${note}`;
+                status.className = "text-xs mb-2 px-2 py-1.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900";
+            }
+            _flTplState.schema = d.schema;
+            _flTplState.slots = d.schema.slots || [];
+            _flTplState.headers = (d.schema.headers || []).map(h => ({
+                header: h,
+                group: h.includes(" - ") ? h.split(" - ")[0] : "Meta",
+            }));
+            _flTplState.assignments = {};
+            for (const s of _flTplState.slots) {
+                if (s.header) _flTplState.assignments[s.id] = s.header;
+            }
+            _flTplRenderBoard(d.tip || "");
+            if (board) board.classList.remove("hidden");
+        } else {
+            if (status) {
+                status.textContent = "Chưa có mẫu — dùng header FL hiện tại khi xuất. Upload mẫu để cố định schema.";
+                status.className = "text-xs mb-2 px-2 py-1.5 rounded bg-white dark:bg-slate-800 border dark:border-slate-600 text-gray-600";
+            }
+            if (board) board.classList.add("hidden");
+        }
+    } catch (err) {
+        if (status) status.textContent = "Không tải được trạng thái mẫu: " + err.message;
+    }
+}
+window._flTplRefresh = _flTplRefresh;
+
+function _flTplPickFile() {
+    const inp = document.getElementById("flTplFileInput");
+    if (inp) inp.click();
+}
+window._flTplPickFile = _flTplPickFile;
+
+async function _flTplOnFile(ev) {
+    const file = ev.target?.files?.[0];
+    if (!file || !currentProjectSlug) return;
+    const status = document.getElementById("flTplStatus");
+    if (status) status.textContent = "Đang parse mẫu…";
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+        // save=1: lưu luôn auto-detect; user chỉnh mapping rồi Lưu lại
+        const r = await fetch(
+            `/api/projects/${currentProjectSlug}/fl-export-template?save=1`,
+            { method: "POST", body: fd },
+        );
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        showToast("✅ Đã nhận mẫu — review mapping rồi Lưu nếu chỉnh");
+        const review = d.review || {};
+        _flTplState.schema = d.schema || review.schema;
+        _flTplState.slots = review.slots || (_flTplState.schema && _flTplState.schema.slots) || [];
+        _flTplState.headers = review.headers || [];
+        _flTplState.assignments = {};
+        for (const s of _flTplState.slots) {
+            if (s.header) _flTplState.assignments[s.id] = s.header;
+        }
+        _flTplRenderBoard(review.tip || d.tip || "");
+        const board = document.getElementById("flTplReviewBoard");
+        if (board) board.classList.remove("hidden");
+        if (status) {
+            status.textContent = `✅ Mẫu: ${file.name} · ${_flTplState.slots.length} slot`;
+            status.className = "text-xs mb-2 px-2 py-1.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900";
+        }
+    } catch (err) {
+        showToast("Lỗi upload mẫu: " + err.message, "red");
+        if (status) status.textContent = "Lỗi: " + err.message;
+    } finally {
+        ev.target.value = "";
+    }
+}
+window._flTplOnFile = _flTplOnFile;
+
+function _flTplRenderBoard(tip) {
+    const tipEl = document.getElementById("flTplTip");
+    if (tipEl) tipEl.textContent = tip || "Ô xanh = khớp chắc; vàng = nên review. Kéo header → slot.";
+
+    const pool = document.getElementById("flTplHeaderPool");
+    const list = document.getElementById("flTplSlotList");
+    if (!pool || !list) return;
+
+    const used = new Set(Object.values(_flTplState.assignments || {}));
+    pool.innerHTML = "";
+    for (const h of _flTplState.headers) {
+        const li = document.createElement("li");
+        li.className = "px-2 py-1 rounded border dark:border-slate-600 cursor-grab "
+            + (used.has(h.header) ? "opacity-40 bg-slate-100 dark:bg-slate-700" : "bg-sky-50 dark:bg-slate-700");
+        li.draggable = true;
+        li.textContent = h.header;
+        li.title = h.group || "";
+        li.dataset.header = h.header;
+        li.addEventListener("dragstart", (e) => {
+            e.dataTransfer.setData("text/plain", h.header);
+        });
+        pool.appendChild(li);
+    }
+
+    list.innerHTML = "";
+    // Group by group name
+    const byGroup = {};
+    for (const s of _flTplState.slots) {
+        const g = s.group || "Meta";
+        if (!byGroup[g]) byGroup[g] = [];
+        byGroup[g].push(s);
+    }
+    for (const [g, slots] of Object.entries(byGroup)) {
+        const gh = document.createElement("li");
+        gh.className = "pt-2 pb-0.5 text-[10px] font-bold uppercase text-gray-400 tracking-wide";
+        gh.textContent = g;
+        list.appendChild(gh);
+        for (const s of slots) {
+            const li = document.createElement("li");
+            const conf = s.confidence || "medium";
+            const confCls = conf === "high"
+                ? "border-emerald-300 bg-emerald-50 dark:bg-emerald-900/30"
+                : conf === "low"
+                    ? "border-amber-300 bg-amber-50 dark:bg-amber-900/30"
+                    : "border-yellow-200 bg-yellow-50 dark:bg-yellow-900/20";
+            li.className = `px-2 py-1.5 rounded border ${confCls} flex items-center gap-2`;
+            li.dataset.slotId = s.id;
+
+            const label = document.createElement("span");
+            label.className = "w-36 shrink-0 font-medium text-gray-700 dark:text-gray-200 truncate";
+            label.textContent = s.label || s.id;
+            label.title = s.id;
+
+            const sel = document.createElement("select");
+            sel.className = "flex-1 border rounded px-1 py-0.5 text-xs dark:bg-slate-800 dark:border-slate-600";
+            sel.dataset.slotId = s.id;
+            const empty = document.createElement("option");
+            empty.value = "";
+            empty.textContent = "— (trống) —";
+            sel.appendChild(empty);
+            for (const h of _flTplState.headers) {
+                const opt = document.createElement("option");
+                opt.value = h.header;
+                opt.textContent = h.header;
+                if ((_flTplState.assignments[s.id] || "") === h.header) opt.selected = true;
+                sel.appendChild(opt);
+            }
+            sel.addEventListener("change", () => {
+                if (sel.value) _flTplState.assignments[s.id] = sel.value;
+                else delete _flTplState.assignments[s.id];
+                _flTplRenderBoard(tipEl ? tipEl.textContent : "");
+            });
+
+            li.addEventListener("dragover", (e) => { e.preventDefault(); li.classList.add("ring-2", "ring-blue-400"); });
+            li.addEventListener("dragleave", () => li.classList.remove("ring-2", "ring-blue-400"));
+            li.addEventListener("drop", (e) => {
+                e.preventDefault();
+                li.classList.remove("ring-2", "ring-blue-400");
+                const header = e.dataTransfer.getData("text/plain");
+                if (!header) return;
+                _flTplState.assignments[s.id] = header;
+                _flTplRenderBoard(tipEl ? tipEl.textContent : "");
+            });
+
+            li.appendChild(label);
+            li.appendChild(sel);
+            list.appendChild(li);
+        }
+    }
+}
+
+async function _flTplSaveMapping() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/fl-export-template?save=1`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ slot_assignments: _flTplState.assignments }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        showToast("💾 Đã lưu mapping mẫu FL");
+        await _flTplRefresh();
+    } catch (err) {
+        showToast("Lỗi lưu mapping: " + err.message, "red");
+    }
+}
+window._flTplSaveMapping = _flTplSaveMapping;
+
+async function _flTplDelete() {
+    if (!currentProjectSlug) return;
+    if (!confirm("Xóa mẫu FL re-import của project này?")) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/fl-export-template`, { method: "DELETE" });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        showToast("Đã xóa mẫu FL");
+        await _flTplRefresh();
+    } catch (err) {
+        showToast("Lỗi xóa mẫu: " + err.message, "red");
+    }
+}
+window._flTplDelete = _flTplDelete;
+
+
+
+
+// ========================================================================
 // T-AA — ARCHIVE SETTINGS UI
 // ========================================================================
 let _archState = { settings: null, snapshots: [], disk: null };
@@ -17667,3 +17933,182 @@ async function _archOne(snapId) {
     }
 }
 window._archOne = _archOne;
+
+// ========================================================================
+// COLUMN PICKER — ẩn/hiện cột bảng, localStorage per table id
+// Không ảnh hưởng export (server-side vẫn đủ cột).
+// Mount: <div data-col-picker="overdue" data-col-table="#section-overdue table">
+// Header th cần data-col="code"; data-col-locked="1" = luôn hiện.
+// ========================================================================
+const COL_PICKER_STORAGE_KEY = "ihrp_table_cols_v1";
+const _colPickerMounted = new Set();
+
+function _colPickerLoadAll() {
+    try {
+        return JSON.parse(localStorage.getItem(COL_PICKER_STORAGE_KEY) || "{}") || {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function _colPickerSave(tableId, hidden) {
+    const all = _colPickerLoadAll();
+    all[tableId] = Array.isArray(hidden) ? hidden : [];
+    try {
+        localStorage.setItem(COL_PICKER_STORAGE_KEY, JSON.stringify(all));
+    } catch (e) { /* localStorage disabled */ }
+}
+
+function _colPickerHidden(tableId) {
+    const all = _colPickerLoadAll();
+    return Array.isArray(all[tableId]) ? all[tableId] : [];
+}
+
+function _resolveColTable(host) {
+    const sel = host.getAttribute("data-col-table");
+    if (!sel) return null;
+    let el = document.querySelector(sel);
+    if (!el) return null;
+    if (el.tagName === "TABLE") return el;
+    return el.closest("table");
+}
+
+function applyColumnVisibility(tableId, tableEl) {
+    if (!tableEl) {
+        const host = document.querySelector(`[data-col-picker="${tableId}"]`);
+        if (host) tableEl = _resolveColTable(host);
+    }
+    if (!tableEl) return;
+    const hidden = new Set(_colPickerHidden(tableId));
+    const ths = tableEl.querySelectorAll("thead th");
+    const colIndex = [];
+    ths.forEach((th, i) => {
+        const col = th.getAttribute("data-col");
+        if (!col) {
+            colIndex.push(null);
+            return;
+        }
+        colIndex.push(col);
+        const locked = th.getAttribute("data-col-locked") === "1";
+        const hide = !locked && hidden.has(col);
+        th.classList.toggle("col-picker-hidden", hide);
+        th.style.display = hide ? "none" : "";
+    });
+    tableEl.querySelectorAll("tbody tr").forEach(tr => {
+        Array.from(tr.children).forEach((td, i) => {
+            const col = colIndex[i];
+            if (!col) return;
+            const th = ths[i];
+            const locked = th && th.getAttribute("data-col-locked") === "1";
+            const hide = !locked && hidden.has(col);
+            td.classList.toggle("col-picker-hidden", hide);
+            td.style.display = hide ? "none" : "";
+        });
+    });
+}
+window.applyColumnVisibility = applyColumnVisibility;
+
+function _colPickerRebuildPanel(host, tableId, tableEl) {
+    const panel = host.querySelector(".col-picker-panel");
+    if (!panel) return;
+    const hidden = new Set(_colPickerHidden(tableId));
+    const ths = tableEl.querySelectorAll("thead th[data-col]");
+    const items = [];
+    ths.forEach(th => {
+        const col = th.getAttribute("data-col");
+        const locked = th.getAttribute("data-col-locked") === "1";
+        if (locked) return;
+        let label = (th.textContent || col).trim();
+        if (!label || label === "👁") label = col;
+        const checked = !hidden.has(col);
+        items.push(
+            `<label class="col-picker-item">`
+            + `<input type="checkbox" data-col-toggle="${escapeHtml(col)}" ${checked ? "checked" : ""}>`
+            + `<span>${escapeHtml(label)}</span></label>`
+        );
+    });
+    panel.innerHTML = items.length
+        ? items.join("") + `<button type="button" class="col-picker-reset">↺ Mặc định</button>`
+        : `<div class="text-xs text-gray-500 px-2 py-1">Không có cột tuỳ chọn</div>`;
+
+    panel.querySelectorAll("input[data-col-toggle]").forEach(inp => {
+        inp.addEventListener("change", () => {
+            const next = [];
+            panel.querySelectorAll("input[data-col-toggle]").forEach(x => {
+                if (!x.checked) next.push(x.getAttribute("data-col-toggle"));
+            });
+            _colPickerSave(tableId, next);
+            applyColumnVisibility(tableId, tableEl);
+        });
+    });
+    const reset = panel.querySelector(".col-picker-reset");
+    if (reset) {
+        reset.addEventListener("click", () => {
+            _colPickerSave(tableId, []);
+            _colPickerRebuildPanel(host, tableId, tableEl);
+            applyColumnVisibility(tableId, tableEl);
+        });
+    }
+}
+
+function mountColumnPicker(host) {
+    if (!host || host.dataset.colPickerReady === "1") return;
+    const tableId = host.getAttribute("data-col-picker");
+    if (!tableId) return;
+    const tableEl = _resolveColTable(host);
+    if (!tableEl) return;
+
+    host.dataset.colPickerReady = "1";
+    host.classList.add("col-picker");
+    host.innerHTML =
+        `<button type="button" class="col-picker-btn" title="Ẩn/hiện cột" aria-haspopup="true">Cột ▾</button>`
+        + `<div class="col-picker-panel hidden" role="menu"></div>`;
+
+    const btn = host.querySelector(".col-picker-btn");
+    const panel = host.querySelector(".col-picker-panel");
+    btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        document.querySelectorAll(".col-picker-panel").forEach(p => {
+            if (p !== panel) p.classList.add("hidden");
+        });
+        const opening = panel.classList.contains("hidden");
+        if (opening) {
+            _colPickerRebuildPanel(host, tableId, tableEl);
+            panel.classList.remove("hidden");
+        } else {
+            panel.classList.add("hidden");
+        }
+    });
+    applyColumnVisibility(tableId, tableEl);
+    _colPickerMounted.add(tableId);
+}
+
+function initAllColumnPickers() {
+    document.querySelectorAll("[data-col-picker]").forEach(host => {
+        try { mountColumnPicker(host); } catch (e) {
+            console.warn("[col-picker]", e);
+        }
+    });
+}
+window.initAllColumnPickers = initAllColumnPickers;
+
+document.addEventListener("click", (e) => {
+    if (e.target.closest && e.target.closest(".col-picker")) return;
+    document.querySelectorAll(".col-picker-panel").forEach(p => p.classList.add("hidden"));
+});
+
+// Re-apply sau mỗi lần render tbody (export không đụng)
+function _reapplyKnownColPickers() {
+    ["overdue", "unassigned", "stalled", "rlogCoded", "rlogPlan", "dq"].forEach(id => {
+        try { applyColumnVisibility(id); } catch (e) {}
+    });
+}
+
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+        try { initAllColumnPickers(); } catch (e) {}
+    });
+} else {
+    try { initAllColumnPickers(); } catch (e) {}
+}

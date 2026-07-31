@@ -2201,6 +2201,262 @@ def project_export_all_issues(slug: str):
         return jsonify({"error": f"Lỗi khi xuất file: {str(e)}"}), 500
 
 
+# ==========================================================================
+# FL re-import — xuất issues đúng format Function List + mẫu schema
+# ==========================================================================
+
+@app.route("/api/projects/<slug>/export-fl-reimport", methods=["GET", "POST"])
+def project_export_fl_reimport(slug: str):
+    """
+    Xuất Excel Function List (header row 1) chỉ các CN dính issue:
+    overdue / unassigned / stalled / anomalies (+ missing_deadline).
+    Tôn trọng global filter. Tô vàng PIC/Status; xanh nhạt date-chain.
+    """
+    from analyzer.data_quality import ANOMALY_CODES, compute_data_quality
+    from exporter.fl_reimport_export import collect_issue_hits, export_fl_reimport
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        fmodules = body.get("g_module") or body.get("modules") or []
+        fprocesses = body.get("g_process") or body.get("processes") or []
+        fpics = body.get("g_pic") or body.get("pics") or []
+        fproject_codes = _project_codes_from_body(body)
+        if isinstance(fmodules, str):
+            fmodules = [x.strip() for x in fmodules.split(",") if x.strip()]
+        if isinstance(fprocesses, str):
+            fprocesses = [x.strip() for x in fprocesses.split(",") if x.strip()]
+        if isinstance(fpics, str):
+            fpics = [x.strip() for x in fpics.split(",") if x.strip()]
+    else:
+        fmodules = _parse_multi_arg("g_module") or _parse_multi_arg("module")
+        fprocesses = _parse_multi_arg("g_process") or _parse_multi_arg("process")
+        fpics = _parse_multi_arg("g_pic") or _parse_multi_arg("pic")
+        fproject_codes = _parse_project_code_args()
+
+    if fmodules or fprocesses or fpics or fproject_codes:
+        filtered = _filter_parsed_data(
+            state["data"],
+            modules=fmodules, processes=fprocesses, pics=fpics,
+            project_codes=fproject_codes,
+        )
+    else:
+        filtered = state["data"]
+
+    engine = DashboardEngine()
+    metrics = engine.compute_all(filtered)
+    overdue_list = metrics.get("overdue_list", []) or []
+    unassigned_list = metrics.get("unassigned_tasks", []) or []
+    stalled_list = (metrics.get("stalled_tasks", {}) or {}).get("items", []) or []
+
+    dq = compute_data_quality(filtered)
+    # Anomaly + DQ liên quan re-import (deadline / PIC / status)
+    reimport_codes = set(ANOMALY_CODES) | {
+        "missing_deadline", "blank_pic", "invalid_status", "closed_no_end",
+    }
+    anomaly_issues = [
+        it for it in (dq.get("issues") or [])
+        if it.get("code") in reimport_codes
+    ]
+
+    hits = collect_issue_hits(
+        overdue_list=overdue_list,
+        unassigned_list=unassigned_list,
+        stalled_list=stalled_list,
+        anomaly_issues=anomaly_issues,
+    )
+    if not hits:
+        return jsonify({"error": "Không có function nào dính issue để xuất."}), 400
+
+    project_dir = _project_dir_for(slug)
+    # Nguồn row: template đã lưu → current.xlsx → snapshot path trong state
+    source_xlsx = None
+    from exporter.fl_export_schema import template_xlsx_path
+    tpl = template_xlsx_path(project_dir)
+    if os.path.isfile(tpl):
+        source_xlsx = tpl
+    else:
+        cur = _project_mgr.get_current_file_path(slug)
+        if os.path.isfile(cur):
+            source_xlsx = cur
+        elif state.get("filepath") and os.path.isfile(state["filepath"]):
+            source_xlsx = state["filepath"]
+
+    try:
+        filepath = export_fl_reimport(
+            filtered,
+            hits=hits,
+            output_dir=_project_mgr.get_export_dir(slug),
+            project_dir=project_dir,
+            source_xlsx=source_xlsx,
+            project_slug=slug,
+        )
+        return send_file(
+            filepath, as_attachment=True,
+            download_name=os.path.basename(filepath),
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi khi xuất FL re-import: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/fl-export-template", methods=["GET", "POST", "DELETE"])
+def project_fl_export_template(slug: str):
+    """
+    GET: schema đã lưu + tip.
+    POST multipart file=xlsx → parse → trả review payload (chưa lưu nếu
+         query save=0; mặc định lưu luôn khi không gửi slot_assignments).
+         Body JSON alternate: {tmp_id} hoặc {slot_assignments} + save.
+    DELETE: xoá mẫu + schema.
+    """
+    from exporter.fl_export_schema import (
+        delete_fl_export_template,
+        load_fl_export_schema,
+        review_from_xlsx,
+        save_fl_export_template,
+        apply_slot_overrides_to_schema,
+        template_xlsx_path,
+    )
+
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    project_dir = _project_dir_for(slug)
+
+    if request.method == "GET":
+        schema = load_fl_export_schema(project_dir)
+        has_tpl = os.path.isfile(template_xlsx_path(project_dir))
+        return jsonify({
+            "has_template": has_tpl,
+            "schema": schema,
+            "template_file": "fl_export_template.xlsx" if has_tpl else None,
+            "tip": (
+                "Upload file Function List mẫu → hệ thống auto-map cột. "
+                "Review kéo-thả nếu cần → Lưu. Export FL re-import dùng schema này."
+            ),
+        })
+
+    if request.method == "DELETE":
+        delete_fl_export_template(project_dir)
+        return jsonify({"success": True, "has_template": False})
+
+    # POST — upload hoặc confirm mapping
+    body = request.get_json(silent=True) if request.is_json else None
+    save_flag = request.args.get("save", "1")
+    want_save = str(save_flag).lower() not in ("0", "false", "no")
+
+    tmp_path = None
+    source_filename = ""
+    slot_assignments = None
+
+    if body and body.get("slot_assignments") is not None and not request.files:
+        # Confirm mapping trên file đã lưu / tmp
+        slot_assignments = body.get("slot_assignments") or {}
+        schema_base = load_fl_export_schema(project_dir)
+        if not schema_base:
+            return jsonify({"error": "Chưa có schema — upload mẫu trước"}), 400
+        schema = apply_slot_overrides_to_schema(schema_base, slot_assignments)
+        if want_save:
+            # Giữ file template hiện có
+            tpl = template_xlsx_path(project_dir)
+            if not os.path.isfile(tpl):
+                return jsonify({"error": "Thiếu file mẫu trên disk"}), 400
+            schema = save_fl_export_template(project_dir, tpl, schema)
+        return jsonify({
+            "success": True,
+            "saved": want_save,
+            "schema": schema,
+            "review": {
+                "slots": schema.get("slots"),
+                "note_column": schema.get("note_column"),
+                "headers": [
+                    {"header": h, "group": h.rsplit(" - ", 1)[0] if " - " in h else "Meta"}
+                    for h in (schema.get("headers") or [])
+                ],
+            },
+        })
+
+    if "file" in request.files and request.files["file"].filename:
+        f = request.files["file"]
+        source_filename = f.filename or "template.xlsx"
+        if not source_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
+            return jsonify({"error": "Chỉ nhận file Excel (.xlsx)"}), 400
+        os.makedirs(_TMP_UPLOAD_DIR, exist_ok=True)
+        import uuid
+        tmp_id = uuid.uuid4().hex[:12]
+        tmp_path = os.path.join(_TMP_UPLOAD_DIR, f"fl_tpl_{tmp_id}.xlsx")
+        f.save(tmp_path)
+    elif body and body.get("tmp_id"):
+        tmp_path = os.path.join(_TMP_UPLOAD_DIR, f"fl_tpl_{body['tmp_id']}.xlsx")
+        if not os.path.isfile(tmp_path):
+            return jsonify({"error": "tmp_id hết hạn / không tồn tại"}), 400
+        source_filename = body.get("filename") or "template.xlsx"
+        slot_assignments = body.get("slot_assignments")
+    else:
+        return jsonify({"error": "Thiếu file mẫu Function List"}), 400
+
+    try:
+        if slot_assignments:
+            from exporter.fl_export_schema import schema_from_xlsx, build_review_payload
+            from parser.excel_parser import FunctionListParser
+            parsed = FunctionListParser().parse(tmp_path)
+            review = build_review_payload(
+                parsed,
+                source_filename=source_filename,
+                slot_overrides=slot_assignments,
+            )
+        else:
+            review = review_from_xlsx(tmp_path, source_filename)
+        schema = review["schema"]
+        saved = False
+        if want_save and not slot_assignments:
+            # Upload lần đầu: lưu luôn với auto-detect; user có thể edit sau
+            schema = save_fl_export_template(project_dir, tmp_path, schema)
+            saved = True
+        elif want_save and slot_assignments:
+            schema = save_fl_export_template(project_dir, tmp_path, schema)
+            saved = True
+        return jsonify({
+            "success": True,
+            "saved": saved,
+            "tmp_id": os.path.basename(tmp_path).replace("fl_tpl_", "").replace(".xlsx", "") if tmp_path else None,
+            "review": review,
+            "schema": schema,
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Không parse được mẫu: {e}"}), 400
+    finally:
+        # Nếu đã save thì có thể xoá tmp; nếu chưa save giữ tmp cho confirm
+        if want_save and tmp_path and os.path.isfile(tmp_path):
+            # Đã copy vào project_dir — xoá tmp
+            try:
+                if os.path.isfile(template_xlsx_path(project_dir)):
+                    # chỉ xoá nếu không phải cùng path
+                    if os.path.abspath(tmp_path) != os.path.abspath(template_xlsx_path(project_dir)):
+                        os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+@app.route("/api/projects/<slug>/fl-export-template/review", methods=["POST"])
+def project_fl_export_template_review(slug: str):
+    """Upload mẫu → chỉ trả review mapping (không lưu). save=0."""
+    # Reuse handler với save=0
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    # Force query
+    from werkzeug.datastructures import ImmutableMultiDict
+    args = request.args.to_dict(flat=True)
+    args["save"] = "0"
+    request.args = ImmutableMultiDict(args)
+    return project_fl_export_template(slug)
+
+
 @app.route("/api/projects/<slug>/export-chart", methods=["GET", "POST"])
 def export_chart_endpoint(slug):
     """
