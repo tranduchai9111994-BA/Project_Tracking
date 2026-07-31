@@ -296,3 +296,22 @@ def test_pm_api_flow(flask_client, plan_file, weekly_file):
     r = client.get(f"/api/projects/{slug}/pm/export")
     assert r.status_code == 200
     assert "spreadsheet" in (r.content_type or "") or r.data[:2] == b"PK"
+
+
+def test_hydrate_from_source_files(tmp_path, plan_file, weekly_file):
+    """Copy nguồn vào pm/ không qua UI → GET bundle hydrate ra JSON."""
+    pdir = tmp_path / "proj"
+    pmd = pdir / "pm"
+    pmd.mkdir(parents=True)
+    import shutil
+    shutil.copy2(plan_file, pmd / "plan.xlsx")
+    shutil.copy2(weekly_file, pmd / "weekly.pptx")
+    assert not (pmd / "plan.json").exists()
+    assert not (pmd / "weekly.json").exists()
+    bundle = pm_store.load_pm_bundle(str(pdir), hydrate=True)
+    assert bundle["has_plan"] and bundle["has_weekly"]
+    assert (pmd / "plan.json").is_file()
+    assert (pmd / "weekly.json").is_file()
+    assert len(bundle["plan"]["milestones"]) >= 1
+    assert len(bundle["weekly"]["done"]) >= 1
+

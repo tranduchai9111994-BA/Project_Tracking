@@ -395,6 +395,8 @@ async function switchProject(slug) {
     chartInstances = {};
     document.getElementById("dashboard").classList.add("hidden");
     document.getElementById("fileInfo").classList.add("hidden");
+    // Chiều PM độc lập Function List — luôn load theo slug (kể cả khi FL 404)
+    try { if (typeof loadPmDimension === "function") loadPmDimension(); } catch (_) {}
     // Thử load state của project mới
     await tryLoadDashboardForCurrent();
 }
@@ -426,7 +428,11 @@ async function tryLoadDashboardForCurrent(preserveFilters = false, opts = {}) {
         } catch (e) {
             // 404 = project chưa có data — im lặng, hiện upload zone
             if (e && e.status === 404) {
-                if (gen === _dashboardLoadGen) syncUploadZoneVisibility(false);
+                if (gen === _dashboardLoadGen) {
+                    syncUploadZoneVisibility(false);
+                    // Vẫn load chiều PM nếu đã import kế hoạch/weekly (không phụ thuộc FL)
+                    try { if (typeof loadPmDimension === "function") loadPmDimension(); } catch (_) {}
+                }
                 return;
             }
             throw e;
@@ -3425,12 +3431,26 @@ let _pmData = null;
 async function loadPmDimension() {
     if (!currentProjectSlug) return;
     try {
-        const res = await fetch(`/api/projects/${currentProjectSlug}/pm`);
-        if (!res.ok) return;
-        _pmData = await res.json();
+        const res = await fetch(`/api/projects/${currentProjectSlug}/pm`, {
+            cache: "no-store",
+            headers: { "Cache-Control": "no-cache" },
+        });
+        let data = null;
+        try { data = await res.json(); } catch (_) { data = null; }
+        if (!res.ok) {
+            console.warn("[loadPmDimension] HTTP", res.status, data && data.error);
+            renderPmDimension({ plan: null, weekly: null, fl_links: {} });
+            const status = document.getElementById("pmStatusLine");
+            if (status && data && data.error) {
+                status.textContent = `Lỗi tải chiều PM: ${data.error}`;
+            }
+            return;
+        }
+        _pmData = data || { plan: null, weekly: null };
         renderPmDimension(_pmData);
     } catch (err) {
         console.error("[loadPmDimension]", err);
+        renderPmDimension({ plan: null, weekly: null, fl_links: {} });
     }
 }
 window.loadPmDimension = loadPmDimension;
@@ -3446,7 +3466,11 @@ function renderPmDimension(data) {
         const per = `${weekly.period_start || "?"} → ${weekly.period_end || "?"}`;
         parts.push(`Weekly: ${weekly.source_filename || "—"} | ${per}`);
     }
-    if (status) status.textContent = parts.length ? parts.join(" · ") : "Chưa import dữ liệu PM.";
+    if (status) {
+        status.textContent = parts.length
+            ? parts.join(" · ")
+            : "Chưa import dữ liệu PM — dùng nút Kế hoạch (.xlsx) / Weekly (.pptx), hoặc copy file vào uploads/projects/<slug>/pm/ rồi tải lại.";
+    }
 
     const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     setTxt("pmMilestoneCount", plan ? (plan.milestones || []).length : "—");

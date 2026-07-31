@@ -25,6 +25,8 @@ uploads/projects/<slug>/pm/
   mapping.json
 ```
 
+**Auto-hydrate:** Nếu có `plan.xlsx` / `weekly.pptx` (hoặc file tên `*KeHoachDuAn*.xlsx` / `*Weekly*.pptx`) trong `pm/` nhưng chưa có JSON → `GET /api/projects/<slug>/pm` sẽ tự parse + ghi `plan.json` / `weekly.json` (mapping auto-propose).
+
 ## API
 
 ```

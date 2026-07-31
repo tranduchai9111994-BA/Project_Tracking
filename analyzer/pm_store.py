@@ -79,7 +79,12 @@ def save_plan(
         save_mapping(project_dir, parsed["sheet_mapping"])
     if source_path and os.path.isfile(source_path):
         ext = os.path.splitext(source_path)[1] or ".xlsx"
-        shutil.copy2(source_path, os.path.join(d, f"plan{ext}"))
+        dest = os.path.join(d, f"plan{ext}")
+        try:
+            if os.path.abspath(source_path) != os.path.abspath(dest):
+                shutil.copy2(source_path, dest)
+        except shutil.SameFileError:
+            pass
     return payload
 
 
@@ -99,12 +104,106 @@ def save_weekly(
     _write_json(os.path.join(d, "weekly.json"), payload)
     if source_path and os.path.isfile(source_path):
         ext = os.path.splitext(source_path)[1] or ".pptx"
-        shutil.copy2(source_path, os.path.join(d, f"weekly{ext}"))
+        dest = os.path.join(d, f"weekly{ext}")
+        try:
+            if os.path.abspath(source_path) != os.path.abspath(dest):
+                shutil.copy2(source_path, dest)
+        except shutil.SameFileError:
+            pass
     return payload
 
 
-def load_pm_bundle(project_dir: str) -> dict[str, Any]:
-    """Trả về {plan, weekly, has_plan, has_weekly}."""
+def _find_pm_source(d: str, stem: str, exts: tuple[str, ...]) -> Optional[str]:
+    """Tìm plan.xlsx / weekly.pptx (hoặc bản copy tên gốc) trong thư mục pm/."""
+    for ext in exts:
+        p = os.path.join(d, f"{stem}{ext}")
+        if os.path.isfile(p):
+            return p
+    # Fallback: file nguồn MPHG_*KeHoachDuAn*.xlsx / *Weekly*.pptx
+    try:
+        for name in os.listdir(d):
+            low = name.lower()
+            if stem == "plan" and low.endswith((".xlsx", ".xls")) and (
+                "kehoachduan" in low or "ke_hoach" in low or low.startswith("plan")
+            ):
+                return os.path.join(d, name)
+            if stem == "weekly" and low.endswith(".pptx") and (
+                "weekly" in low or low.startswith("weekly")
+            ):
+                return os.path.join(d, name)
+    except OSError:
+        pass
+    return None
+
+
+def hydrate_pm_from_sources(project_dir: str) -> dict[str, Any]:
+    """
+    Nếu thiếu plan.json/weekly.json nhưng còn file nguồn trong pm/ → parse + lưu.
+
+    Dùng khi user copy file vào uploads/.../pm/ mà chưa qua UI import,
+    hoặc sau khi restore project folder.
+    """
+    d = pm_dir(project_dir)
+    plan = load_plan(project_dir)
+    weekly = load_weekly(project_dir)
+
+    def _pretty_name(src: str, stem: str) -> str:
+        base = os.path.basename(src)
+        # Nếu đang dùng plan.xlsx/weekly.pptx, ưu tiên tên file gốc cạnh đó (nếu có)
+        if base.lower() in (f"{stem}.xlsx", f"{stem}.xls", f"{stem}.pptx"):
+            try:
+                for name in os.listdir(d):
+                    low = name.lower()
+                    if stem == "plan" and low.endswith((".xlsx", ".xls")) and "kehoachduan" in low:
+                        return name
+                    if stem == "weekly" and low.endswith(".pptx") and "weekly" in low and not low.startswith("weekly."):
+                        return name
+            except OSError:
+                pass
+        return base
+
+    if plan is None:
+        src = _find_pm_source(d, "plan", (".xlsx", ".xls"))
+        if src:
+            try:
+                from parser.pm_plan_parser import parse_plan
+                parsed = parse_plan(src)
+                plan = save_plan(
+                    project_dir,
+                    parsed,
+                    source_filename=_pretty_name(src, "plan"),
+                    source_path=src,
+                )
+            except Exception:
+                pass
+
+    if weekly is None:
+        src = _find_pm_source(d, "weekly", (".pptx",))
+        if src:
+            try:
+                from parser.pm_weekly_parser import parse_weekly
+                parsed = parse_weekly(src)
+                weekly = save_weekly(
+                    project_dir,
+                    parsed,
+                    source_filename=_pretty_name(src, "weekly"),
+                    source_path=src,
+                )
+            except Exception:
+                pass
+
+    return {
+        "plan": plan,
+        "weekly": weekly,
+        "has_plan": plan is not None,
+        "has_weekly": weekly is not None,
+    }
+
+
+def load_pm_bundle(project_dir: str, *, hydrate: bool = True) -> dict[str, Any]:
+    """Trả về {plan, weekly, has_plan, has_weekly}. hydrate=True → auto-parse nguồn nếu thiếu JSON."""
+    if hydrate:
+        return hydrate_pm_from_sources(project_dir)
     plan = load_plan(project_dir)
     weekly = load_weekly(project_dir)
     return {
