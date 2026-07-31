@@ -445,14 +445,14 @@ def export_full_report(
     # === Sheet 3: Unassigned_Tasks ===
     ws = wb.create_sheet("Unassigned_Tasks")
     columns = [
-        ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+        ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40), ("Module", 10),
         ("Phase", 16), ("Trạng thái", 13), ("Priority", 12), ("Complexity", 12),
         ("Deadline", 13), ("Trễ (ngày)", 12),
     ]
     data_rows = [
         [
             idx + 1,
-            i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+            i.get("ma_cn", ""), i.get("rlog_id", ""), i.get("ten_cn", ""), i.get("module", ""),
             i.get("phase", ""), i.get("status", ""),
             i.get("priority", ""), i.get("complexity", ""),
             i.get("end_date", ""), i.get("days_overdue", 0),
@@ -1473,14 +1473,14 @@ def export_chart(
         ws.title = "Unassigned"
         items = metrics.get("unassigned_tasks") or []
         columns = [
-            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+            ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40), ("Module", 10),
             ("Phase", 16), ("Status", 12), ("Priority", 12),
             ("Deadline", 13), ("Trễ (ngày)", 12),
         ]
         data_rows = [
             [
-                idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
-                i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
+                idx + 1, i.get("ma_cn", ""), i.get("rlog_id", ""), i.get("ten_cn", ""),
+                i.get("module", ""), i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
                 i.get("end_date", ""), i.get("days_overdue", 0),
             ]
             for idx, i in enumerate(items)
@@ -1614,10 +1614,10 @@ def export_audit_report(
     items = issues["unassigned"]
     _write_sheet(
         ws, "UNASSIGNED",
-        [("STT", 6), ("Mã CN", 14), ("Tên CN", 40), ("Module", 10), ("Phase", 16),
-         ("Status", 12), ("Priority", 12), ("Deadline", 13)],
-        [[idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
-          i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
+        [("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên CN", 40), ("Module", 10),
+         ("Phase", 16), ("Status", 12), ("Priority", 12), ("Deadline", 13)],
+        [[idx + 1, i.get("ma_cn", ""), i.get("rlog_id", ""), i.get("ten_cn", ""),
+          i.get("module", ""), i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
           i.get("end_date", "")] for idx, i in enumerate(items)],
         subtitle=sub,
     )

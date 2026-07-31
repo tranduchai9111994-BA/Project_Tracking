@@ -109,9 +109,12 @@ def _row_to_dict(
             if pd.status == prio_status:
                 break
 
+    from analyzer.rlog_weekly import _row_rlog_id
+
     return {
         "ma_cn": meta.get("ma_cn", ""),
         "ten_cn": meta.get("ten_cn", ""),
+        "rlog_id": _row_rlog_id(row) or "",
         "module": meta.get("module", ""),
         "quy_trinh": meta.get("quy_trinh", ""),
         "priority": meta.get("priority", ""),

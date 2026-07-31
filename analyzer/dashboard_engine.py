@@ -651,16 +651,19 @@ class DashboardEngine:
         không cần predecessor). Tránh flag oan Dev/Config khi Analysis chưa xong.
         """
         from analyzer.unassigned import is_unassigned_phase
+        from analyzer.rlog_weekly import _row_rlog_id
 
         results = []
         phase_order = data.all_phases
         for r in data.rows:
+            rlog_id = _row_rlog_id(r) or ""
             for phase_name, pd in r.phases.items():
                 if not is_unassigned_phase(r, phase_name, pd, phase_order):
                     continue
                 results.append({
                     "ma_cn": r.meta.get("ma_cn", ""),
                     "ten_cn": r.meta.get("ten_cn", ""),
+                    "rlog_id": rlog_id,
                     "module": r.meta.get("module", ""),
                     "phase": phase_name,
                     # Nếu status blank thì hiện "(chưa fill)" cho FE dễ hiểu

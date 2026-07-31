@@ -152,3 +152,19 @@ def test_engine_summary_and_list_match_gate():
     assert ("CFG.SKIP", "Config Local") not in phases
     assert m["summary"]["unassigned_count"] == 2
     assert m["summary"]["unassigned_records"] == 2
+
+
+def test_unassigned_tasks_include_rlog_id():
+    """Payload unassigned kèm rlog_id từ phase.extra (không đổi logic flag)."""
+    analysis = _pd("Closed", ["A"], end_off=-10)
+    analysis.extra = {"RlogID": "25265"}
+    row = _row({
+        "Analysis": analysis,
+        "Dev": _pd("Open", []),
+    }, ma_cn="R.01")
+    data = _parsed([row])
+    items = DashboardEngine(today=TODAY).compute_all(data)["unassigned_tasks"]
+    assert len(items) == 1
+    assert items[0]["ma_cn"] == "R.01"
+    assert items[0]["phase"] == "Dev"
+    assert items[0]["rlog_id"] == "25265"

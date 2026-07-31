@@ -105,6 +105,7 @@ class TestWorkbookShape:
             ],
             unassigned_list=[
                 {"ma_cn": "B.01", "ten_cn": "Foo", "module": "PR",
+                 "rlog_id": "25001",
                  "phase": "Dev", "status": "Open", "priority": "Should-have",
                  "complexity": "Low", "end_date": "", "days_overdue": 0,
                  "is_overdue": False},

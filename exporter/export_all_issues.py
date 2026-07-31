@@ -459,14 +459,14 @@ def _write_unassigned_sheet(wb, items: list[dict], *, lang: str = "vi", name: st
     ws = wb.create_sheet(name or _sn("unassigned", lang))
     if lang == "en":
         cols = [
-            ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
+            ("#", 6), ("Code", 14), ("Rlog ID", 14), ("Function Name", 40), ("Module", 12),
             ("Phase", 16), ("Status", 16), ("Priority", 12), ("Complexity", 12),
             ("Deadline", 13), ("Days late", 12),
         ]
         title = "🟠 UNASSIGNED TASKS"
     else:
         cols = [
-            ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
+            ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40), ("Module", 12),
             ("Phase", 16), ("Status", 16), ("Priority", 12), ("Complexity", 12),
             ("Deadline", 13), ("Trễ (ngày)", 12),
         ]
@@ -478,7 +478,8 @@ def _write_unassigned_sheet(wb, items: list[dict], *, lang: str = "vi", name: st
     for idx, it in enumerate(items):
         rows.append([
             idx + 1,
-            it.get("ma_cn", ""), it.get("ten_cn", ""), it.get("module", ""),
+            it.get("ma_cn", ""), it.get("rlog_id", ""), it.get("ten_cn", ""),
+            it.get("module", ""),
             it.get("phase", ""), it.get("status", ""),
             it.get("priority", ""), it.get("complexity", ""),
             it.get("end_date", ""), it.get("days_overdue", 0),

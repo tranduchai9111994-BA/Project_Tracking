@@ -3465,7 +3465,7 @@ function renderUnassignedSection() {
     const tbody = document.getElementById("unassignedTable");
     if (!tbody) return;
     if (items.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" class="px-4 py-6 text-center text-gray-500">Không có task nào chưa được giao PIC</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" class="px-4 py-6 text-center text-gray-500">Không có task nào chưa được giao PIC</td></tr>`;
         renderPager("unassignedShowMoreWrap", "unassigned", 0, () => renderUnassignedSection());
         document.getElementById("unassignedCount").textContent = "0 task chưa có PIC";
         return;
@@ -3477,6 +3477,7 @@ function renderUnassignedSection() {
         return `<tr class="${rowCls} border-b">
             <td class="px-2 py-2 text-center">${start + idx + 1}</td>
             <td class="px-2 py-2 font-mono text-xs">${escapeHtml(i.ma_cn)}</td>
+            <td class="px-2 py-2 font-mono text-xs">${escapeHtml(i.rlog_id || "") || "—"}</td>
             <td class="px-2 py-2">${escapeHtml(i.ten_cn)}</td>
             <td class="px-2 py-2 text-center">${escapeHtml(i.module)}</td>
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(i.phase)}</td>
@@ -6158,6 +6159,7 @@ const drillState = {
 
 const DRILL_COLUMNS = [
     { key: "ma_cn",        label: "Mã CN",       width: "w-24" },
+    { key: "rlog_id",      label: "Rlog ID",     width: "w-24" },
     { key: "ten_cn",       label: "Tên chức năng", width: "" },
     { key: "module",       label: "Module",      width: "w-16" },
     { key: "phase",        label: "Phase",       width: "w-24" },
@@ -6353,9 +6355,9 @@ function applyDrillFilters() {
     const toD = parseD(dateTo);
 
     drillState.filtered = drillState.items.filter(it => {
-        // 1. Text search (Mã CN + Tên)
+        // 1. Text search (Mã CN + Rlog ID + Tên)
         if (search) {
-            const hay = ((it.ma_cn || "") + " " + (it.ten_cn || "")).toLowerCase();
+            const hay = ((it.ma_cn || "") + " " + (it.rlog_id || "") + " " + (it.ten_cn || "")).toLowerCase();
             if (!hay.includes(search)) return false;
         }
         // 2. Status (OR trong set)
