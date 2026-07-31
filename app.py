@@ -54,6 +54,7 @@ from exporter.excel_exporter import (
     export_function_diff_report,
     SUPPORTED_EXPORT_CHARTS,
 )
+from exporter.weekly_mom import export_weekly_mom
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(__file__), "uploads")
@@ -1824,6 +1825,32 @@ def export_full(slug=None):
         import traceback
         traceback.print_exc()
         return jsonify({"error": f"Lỗi khi xuất file: {str(e)}"}), 500
+
+@app.route("/api/projects/<slug>/export-weekly-mom")
+@app.route("/api/export-weekly-mom")
+def export_weekly_mom_api(slug=None):
+    """Xuất báo cáo tuần MoM (mẫu W30) + sheet PM Dashboard."""
+    try:
+        slug = slug or _resolve_slug()
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    st, err = _need_state(slug)
+    if err:
+        return err
+    try:
+        proj = _project_mgr.get_project(slug)
+        project_code = (proj.name if proj else None) or slug
+        filepath = export_weekly_mom(
+            st["metrics"],
+            _project_mgr.get_export_dir(slug),
+            project_code=project_code,
+            parsed_data=st.get("data"),
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi khi xuất MoM tuần: {str(e)}"}), 500
 
 
 # ==========================================================================
@@ -4812,10 +4839,19 @@ if __name__ == "__main__":
 
     debug_mode = "--debug" in sys.argv
     reloader = debug_mode  # chỉ auto-reload khi user bật --debug
+    # Solo-safe: mặc định 127.0.0.1. Mở LAN: IHRP_LAN=1 hoặc IHRP_BIND_LOCAL_ONLY=0.
+    bind_host = _lansec.resolve_bind_host()
+    port = 5000
 
     print("\n" + "=" * 60)
     print("  iHRP Function List Tracker (V3)")
-    print("  http://localhost:5000")
+    print(f"  Listen: {bind_host}:{port}")
+    print(f"  Local URL: http://localhost:{port}")
+    if bind_host == "0.0.0.0":
+        print("  [CANH BAO] Bind 0.0.0.0 — GET dashboard mo tren LAN.")
+        print("             Khong dung tren WiFi cong cong; chi mang noi bo cong ty.")
+    else:
+        print("  Bind: LOCAL-ONLY (mac dinh). Mo LAN: set IHRP_LAN=1")
     if debug_mode:
         print("  Mode: DEBUG (auto-reload BAT khi sua file)")
     else:
@@ -4828,7 +4864,7 @@ if __name__ == "__main__":
         _run_startup_digest_scheduler()
         _run_startup_auto_archive()
     try:
-        app.run(debug=debug_mode, use_reloader=reloader, port=5000, host="0.0.0.0")
+        app.run(debug=debug_mode, use_reloader=reloader, port=port, host=bind_host)
     except Exception as e:
         print(f"\n[LOI] Server crash: {e}")
         import traceback

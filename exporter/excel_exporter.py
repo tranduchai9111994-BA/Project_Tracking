@@ -3,6 +3,7 @@ Xuất báo cáo Excel:
 - export_overdue_report: danh sách task trễ (single sheet)
 - export_full_report:    báo cáo tổng hợp nhiều sheet (Overdue / Unassigned / Long Duration / Stalled / High Risk / Summary)
 - export_by_pic:         báo cáo riêng cho 1 PIC
+- export_weekly_mom:     báo cáo tuần MoM (mẫu W30) + PM Dashboard — xem exporter/weekly_mom.py
 Format chuyên nghiệp, highlight theo mức trễ / risk score.
 """
 import os

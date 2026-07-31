@@ -83,6 +83,7 @@ Project_Tracking/
 │   └── type_infer.py             # Suy đoán kiểu cột (smart mapping)
 ├── exporter/
 │   ├── excel_exporter.py         # Overdue / full / by-pic / compare
+│   ├── weekly_mom.py             # Báo cáo tuần MoM (mẫu W30) + PM Dashboard
 │   └── export_all_issues.py      # Workbook multi-sheet “toàn bộ vấn đề”
 ├── templates/
 │   ├── index.html                # SPA dashboard
@@ -309,6 +310,7 @@ Guides: [`LAN_DEPLOY_GUIDE.md`](LAN_DEPLOY_GUIDE.md), [`PUBLIC_API_GUIDE.md`](PU
 | `integrations.py` | 4 HTTP auth + `database`; excel/json sync; `verify_ssl` |
 | `public_api.py` | Token CRUD helpers, scopes, rate limit, PNG render |
 | `exporter/excel_exporter.py` | Overdue / full / by-pic / compare |
+| `exporter/weekly_mom.py` | Báo cáo tuần MoM (Cover + Master plan khung + MoM_Wxx + PM Dashboard) |
 | `exporter/export_all_issues.py` | 8-sheet “toàn bộ vấn đề” |
 
 ### Frontend JS

@@ -3178,6 +3178,24 @@ async function exportAllIssues() {
 window.exportAllIssues = exportAllIssues;
 
 
+/** Xuất báo cáo tuần MoM (mẫu W30) + sheet PM Dashboard. */
+async function exportWeeklyMom() {
+    if (!currentProjectSlug) {
+        showToast("⚠️ Chưa chọn project");
+        return;
+    }
+    showToast("📋 Đang tạo báo cáo tuần MoM…");
+    try {
+        const url = `/api/projects/${currentProjectSlug}/export-weekly-mom`;
+        await downloadFile(url, `MoM_${currentProjectSlug}.xlsx`);
+    } catch (err) {
+        console.error("[exportWeeklyMom]", err);
+        showToast("❌ Lỗi khi xuất báo cáo tuần MoM", "red");
+    }
+}
+window.exportWeeklyMom = exportWeeklyMom;
+
+
 // ========================================================================
 // V2: UNASSIGNED
 // ========================================================================
