@@ -4,7 +4,8 @@
 > Tracker từ bên ngoài (Confluence, Word, email, portal riêng, dashboard 3rd-party)
 > mà **không cần đăng nhập app chính**.
 >
-> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md).  
+> Mục lục docs → [`README.md`](README.md).
 
 Có 3 kiểu tiêu thụ:
 

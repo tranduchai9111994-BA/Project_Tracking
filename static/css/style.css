@@ -693,14 +693,17 @@ html.dark .chart-help-popover-body .help-label { color: #94a3b8; }
     background: #f8fafc;
     border-radius: 8px;
     padding: 10px;
+    min-height: 60vh;
+    max-height: 80vh;
+    overflow-y: auto;
 }
 html.dark .gantt-container { background: #0f172a; }
 .gantt-row {
     display: flex;
     align-items: center;
-    height: 32px;
+    height: 40px;
     border-bottom: 1px dashed #e2e8f0;
-    padding: 2px 0;
+    padding: 3px 0;
     position: relative;
 }
 html.dark .gantt-row { border-color: #334155; }
@@ -717,7 +720,7 @@ html.dark .gantt-label { color: #cbd5e1; }
 .gantt-track {
     flex: 1;
     position: relative;
-    height: 20px;
+    height: 26px;
     background: #f1f5f9;
     border-radius: 4px;
 }
@@ -770,8 +773,8 @@ html.dark .gantt-track { background: #1e293b; }
     background: #f8fafc;
     border-radius: 8px;
     padding: 8px;
-    min-height: 500px;
-    max-height: 700px;
+    min-height: 70vh;
+    max-height: 85vh;
     overflow: auto;         /* Scroll cả 2 chiều trong card */
     border: 1px solid #e2e8f0;
 }
@@ -848,7 +851,7 @@ html.dark .gantt-module-header {
 .gantt-module-header:hover { filter: brightness(0.97); }
 .gantt-module-header-label {
     flex: 0 0 var(--gantt-label-w, 220px);
-    padding: 8px 10px;
+    padding: 10px 10px;
     font-size: 13px;
     font-weight: 700;
     color: #1e3a8a;
@@ -859,7 +862,7 @@ html.dark .gantt-module-header {
 html.dark .gantt-module-header-label { color: #e0e7ff; }
 .gantt-module-header-meta {
     flex: 1;
-    padding: 8px 10px;
+    padding: 10px 10px;
     font-size: 11px;
     color: #475569;
     display: flex;
@@ -880,7 +883,7 @@ html.dark .gantt-module-header-meta { color: #cbd5e1; }
 .gantt-func-row {
     display: flex;
     align-items: center;
-    height: 30px;
+    height: 38px;
     border-bottom: 1px solid #f1f5f9;
     min-width: 100%;
     background: white;
@@ -890,8 +893,8 @@ html.dark .gantt-func-row { background: #0f172a; border-bottom-color: #1e293b; }
 html.dark .gantt-func-row:hover { background: #1e293b; }
 .gantt-func-label {
     flex: 0 0 var(--gantt-label-w, 220px);
-    padding: 4px 10px;
-    font-size: 11px;
+    padding: 6px 10px;
+    font-size: 12px;
     color: #334155;
     position: sticky;
     left: 0;
@@ -913,7 +916,7 @@ html.dark .gantt-func-label .code { color: #93c5fd; }
 .gantt-func-track {
     flex: 1;
     position: relative;
-    height: 22px;
+    height: 28px;
     min-width: var(--gantt-track-w, 800px);
     background: repeating-linear-gradient(
         to right,
@@ -927,12 +930,12 @@ html.dark .gantt-func-label .code { color: #93c5fd; }
 /* Phase segment trên track */
 .gantt-seg {
     position: absolute;
-    top: 3px;
-    bottom: 3px;
-    border-radius: 3px;
+    top: 4px;
+    bottom: 4px;
+    border-radius: 4px;
     color: white;
-    font-size: 10px;
-    padding: 0 4px;
+    font-size: 11px;
+    padding: 0 5px;
     display: flex;
     align-items: center;
     overflow: hidden;
@@ -950,6 +953,177 @@ html.dark .gantt-func-label .code { color: #93c5fd; }
     outline: 1.5px solid #7f1d1d;
     outline-offset: -1px;
 }
+/* BA/UX #6 — Critical path trên Gantt Calendar */
+.gantt-cal-table tr.gantt-cal-critical td.gantt-cal-label {
+    border-left: 3px solid #dc2626;
+    background: #fef2f2;
+    font-weight: 700;
+}
+.gantt-cal-table tr.gantt-cal-critical td.gantt-cal-cell.active {
+    outline: 2px solid #dc2626;
+    outline-offset: -2px;
+    box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.35);
+}
+.gantt-cal-crit-badge {
+    display: inline-block;
+    margin-left: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    color: #b91c1c;
+    background: #fee2e2;
+    border: 1px solid #fecaca;
+    border-radius: 3px;
+    padding: 0 4px;
+    vertical-align: middle;
+}
+/* BA/UX #4 — DQ highlight trên Module / Matrix */
+.dq-cell-hit {
+    box-shadow: inset 0 0 0 2px #f59e0b;
+    position: relative;
+}
+.dq-mod-hit td:first-child,
+.dq-mod-hit td:nth-child(2) {
+    box-shadow: inset 3px 0 0 #f59e0b;
+}
+.dq-hit-badge {
+    display: inline-block;
+    margin-left: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    color: #92400e;
+    background: #fef3c7;
+    border-radius: 3px;
+    padding: 0 4px;
+    cursor: pointer;
+}
+/* Auto-diff badge chips */
+.auto-diff-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+.auto-diff-badge:hover { filter: brightness(0.97); }
+.auto-diff-badge.added { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+.auto-diff-badge.rollback { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+.auto-diff-badge.pic { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
+.auto-diff-badge.deleted { background: #f3f4f6; color: #374151; border-color: #e5e7eb; }
+.trend-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+}
+.trend-chip .up { color: #dc2626; }
+.trend-chip .down { color: #16a34a; }
+.trend-chip .flat { color: #64748b; }
+.sparkline {
+    display: inline-block;
+    vertical-align: middle;
+    height: 18px;
+}
+
+/* Insight strip — collapsible trends / forecast / FL verify (filter luôn ngoài) */
+.insight-strip {
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #fff;
+    overflow: hidden;
+}
+html.dark .insight-strip {
+    background: #1e293b;
+    border-color: #334155;
+}
+.insight-strip-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    text-align: left;
+    font-size: 12px;
+    color: #475569;
+    background: #f8fafc;
+    border: 0;
+    cursor: pointer;
+    min-height: 32px;
+}
+html.dark .insight-strip-bar {
+    background: #0f172a;
+    color: #cbd5e1;
+}
+.insight-strip-bar:hover { background: #f1f5f9; }
+html.dark .insight-strip-bar:hover { background: #1e293b; }
+.insight-strip-title {
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #64748b;
+}
+.insight-strip-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+}
+.insight-strip-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    font-size: 11px;
+    color: #334155;
+    white-space: nowrap;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+html.dark .insight-strip-chip {
+    background: #1e293b;
+    border-color: #475569;
+    color: #e2e8f0;
+}
+.insight-strip-chip.forecast { border-color: #ddd6fe; background: #f5f3ff; color: #5b21b6; }
+.insight-strip-chip.fl-verify { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+.insight-strip-chip.trend { border-color: #e2e8f0; }
+.insight-strip-chip.diff { border-color: #c7d2fe; background: #eef2ff; color: #3730a3; }
+.insight-strip-toggle-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #64748b;
+}
+.insight-strip-chevron {
+    font-size: 12px;
+    color: #94a3b8;
+    transition: transform 0.15s ease;
+}
+.insight-strip.expanded .insight-strip-chevron { transform: rotate(180deg); }
+.insight-strip.collapsed .insight-strip-body { display: none; }
+.insight-strip.expanded .insight-strip-body {
+    display: block;
+    padding: 8px 10px 4px;
+    border-top: 1px solid #e2e8f0;
+}
+html.dark .insight-strip.expanded .insight-strip-body { border-top-color: #334155; }
+.insight-strip.expanded .insight-strip-chips { display: none; }
+/* Sticky compact: chỉ giữ thanh mỏng (không bung banners) — hiện lại chips */
+.sticky-top-block.compact #insightStripBody { display: none !important; }
+.sticky-top-block.compact #insightStrip { margin-bottom: 6px !important; }
+.sticky-top-block.compact .insight-strip-bar { padding: 4px 8px; min-height: 26px; }
+.sticky-top-block.compact .insight-strip.expanded .insight-strip-chips { display: flex; }
 /* Aggregate segment (mode "module" / "process") — cao hơn 1 chút, font đậm hơn */
 .gantt-seg.gantt-seg-aggregate {
     top: 2px;
@@ -2288,18 +2462,25 @@ html.dark .hdr-menu-item:hover {
 }
 
 /* ---- Forecast Gantt (section-forecast-gantt) ---- */
-.fg-gantt { font-size: 11px; min-width: 100%; }
+.fg-gantt-wrap {
+  min-height: 60vh;
+  max-height: 80vh;
+  overflow: auto;
+  background: #fff;
+}
+html.dark .fg-gantt-wrap { background: #0f172a; }
+.fg-gantt { font-size: 12px; min-width: 100%; }
 .fg-gantt-ruler, .fg-gantt-row {
   display: flex; align-items: stretch; border-bottom: 1px solid #e2e8f0;
 }
 .fg-gantt-ruler { background: #f8fafc; font-weight: 600; position: sticky; top: 0; z-index: 1; }
 .fg-gantt-label {
   flex: 0 0 var(--fg-label-w, 160px); width: var(--fg-label-w, 160px);
-  padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 8px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border-right: 1px solid #e2e8f0; background: inherit;
 }
 .fg-gantt-track {
-  position: relative; display: flex; flex: 1; min-height: 28px;
+  position: relative; display: flex; flex: 1; min-height: 36px;
   background-image: repeating-linear-gradient(
     to right, transparent 0, transparent calc(var(--fg-cell-w, 56px) - 1px),
     #e2e8f0 calc(var(--fg-cell-w, 56px) - 1px), #e2e8f0 var(--fg-cell-w, 56px)
@@ -2307,14 +2488,22 @@ html.dark .hdr-menu-item:hover {
 }
 .fg-gantt-tick {
   flex: 0 0 var(--fg-cell-w, 56px); width: var(--fg-cell-w, 56px);
-  text-align: center; padding: 6px 2px; color: #475569;
+  text-align: center; padding: 8px 2px; color: #475569;
 }
 .fg-gantt-tick.fg-today { background: #dbeafe; color: #1d4ed8; }
-.fg-gantt-row .fg-gantt-track { min-height: 32px; }
+.fg-gantt-row .fg-gantt-track { min-height: 40px; }
 .fg-gantt-row-parent { background: #f8fafc; font-weight: 600; }
 .fg-gantt-row-parent .fg-gantt-label {
   display: flex; align-items: center; gap: 4px; white-space: nowrap;
 }
+.fg-gantt-project-block {
+  border-bottom: 3px solid #cbd5e1;
+  margin-bottom: 10px;
+  padding-bottom: 4px;
+  min-height: 120px;
+}
+.fg-gantt-project-block:last-child { border-bottom: none; margin-bottom: 0; }
+html.dark .fg-gantt-project-block { border-bottom-color: #475569; }
 .fg-fold-btn {
   flex: 0 0 auto; width: 16px; height: 16px; padding: 0; border: none;
   background: transparent; color: #64748b; font-size: 9px; line-height: 1;
@@ -2322,23 +2511,74 @@ html.dark .hdr-menu-item:hover {
 }
 .fg-fold-btn:hover { background: #e2e8f0; color: #334155; }
 .fg-proj-name { overflow: hidden; text-overflow: ellipsis; }
-.fg-gantt-row-child .fg-gantt-track { min-height: 28px; }
+.fg-gantt-row-child .fg-gantt-track { min-height: 36px; }
 .fg-gantt-label-child {
   padding-left: 18px; font-weight: 400; color: #475569;
 }
 .fg-tree-prefix { color: #94a3b8; margin-right: 2px; }
 .fg-marker {
-  position: absolute; top: 8px; width: 16px; height: 16px; border-radius: 50%;
-  color: #fff; font-size: 9px; font-weight: 700; line-height: 16px; text-align: center;
+  position: absolute; top: 11px; width: 18px; height: 18px; border-radius: 50%;
+  color: #fff; font-size: 10px; font-weight: 700; line-height: 18px; text-align: center;
   box-shadow: 0 0 0 1px rgba(255,255,255,.8); z-index: 2; pointer-events: none;
 }
 .fg-marker-hi { box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(15,23,42,.35); }
 .fg-bar {
-  position: absolute; top: 9px; height: 14px; border-radius: 4px; opacity: .72;
+  position: absolute; top: 12px; height: 16px; border-radius: 4px; opacity: .72;
   z-index: 1;
 }
 .fg-bar-hi { opacity: .88; box-shadow: 0 0 0 1px rgba(255,255,255,.6); }
-.fg-bar-summary { background: #94a3b8; opacity: .4; height: 10px; top: 11px; }
+.fg-bar-summary { background: #94a3b8; opacity: .4; height: 12px; top: 14px; }
+
+/* Zoom toolbar dùng chung Forecast / Gantt Calendar */
+.gantt-hz-zoom {
+  display: inline-flex; align-items: center; gap: 0;
+  border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden;
+  background: #fff; font-size: 11px;
+}
+html.dark .gantt-hz-zoom { border-color: #475569; background: #1e293b; }
+.gantt-hz-zoom button {
+  padding: 4px 9px; border: none; background: transparent;
+  color: #334155; cursor: pointer; line-height: 1.2; white-space: nowrap;
+}
+html.dark .gantt-hz-zoom button { color: #e2e8f0; }
+.gantt-hz-zoom button:hover { background: #eef2ff; color: #1d4ed8; }
+html.dark .gantt-hz-zoom button:hover { background: #334155; color: #93c5fd; }
+.gantt-hz-zoom button + button { border-left: 1px solid #e2e8f0; }
+html.dark .gantt-hz-zoom button + button { border-left-color: #475569; }
+.gantt-hz-zoom-label {
+  padding: 4px 8px; min-width: 3.2rem; text-align: center;
+  color: #64748b; border-left: 1px solid #e2e8f0; font-variant-numeric: tabular-nums;
+}
+html.dark .gantt-hz-zoom-label { color: #94a3b8; border-left-color: #475569; }
+
+/* Gantt Calendar scroll viewport */
+.gantt-calendar-container {
+  min-height: 65vh;
+  max-height: 85vh;
+  overflow: auto;
+  background: #fff;
+}
+html.dark .gantt-calendar-container { background: #0f172a; }
+.fg-baseline-mark {
+  position: absolute; top: 4px; width: 10px; height: 10px;
+  transform: rotate(45deg); border: 1.5px solid #fff; z-index: 2;
+  box-shadow: 0 0 0 1px rgba(15,23,42,.25);
+}
+.fg-bl-late { background: #dc2626; }
+.fg-bl-early { background: #059669; }
+.fg-bl-ok { background: #d97706; }
+.fg-sv-chip {
+  position: absolute; top: 1px; font-size: 9px; font-weight: 700;
+  padding: 0 3px; border-radius: 3px; line-height: 14px; z-index: 3;
+  white-space: nowrap; pointer-events: none;
+}
+.fg-sv-late { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+.fg-sv-early { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+.fg-sv-ok { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+.fg-legend-bl {
+  display: inline-block; width: 10px; height: 10px; transform: rotate(45deg);
+  background: #d97706; margin-right: 4px; vertical-align: middle;
+}
 .fg-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #475569; }
 .fg-legend i {
   display: inline-block; width: 14px; height: 8px; border-radius: 2px; margin-right: 4px;
@@ -2364,6 +2604,109 @@ html.dark .fg-bar-summary { background: #64748b; }
 html.dark .fg-assess-ok { background: #064e3b; color: #a7f3d0; border-color: #047857; }
 html.dark .fg-assess-warn { background: #78350f; color: #fde68a; border-color: #b45309; }
 html.dark .fg-assess-risk { background: #7f1d1d; color: #fecaca; border-color: #b91c1c; }
+
+/* ---- Forecast metric tables (Gantt / Manpower / Baseline SV / EVM) ---- */
+.fc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+}
+.fc-table thead th {
+    background: #eef2ff;
+    color: #312e81;
+    font-weight: 600;
+    padding: 0.4rem 0.5rem;
+    text-align: left;
+    border-bottom: 1px solid #c7d2fe;
+    white-space: nowrap;
+}
+.fc-table thead th.fc-th-right { text-align: right; }
+.fc-table thead th.fc-th-center { text-align: center; }
+.fc-table tbody td {
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid #e2e8f0;
+    vertical-align: middle;
+}
+.fc-table tbody tr:nth-child(even) { background: #f8fafc; }
+.fc-table tbody tr:hover { background: #f1f5f9; }
+.fc-table tbody tr.fc-row-hire { background: #fef2f2; }
+.fc-table tbody tr.fc-row-hire:nth-child(even) { background: #fee2e2; }
+.fc-table tbody tr.fc-row-hire:hover { background: #fecaca; }
+
+.fc-num {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    border-radius: 4px;
+    padding: 1px 6px;
+    display: inline-block;
+    min-width: 1.5rem;
+    text-align: right;
+}
+.fc-num-neutral { color: #1e40af; background: #eff6ff; }
+.fc-num-mh { color: #1d4ed8; background: #dbeafe; }
+.fc-num-remain { color: #0f766e; background: #f0fdfa; }
+.fc-num-closed,
+.fc-num-good,
+.fc-num-early { color: #047857; background: #ecfdf5; }
+.fc-num-late,
+.fc-num-hire,
+.fc-num-bad { color: #b91c1c; background: #fef2f2; }
+.fc-num-warn { color: #b45309; background: #fffbeb; }
+.fc-num-hc { color: #334155; background: #f1f5f9; }
+.fc-num-muted { color: #64748b; background: transparent; font-weight: 500; }
+.fc-num-month-uat { color: #5b21b6; background: #f5f3ff; }
+.fc-num-month-gl { color: #065f46; background: #ecfdf5; }
+.fc-num-month { color: #1e40af; background: #eff6ff; }
+
+html.dark .fc-table thead th {
+    background: #1e293b;
+    color: #c7d2fe;
+    border-bottom-color: #334155;
+}
+html.dark .fc-table tbody td { border-bottom-color: #334155; }
+html.dark .fc-table tbody tr:nth-child(even) { background: #0f172a; }
+html.dark .fc-table tbody tr:hover { background: #1e293b; }
+html.dark .fc-table tbody tr.fc-row-hire { background: #450a0a; }
+html.dark .fc-table tbody tr.fc-row-hire:nth-child(even) { background: #7f1d1d; }
+html.dark .fc-num-neutral { color: #93c5fd; background: #1e3a5f; }
+html.dark .fc-num-mh { color: #93c5fd; background: #1e3a8a; }
+html.dark .fc-num-remain { color: #5eead4; background: #134e4a; }
+html.dark .fc-num-closed,
+html.dark .fc-num-good,
+html.dark .fc-num-early { color: #6ee7b7; background: #064e3b; }
+html.dark .fc-num-late,
+html.dark .fc-num-hire,
+html.dark .fc-num-bad { color: #fca5a5; background: #7f1d1d; }
+html.dark .fc-num-warn { color: #fcd34d; background: #78350f; }
+html.dark .fc-num-hc { color: #cbd5e1; background: #334155; }
+html.dark .fc-num-muted { color: #94a3b8; }
+html.dark .fc-num-month-uat { color: #c4b5fd; background: #4c1d95; }
+html.dark .fc-num-month-gl { color: #6ee7b7; background: #064e3b; }
+html.dark .fc-num-month { color: #93c5fd; background: #1e3a5f; }
+
+/* Completion forecast date emphasis (banner already violet) */
+#cardForecastDate.fc-status-ok { color: #5b21b6; }
+#cardForecastDate.fc-status-done { color: #047857; }
+#cardForecastDate.fc-status-warn { color: #b45309; }
+#forecastCompletionDate.fc-status-ok { color: #5b21b6; }
+#forecastCompletionDate.fc-status-done { color: #047857; }
+#forecastCompletionDate.fc-status-warn { color: #b45309; }
+html.dark #cardForecastDate.fc-status-ok,
+html.dark #forecastCompletionDate.fc-status-ok { color: #c4b5fd; }
+html.dark #cardForecastDate.fc-status-done,
+html.dark #forecastCompletionDate.fc-status-done { color: #6ee7b7; }
+html.dark #cardForecastDate.fc-status-warn,
+html.dark #forecastCompletionDate.fc-status-warn { color: #fcd34d; }
+
+/* Manpower remain badge number */
+#fmRemainLabel { color: #0f766e; font-weight: 700; }
+html.dark #fmRemainLabel { color: #5eead4; }
+#fmHireDev, #fmHireImpl { font-weight: 700; }
+#fgSvLate { color: #b91c1c; font-weight: 700; }
+#fgSvEarly { color: #047857; font-weight: 700; }
+#bslSvLate { font-weight: 700; }
+#bslSvEarly { font-weight: 700; }
+#bslSvAvg { font-weight: 700; }
 
 /* ---- Column picker ---- */
 .col-picker { position: relative; display: inline-block; }

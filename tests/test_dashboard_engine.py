@@ -28,12 +28,13 @@ def test_summary_overdue_semantics(metrics):
     """
     Function unique có overdue:
       - Row 2 (TMS.FR.02): UAT In-progress, To 5d trước → overdue
+      - Row 3 (HR.FR.05): Dev Open, End 5d trước → overdue
       - Row 6 (ESS.FR.10): Analysis In-progress, End 20d trước → overdue
-    → 2 function
+    → 3 function
     """
-    assert metrics["summary"]["total_overdue"] == 2
+    assert metrics["summary"]["total_overdue"] == 3
     # Phase-level ít nhất phải bằng function-level
-    assert metrics["summary"]["total_overdue_records"] >= 2
+    assert metrics["summary"]["total_overdue_records"] >= 3
 
 
 def test_summary_last_phase_name(metrics):

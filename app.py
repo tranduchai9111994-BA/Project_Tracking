@@ -21,7 +21,7 @@ import zipfile
 from datetime import date, datetime
 from typing import Any, Optional
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from parser.excel_parser import FunctionListParser
 from analyzer.dashboard_engine import DashboardEngine
@@ -65,6 +65,23 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB
 
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 os.makedirs(app.config["PROJECTS_FOLDER"], exist_ok=True)
+
+# --------------------------------------------------------------------------
+# Session auth — bắt buộc đăng nhập trước khi vào dashboard / API nội bộ.
+# Public API (/public/*, /embed/*) vẫn dùng token riêng (không đụng session).
+# Tắt tạm: IHRP_DISABLE_AUTH=1 (chỉ debug).
+# --------------------------------------------------------------------------
+from analyzer import auth_store as _auth_store
+
+app.secret_key = _auth_store.ensure_secret_key()
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# Tạo admin/admin nếu chưa có user nào
+if _auth_store.ensure_default_admin():
+    print(
+        "[auth] Đã tạo tài khoản mặc định admin / admin — hãy đổi mật khẩu ngay.",
+        file=sys.stderr,
+    )
 
 # --------------------------------------------------------------------------
 # Cache-busting cho static assets — mtime của file thành ?v= query param.
@@ -121,16 +138,91 @@ if os.environ.get("IHRP_DISABLE_ADMIN_GUARD", "").strip() != "1":
 if os.environ.get("IHRP_DISABLE_ACCESS_LOG", "").strip() != "1":
     _lansec.install_access_log(app, _ACCESS_LOG_PATH)
 
-# Phase 7 Slim: dọn export cũ + giới hạn snapshot khi start
+# Session login gate — bảo vệ UI + /api/* (trừ auth endpoints).
+# Public API / embed vẫn token-based. Tắt: IHRP_DISABLE_AUTH=1.
+_AUTH_DISABLED = os.environ.get("IHRP_DISABLE_AUTH", "").strip() == "1"
+_AUTH_PUBLIC_PREFIXES = (
+    "/static/",
+    "/public/",
+    "/embed/",
+)
+_AUTH_PUBLIC_EXACT = {
+    "/login",
+    "/logout",
+    "/api/auth/login",
+    "/api/health",
+}
+
+
+def _auth_current_user() -> Optional[dict]:
+    """User từ Flask session (đã verify id còn tồn tại)."""
+    uid = session.get("user_id")
+    if not uid:
+        return None
+    user = _auth_store.get_user_by_id(uid)
+    if not user:
+        session.clear()
+        return None
+    return user
+
+
+def _auth_is_public_path(path: str) -> bool:
+    if path in _AUTH_PUBLIC_EXACT:
+        return True
+    for prefix in _AUTH_PUBLIC_PREFIXES:
+        if path.startswith(prefix):
+            return True
+    return False
+
+
+if not _AUTH_DISABLED:
+    @app.before_request
+    def _session_login_gate():
+        # OPTIONS preflight (CORS public API) — không yêu cầu session
+        if request.method == "OPTIONS":
+            return None
+        path = request.path or ""
+        if _auth_is_public_path(path):
+            return None
+        if _auth_current_user():
+            return None
+        # HTML page → redirect login; API / XHR → 401 JSON
+        wants_html = (
+            path == "/"
+            or (not path.startswith("/api/") and "text/html" in (request.accept_mimetypes.best or ""))
+        )
+        if wants_html and request.method == "GET":
+            return redirect(url_for("login_page", next=path))
+        return jsonify({
+            "error": "Chưa đăng nhập.",
+            "code": "AUTH_REQUIRED",
+            "login_url": "/login",
+        }), 401
+
+# Phase 7 Slim: dọn export / snapshot / synced tạm / PM PPTX trùng khi start
 try:
-    from analyzer.disk_janitor import purge_old_exports, purge_excess_snapshots
+    from analyzer.disk_janitor import (
+        purge_old_exports,
+        purge_excess_snapshots,
+        purge_excess_synced_all,
+        purge_duplicate_pm_weekly_all,
+        MAX_SYNCED_XLSX,
+    )
     _n_exp = purge_old_exports(app.config["PROJECTS_FOLDER"], max_age_days=7)
     _n_snap = 0
     for _slug_name in os.listdir(app.config["PROJECTS_FOLDER"]):
         _snap_dir = os.path.join(app.config["PROJECTS_FOLDER"], _slug_name, "snapshots")
         _n_snap += purge_excess_snapshots(_snap_dir, keep=15)
-    if _n_exp or _n_snap:
-        print(f"[janitor] Đã xóa {_n_exp} export cũ, {_n_snap} snapshot thừa", file=sys.stderr)
+    _n_synced = purge_excess_synced_all(
+        app.config["PROJECTS_FOLDER"], keep=MAX_SYNCED_XLSX,
+    )
+    _n_pptx = purge_duplicate_pm_weekly_all(app.config["PROJECTS_FOLDER"])
+    if _n_exp or _n_snap or _n_synced or _n_pptx:
+        print(
+            f"[janitor] Đã xóa {_n_exp} export, {_n_snap} snapshot, "
+            f"{_n_synced} synced_*.xlsx, {_n_pptx} PM PPTX trùng",
+            file=sys.stderr,
+        )
 except Exception as _janitor_err:
     print(f"[janitor] Bỏ qua: {_janitor_err}", file=sys.stderr)
 
@@ -524,6 +616,150 @@ def _project_to_dict(p: Project) -> dict:
 
 
 # ==========================================================================
+# Auth — login / logout / account management
+# ==========================================================================
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """Health check công khai (không cần login) — cho LAN / monitor."""
+    return jsonify({"ok": True, "auth": not _AUTH_DISABLED})
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    """Trang đăng nhập (HTML). Đã login → về dashboard."""
+    if not _AUTH_DISABLED and _auth_current_user():
+        return redirect("/")
+    error = None
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        user = _auth_store.authenticate(username, password)
+        if user:
+            session.clear()
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            session["role"] = user["role"]
+            nxt = (request.args.get("next") or request.form.get("next") or "/").strip()
+            if not nxt.startswith("/") or nxt.startswith("//"):
+                nxt = "/"
+            return redirect(nxt)
+        error = "Sai tên đăng nhập hoặc mật khẩu."
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout_page():
+    session.clear()
+    return redirect(url_for("login_page"))
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    """JSON login — dùng cho test / client không form."""
+    body = request.get_json(silent=True) or {}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    user = _auth_store.authenticate(username, password)
+    if not user:
+        return jsonify({"error": "Sai tên đăng nhập hoặc mật khẩu.", "code": "AUTH_FAILED"}), 401
+    session.clear()
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    session["role"] = user["role"]
+    return jsonify({"success": True, "user": user})
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    session.clear()
+    return jsonify({"success": True})
+
+
+@app.route("/api/auth/me", methods=["GET"])
+def api_auth_me():
+    if _AUTH_DISABLED:
+        return jsonify({
+            "user": {"id": None, "username": "dev", "role": "admin"},
+            "auth_disabled": True,
+        })
+    user = _auth_current_user()
+    if not user:
+        return jsonify({"error": "Chưa đăng nhập.", "code": "AUTH_REQUIRED"}), 401
+    return jsonify({"user": user, "auth_disabled": False})
+
+
+@app.route("/api/auth/users", methods=["GET"])
+def api_auth_list_users():
+    """Admin: danh sách tài khoản (không kèm hash)."""
+    user = _auth_current_user()
+    if _AUTH_DISABLED:
+        user = {"role": "admin"}
+    if not user or user.get("role") != "admin":
+        return jsonify({"error": "Chỉ admin mới xem danh sách tài khoản.", "code": "FORBIDDEN"}), 403
+    return jsonify({"users": _auth_store.list_users()})
+
+
+@app.route("/api/auth/users", methods=["POST"])
+def api_auth_create_user():
+    """Admin: tạo user mới. Body: {username, password, role?}."""
+    user = _auth_current_user()
+    if _AUTH_DISABLED:
+        user = {"role": "admin"}
+    if not user or user.get("role") != "admin":
+        return jsonify({"error": "Chỉ admin mới tạo tài khoản.", "code": "FORBIDDEN"}), 403
+    body = request.get_json(silent=True) or {}
+    try:
+        created = _auth_store.create_user(
+            body.get("username") or "",
+            body.get("password") or "",
+            role=body.get("role") or "viewer",
+        )
+        return jsonify({"success": True, "user": created}), 201
+    except _auth_store.AuthError as e:
+        return jsonify({"error": str(e), "code": "AUTH_ERROR"}), e.status_code
+
+
+@app.route("/api/auth/change-password", methods=["POST"])
+def api_auth_change_password():
+    """
+    Đổi mật khẩu.
+
+    - User thường: body {current_password, new_password} — đổi của chính mình.
+    - Admin: body {user_id, new_password} — đổi cho user khác (không cần current).
+      Hoặc bỏ user_id → đổi của chính mình (vẫn cần current_password).
+    """
+    me = _auth_current_user()
+    if _AUTH_DISABLED:
+        return jsonify({"error": "Auth đang tắt (IHRP_DISABLE_AUTH=1)."}), 400
+    if not me:
+        return jsonify({"error": "Chưa đăng nhập.", "code": "AUTH_REQUIRED"}), 401
+
+    body = request.get_json(silent=True) or {}
+    new_password = body.get("new_password") or ""
+    target_id = (body.get("user_id") or "").strip()
+
+    try:
+        if target_id and target_id != me["id"]:
+            if me.get("role") != "admin":
+                return jsonify({
+                    "error": "Chỉ admin mới đổi mật khẩu người khác.",
+                    "code": "FORBIDDEN",
+                }), 403
+            _auth_store.change_password(target_id, new_password)
+        else:
+            _auth_store.change_password(
+                me["id"],
+                new_password,
+                current_password=body.get("current_password") or "",
+                require_current=True,
+            )
+        return jsonify({"success": True})
+    except _auth_store.AuthError as e:
+        return jsonify({"error": str(e), "code": "AUTH_ERROR"}), e.status_code
+
+
+# ==========================================================================
 # Frontend routing
 # ==========================================================================
 
@@ -707,6 +943,13 @@ def _upload_and_process(slug: str) -> tuple:
 
         settings = ps.load_project_settings(folder)
 
+        current_meta = {
+            "date": upload_time.date().isoformat(),
+            "filename": file.filename,
+            "total_functions": len(data.rows),
+        }
+        auto_diff = _build_auto_diff_summary(slug, data, current_meta)
+
         return jsonify({
             "success": True,
             "project": _project_to_dict(_project_mgr.get_project(slug)),
@@ -721,6 +964,7 @@ def _upload_and_process(slug: str) -> tuple:
             "pic_blacklist_count": len(getattr(data, "pic_blacklisted", []) or []),
             "warnings": warnings,
             "settings": settings,
+            "auto_diff": auto_diff,
         })
     except Exception as e:
         import traceback
@@ -942,6 +1186,11 @@ def upload_confirm():
             "pic_blacklist_count": len(getattr(data, "pic_blacklisted", []) or []),
             "column_mapping_applied": bool(mapping),
             "column_mapping_count": len(mapping),
+            "auto_diff": _build_auto_diff_summary(slug, data, {
+                "date": upload_time.date().isoformat(),
+                "filename": original_name,
+                "total_functions": len(data.rows),
+            }),
         })
     except Exception as e:
         import traceback
@@ -2833,6 +3082,27 @@ def _portfolio_state_loader(slug: str):
     return _get_state(slug)
 
 
+def _baseline_parsed_loader(slug: str):
+    """
+    Phase A — load ParsedData của snapshot baseline (nếu project đã đánh dấu).
+    Trả None nếu chưa set / snapshot không còn / lỗi load.
+    """
+    from analyzer import project_store as ps
+    try:
+        folder = _project_dir_for(slug)
+        settings = ps.load_project_settings(folder)
+        snap_id = (settings.get("baseline_snapshot_id") or "").strip()
+        if not snap_id:
+            return None
+        smgr = _project_mgr.get_snapshot_manager(slug)
+        loaded = smgr.load_snapshot(snap_id)
+        if not loaded:
+            return None
+        return loaded.get("parsed")
+    except Exception:
+        return None
+
+
 @app.route("/api/portfolio/search", methods=["GET"])
 def portfolio_search():
     """
@@ -3125,6 +3395,7 @@ def forecast_gantt():
         _portfolio_state_loader,
         slugs=slugs or None,
         include_archived=include_archived,
+        baseline_loader=_baseline_parsed_loader,
     )
     return jsonify({"success": True, **result})
 
@@ -3150,6 +3421,7 @@ def forecast_gantt_export():
         _portfolio_state_loader,
         slugs=slugs or None,
         include_archived=include_archived,
+        baseline_loader=_baseline_parsed_loader,
     )
     try:
         filepath = export_forecast_gantt(result, app.config["UPLOAD_FOLDER"])
@@ -3313,6 +3585,127 @@ def export_forecast_manpower_api(slug: str):
         )
     except Exception as e:
         return jsonify({"error": f"Lỗi khi xuất Excel: {str(e)}"}), 500
+
+
+# ==========================================================================
+# Estimate Ratio — ước lượng theo hệ số (parametric, không thay Forecast MH)
+# ==========================================================================
+
+def _estimate_ratio_filters():
+    """Parse module/process/pic filter từ query hoặc JSON body."""
+    body = request.get_json(silent=True) or {}
+    src = {**request.args.to_dict(), **body}
+    modules = src.get("module") or src.get("modules") or ""
+    processes = src.get("process") or src.get("processes") or ""
+    pics = src.get("pic") or src.get("pics") or ""
+    if isinstance(modules, str):
+        modules = [m.strip() for m in modules.split(",") if m.strip()]
+    if isinstance(processes, str):
+        processes = [p.strip() for p in processes.split(",") if p.strip()]
+    if isinstance(pics, str):
+        pics = [p.strip() for p in pics.split(",") if p.strip()]
+    return {
+        "modules": modules or None,
+        "processes": processes or None,
+        "pics": pics or None,
+    }
+
+
+@app.route("/api/projects/<slug>/estimate-ratio", methods=["GET", "POST"])
+def estimate_ratio_api(slug: str):
+    """
+    GET: tính ước lượng theo hệ số (+ trả params hiện tại).
+    POST body ``{"action":"save","scope":"project|global","params":{...}}``
+         lưu estimation_params.json rồi tính lại.
+    POST không action / action=compute: tính với params override trong body (không lưu).
+    """
+    from analyzer.estimate_ratio import (
+        compute_estimate_ratio,
+        load_estimation_params,
+        normalize_params,
+        save_estimation_params,
+    )
+
+    state = _get_state(slug)
+    if not state or not state.get("data"):
+        return jsonify({"error": "Chưa có dữ liệu. Hãy upload Function List."}), 400
+
+    project_dir = _project_dir_for(slug)
+    projects_folder = _project_mgr.base_dir
+    body = request.get_json(silent=True) or {}
+    action = (body.get("action") or request.args.get("action") or "").strip().lower()
+
+    if request.method == "POST" and action == "save":
+        scope = (body.get("scope") or "project").strip().lower()
+        if scope not in ("project", "global"):
+            scope = "project"
+        try:
+            params = save_estimation_params(
+                project_dir,
+                body.get("params") or {},
+                scope=scope,
+                projects_folder=projects_folder,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    else:
+        params = load_estimation_params(project_dir, projects_folder)
+        # Override tạm (không lưu) nếu client gửi params
+        if isinstance(body.get("params"), dict) and body["params"]:
+            from analyzer.estimate_ratio import _deep_merge
+            raw = {k: v for k, v in params.items() if not k.startswith("_")}
+            params = normalize_params(_deep_merge(raw, body["params"]))
+
+    filt = _estimate_ratio_filters()
+    data = _filter_parsed_data(
+        state["data"],
+        modules=filt["modules"],
+        processes=filt["processes"],
+        pics=filt["pics"],
+    )
+    # Giữ metadata nguồn/paths trên response params
+    stored = load_estimation_params(project_dir, projects_folder)
+    result = compute_estimate_ratio(data, params)
+    result["params_meta"] = {
+        "source": stored.get("_source"),
+        "paths": stored.get("_paths"),
+    }
+    # Trả params đã dùng (đã normalize); kèm source nếu không override
+    if not (isinstance(body.get("params"), dict) and body["params"] and action != "save"):
+        result["params"]["_source"] = stored.get("_source")
+        result["params"]["_paths"] = stored.get("_paths")
+    return jsonify({"success": True, **result})
+
+
+@app.route("/api/projects/<slug>/estimation-params", methods=["GET", "PUT", "POST"])
+def estimation_params_api(slug: str):
+    """GET/PUT estimation_params.json (project hoặc global qua ?scope=)."""
+    from analyzer.estimate_ratio import load_estimation_params, save_estimation_params
+
+    project_dir = _project_dir_for(slug)
+    projects_folder = _project_mgr.base_dir
+    if request.method == "GET":
+        params = load_estimation_params(project_dir, projects_folder)
+        return jsonify({"success": True, "params": params})
+    body = request.get_json(silent=True) or {}
+    scope = (
+        body.get("scope")
+        or request.args.get("scope")
+        or "project"
+    ).strip().lower()
+    if scope not in ("project", "global"):
+        scope = "project"
+    payload = body.get("params") if isinstance(body.get("params"), dict) else body
+    try:
+        saved = save_estimation_params(
+            project_dir,
+            payload,
+            scope=scope,
+            projects_folder=projects_folder,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"success": True, "params": saved})
 
 
 # ==========================================================================
@@ -4152,6 +4545,111 @@ def project_bookmark_toggle(slug: str):
     return jsonify({"bookmarked": is_now, "bookmarks": all_bm})
 
 
+@app.route("/api/projects/<slug>/tags", methods=["GET"])
+def project_tags_get(slug: str):
+    """Danh sách tag theo Mã CN (đã review / escalate / chờ khách / CR / UAT issue)."""
+    from analyzer import project_store as ps
+    _, err = _require_state(slug)
+    if err:
+        return err
+    tags = ps.load_function_tags(_project_dir_for(slug))
+    return jsonify({
+        "tags": tags,
+        "valid_tags": list(ps.VALID_FUNCTION_TAGS),
+        "count": len(tags),
+    })
+
+
+@app.route("/api/projects/<slug>/tags/bulk", methods=["POST"])
+def project_tags_bulk(slug: str):
+    """
+    Bulk tag nhiều function trong drill-down.
+    Body: { ma_cns: [...], tag: "đã review"|"escalate"|"chờ khách"|"CR"|"UAT issue", action: "add"|"remove"|"toggle" }
+    """
+    from analyzer import project_store as ps
+    _, err = _require_state(slug)
+    if err:
+        return err
+    payload = request.get_json(silent=True) or {}
+    ma_cns = payload.get("ma_cns") or []
+    if not isinstance(ma_cns, list) or not ma_cns:
+        return jsonify({"error": "ma_cns required (list)"}), 400
+    tag = str(payload.get("tag") or "").strip()
+    if not tag:
+        return jsonify({"error": "tag required"}), 400
+    action = str(payload.get("action") or "add").strip().lower()
+    if action not in ("add", "remove", "toggle"):
+        action = "add"
+    tags = ps.bulk_tag_functions(
+        _project_dir_for(slug), ma_cns, tag, action=action,
+    )
+    return jsonify({
+        "ok": True,
+        "tag": tag,
+        "action": action,
+        "affected": len([m for m in ma_cns if str(m).strip()]),
+        "tags": tags,
+    })
+
+
+@app.route("/api/projects/<slug>/pic-upcoming")
+def project_pic_upcoming(slug: str):
+    """PIC × upcoming weeks — task đến hạn theo tuần tới."""
+    from analyzer.pic_upcoming import compute_pic_upcoming_weeks
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    weeks = request.args.get("weeks", default=4, type=int)
+    payload = compute_pic_upcoming_weeks(data, weeks=weeks)
+    return jsonify(payload)
+
+
+@app.route("/api/projects/<slug>/fl-reimport-verify")
+def project_fl_reimport_verify(slug: str):
+    """
+    Sau re-upload yellow-cell export: so ô vàng snapshot trước vs hiện tại.
+    Query: vs=previous (default) hoặc YYYY-MM-DD.
+    """
+    from analyzer.fl_reimport_verify import verify_fl_reimport
+    from analyzer.data_quality import compute_data_quality
+    from exporter.fl_reimport_export import collect_issue_hits
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    vs = request.args.get("vs", "previous").strip() or "previous"
+    prev_data, prev_meta, err2 = _resolve_diff_previous_snapshot(slug, vs)
+    if err2:
+        return err2
+
+    # Issue hits từ snapshot TRƯỚC (baseline yellow cells)
+    try:
+        prev_engine = DashboardEngine()
+        prev_metrics = prev_engine.compute_all(prev_data)
+        prev_dq = compute_data_quality(prev_data, today=prev_engine.today)
+        hits_lists = {
+            "overdue_list": (prev_metrics.get("overdue_list") or [])[:],
+            "unassigned_list": (prev_metrics.get("unassigned_tasks") or [])[:],
+            "stalled_list": list((prev_metrics.get("stalled_tasks") or {}).get("items") or []),
+            "anomaly_issues": list(prev_dq.get("issues") or []),
+        }
+    except Exception as e:
+        return jsonify({"error": f"Không tính issue hits snapshot trước: {e}"}), 500
+
+    report = verify_fl_reimport(
+        prev_data,
+        state["data"],
+        overdue_list=hits_lists["overdue_list"],
+        unassigned_list=hits_lists["unassigned_list"],
+        stalled_list=hits_lists["stalled_list"],
+        anomaly_issues=hits_lists["anomaly_issues"],
+    )
+    report["previous_snapshot"] = prev_meta or {}
+    report["current_filename"] = state.get("filename")
+    return jsonify(report)
+
+
 @app.route("/api/projects/<slug>/notes/<path:ma_cn>", methods=["GET"])
 def project_note_get(slug: str, ma_cn: str):
     from analyzer import project_store as ps
@@ -4289,13 +4787,69 @@ def project_data_quality(slug: str):
     """
     Trả về data quality issues (list + summary).
     Hỗ trợ global filter module/process/pic để user zoom vào 1 subset.
+    Kèm ownership (PIC + target date) + SLA / resolution rate WoW.
     """
+    from analyzer import project_store as ps
     from analyzer.data_quality import compute_data_quality
+    from analyzer.dq_ownership import attach_ownership, compute_dq_sla_stats
+
     state, err = _require_state(slug)
     if err:
         return err
     data = _filtered_data_from_request(state)
-    return jsonify(compute_data_quality(data))
+    result = compute_data_quality(data)
+    folder = _project_dir_for(slug)
+    ownership = ps.load_dq_ownership(folder)
+
+    # prior open count từ snapshot trước (nếu có)
+    prior_open = None
+    try:
+        snaps = _project_mgr.get_snapshot_manager(slug).list_snapshots() or []
+        if len(snaps) >= 2:
+            prev = snaps[1]
+            # Dùng tổng issue approximation từ metrics nếu có; else load parse
+            loaded = _project_mgr.get_snapshot_manager(slug).load_snapshot(prev["date"])
+            if loaded and loaded.get("parsed"):
+                prior_dq = compute_data_quality(loaded["parsed"])
+                prior_open = int((prior_dq.get("summary") or {}).get("total_issues") or 0)
+    except Exception:
+        prior_open = None
+
+    result["issues"] = attach_ownership(result.get("issues") or [], ownership)
+    result["ownership_stats"] = compute_dq_sla_stats(
+        result["issues"], ownership, prior_open_count=prior_open,
+    )
+    result["ownership"] = ownership
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/dq-ownership", methods=["GET", "POST"])
+def project_dq_ownership(slug: str):
+    """GET list / POST upsert ownership cho 1 DQ issue key."""
+    from analyzer import project_store as ps
+
+    _, err = _require_state(slug)
+    if err:
+        return err
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({"items": ps.load_dq_ownership(folder)})
+    payload = request.get_json(silent=True) or {}
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        return jsonify({"error": "key required (ma_cn|phase|code)"}), 400
+    user = _auth_current_user() or {}
+    items = ps.save_dq_ownership(
+        folder,
+        key,
+        owner_pic=str(payload.get("owner_pic") or ""),
+        target_date=str(payload.get("target_date") or ""),
+        assigned_by=str(user.get("username") or ""),
+        note=str(payload.get("note") or ""),
+        resolved=payload.get("resolved"),
+        delete=bool(payload.get("delete")),
+    )
+    return jsonify({"ok": True, "items": items})
 
 
 @app.route("/api/projects/<slug>/export-data-quality")
@@ -4800,6 +5354,784 @@ def project_baseline_variance(slug: str):
     return jsonify(compute_baseline_variance(data))
 
 
+# --------------------------------------------------------------------------
+# Phase A — Baseline snapshot (kế hoạch gốc) + SV + Predictive completion
+# --------------------------------------------------------------------------
+
+@app.route("/api/projects/<slug>/baseline", methods=["GET", "PUT", "POST", "DELETE"])
+def project_baseline(slug: str):
+    """
+    Đánh dấu / đọc / xóa snapshot baseline của project.
+
+    GET  → {baseline_snapshot_id, meta?, snapshots[]}
+    PUT/POST body: {baseline_snapshot_id: "YYYY-MM-DD"|null|""}
+         null/"" → clear baseline
+    DELETE → clear baseline
+    """
+    from analyzer import project_store as ps
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    snaps = smgr.list_snapshots()
+
+    if request.method == "GET":
+        settings = ps.load_project_settings(folder)
+        snap_id = (settings.get("baseline_snapshot_id") or "").strip()
+        meta = next((s for s in snaps if s.get("date") == snap_id), None)
+        return jsonify({
+            "baseline_snapshot_id": snap_id or None,
+            "meta": meta,
+            "snapshots": snaps,
+        })
+
+    if request.method == "DELETE":
+        settings = ps.save_project_settings(folder, {"baseline_snapshot_id": ""})
+        return jsonify({
+            "baseline_snapshot_id": None,
+            "settings": settings,
+            "message": "Đã xóa baseline.",
+        })
+
+    body = request.get_json(silent=True) or {}
+    raw = body.get("baseline_snapshot_id", "")
+    if raw is None or str(raw).strip() == "":
+        settings = ps.save_project_settings(folder, {"baseline_snapshot_id": ""})
+        return jsonify({
+            "baseline_snapshot_id": None,
+            "settings": settings,
+            "message": "Đã xóa baseline.",
+        })
+
+    snap_id = str(raw).strip()
+    # Validate snapshot tồn tại
+    if not any(s.get("date") == snap_id for s in snaps):
+        return jsonify({
+            "error": f"Snapshot '{snap_id}' không tồn tại trong project này.",
+        }), 400
+    settings = ps.save_project_settings(folder, {"baseline_snapshot_id": snap_id})
+    meta = next((s for s in snaps if s.get("date") == snap_id), None)
+    return jsonify({
+        "baseline_snapshot_id": snap_id,
+        "meta": meta,
+        "settings": settings,
+        "message": f"Đã đặt baseline = {snap_id}.",
+    })
+
+
+@app.route("/api/projects/<slug>/baseline-sv")
+def project_baseline_sv(slug: str):
+    """
+    Schedule Variance vs snapshot baseline (Phase A).
+
+    SV = end_hiện_tại − end_baseline (ngày). Cần đã đánh dấu baseline.
+    """
+    from analyzer import project_store as ps
+    from analyzer.baseline_sv import compute_baseline_sv
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    folder = _project_dir_for(slug)
+    settings = ps.load_project_settings(folder)
+    snap_id = (settings.get("baseline_snapshot_id") or "").strip()
+    if not snap_id:
+        return jsonify({
+            "error": "Chưa đánh dấu baseline. Chọn 1 snapshot làm kế hoạch gốc.",
+            "baseline_snapshot_id": None,
+            "summary": None,
+        }), 400
+
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    loaded = smgr.load_snapshot(snap_id)
+    if not loaded or not loaded.get("parsed"):
+        return jsonify({
+            "error": f"Không load được snapshot baseline '{snap_id}'.",
+            "baseline_snapshot_id": snap_id,
+        }), 404
+
+    data = _filtered_data_from_request(state)
+    top_raw = request.args.get("top")
+    top: int | None = 200
+    if top_raw is not None:
+        try:
+            top = int(top_raw)
+            if top <= 0:
+                top = None
+        except (TypeError, ValueError):
+            top = 200
+
+    result = compute_baseline_sv(
+        data,
+        loaded["parsed"],
+        baseline_snapshot_id=snap_id,
+        top_functions=top,
+    )
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/completion-forecast")
+def project_completion_forecast(slug: str):
+    """
+    Dự báo ngày xong từ velocity 4 tuần (remaining ÷ Closed/tuần).
+    Query: phase= (optional — scope burndown giống /burndown).
+    """
+    from analyzer.completion_forecast import compute_completion_forecast
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    phase = (request.args.get("phase") or "").strip()
+    return jsonify(compute_completion_forecast(data, phase=phase or None))
+
+
+def _load_baseline_for_project(slug: str):
+    """Trả (baseline ParsedData|None, snap_id str)."""
+    from analyzer import project_store as ps
+    folder = _project_dir_for(slug)
+    settings = ps.load_project_settings(folder)
+    snap_id = (settings.get("baseline_snapshot_id") or "").strip()
+    baseline = None
+    if snap_id:
+        loaded = _project_mgr.get_snapshot_manager(slug).load_snapshot(snap_id)
+        if loaded and loaded.get("parsed"):
+            baseline = loaded["parsed"]
+    return baseline, snap_id
+
+
+def _snapshot_series_for_project(slug: str, current_data=None):
+    """
+    List (date, ParsedData) tăng dần từ snapshot history + current.
+    """
+    from datetime import date as _date
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    series = []
+    for entry in reversed(smgr.list_snapshots() or []):  # list desc → reverse asc
+        d_str = entry.get("date") or ""
+        try:
+            as_of = _date.fromisoformat(d_str[:10])
+        except ValueError:
+            continue
+        loaded = smgr.load_snapshot(d_str)
+        if loaded and loaded.get("parsed"):
+            series.append((as_of, loaded["parsed"]))
+    # Đảm bảo điểm hiện tại (hôm nay) có mặt
+    if current_data is not None:
+        today = _date.today()
+        if not series or series[-1][0] != today:
+            series.append((today, current_data))
+        else:
+            series[-1] = (today, current_data)
+    return series
+
+
+@app.route("/api/projects/<slug>/earned-value")
+def project_earned_value(slug: str):
+    """
+    Earned Value (Phase B) — EV / PV / AC → SPI / CPI.
+
+    PV cần baseline snapshot; không có baseline vẫn trả EV/AC/CPI với SPI=null.
+    """
+    from analyzer.earned_value import compute_earned_value
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    baseline, snap_id = _load_baseline_for_project(slug)
+
+    result = compute_earned_value(
+        data,
+        baseline=baseline,
+        baseline_snapshot_id=snap_id or None,
+        today=None,
+    )
+    if snap_id and baseline is None:
+        result["messages"] = list(result.get("messages") or []) + [
+            f"Không load được snapshot baseline '{snap_id}' — SPI tạm N/A."
+        ]
+        result["has_baseline"] = False
+        result["summary"]["pv"] = None
+        result["summary"]["spi"] = None
+        result["summary"]["spi_label"] = "N/A"
+        result["summary"]["pv_pct_bac"] = None
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/earned-value-scurve")
+def project_earned_value_scurve(slug: str):
+    """S-curve EV/PV/AC theo snapshot (weekly)."""
+    from analyzer.earned_value import compute_evm_scurve
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    baseline, snap_id = _load_baseline_for_project(slug)
+    series = _snapshot_series_for_project(slug, current_data=data)
+    weekly = (request.args.get("weekly", "1") or "1").strip() != "0"
+    return jsonify(compute_evm_scurve(
+        series,
+        baseline=baseline,
+        baseline_snapshot_id=snap_id or None,
+        weekly=weekly,
+    ))
+
+
+@app.route("/api/projects/<slug>/scope-creep")
+def project_scope_creep(slug: str):
+    """
+    Change Request / Scope Creep (Phase C).
+
+    Primary: cột Excel CR / Phát sinh (auto-detect).
+    Fallback: tag «CR» hoặc settings.cr_function_codes.
+    """
+    from analyzer import project_store as ps
+    from analyzer.scope_creep import compute_scope_creep
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    folder = _project_dir_for(slug)
+    settings = ps.load_project_settings(folder)
+    tags = ps.load_function_tags(folder)
+    result = compute_scope_creep(
+        data,
+        function_tags=tags,
+        cr_function_codes=settings.get("cr_function_codes") or [],
+    )
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/uat-quality")
+def project_uat_quality(slug: str):
+    """
+    Phase E — UAT / Customer feedback quality.
+
+    Auto-detect cột Defect/Bug/Feedback/Reopen/UAT cycle.
+    Không có cột → empty metrics + optional tag «UAT issue» (không bịa số lỗi).
+    """
+    from analyzer import project_store as ps
+    from analyzer.uat_quality import compute_uat_quality
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    folder = _project_dir_for(slug)
+    tags = ps.load_function_tags(folder)
+    return jsonify(compute_uat_quality(data, function_tags=tags))
+
+
+# ==========================================================================
+# PMO/BA analytics — Excel export (Tong_hop + Chi_tiet)
+# ==========================================================================
+
+def _export_mode_from_request() -> str:
+    body = request.get_json(silent=True) or {}
+    mode = (request.args.get("mode") or body.get("mode") or "both").strip().lower()
+    return mode if mode in ("summary", "detail", "both") else "both"
+
+
+@app.route("/api/projects/<slug>/export-baseline-sv", methods=["GET", "POST"])
+def export_baseline_sv_api(slug: str):
+    """Xuất Excel Schedule Variance vs snapshot baseline (ALL function×phase)."""
+    from analyzer import project_store as ps
+    from analyzer.baseline_sv import compute_baseline_sv
+    from exporter.pmo_analytics_exporter import export_baseline_sv_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    folder = _project_dir_for(slug)
+    settings = ps.load_project_settings(folder)
+    snap_id = (settings.get("baseline_snapshot_id") or "").strip()
+    if not snap_id:
+        return jsonify({"error": "Chưa đánh dấu baseline. Chọn snapshot làm kế hoạch gốc."}), 400
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    loaded = smgr.load_snapshot(snap_id)
+    if not loaded or not loaded.get("parsed"):
+        return jsonify({"error": f"Không load được snapshot baseline '{snap_id}'."}), 404
+    data = _filtered_data_from_request(state)
+    result = compute_baseline_sv(
+        data, loaded["parsed"],
+        baseline_snapshot_id=snap_id,
+        top_functions=None,
+    )
+    try:
+        filepath = export_baseline_sv_report(
+            result, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Baseline SV: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-earned-value", methods=["GET", "POST"])
+def export_earned_value_api(slug: str):
+    """Xuất Excel Earned Value (SPI/CPI)."""
+    from analyzer.earned_value import compute_earned_value
+    from exporter.pmo_analytics_exporter import export_earned_value_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    baseline, snap_id = _load_baseline_for_project(slug)
+    result = compute_earned_value(
+        data, baseline=baseline, baseline_snapshot_id=snap_id or None, today=None
+    )
+    try:
+        filepath = export_earned_value_report(
+            result, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất EVM: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-earned-value-scurve", methods=["GET", "POST"])
+def export_earned_value_scurve_api(slug: str):
+    """Xuất Excel EVM S-curve."""
+    from analyzer.earned_value import compute_evm_scurve
+    from exporter.pmo_analytics_exporter import export_evm_scurve_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    baseline, snap_id = _load_baseline_for_project(slug)
+    series = _snapshot_series_for_project(slug, current_data=data)
+    result = compute_evm_scurve(
+        series, baseline=baseline, baseline_snapshot_id=snap_id or None, weekly=True,
+    )
+    try:
+        filepath = export_evm_scurve_report(
+            result, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất S-curve: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-scope-creep", methods=["GET", "POST"])
+def export_scope_creep_api(slug: str):
+    """Xuất Excel Scope Creep (ALL CR)."""
+    from analyzer import project_store as ps
+    from analyzer.scope_creep import compute_scope_creep
+    from exporter.pmo_analytics_exporter import export_scope_creep_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    folder = _project_dir_for(slug)
+    settings = ps.load_project_settings(folder)
+    tags = ps.load_function_tags(folder)
+    result = compute_scope_creep(
+        data,
+        function_tags=tags,
+        cr_function_codes=settings.get("cr_function_codes") or [],
+        detail_limit=None,
+    )
+    try:
+        filepath = export_scope_creep_report(
+            result, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Scope Creep: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-uat-quality", methods=["GET", "POST"])
+def export_uat_quality_api(slug: str):
+    """Xuất Excel UAT Quality (ALL function có dữ liệu)."""
+    from analyzer import project_store as ps
+    from analyzer.uat_quality import compute_uat_quality
+    from exporter.pmo_analytics_exporter import export_uat_quality_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    folder = _project_dir_for(slug)
+    tags = ps.load_function_tags(folder)
+    result = compute_uat_quality(data, function_tags=tags, detail_limit=None)
+    try:
+        filepath = export_uat_quality_report(
+            result, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất UAT Quality: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-completion-forecast", methods=["GET", "POST"])
+def export_completion_forecast_api(slug: str):
+    """Xuất Excel dự báo ngày xong (velocity)."""
+    from analyzer.completion_forecast import compute_completion_forecast
+    from exporter.pmo_analytics_exporter import export_completion_forecast_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    phase = (request.args.get("phase") or "").strip()
+    result = compute_completion_forecast(data, phase=phase or None)
+    try:
+        filepath = export_completion_forecast_report(
+            result, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Completion Forecast: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/executive-dashboard")
+def project_executive_dashboard(slug: str):
+    """PM Executive Dashboard — 1 trang tổng hợp."""
+    from analyzer import project_store as ps
+    from analyzer.completion_forecast import compute_completion_forecast
+    from analyzer.earned_value import compute_earned_value
+    from analyzer.executive_dashboard import build_executive_dashboard
+    from analyzer.risk_tracking import attach_mitigations
+    from analyzer.scope_creep import compute_scope_creep
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    folder = _project_dir_for(slug)
+    baseline, snap_id = _load_baseline_for_project(slug)
+    tags = ps.load_function_tags(folder)
+    settings = ps.load_project_settings(folder)
+    mitigations = ps.load_risk_mitigations(folder)
+
+    evm = compute_earned_value(
+        data, baseline=baseline, baseline_snapshot_id=snap_id or None,
+    )
+    fc = compute_completion_forecast(data)
+    sc = compute_scope_creep(
+        data,
+        function_tags=tags,
+        cr_function_codes=settings.get("cr_function_codes") or [],
+    )
+    risk_scores = attach_mitigations(
+        list((state.get("metrics") or {}).get("risk_scores") or []),
+        mitigations,
+    )
+    project = _project_mgr.get_project(slug)
+    payload = build_executive_dashboard(
+        data=data,
+        metrics=state.get("metrics") or {},
+        earned_value=evm,
+        completion_forecast=fc,
+        scope_creep=sc,
+        risk_scores=risk_scores,
+        mitigations=mitigations,
+        project_name=(project.name if project else slug),
+    )
+    return jsonify(payload)
+
+
+@app.route("/api/projects/<slug>/export-executive-dashboard", methods=["GET", "POST"])
+def export_executive_dashboard_api(slug: str):
+    """Xuất Excel PM Executive Dashboard."""
+    from analyzer import project_store as ps
+    from analyzer.completion_forecast import compute_completion_forecast
+    from analyzer.earned_value import compute_earned_value
+    from analyzer.executive_dashboard import build_executive_dashboard
+    from analyzer.risk_tracking import attach_mitigations
+    from analyzer.scope_creep import compute_scope_creep
+    from exporter.pmo_analytics_exporter import export_executive_dashboard_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    folder = _project_dir_for(slug)
+    baseline, snap_id = _load_baseline_for_project(slug)
+    tags = ps.load_function_tags(folder)
+    settings = ps.load_project_settings(folder)
+    mitigations = ps.load_risk_mitigations(folder)
+    evm = compute_earned_value(
+        data, baseline=baseline, baseline_snapshot_id=snap_id or None,
+    )
+    fc = compute_completion_forecast(data)
+    sc = compute_scope_creep(
+        data,
+        function_tags=tags,
+        cr_function_codes=settings.get("cr_function_codes") or [],
+    )
+    risk_scores = attach_mitigations(
+        list((state.get("metrics") or {}).get("risk_scores") or []),
+        mitigations,
+    )
+    project = _project_mgr.get_project(slug)
+    payload = build_executive_dashboard(
+        data=data,
+        metrics=state.get("metrics") or {},
+        earned_value=evm,
+        completion_forecast=fc,
+        scope_creep=sc,
+        risk_scores=risk_scores,
+        mitigations=mitigations,
+        project_name=(project.name if project else slug),
+    )
+    try:
+        filepath = export_executive_dashboard_report(
+            payload, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Executive: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/risk-trend")
+def project_risk_trend(slug: str):
+    """Xu hướng risk score theo snapshot + danh sách mitigation."""
+    from analyzer import project_store as ps
+    from analyzer.risk_tracking import attach_mitigations, compute_risk_trend
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    folder = _project_dir_for(slug)
+    series = _snapshot_series_for_project(slug, current_data=data)
+    trend = compute_risk_trend(series, weekly=True)
+    mitigations = ps.load_risk_mitigations(folder)
+    scores = attach_mitigations(
+        list((state.get("metrics") or {}).get("risk_scores") or [])[:50],
+        mitigations,
+    )
+    trend["mitigations"] = mitigations
+    trend["risk_scores"] = scores
+    return jsonify(trend)
+
+
+@app.route("/api/projects/<slug>/risk-mitigation", methods=["GET", "POST"])
+def project_risk_mitigation(slug: str):
+    """GET all / POST upsert mitigation (key = ma_cn hoặc module:X)."""
+    from analyzer import project_store as ps
+
+    _, err = _require_state(slug)
+    if err:
+        return err
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({"items": ps.load_risk_mitigations(folder)})
+    payload = request.get_json(silent=True) or {}
+    key = str(payload.get("key") or payload.get("ma_cn") or "").strip()
+    if not key:
+        return jsonify({"error": "key / ma_cn required"}), 400
+    user = _auth_current_user() or {}
+    items = ps.save_risk_mitigation(
+        folder,
+        key,
+        note=str(payload.get("note") or ""),
+        owner=str(payload.get("owner") or ""),
+        target_date=str(payload.get("target_date") or ""),
+        updated_by=str(user.get("username") or ""),
+        delete=bool(payload.get("delete")),
+    )
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/projects/<slug>/diff-review", methods=["GET", "POST"])
+def project_diff_review(slug: str):
+    """
+    Diff approval nhẹ: gắn tag «đã review» + audit trail.
+    POST body: { ma_cns: [...], reviewed: true|false, vs: "previous"|date }
+    """
+    from analyzer import project_store as ps
+
+    _, err = _require_state(slug)
+    if err:
+        return err
+    folder = _project_dir_for(slug)
+    if request.method == "GET":
+        return jsonify({
+            "tags": ps.load_function_tags(folder),
+            "reviews": ps.load_diff_reviews(folder),
+            "review_tag": "đã review",
+        })
+    payload = request.get_json(silent=True) or {}
+    ma_cns = payload.get("ma_cns") or []
+    if isinstance(ma_cns, str):
+        ma_cns = [ma_cns]
+    if not isinstance(ma_cns, list) or not ma_cns:
+        return jsonify({"error": "ma_cns required"}), 400
+    reviewed = payload.get("reviewed", True)
+    action = "review" if reviewed else "unreview"
+    vs = str(payload.get("vs") or "")
+    user = _auth_current_user() or {}
+    username = str(user.get("username") or "")
+    tag_action = "add" if reviewed else "remove"
+    tags = ps.bulk_tag_functions(folder, ma_cns, "đã review", action=tag_action)
+    reviews = ps.load_diff_reviews(folder)
+    for ma in ma_cns:
+        reviews = ps.append_diff_review(
+            folder, str(ma), reviewed_by=username, vs=vs, action=action,
+        )
+    return jsonify({
+        "ok": True,
+        "tag": "đã review",
+        "action": action,
+        "affected": len([m for m in ma_cns if str(m).strip()]),
+        "tags": tags,
+        "reviews": reviews,
+    })
+
+
+@app.route("/api/projects/<slug>/insight-module-deltas")
+def project_insight_module_deltas(slug: str):
+    """Delta OD/UA/ST theo module vs snapshot trước."""
+    from analyzer.insight_module_deltas import compute_module_issue_deltas
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    vs = (request.args.get("vs") or "previous").strip() or "previous"
+    prev_data, prev_meta, err2 = _resolve_diff_previous_snapshot(slug, vs)
+    if err2:
+        # Không có snapshot trước → empty
+        return jsonify({
+            "modules": [],
+            "totals": {},
+            "message": "Chưa có snapshot trước để so sánh module delta.",
+            "available": False,
+        })
+    result = compute_module_issue_deltas(prev_data, state["data"])
+    result["previous_snapshot"] = prev_meta or {}
+    result["available"] = True
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/export-pic-upcoming", methods=["GET", "POST"])
+def export_pic_upcoming_api(slug: str):
+    """Xuất Excel PIC × tuần tới."""
+    from analyzer.pic_upcoming import compute_pic_upcoming_weeks
+    from exporter.pmo_analytics_exporter import export_pic_upcoming_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    try:
+        weeks = int(request.args.get("weeks") or 4)
+    except (TypeError, ValueError):
+        weeks = 4
+    result = compute_pic_upcoming_weeks(data, weeks=weeks)
+    try:
+        filepath = export_pic_upcoming_report(
+            result, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất PIC tuần tới: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/export-estimate-ratio", methods=["GET", "POST"])
+def export_estimate_ratio_api(slug: str):
+    """Xuất Excel ước lượng theo hệ số (parametric)."""
+    from analyzer.estimate_ratio import compute_estimate_ratio, load_estimation_params
+    from exporter.pmo_analytics_exporter import export_estimate_ratio_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    filt = _estimate_ratio_filters()
+    data = _filter_parsed_data(
+        state["data"],
+        modules=filt["modules"],
+        processes=filt["processes"],
+        pics=filt["pics"],
+    )
+    params = load_estimation_params(_project_dir_for(slug), _project_mgr.base_dir)
+    # Cho phép override params từ body (không lưu) — giống API compute
+    body = request.get_json(silent=True) or {}
+    if isinstance(body.get("params"), dict) and body["params"]:
+        from analyzer.estimate_ratio import _deep_merge, normalize_params
+        raw = {k: v for k, v in params.items() if not k.startswith("_")}
+        params = normalize_params(_deep_merge(raw, body["params"]))
+    result = compute_estimate_ratio(data, params)
+    try:
+        filepath = export_estimate_ratio_report(
+            result, _project_mgr.get_export_dir(slug), mode=_export_mode_from_request()
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        return jsonify({"error": f"Lỗi xuất Estimate Ratio: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<slug>/pmo-risk")
+def project_pmo_risk(slug: str):
+    """
+    Phase D — Risk + chiều Resource (PIC overload) + Dependency (cascade module).
+
+    Query:
+      cross_project=1 → lấy overload PIC từ quét đa dự án (pic_overload).
+    """
+    from analyzer import project_store as ps
+    from analyzer.risk_scorer import compute_pmo_risk
+    from analyzer.pic_overload import (
+        compute_pic_overload,
+        load_overload_settings,
+        overloaded_pics_for_data,
+    )
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    folder = _project_dir_for(slug)
+    module_order = ps.load_module_order(folder)
+    thr = load_overload_settings(app.config["PROJECTS_FOLDER"])
+
+    overloaded: set[str] | None = None
+    overload_source = "single_project"
+    cross = (request.args.get("cross_project") or "").strip().lower() in (
+        "1", "true", "yes", "y",
+    )
+    if cross:
+        try:
+            result_ol = compute_pic_overload(
+                _project_mgr,
+                lambda s: _get_state(s),
+                grain="day",
+                thresholds=thr,
+                today=date.today(),
+                detail_limit=1,
+            )
+            overloaded = {
+                p["pic"] for p in (result_ol.get("by_pic") or [])
+                if p.get("is_overload")
+            }
+            overload_source = "cross_project"
+        except Exception:
+            overloaded = overloaded_pics_for_data(
+                data, today=date.today(), thresholds=thr,
+            )
+            overload_source = "single_project_fallback"
+    else:
+        overloaded = overloaded_pics_for_data(
+            data, today=date.today(), thresholds=thr,
+        )
+
+    result = compute_pmo_risk(
+        data,
+        today=date.today(),
+        module_order=module_order or None,
+        overloaded_pics=overloaded,
+        overload_thresholds=thr,
+    )
+    result["overload_source"] = overload_source
+    return jsonify(result)
+
+
 # ==========================================================================
 # Excel exports cho 4 section Phase 4/5 (Vấn đề 3 + Rule V4 "xuất ALL").
 # Accept GET (dùng query string) và POST (body JSON) — cả 2 đều đọc global
@@ -5099,6 +6431,42 @@ def _resolve_diff_previous_snapshot(slug: str, vs: str):
     if not loaded:
         return None, None, (jsonify({"error": "Không load được snapshot trước"}), 500)
     return loaded["parsed"], loaded["meta"], None
+
+
+def _build_auto_diff_summary(slug: str, current_data, current_meta: Optional[dict] = None) -> Optional[dict]:
+    """
+    Sau upload/sync: so với snapshot trước → badges ngắn cho summary cards.
+    Return None nếu chưa đủ 2 snapshot.
+    """
+    from analyzer.function_diff import compute_function_diff
+
+    prev_data, prev_meta, err = _resolve_diff_previous_snapshot(slug, "previous")
+    if err:
+        return None
+    try:
+        payload = compute_function_diff(
+            current=current_data,
+            previous=prev_data,
+            current_meta=current_meta or {},
+            previous_meta=prev_meta or {},
+        )
+        badges = payload.get("badges") or {}
+        return {
+            "available": True,
+            "previous_date": (prev_meta or {}).get("date"),
+            "current_date": (current_meta or {}).get("date"),
+            "badges": badges,
+            "counts": payload.get("counts") or {},
+            # Lists rút gọn cho modal click-through (cap 50)
+            "lists": {
+                "added": (payload.get("added") or [])[:50],
+                "status_rollback": (payload.get("status_rollback") or [])[:50],
+                "pic_changed": (payload.get("pic_changed") or [])[:50],
+                "deleted": (payload.get("deleted") or [])[:50],
+            },
+        }
+    except Exception:
+        return None
 
 
 @app.route("/api/projects/<slug>/function-diff")

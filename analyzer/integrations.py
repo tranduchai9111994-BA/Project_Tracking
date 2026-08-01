@@ -1570,6 +1570,12 @@ def _persist_synced_xlsx(
             "rows_imported": rows_count,
         }
 
+    try:
+        from analyzer.disk_janitor import purge_excess_synced_xlsx, MAX_SYNCED_XLSX
+        purge_excess_synced_xlsx(target_dir, keep=MAX_SYNCED_XLSX)
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "rows_imported": rows_count,
@@ -2338,6 +2344,12 @@ def sync_integration(
             msg = f"Lưu snapshot lỗi: {type(e).__name__}: {str(e)[:200]}"
             _update_last_status(project_dir, integration_id, "error", msg)
             return _err(msg, rows_imported=rows_count, filename=filename)
+
+        try:
+            from analyzer.disk_janitor import purge_excess_synced_xlsx, MAX_SYNCED_XLSX
+            purge_excess_synced_xlsx(project_dir, keep=MAX_SYNCED_XLSX)
+        except Exception:
+            pass
 
         ok_msg = (f"Đã tải {rows_count} dòng · snapshot "
                   f"{snapshot_entry.get('date') if snapshot_entry else '?'} · "

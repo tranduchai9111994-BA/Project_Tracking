@@ -31,6 +31,7 @@ from exporter.excel_exporter import (
     _want_summary,
     _write_sheet,
 )
+from exporter.reason_formatters import process_code, reason_pic_overload
 from parser.excel_parser import FunctionRow, ParsedData
 
 # Soft yellow cho ô PIC/Status cần chú ý khi re-import
@@ -157,6 +158,7 @@ def export_pic_overload_report(
         first = False
         if ws.title != "Chi_tiet":
             ws.title = "Chi_tiet"
+        day_max = thr.get("day_max_tasks", 5)
         data_rows = [
             [
                 idx + 1,
@@ -166,11 +168,25 @@ def export_pic_overload_report(
                 r.get("ma_cn", ""),
                 r.get("ten_cn", ""),
                 r.get("module", ""),
+                process_code(r),
                 r.get("phase", ""),
                 r.get("status", ""),
                 r.get("start", ""),
                 r.get("end", ""),
                 "Có" if r.get("is_overdue") else "",
+                r.get("concurrent_count", ""),
+                r.get("threshold", day_max),
+                reason_pic_overload(
+                    r.get("pic", ""),
+                    r.get("date", ""),
+                    int(r.get("concurrent_count") or 0),
+                    int(r.get("threshold") or day_max),
+                ) if r.get("is_day_overload") or (
+                    (r.get("concurrent_count") or 0) > (r.get("threshold") or day_max)
+                ) else (
+                    f"PIC {r.get('pic', '')} ngày {r.get('date', '')}: "
+                    f"{r.get('concurrent_count', 0)} task (ngưỡng {r.get('threshold', day_max)})"
+                ),
             ]
             for idx, r in enumerate(detail)
         ]
@@ -190,11 +206,15 @@ def export_pic_overload_report(
                 ("Mã CN", 14),
                 ("Tên chức năng", 36),
                 ("Module", 10),
+                ("Quy trình", 22),
                 ("Phase", 14),
                 ("Status", 12),
                 ("Start", 12),
                 ("End", 12),
                 ("Overdue?", 10),
+                ("Số task cùng ngày", 14),
+                ("Ngưỡng", 10),
+                ("Lý do", 48),
             ],
             data_rows=data_rows,
             row_fill_fn=_det_fill,

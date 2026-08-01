@@ -4,8 +4,8 @@ Xuất Function List re-import — chỉ các CN dính issue.
 Nguồn issue: overdue / unassigned / stalled / anomalies (+ missing_deadline nếu có).
 Định dạng cột theo schema mẫu (fl_export_schema) hoặc header ParsedData hiện tại.
 
-Chỉ 1 sheet ``Function List`` (import được luôn) — không sheet hướng dẫn.
-Không ghi text note / Remark tracker; chỉ tô màu:
+Sheet ``Function List`` (import được luôn) + sheet phụ ``Ly_do`` (review).
+Không ghi text note / Remark tracker vào FL; chỉ tô màu:
   - Vàng: PIC/Status bất thường / cần sửa
   - Xanh nhạt: From/Start auto-fill = To/End phase trước + 1 ngày làm việc (bỏ T7/CN)
 
@@ -28,10 +28,18 @@ from exporter.excel_exporter import (
     HEADER_FILL,
     HEADER_FONT,
     THIN_BORDER,
+    _write_sheet,
 )
 from exporter.fl_export_schema import (
     next_business_day,
     resolve_export_schema,
+)
+from exporter.reason_formatters import (
+    join_notes,
+    process_code,
+    reason_overdue,
+    reason_stalled,
+    reason_unassigned,
 )
 from parser.excel_parser import FunctionRow, ParsedData, PhaseData, VALID_STATUSES
 
@@ -88,10 +96,11 @@ def collect_issue_hits(
         h["kinds"].add("overdue")
         if ph:
             h["yellow_status"].add(ph)
-            days = it.get("days_overdue")
-            h["notes"].append(
-                f"Overdue {ph}" + (f" ({days}d)" if days is not None else "")
+        h["notes"].append(reason_overdue(it) if it.get("end_date") or it.get("status") else (
+            f"Overdue {ph}" + (
+                f" ({it.get('days_overdue')}d)" if it.get("days_overdue") is not None else ""
             )
+        ))
 
     for it in unassigned_list or []:
         ma = it.get("ma_cn") or ""
@@ -102,7 +111,7 @@ def collect_issue_hits(
         h["kinds"].add("unassigned")
         if ph:
             h["yellow_pic"].add(ph)
-            h["notes"].append(f"Thiếu PIC · {ph}")
+        h["notes"].append(reason_unassigned(it))
 
     for it in stalled_list or []:
         ma = it.get("ma_cn") or ""
@@ -115,10 +124,10 @@ def collect_issue_hits(
         if wait:
             h["yellow_status"].add(wait)
             h["yellow_pic"].add(wait)
-            h["notes"].append(
-                f"Đình trệ {done}→{wait}"
-                + (f" ({it.get('wait_days')}d)" if it.get("wait_days") else "")
-            )
+        h["notes"].append(reason_stalled(it) if done or wait else (
+            f"Đình trệ {done}→{wait}"
+            + (f" ({it.get('wait_days')}d)" if it.get("wait_days") else "")
+        ))
 
     for it in anomaly_issues or []:
         ma = it.get("ma_cn") or ""
@@ -397,8 +406,9 @@ def export_fl_reimport(
     schema: Optional[dict[str, Any]] = None,
 ) -> str:
     """
-    Xuất workbook 1 sheet Function List — chỉ row trong ``hits``.
-    Chỉ tô màu (vàng/xanh); không sheet hướng dẫn, không ghi Remark tracker.
+    Xuất workbook Function List (+ sheet phụ Ly_do) — chỉ row trong ``hits``.
+    Chỉ tô màu (vàng/xanh) trên FL; không ghi Remark tracker.
+    Sheet ``Ly_do`` chứa kinds + notes từ collect_issue_hits để BA/PM review.
 
     Returns: filepath
     """
@@ -492,6 +502,39 @@ def export_fl_reimport(
     ws.freeze_panes = "A2"
     if out_row > 2:
         ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{out_row - 1}"
+
+    # Sheet phụ Lý do — không đụng template FL / Remark
+    ly_rows = []
+    for ma in sorted(hits.keys()):
+        row = rows_by_ma.get(ma)
+        hit = hits[ma]
+        kinds = sorted(hit.get("kinds") or [])
+        ly_rows.append([
+            ma,
+            (row.meta.get("ten_cn") if row else "") or "",
+            (row.meta.get("module") if row else "") or "",
+            process_code(row.meta if row else {}),
+            ", ".join(kinds),
+            join_notes(list(hit.get("notes") or [])),
+        ])
+    ws_ly = wb.create_sheet("Ly_do")
+    _write_sheet(
+        ws_ly,
+        title="LÝ DO ISSUE — FL RE-IMPORT (không ghi vào Remark)",
+        columns=[
+            ("Mã CN", 16),
+            ("Tên chức năng", 36),
+            ("Module", 12),
+            ("Quy trình", 22),
+            ("Loại issue", 28),
+            ("Lý do / Ghi chú", 60),
+        ],
+        data_rows=ly_rows,
+        subtitle=(
+            f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}  |  "
+            f"{len(ly_rows)} CN  |  Sheet Function List giữ nguyên template tô vàng"
+        ),
+    )
 
     os.makedirs(output_dir, exist_ok=True)
     slug_part = project_slug or "project"

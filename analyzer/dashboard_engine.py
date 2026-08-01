@@ -29,9 +29,15 @@ class DashboardEngine:
     def compute_all(self, data: ParsedData) -> dict[str, Any]:
         """Entry point: tính tất cả metrics."""
         # Import cục bộ để tránh circular
-        from analyzer.risk_scorer import compute_all_risk_scores
+        from analyzer.risk_scorer import compute_pmo_risk
 
-        risk_scores = compute_all_risk_scores(data, self.today, self.long_duration_threshold)
+        # Phase D: risk + resource/dependency dimensions (single-project overload)
+        pmo = compute_pmo_risk(
+            data,
+            self.today,
+            long_duration_threshold=self.long_duration_threshold,
+        )
+        risk_scores = pmo["risk_scores"]
 
         return {
             "structure": self._structure_info(data),
@@ -51,6 +57,13 @@ class DashboardEngine:
             "duration_analysis": self._duration_analysis(data, self.long_duration_threshold),
             "stalled_tasks": self._stalled_tasks(data),
             "risk_scores": risk_scores,
+            "pmo_risk": {
+                "summary": pmo["summary"],
+                "dimensions": pmo["dimensions"],
+                "modules": pmo["modules"],
+                "cascade": pmo["cascade"],
+                "scoring_notes": pmo["scoring_notes"],
+            },
             "effort_analysis": self._effort_analysis(data),
             "process_analysis": self._process_analysis(data),
             "timeline_data": self._timeline_data(data),
@@ -296,6 +309,34 @@ class DashboardEngine:
         overdue_count = sum(
             1 for r in rows if self._row_has_overdue(r, data.all_phases)
         )
+        # Còn lại = function chưa Closed phase cuối
+        remaining = 0
+        last_phase = data.all_phases[-1] if data.all_phases else None
+        for r in rows:
+            if last_phase:
+                st = (r.phases.get(last_phase, PhaseData()).status or "")
+                if st != "Closed":
+                    remaining += 1
+            else:
+                remaining += 1
+        # MH còn lại (nếu có estimate) — tỷ lệ phase chưa Closed/Cancelled
+        remaining_mh = 0.0
+        for r in rows:
+            est = r.meta.get("estimate_mh")
+            if est is None:
+                continue
+            try:
+                est_f = float(est)
+            except (TypeError, ValueError):
+                continue
+            if est_f <= 0 or not data.all_phases:
+                continue
+            open_phases = sum(
+                1 for ph in data.all_phases
+                if (r.phases.get(ph, PhaseData()).status or "") not in ("Closed", "Cancelled")
+            )
+            if open_phases > 0:
+                remaining_mh += est_f * (open_phases / len(data.all_phases))
         return {
             "stt": idx,
             "module": module,
@@ -306,6 +347,8 @@ class DashboardEngine:
             "progress_pct": progress_pct,
             "active_phase": active_phase,
             "overdue_count": overdue_count,
+            "remaining": remaining,
+            "remaining_mh": round(remaining_mh, 1),
         }
 
     # ------------------------------------------------------------------
@@ -378,8 +421,39 @@ class DashboardEngine:
                     **{s: status_counts.get(s, 0) for s in all_statuses_ordered},
                 }
 
+        # Bottleneck row: per phase, số row-label "stuck"
+        # (= có ≥1 function chưa Closed ở phase đó VÀ (overdue HOẶC stalled sang phase này))
+        from analyzer.stalled import is_stalled_transition
+
+        phases = list(data.all_phases)
+        bottleneck: dict[str, int] = {ph: 0 for ph in phases}
+        for label in row_labels:
+            rows = by_proc.get(label, [])
+            for pi, phase_name in enumerate(phases):
+                stuck = False
+                for r in rows:
+                    pd = r.phases.get(phase_name, PhaseData())
+                    st = (pd.status or "").strip()
+                    if st == "Closed":
+                        continue
+                    # Overdue ở phase này
+                    if is_phase_overdue(
+                        pd, self.today, row=r, phase_name=phase_name, phase_order=phases,
+                    ):
+                        stuck = True
+                        break
+                    # Stalled: phase trước Closed, phase này chưa start, End pred quá hạn
+                    if pi > 0:
+                        pred = phases[pi - 1]
+                        pred_pd = r.phases.get(pred)
+                        if is_stalled_transition(pred_pd, pd, self.today):
+                            stuck = True
+                            break
+                if stuck:
+                    bottleneck[phase_name] += 1
+
         return {
-            "phases": data.all_phases,
+            "phases": phases,
             # Backward compat: 'modules' key luôn có (là row labels), nhưng
             # thêm 'row_labels' + 'group_by' + 'row_module_map' cho FE mode process.
             "modules": row_labels,
@@ -388,6 +462,7 @@ class DashboardEngine:
             "row_module_map": proc_module_map,
             "statuses": all_statuses_ordered,
             "data": matrix,
+            "bottleneck": bottleneck,
         }
 
     # ------------------------------------------------------------------
@@ -522,6 +597,7 @@ class DashboardEngine:
                         "ma_cn": r.meta.get("ma_cn", ""),
                         "ten_cn": r.meta.get("ten_cn", ""),
                         "module": r.meta.get("module", ""),
+                        "quy_trinh": r.meta.get("quy_trinh") or r.meta.get("process") or "",
                         "phase": phase_name,
                         "end_date": pd.end_date.isoformat() if pd.end_date else "",
                         "days_overdue": days,
@@ -664,12 +740,33 @@ class DashboardEngine:
                     r, phase_name, pd, phase_order, self.today,
                 ):
                     continue
+                # Phase trước + start-gate — phục vụ cột Lý do export
+                pred_phase = ""
+                is_first = False
+                try:
+                    idx = phase_order.index(phase_name)
+                    is_first = idx == 0
+                    if idx > 0:
+                        pred_phase = phase_order[idx - 1]
+                except ValueError:
+                    pass
+                if pd.start_date is not None:
+                    start_gate = "start"
+                elif pd.end_date is not None and pd.end_date <= self.today:
+                    start_gate = "end"
+                else:
+                    start_gate = "active_status"
                 results.append({
                     "ma_cn": r.meta.get("ma_cn", ""),
                     "ten_cn": r.meta.get("ten_cn", ""),
                     "rlog_id": rlog_id,
                     "module": r.meta.get("module", ""),
+                    "quy_trinh": r.meta.get("quy_trinh") or r.meta.get("process") or "",
                     "phase": phase_name,
+                    "predecessor_phase": pred_phase,
+                    "is_first_phase": is_first,
+                    "start_date": pd.start_date.isoformat() if pd.start_date else "",
+                    "start_gate": start_gate,
                     # Nếu status blank thì hiện "(chưa fill)" cho FE dễ hiểu
                     "status": pd.status or "(chưa fill status)",
                     "priority": r.meta.get("priority", ""),
@@ -745,11 +842,13 @@ class DashboardEngine:
                         "ma_cn": r.meta.get("ma_cn", ""),
                         "ten_cn": r.meta.get("ten_cn", ""),
                         "module": r.meta.get("module", ""),
+                        "quy_trinh": r.meta.get("quy_trinh") or r.meta.get("process") or "",
                         "phase": phase_name,
                         "start_date": pd.start_date.isoformat() if pd.start_date else "",
                         "end_date": pd.end_date.isoformat() if pd.end_date else "",
                         "duration_days": duration,
                         "duration_type": dur_type,
+                        "threshold_days": threshold_days,
                         "status": pd.status,
                         "pic": pd.pics,
                         "priority": r.meta.get("priority", ""),
@@ -845,9 +944,14 @@ class DashboardEngine:
                     "ma_cn": r.meta.get("ma_cn", ""),
                     "ten_cn": r.meta.get("ten_cn", ""),
                     "module": r.meta.get("module", ""),
+                    "quy_trinh": r.meta.get("quy_trinh") or r.meta.get("process") or "",
                     "completed_phase": curr,
                     "waiting_phase": nxt,
                     "completed_date": curr_pd.end_date.isoformat() if curr_pd.end_date else "",
+                    "waiting_end_date": (
+                        next_pd.end_date.isoformat() if next_pd and next_pd.end_date else ""
+                    ),
+                    "waiting_status": (next_pd.status or "") if next_pd else "",
                     "wait_days": wait_days,
                     "priority": r.meta.get("priority", ""),
                 })

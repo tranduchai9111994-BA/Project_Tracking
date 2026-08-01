@@ -1,149 +1,156 @@
-# Hệ thống iHRP Function List Tracker — Tổng quan cấu trúc & logic
+# Hệ thống iHRP Function List Tracker — Tổng quan
 
-> Cập nhật: **2026-07-31**. Tài liệu này là **lối vào** để hiểu toàn bộ hệ thống từ tổng quan → chi tiết.
-> Chi tiết chuyên sâu vẫn nằm ở các guide cũ; bảng mục lục cuối file chỉ đường đi đọc tiếp.
+> Cập nhật: **2026-08-01** (đồng bộ code sau PMO A–F + BA UX).  
+> Lối vào cho PM/BA và reviewer ngoài. Chi tiết rule → [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md); checklist → [FEATURE_CATALOG.md](FEATURE_CATALOG.md).
 
 ---
 
-## 1. Hệ thống này là gì?
+## 1. Sản phẩm là gì?
 
-Ứng dụng **dashboard local** (Flask) cho PM/BA dự án triển khai **HRIS iHRP**.
+Ứng dụng **dashboard local** (Flask + SPA vanilla JS) cho **PM/BA** dự án triển khai **HRIS iHRP**.
 
 ```
-Function List Excel  ──parse──►  Metrics / Rules  ──►  Dashboard UI
-         ▲                           │
-    Sync API/DB                      ├── Export Excel / PDF / MoM / FL re-import
-         │                           ├── Forecast (tháng UAT/Golive, Manpower)
-Chiều PM (KeHoach + Weekly PPT)      └── Public API / LAN / Archive
+Function List Excel ──parse──► Metrics / Rules ──► Dashboard UI
+         ▲                          │
+    Sync API/DB                     ├── Export Excel / PDF / MoM / FL re-import
+         │                          ├── Forecast (Gantt tháng, Manpower, Overload)
+Chiều PM (KeHoach + Weekly PPT)     ├── PMO (SV, EVM, CR, Risk, UAT Quality)
+                                    └── Public API / LAN / Archive
 ```
 
-**Người dùng chính:** 1 PM/BA (solo) trên máy local hoặc LAN tin cậy — không phải SaaS multi-tenant.
+| Ai dùng | Cách dùng |
+|---------|-----------|
+| PM / BA solo | Máy local (`127.0.0.1`) |
+| Team tin cậy | LAN read-only (`IHRP_LAN=1`) + Public API token |
 
-**Nguyên tắc gốc (`.cursorrules`):**
+**Không phải** SaaS multi-tenant. Persistence chủ yếu **file** dưới `uploads/projects/<slug>/`; Phase F thêm **SQLite `meta.db`** cho một slice metadata (dual-write).
 
-| # | Nguyên tắc |
-|---|------------|
-| 1 | **Không hardcode cột** — auto-detect header `Phase - Attribute` |
+---
+
+## 2. Nguyên tắc gốc (`.cursorrules`)
+
+| # | Rule |
+|---|------|
+| 1 | **Không hardcode cột** — đọc header row 1; phase = `PhaseName - Attribute` |
 | 2 | **Overdue** = có End < today và Status ∉ {Closed, Cancelled} (+ ngoại lệ phase sau Closed) |
 | 3 | **Status** chuẩn: Open, Assigned, In-progress, Resolved, Closed, Pending, Cancelled; số ở Status = lỗi lệch cột |
 | 4 | **PIC** tách bởi `,` `;` `+` `\n` |
 
 ---
 
-## 2. Bản đồ tài liệu (đọc theo thứ tự)
+## 3. Kiến trúc (mermaid)
 
-| Bước | File | Nội dung |
-|------|------|----------|
-| **1** | **[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)** (file này) | Big picture + data flow + nhóm dashboard |
-| **2** | **[BUSINESS_LOGIC.md](BUSINESS_LOGIC.md)** | Toàn bộ rule nghiệp vụ (overdue, unassigned, stalled, DQ, forecast…) |
-| **3** | **[FEATURE_CATALOG.md](FEATURE_CATALOG.md)** | Catalog từng section / API / export |
-| 4 | [ARCHITECTURE.md](ARCHITECTURE.md) | Stack, folder, storage, security, module map kỹ thuật |
-| 5 | [DATA_MODEL.md](DATA_MODEL.md) | Schema parse + JSON store |
-| 6 | [DASHBOARD_SPEC.md](DASHBOARD_SPEC.md) | Spec UI từng chart (lịch sử + default order) |
-| 7 | Guides chuyên đề | Integrations, Public API, LAN, Archive, PM dimension, Help |
+```mermaid
+flowchart TB
+    subgraph Sources
+        XLSX[Excel Function List]
+        API[HTTP / JSON sync]
+        DB[(SQL View)]
+        PM[KeHoachDuAn + Weekly PPT]
+    end
 
----
+    subgraph App
+        PARSE[parser/excel_parser]
+        ENG[analyzer/* metrics]
+        FE[templates + dashboard.js]
+        EXP[exporter/*]
+    end
 
-## 3. Kiến trúc 3 lớp (rút gọn)
+    subgraph Persist
+        FILES[JSON + xlsx + pickle]
+        META[(meta.db WAL — settings/bookmarks/tags)]
+        SNAP[snapshots + archive.gz]
+    end
 
+    XLSX --> PARSE
+    API --> PARSE
+    DB --> PARSE
+    PM --> ENG
+    PARSE --> SNAP
+    PARSE --> ENG
+    ENG --> FE
+    ENG --> EXP
+    FILES --> ENG
+    META --> FE
+    SNAP --> ENG
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  templates/index.html + static/js/dashboard.js (SPA)         │
-│  Chart.js · Tailwind · i18n VI/EN · sidebar nhóm · Help      │
-└──────────────────────────▲──────────────────────────────────┘
-                           │ fetch /api/projects/<slug>/…
-┌──────────────────────────┴──────────────────────────────────┐
-│  app.py (Flask) — routes admin + public + embed              │
-└──────────────────────────▲──────────────────────────────────┘
-                           │
-     ┌─────────────────────┼─────────────────────┐
-     ▼                     ▼                     ▼
- parser/              analyzer/              exporter/
- excel_parser         dashboard_engine       excel / MoM / FL
- column_mapping       overdue, stalled…      forecast / PM…
- pm_*_parser          forecast_*, rlog…      chart export
-```
 
-**Persistence:** `uploads/projects/<slug>/` — JSON + pickle + xlsx. **Không** dùng DB app.
-
-Chi tiết folder/API → [ARCHITECTURE.md](ARCHITECTURE.md).
+Chi tiết folder / API → [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
 ## 4. Data flow chính
 
-### 4.1 Nạp dữ liệu Function List
+### 4.1 Nạp Function List
 
 ```
-Upload Excel ──► Column Mapping Wizard (optional)
-              ──► parser.excel_parser (auto-detect)
-              ──► SnapshotManager.add (source=upload|sync:…)
-              ──► _state[slug] in-memory + current.xlsx
-              ──► DashboardEngine.compute_all → metrics JSON
+Upload / Sync → Column Mapping (optional) → FunctionListParser
+  → SnapshotManager (source=upload|sync:…)
+  → _state[slug] + current.xlsx
+  → DashboardEngine.compute_all (+ module PMO/BA theo route)
 ```
 
-**Sync API:** Integrations registry → fetch JSON → field_mapping → snapshot (`source=sync:…`) → **eager-reload `_state`** → FE `_refreshAfterSync` (cache-bust).
+### 4.2 Persistence (tóm tắt)
 
-### 4.2 Phase & task type
-
-Header dạng `Analysis - Start|End|Status|PIC|Estimate MH` → `PhaseGroup`.
-
-`PhaseGroup.task_type` map regex → tiếng Việt:
-
-| Pattern phase | Công đoạn (task_type) |
-|---------------|------------------------|
-| analy* | Phân tích |
-| \bdev\b | Lập trình |
-| local\|test | Kiểm thử |
-| config.*uat | Cấu hình UAT |
-| ^uat$ | UAT |
-| doc | Tài liệu |
-| prod\|golive | Cấu hình Golive |
+| Loại | Ví dụ | Ghi chú |
+|------|--------|---------|
+| File hot | `current.xlsx`, snapshots `.xlsx`+`.pkl` | Metrics tính lại từ ParsedData |
+| JSON | capacity, saved_views, section_order, integrations, PM… | Vẫn là nguồn chính hầu hết config |
+| SQLite | `meta.db` — settings, bookmarks, function_tags | Dual-write + đọc ưu tiên SQLite |
+| Archive | `snapshots/archive/*.gz` | Gzip; load transparent |
+| Janitor (startup) | prune exports, excess snapshots, `synced_*.xlsx`, PPTX weekly trùng | `disk_janitor.py` |
 
 ### 4.3 Filters
 
-- **Global:** Module × Quy trình × PIC × Mã dự án (AND giữa chiều).
-- **Local:** từng section (Kanban AND với global; Timeline Status/Phase/Priority…).
-- Export chart: `mode=summary|detail|both` → sheet `Tong_hop` / `Chi_tiet`.
+- **Global:** Module × Quy trình × PIC × Mã dự án  
+- **Local:** theo section (Kanban AND global; Timeline Status/Phase…)  
+- **Saved views:** lưu/khôi phục bộ filter (`saved_views.json`)  
+- Export chart: `mode=summary|detail|both` → sheet `Tong_hop` / `Chi_tiet`
 
 ---
 
 ## 5. Nhóm dashboard (IA)
 
-Sidebar lọc theo nhóm; **All** = hiện hết. Có thể sửa tên VI/EN + chuyển section giữa nhóm (`localStorage` `ihrp_sidebar_groups_v2`).
+Sidebar lọc theo nhóm; **All** = hiện hết. Tùy chỉnh VI/EN + chuyển section (`localStorage` `ihrp_sidebar_groups_v2`).
 
 | Nhóm | Mục đích | Section tiêu biểu |
 |------|----------|-------------------|
-| **Tracking** | Tiến độ tổng → rồi vấn đề | Summary, Module, Công việc, Phase, Matrix, Rlog, Overdue, Unassigned, Đình trệ |
-| **Forecast** | Dự báo thời gian & lực lượng | Timeline Gantt, Forecast UAT/Golive, **Forecast Manpower**, Capacity, PIC Overload |
-| **Chất lượng** | DQ / anomaly / risk | Data Quality, Risk Score |
-| **Phân tích** | Sâu hơn | Quy trình, PIC, Effort, Kanban… |
-| **Chiều PM** | Kế hoạch dự án + weekly PPT | Chiều PM, Digest |
-| **Quản trị** | Settings-adjacent | So sánh, Custom dash, History |
+| **Tracking** | Tiến độ → rồi vấn đề | Summary, Module (+ còn lại), Công việc, Matrix (+ bottleneck), Phase, Rlog, Overdue, Unassigned, Stalled, **PIC tuần tới** |
+| **Forecast** | Thời gian & lực lượng + PMO lịch/effort | Gantt, Forecast UAT/Golive, Manpower, Calendar (+ critical path), Capacity, PIC Overload, **Baseline SV**, **EVM**, **Scope Creep** |
+| **Chất lượng** | DQ / risk / UAT | Data Quality (+ highlights), Risk, Anomaly, **UAT Quality** |
+| **Phân tích** | Sâu hơn | Quy trình, PIC, Effort, Diff, Kanban, Bookmarks… |
+| **Chiều PM** | Kế hoạch + weekly PPT | Chiều PM, Digest |
+| **Quản trị** | So sánh / custom / history | Compare, Custom dash, History |
 
-### Thứ tự mặc định (DOM) — **tiến độ trước, vấn đề sau**
+**Thứ tự DOM mặc định:** tiến độ tổng thể → timeline/forecast → cảnh báo → UAT Quality → phân tích (gồm Baseline/EVM/CR) → PM → admin. Nút **↺ Mặc định** áp `DEFAULT_SECTION_DOM_ORDER`.
 
-1. Summary + filter global  
-2. Module / Công việc / Matrix / Phase / Giai đoạn  
-3. Timeline + Forecast (UAT/Golive, Manpower) + Burndown + Rlog  
-4. Overdue → Unassigned → Stalled → Risk / DQ…  
-5. Phân tích sâu → Chiều PM → Admin  
-
-Nút **↺ Mặc định** áp `DEFAULT_SECTION_DOM_ORDER` (không cần F5). Nếu đã lưu `section_order.json` cũ → phải reset một lần.
-
-Chi tiết từng section → [FEATURE_CATALOG.md](FEATURE_CATALOG.md).
+**UX shell:** Insight strip (chip OD/UA/ST delta vs snapshot trước) có thể **collapse**; Help topic **Data Quality**.
 
 ---
 
-## 6. Các “chiều” dữ liệu ngoài Function List
+## 6. Ba lớp năng lực đã ship
 
-| Chiều | Nguồn | Lưu | UI / Export |
-|-------|--------|-----|-------------|
-| Function List | Excel / API sync | snapshots + current | Toàn dashboard |
-| **Chiều PM** | KeHoachDuAn.xlsx + Weekly.pptx | `pm/plan.json`, `weekly.json` | Section Chiều PM; MoM sheet PM Lịch trình |
-| **Mẫu FL re-import** | Upload template | `fl_export_schema.json` | Xuất FL chỉnh sửa (tô màu) |
-| Capacity PIC | Settings | `capacity.json` | Capacity load |
-| PIC Overload | Aggregate mọi project | settings thresholds | Cross-project |
+### 6.1 Core (ổn định)
+
+Auto-detect cột · overdue/unassigned/stalled/DQ · multi-project · snapshots · archive · sync integrations · export MoM/FL · Public API · LAN.
+
+### 6.2 Forecast & chiều PM
+
+Forecast Gantt (milestone theo tháng) · Forecast Manpower (MH/MD/MM + tuyển) · PIC Overload đa dự án · Rlog tuần · Chiều PM (KeHoach + Weekly) · Capacity PIC.
+
+### 6.3 PMO Phase A–F + BA UX
+
+| Phase | Nội dung |
+|-------|----------|
+| A | Baseline snapshot + Schedule Variance (SV ngày) cross-snapshot |
+| B | Completion forecast từ velocity 4 tuần |
+| C | EVM (EV/PV/AC → SPI/CPI) + Scope creep / CR |
+| D | PMO risk rollup + module cascade + PIC overload |
+| E | UAT Quality (defect / feedback / reopen / cycle) |
+| F | SQLite `meta.db` dual-write (settings / bookmarks / tags) |
+| BA 1–11 | Diff, saved filters, insight trends, DQ highlights, bulk tags, critical path, FL verify, bottleneck, PIC upcoming, Rlog section/chips, Module còn lại |
+
+Chi tiết checklist → [FEATURE_CATALOG.md](FEATURE_CATALOG.md) · tóm tắt ship → [CHANGELOG_PMO_BA.md](CHANGELOG_PMO_BA.md).
 
 ---
 
@@ -152,11 +159,10 @@ Chi tiết từng section → [FEATURE_CATALOG.md](FEATURE_CATALOG.md).
 | Nút / API | Đầu ra |
 |-----------|--------|
 | Chart 📥 | Tong_hop + Chi_tiet (+ Theo_nhom nếu task_type) |
-| Xuất MoM tuần | Cover, Master, Gantt, MoM_Wxx, Risk Analysis, PM Dashboard, PM Lịch trình |
-| Xuất FL chỉnh sửa | 1 sheet Function List — vàng PIC/Status, xanh date-chain; **không** sheet hướng dẫn |
-| Forecast Gantt / Manpower | Excel riêng |
-| PIC Overload | Summary + detail (+ optional FL) |
-| Chiều PM | Workbook lịch trình / WBS / weekly |
+| Xuất MoM tuần | Cover, Master, Gantt, MoM_Wxx, Risk Analysis, PM… |
+| Xuất FL chỉnh sửa | 1 sheet FL — vàng PIC/Status, xanh date-chain |
+| Forecast Gantt / Manpower / Overload | Excel riêng |
+| Function Diff / Rlog / All issues | Excel chuyên biệt |
 | PDF | Client html2canvas + ghi chú chart |
 
 ---
@@ -166,11 +172,9 @@ Chi tiết từng section → [FEATURE_CATALOG.md](FEATURE_CATALOG.md).
 | Chế độ | Hành vi |
 |--------|---------|
 | Mặc định | Bind **`127.0.0.1`** |
-| `IHRP_LAN=1` | Bind `0.0.0.0` + cảnh báo console |
-| Admin mutation | Chỉ localhost (trừ override env) |
+| `IHRP_LAN=1` | Bind `0.0.0.0` + cảnh báo |
+| Admin mutation | Chỉ localhost (trừ override) |
 | Public API | Token SHA-256, scope, expiry, rate limit |
-
-→ [LAN_DEPLOY_GUIDE.md](LAN_DEPLOY_GUIDE.md), [ARCHITECTURE.md § Auth](ARCHITECTURE.md).
 
 ---
 
@@ -184,15 +188,25 @@ start.bat
 pytest -q
 ```
 
-Mở `http://127.0.0.1:5000` → chọn project → upload/sync.
+---
+
+## 10. Gaps / hạn chế (trung thực)
+
+| Hạng mục | Trạng thái |
+|----------|------------|
+| SQLite | Chỉ **meta slice** (settings, bookmarks, tags); FL/metrics/snapshots vẫn file |
+| Critical path trên Gantt Calendar | **Heuristic**: row có segment chưa xong kết thúc muộn nhất — không phải dependency graph |
+| FL re-import verify | Chỉ verify ô **yellow-hit** (PIC/Status issue) từ snapshot trước theo `ma_cn` — không diff mọi cell |
+| Trends | Chip delta OD/UA/ST trên insight strip — không phải module trend analytics riêng |
+| Rlog “badges” | Section Rlog đầy đủ + insight chips; không có badge Rlog kiểu DQ trên mọi bảng |
+| P2 integrations | API Registry Catalog (T-B), form_login wizard đầy đủ (T-C) — xem [BUGS_TODO.md](BUGS_TODO.md) |
 
 ---
 
-## 10. File liên quan tiếp theo
+## 11. Đọc tiếp
 
-- **Rule nghiệp vụ đầy đủ:** [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md)  
-- **Catalog feature:** [FEATURE_CATALOG.md](FEATURE_CATALOG.md)  
-- **Kiến trúc kỹ thuật:** [ARCHITECTURE.md](ARCHITECTURE.md)  
-- **Schema parse:** [DATA_MODEL.md](DATA_MODEL.md)  
-- **Chiều PM:** [PM_DIMENSION_GUIDE.md](PM_DIMENSION_GUIDE.md)  
-- **Integrations / Public / Archive / Help:** xem [README.md](README.md)
+1. [FEATURE_CATALOG.md](FEATURE_CATALOG.md)  
+2. [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md)  
+3. [ARCHITECTURE.md](ARCHITECTURE.md)  
+4. [CHANGELOG_PMO_BA.md](CHANGELOG_PMO_BA.md)  
+5. Guides: Archive · Integrations · Public API · PM dimension · Help  

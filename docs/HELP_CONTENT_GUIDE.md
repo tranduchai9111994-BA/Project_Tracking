@@ -1,7 +1,12 @@
 # Hướng dẫn thêm nội dung Help — Unified Help System (T34 Task 4)
 
+> Kiến trúc frontend → [`ARCHITECTURE.md`](ARCHITECTURE.md) § Frontend.  
+> Spec UI → [`DASHBOARD_SPEC.md`](DASHBOARD_SPEC.md). Cập nhật: **2026-08-01**.
+
 Tài liệu này dành cho developer khi thêm section mới vào dashboard và cần
 đăng ký nội dung trợ giúp (help) cho user.
+
+**Topic đã có (ví dụ PMO/BA):** `dataquality`, `baseline`, `earned-value`, `scope-creep`, … — xem keys trong `static/js/help_content.js`.
 
 Hệ thống help gồm 4 phần:
 1. **Section-level help modal**: nút `?` cạnh title mỗi section → mở modal có nội dung cấu trúc.
@@ -47,13 +52,13 @@ Chọn 1 trong 7 category — thứ tự hiển thị trong Global Help modal th
 
 | Category | Dành cho |
 |----------|----------|
-| Tổng quan | Summary cards, filter, snapshot compare |
-| Tiến độ & Timeline | Module overview, phase, giai đoạn, Gantt, burndown, SLA, capacity, baseline |
-| Phân tích chuyên sâu | Task type, PIC workload, priority, FIT/GAP, effort, duration, dependency |
-| Danh sách vấn đề | Overdue, unassigned, stalled, high-risk, aging WIP, data quality, bookmark, digest, function diff |
+| Tổng quan | Summary cards, filter, snapshot compare, insight strip |
+| Tiến độ & Timeline | Module, phase, giai đoạn, Gantt, Forecast, burndown, SLA, capacity, baseline, EVM, scope creep |
+| Phân tích chuyên sâu | Task type, PIC, FIT/GAP, effort, duration, dependency, PIC upcoming |
+| Danh sách vấn đề | Overdue, unassigned, stalled, risk, aging WIP, **data quality**, UAT Quality, bookmark, digest, function diff |
 | Tùy chỉnh | Custom dashboards, kanban, upload history |
 | Public API | Public API tab (Settings) |
-| Import/Export | Upload wizard, xuất PDF, xuất all issues, integrations |
+| Import/Export | Upload wizard, FL re-import, xuất PDF/all issues, integrations |
 
 ---
 

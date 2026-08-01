@@ -1,5 +1,8 @@
 # UPGRADE_V2.md — Nâng cấp Dashboard nâng cao
 
+> ⚠️ **HISTORICAL** — kế hoạch nâng cấp cũ. Không dùng làm mô tả sản phẩm hiện tại.  
+> SSOT: [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) · [FEATURE_CATALOG.md](FEATURE_CATALOG.md) · [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Tổng quan
 
 Bản nâng cấp thêm **8 dashboard nâng cao** + **hệ thống so sánh snapshot** vào app hiện tại.

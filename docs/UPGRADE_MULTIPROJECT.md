@@ -1,5 +1,8 @@
 # UPGRADE_MULTIPROJECT.md — Nâng cấp quản lý đa dự án
 
+> ⚠️ **HISTORICAL** — kế hoạch multi-project cũ (đã ship từ lâu). Không dùng làm SSOT.  
+> Hiện tại: [ARCHITECTURE.md](ARCHITECTURE.md) § storage · [FEATURE_CATALOG.md](FEATURE_CATALOG.md).
+
 ## Tổng quan
 
 Hiện tại app chỉ xử lý 1 file tại 1 thời điểm, không lưu gì sau khi tắt.

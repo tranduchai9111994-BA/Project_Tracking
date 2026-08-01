@@ -49,14 +49,19 @@ _DEFAULT_MEMBERSHIP = {
         "section-unassigned", "section-stalled", "section-aging-wip",
         "section-sla", "section-module", "section-tasktype",
         "section-matrix", "section-phase", "section-giaidoan",
+        "section-pic-upcoming",
     },
     "forecast": {
-        "section-gantt", "section-forecast-gantt", "section-gantt-calendar", "section-burndown",
+        "section-gantt", "section-forecast-gantt", "section-forecast-manpower",
+        "section-estimate-ratio",
+        "section-gantt-calendar", "section-burndown",
         "section-capacity", "section-pic-overload", "section-baseline",
+        "section-evm", "section-exec-dashboard", "section-scope-creep",
         "section-duration",
     },
     "quality": {
         "section-dataquality", "section-anomaly", "section-risk",
+        "section-uat-quality",
     },
     "analysis": {
         "section-process", "section-pic", "section-priority",
@@ -131,7 +136,7 @@ def test_filter_all_vs_one_group_api(dashboard_js: str):
     assert "buildSidebarSectionMembership" in dashboard_js
     # Compose: không đè .hidden visibility
     assert "data-user-hidden" in dashboard_js or "userHidden" in dashboard_js
-    assert "ihrp_sidebar_groups_v1" in dashboard_js
+    assert "ihrp_sidebar_groups_v2" in dashboard_js
 
 
 def test_sidebar_html_toolbar_and_modal(index_html: str):

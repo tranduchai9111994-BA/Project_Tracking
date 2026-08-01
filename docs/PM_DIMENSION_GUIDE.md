@@ -1,5 +1,7 @@
 # Chiều PM — Kế hoạch dự án + Weekly Report
 
+> Cập nhật nhỏ: **2026-08-01**. Disk janitor có thể xóa PPTX `*weekly*` trùng khi đã có `pm/weekly.pptx` (xem [ARCHIVE_GUIDE.md](ARCHIVE_GUIDE.md) § Disk janitor).
+
 Import **2 loại file PM** vào từng project (không thay Function List):
 
 | Loại | Định dạng | Ví dụ |

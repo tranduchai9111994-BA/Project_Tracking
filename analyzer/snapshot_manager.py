@@ -82,6 +82,10 @@ class SnapshotManager:
             pickle.dump(parsed_data, f)
 
         summary = metrics.get("summary", {})
+        stalled = metrics.get("stalled_tasks") or {}
+        stalled_count = 0
+        if isinstance(stalled, dict):
+            stalled_count = len(stalled.get("items") or [])
         src = (source or "upload").strip() or "upload"
         entry = {
             "date": today_str,
@@ -91,6 +95,7 @@ class SnapshotManager:
             "overall_pct": summary.get("overall_progress_pct", 0),
             "overdue_count": summary.get("total_overdue", 0),
             "unassigned_count": summary.get("unassigned_count", 0),
+            "stalled_count": stalled_count,
             "high_risk_count": summary.get("high_risk_count", 0),
             "upload_time": datetime.now().isoformat(timespec="seconds"),
             "source": src,

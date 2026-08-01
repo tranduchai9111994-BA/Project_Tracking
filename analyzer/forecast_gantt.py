@@ -296,12 +296,15 @@ def compute_forecast_gantt(
     slugs: Optional[list[str]] = None,
     include_archived: bool = False,
     today: Optional[date] = None,
+    baseline_loader: Optional[Callable[[str], Optional[Any]]] = None,
 ) -> dict[str, Any]:
     """
     Forecast Gantt đa dự án.
 
     Args:
         slugs: danh sách slug cần tính; None/[] → tất cả project active có file.
+        baseline_loader: optional callable(slug) → ParsedData baseline hoặc None.
+            Khi có → gắn lớp SV vs baseline vào từng project row.
     """
     today = today or date.today()
     projects = project_mgr.list_projects(include_archived=include_archived)
@@ -324,11 +327,31 @@ def compute_forecast_gantt(
             for key in ("month", "span_start", "span_end"):
                 if info.get(key):
                     all_months.append(info[key])
-        rows.append({
+
+        baseline_layer = None
+        if baseline_loader is not None:
+            try:
+                from analyzer.baseline_sv import (
+                    attach_baseline_to_forecast_row,
+                    baseline_months_from_layer,
+                )
+                base_data = baseline_loader(proj.slug)
+                if base_data is not None:
+                    baseline_layer = attach_baseline_to_forecast_row(
+                        milestones, base_data, today=today,
+                    )
+                    all_months.extend(baseline_months_from_layer(baseline_layer))
+            except Exception:
+                baseline_layer = None
+
+        row: dict[str, Any] = {
             "slug": proj.slug,
             "name": proj.name,
             "milestones": milestones,
-        })
+        }
+        if baseline_layer is not None:
+            row["baseline_sv"] = baseline_layer
+        rows.append(row)
 
     months = _month_span(all_months)
 
@@ -385,8 +408,24 @@ def compute_forecast_gantt(
             agg["span_end_date"] = hi.isoformat()
         milestone_agg[mid] = agg
 
+    # Portfolio-level baseline SV summary (nếu có)
+    bl_late = bl_early = bl_compared = 0
+    projects_with_baseline = 0
+    for r in rows:
+        bs = r.get("baseline_sv") or {}
+        sm = bs.get("summary")
+        if sm:
+            projects_with_baseline += 1
+            bl_late += int(sm.get("late_count") or 0)
+            bl_early += int(sm.get("early_count") or 0)
+            bl_compared += int(sm.get("compared") or 0)
+
     return {
         "rule": FORECAST_RULE_VI,
+        "sv_definition": (
+            "SV (ngày) = tháng/ngày milestone hiện tại − baseline. "
+            "SV>0 trễ so với kế hoạch gốc; SV<0 sớm."
+        ),
         "milestones": [
             {
                 "id": m["id"],
@@ -405,5 +444,11 @@ def compute_forecast_gantt(
             "projects_skipped": skipped,
             "uat_by_month": {k: v for k, v in sorted(uat_by_month.items())},
             "golive_by_month": {k: v for k, v in sorted(golive_by_month.items())},
+            "baseline_sv": {
+                "projects_with_baseline": projects_with_baseline,
+                "milestone_compared": bl_compared,
+                "milestone_late": bl_late,
+                "milestone_early": bl_early,
+            } if projects_with_baseline else None,
         },
     }

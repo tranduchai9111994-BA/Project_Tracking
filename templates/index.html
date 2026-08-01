@@ -25,17 +25,18 @@
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_ver('css/style.css') }}">
     <style>
         /* ============ GANTT CALENDAR (Excel-style, 3-tier header) ============ */
-        .gantt-cal-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 11px; }
+        .gantt-cal-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 12px; }
         .gantt-cal-table th, .gantt-cal-table td {
-            border: 1px solid #e2e8f0; padding: 2px 4px; text-align: center;
+            border: 1px solid #e2e8f0; padding: 3px 5px; text-align: center;
             box-sizing: border-box; white-space: nowrap;
         }
         .gantt-cal-table thead th {
             background: #eef2ff; font-weight: 600; color: #1e3a8a;
             position: sticky; top: 0; z-index: 4;
+            height: var(--gantt-cal-hdr-h, 28px);
         }
-        .gantt-cal-table thead tr:nth-child(2) th { top: 22px; z-index: 3; }
-        .gantt-cal-table thead tr:nth-child(3) th { top: 42px; z-index: 3; }
+        .gantt-cal-table thead tr:nth-child(2) th { top: var(--gantt-cal-hdr-h, 28px); z-index: 3; }
+        .gantt-cal-table thead tr:nth-child(3) th { top: calc(var(--gantt-cal-hdr-h, 28px) * 2); z-index: 3; }
         .gantt-cal-table td.gantt-cal-label {
             text-align: left; font-weight: 500; color: #1e293b;
             min-width: 220px; max-width: 320px; white-space: normal;
@@ -45,7 +46,12 @@
             text-align: left; padding-left: 8px;
             position: sticky; left: 0; z-index: 5; background: #eef2ff;
         }
-        .gantt-cal-table td.gantt-cal-cell { min-width: 24px; height: 26px; padding: 0; position: relative; }
+        .gantt-cal-table td.gantt-cal-cell {
+            min-width: var(--gantt-cal-cell-w, 28px);
+            width: var(--gantt-cal-cell-w, 28px);
+            height: var(--gantt-cal-row-h, 34px);
+            padding: 0; position: relative;
+        }
         .gantt-cal-table td.gantt-cal-cell.active {
             /* Nền màu bar được set inline theo category từ JS */
         }
@@ -54,8 +60,8 @@
             box-shadow: inset 0 0 0 2px #ec4899;
         }
         .gantt-cal-table td.gantt-cal-cell .gantt-cal-pct {
-            display: inline-block; font-weight: 700; font-size: 10px; color: #0f172a;
-            padding: 0 4px; line-height: 24px;
+            display: inline-block; font-weight: 700; font-size: 11px; color: #0f172a;
+            padding: 0 4px; line-height: var(--gantt-cal-row-h, 34px);
         }
         .gantt-cal-table tr.summary-row td.gantt-cal-label { font-weight: 700; background: #f8fafc; }
         .gantt-cal-table tbody tr:hover td.gantt-cal-label { background: #fef9c3; }
@@ -93,6 +99,7 @@
     <a href="#section-gantt">Timeline</a>
     <a href="#section-forecast-gantt" data-i18n="nav.forecast_gantt">Forecast UAT/Golive</a>
     <a href="#section-forecast-manpower">Forecast Manpower</a>
+    <a href="#section-estimate-ratio">Ước lượng hệ số</a>
     <a href="#section-gantt-calendar">Gantt Calendar</a>
     <a href="#section-burndown">Burndown</a>
     <a href="#section-rlog" data-i18n="nav.rlog">Rlog tuần</a>
@@ -107,7 +114,12 @@
     <a href="#section-process">Quy trình</a>
     <a href="#section-capacity">Capacity</a>
     <a href="#section-pic-overload">PIC Overload</a>
+    <a href="#section-pic-upcoming">PIC tuần tới</a>
     <a href="#section-baseline">Baseline</a>
+    <a href="#section-evm">EVM</a>
+    <a href="#section-exec-dashboard">Executive</a>
+    <a href="#section-scope-creep">Scope Creep</a>
+    <a href="#section-uat-quality">UAT Quality</a>
     <a href="#section-effort">Effort MH</a>
     <a href="#section-duration">Duration</a>
     <a href="#section-slow">PIC chậm</a>
@@ -360,12 +372,108 @@
                                 title="Cài đặt">
                             ⚙️ Cài đặt
                         </button>
+                        <button id="btnAccount" type="button" role="menuitem"
+                                onclick="closeHdrMenus(); openAccountModal()"
+                                class="hdr-menu-item"
+                                title="Quản lý tài khoản / đổi mật khẩu">
+                            👤 Tài khoản
+                        </button>
                     </div>
                 </div>
+            </div>
+
+            <span class="hdr-sep" aria-hidden="true"></span>
+
+            <!-- Session user + logout -->
+            <div class="hdr-group items-center">
+                <span id="hdrUsername" class="text-xs text-blue-100 max-w-[7rem] truncate" title="">…</span>
+                <a id="btnLogout" href="/logout"
+                   class="hdr-btn"
+                   title="Đăng xuất khỏi ứng dụng">
+                    Đăng xuất
+                </a>
             </div>
         </div>
     </div>
 </header>
+
+<!-- ============ ACCOUNT / LOGIN MANAGEMENT MODAL ============ -->
+<div id="accountModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print"
+     onclick="if(event.target===this)closeAccountModal()">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+        <div class="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between">
+            <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100 inline-flex items-center gap-2" data-help-id="accounts">
+                👤 Tài khoản
+            </h3>
+            <button type="button" onclick="closeAccountModal()" class="text-gray-500 hover:text-red-500 text-xl">✕</button>
+        </div>
+        <div class="p-5 flex-1 overflow-y-auto space-y-5 text-sm">
+            <p class="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                Lần đầu chạy: tài khoản mặc định <code class="bg-white/80 px-1 rounded">admin</code> /
+                <code class="bg-white/80 px-1 rounded">admin</code> — hãy đổi mật khẩu ngay.
+            </p>
+            <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
+                <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-1">Đang đăng nhập</h4>
+                <p class="text-xs text-gray-500 mb-3">
+                    User: <b id="acctMeName">—</b>
+                    · Role: <b id="acctMeRole">—</b>
+                </p>
+                <h5 class="text-xs font-semibold text-gray-700 dark:text-gray-200 mb-2">Đổi mật khẩu của tôi</h5>
+                <div class="space-y-2">
+                    <input type="password" id="acctCurPass" placeholder="Mật khẩu hiện tại"
+                           class="w-full border rounded px-2 py-1.5 dark:bg-slate-700 dark:border-slate-600" autocomplete="current-password">
+                    <input type="password" id="acctNewPass" placeholder="Mật khẩu mới"
+                           class="w-full border rounded px-2 py-1.5 dark:bg-slate-700 dark:border-slate-600" autocomplete="new-password">
+                    <input type="password" id="acctNewPass2" placeholder="Nhập lại mật khẩu mới"
+                           class="w-full border rounded px-2 py-1.5 dark:bg-slate-700 dark:border-slate-600" autocomplete="new-password">
+                    <button type="button" onclick="_acctChangeOwnPassword()"
+                            class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-semibold">
+                        Lưu mật khẩu mới
+                    </button>
+                </div>
+            </section>
+
+            <section id="acctAdminSection" class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40 hidden">
+                <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-1">Quản lý tài khoản (admin)</h4>
+                <p class="text-xs text-gray-500 mb-3">Tạo user mới · xem danh sách · đặt lại mật khẩu.</p>
+                <div class="overflow-x-auto mb-3">
+                    <table class="w-full text-xs border-collapse">
+                        <thead>
+                            <tr class="text-left text-gray-500 border-b dark:border-slate-600">
+                                <th class="py-1 pr-2">User</th>
+                                <th class="py-1 pr-2">Role</th>
+                                <th class="py-1">Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody id="acctUserRows">
+                            <tr><td colspan="3" class="py-2 text-gray-400">Đang tải…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <h5 class="text-xs font-semibold text-gray-700 dark:text-gray-200 mb-2">Tạo user mới</h5>
+                <div class="grid grid-cols-2 gap-2">
+                    <input type="text" id="acctNewUser" placeholder="Tên đăng nhập"
+                           class="border rounded px-2 py-1.5 dark:bg-slate-700 dark:border-slate-600" autocomplete="off">
+                    <input type="password" id="acctNewUserPass" placeholder="Mật khẩu"
+                           class="border rounded px-2 py-1.5 dark:bg-slate-700 dark:border-slate-600" autocomplete="new-password">
+                    <select id="acctNewUserRole"
+                            class="border rounded px-2 py-1.5 dark:bg-slate-700 dark:border-slate-600">
+                        <option value="viewer">viewer (xem)</option>
+                        <option value="admin">admin</option>
+                    </select>
+                    <button type="button" onclick="_acctCreateUser()"
+                            class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-xs font-semibold">
+                        + Tạo user
+                    </button>
+                </div>
+            </section>
+        </div>
+        <div class="px-5 py-3 border-t border-gray-200 dark:border-slate-700 flex justify-end">
+            <button type="button" onclick="closeAccountModal()"
+                    class="px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-slate-700 text-sm">Đóng</button>
+        </div>
+    </div>
+</div>
 
 <!-- ============ PROJECT MANAGER MODAL ============ -->
 <div id="projectManagerModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print" onclick="if(event.target===this)closeProjectManager()">
@@ -716,6 +824,25 @@
                     </label>
                 </div>
 
+                <!-- BA/UX #5 — Bulk tag -->
+                <div class="flex flex-col gap-1">
+                    <label class="text-[10px] font-semibold text-gray-600 dark:text-gray-400 uppercase">🏷 Tag hàng loạt</label>
+                    <div class="flex items-center gap-1 flex-wrap">
+                        <button type="button" onclick="bulkTagSelected('đã review')"
+                                class="text-xs px-2 py-1.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100">đã review</button>
+                        <button type="button" onclick="bulkTagSelected('escalate')"
+                                class="text-xs px-2 py-1.5 rounded border border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100">escalate</button>
+                        <button type="button" onclick="bulkTagSelected('chờ khách')"
+                                class="text-xs px-2 py-1.5 rounded border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100">chờ khách</button>
+                        <button type="button" onclick="bulkTagSelected('CR')"
+                                class="text-xs px-2 py-1.5 rounded border border-violet-300 bg-violet-50 text-violet-800 hover:bg-violet-100"
+                                title="Đánh dấu Change Request / phát sinh (Scope Creep)">CR</button>
+                        <button type="button" onclick="bulkTagSelected('UAT issue')"
+                                class="text-xs px-2 py-1.5 rounded border border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100"
+                                title="Đánh dấu qualitative vấn đề UAT / feedback (khi chưa có cột Defect)">UAT issue</button>
+                    </div>
+                </div>
+
                 <!-- Reset -->
                 <button onclick="resetDrillFilters()"
                         class="ml-auto bg-gray-200 hover:bg-gray-300 dark:bg-slate-600 dark:hover:bg-slate-500 dark:text-gray-100 text-gray-700 rounded px-3 py-1.5 text-sm font-medium">
@@ -855,6 +982,21 @@
                         <input type="number" id="setAgingWip" min="1" max="365" step="1"
                                class="w-20 border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600">
                         <span class="text-xs text-gray-500">ngày</span>
+                    </label>
+                </section>
+
+                <!-- Phase C — CR / Scope Creep fallback codes -->
+                <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40" id="setScopeCreepSection">
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">📋 Change Request / Scope Creep</h4>
+                    <p class="text-xs text-gray-500 mb-3">
+                        <b>Nguồn chính:</b> cột Excel tự nhận (CR / Change Request / Phát sinh).
+                        <b>Fallback</b> khi không có cột: tag «CR» trong drill-down, hoặc danh sách Mã CN bên dưới
+                        (phẩy / xuống dòng).
+                    </p>
+                    <label class="block">
+                        <span class="text-xs">Mã CN phát sinh (CR) — thủ công</span>
+                        <textarea id="setCrCodes" rows="3" placeholder="F.101, F.102&#10;HR-CR-01"
+                                  class="mt-1 w-full border rounded px-2 py-1 text-sm font-mono dark:bg-slate-700 dark:border-slate-600"></textarea>
                     </label>
                 </section>
 
@@ -2378,6 +2520,59 @@
             </div>
         </section>
 
+        <!-- Insight strip — thu gọn banners/trends để Module Overview cao hơn.
+             Filter global giữ ngoài (luôn hiện). Mặc định collapsed + localStorage. -->
+        <div id="insightStrip" class="insight-strip collapsed mb-3 no-print" data-collapsed="1">
+            <button type="button" id="insightStripToggle" class="insight-strip-bar"
+                    onclick="toggleInsightStrip()" aria-expanded="false"
+                    title="Thu gọn / mở rộng insight">
+                <span class="insight-strip-title shrink-0" data-help-id="insight-strip">Insight</span>
+                <span id="insightStripChips" class="insight-strip-chips"></span>
+                <span id="insightStripToggleLabel" class="insight-strip-toggle-label ml-auto shrink-0">Mở rộng</span>
+                <span class="insight-strip-chevron shrink-0" aria-hidden="true">▾</span>
+            </button>
+            <div id="insightStripBody" class="insight-strip-body">
+                <!-- BA/UX #1 — Auto-diff badges sau upload/sync -->
+                <div class="mb-1 hidden" id="autoDiffHelpRow">
+                    <span class="text-[11px] font-semibold text-slate-600" data-help-id="auto-diff">Δ Auto-diff</span>
+                </div>
+                <div id="autoDiffBadges" class="hidden mb-3 flex flex-wrap items-center gap-2 text-xs"></div>
+                <!-- BA/UX #3 — Trend strip từ snapshot history -->
+                <div class="mb-1 hidden" id="summaryTrendsHelpRow">
+                    <span class="text-[11px] font-semibold text-slate-600" data-help-id="summary-trends">📈 Trends</span>
+                </div>
+                <div id="summaryTrends" class="hidden mb-3 flex flex-wrap items-center gap-3 text-xs text-gray-600"></div>
+                <div id="moduleDeltaStrip" class="hidden mb-3 text-xs text-gray-600"
+                     data-help-id="insight-module-deltas"></div>
+
+                <!-- Phase A — Predictive completion (velocity-based) -->
+                <div id="forecastCompletionBanner"
+                     class="mb-3 px-4 py-2.5 rounded-lg border border-violet-200 bg-violet-50 text-sm text-violet-950 flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <span class="font-semibold shrink-0" data-help-id="completion-forecast">📅 Dự báo ngày xong:</span>
+                    <b id="cardForecastDate" class="text-base">—</b>
+                    <span id="cardForecastSub" class="text-xs text-violet-800/80"></span>
+                    <span id="cardForecastBand" class="text-[11px] text-violet-700 hidden"></span>
+                    <div id="cardForecastScenarios" class="hidden w-full flex flex-wrap gap-2 text-[11px] mt-1"></div>
+                    <button type="button" onclick="exportCompletionForecast(event)"
+                            class="ml-auto text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print"
+                            title="Xuất Excel dự báo ngày xong">📥 Xuất</button>
+                </div>
+
+                <!-- BA/UX #7 — FL re-import verify banner -->
+                <div id="flVerifyBanner" class="hidden mb-3 px-4 py-2.5 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-950 flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <span class="font-semibold shrink-0" data-help-id="fl-verify">🟨 FL re-import:</span>
+                    <span id="flVerifyMsg"></span>
+                    <button type="button" onclick="openFlVerifyDetail()"
+                            class="text-xs underline text-amber-800 hover:text-amber-950">Xem chi tiết</button>
+                    <button type="button" onclick="exportFlReimport()"
+                            class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-0.5"
+                            title="Xuất Excel FL re-import">📥</button>
+                    <button type="button" onclick="dismissFlVerifyBanner()"
+                            class="ml-auto text-amber-600 hover:text-amber-900 text-lg leading-none px-1" title="Đóng">×</button>
+                </div>
+            </div>
+        </div>
+
         <section id="section-globalfilter" class="bg-white dashboard-card rounded-xl shadow-md p-4 mb-6 no-print">
             <div class="flex items-center flex-wrap gap-3">
                 <span class="text-sm font-semibold text-gray-700 shrink-0" data-i18n="filter.analyze_by">🎯 Phân tích theo:</span>
@@ -2395,14 +2590,14 @@
                 </button>
                 <div id="globalFilterProcess" class="ms-container" data-label="Quy trình"></div>
                 <div id="globalFilterPIC" class="ms-container" data-label="PIC"></div>
-                <!-- Saved views (Phase 3): ẩn cho đến khi wire xong FE để tránh
-                     ReferenceError khi click. Bỏ hidden khi implement xong. -->
-                <div id="savedViewsWrap" class="hidden flex items-center gap-2">
+                <!-- Saved views — luôn hiện để quick-switch -->
+                <div id="savedViewsWrap" class="flex items-center gap-2 flex-wrap">
                 <select id="savedViewSelect" onchange="applySavedView(this.value)"
                         class="border rounded px-2 py-1 text-xs bg-white max-w-[160px]"
                         title="View đã lưu">
                     <option value="" data-i18n="filter.saved_views">📂 View đã lưu…</option>
                 </select>
+                <div id="savedViewChips" class="flex items-center gap-1 flex-wrap"></div>
                 <button type="button" onclick="saveCurrentView()"
                         class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded text-xs"
                         data-i18n="filter.save_view"
@@ -2840,12 +3035,61 @@
 
 <section id="section-risk" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-4 flex-wrap">
-                <h3 class="text-lg font-semibold text-gray-800" data-help="section-risk">⚡ Top Functions Có Điểm Rủi Ro Cao</h3>
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-risk" data-help-id="risk">⚡ Top Functions Có Điểm Rủi Ro Cao</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Điểm 0–100 gồm yếu tố cũ + <b>PIC overload</b> (+15) + <b>cascade delay module</b> (+10).
+                        Chiều Resource / Dependency bên dưới phục vụ góc nhìn PM.
+                    </p>
+                </div>
                 <div class="flex items-center gap-2">
+                    <label class="text-xs text-gray-600 flex items-center gap-1 no-print" title="Gộp PIC overload đa dự án vào điểm rủi ro">
+                        <input type="checkbox" id="riskCrossProject" class="rounded" onchange="loadPmoRisk()">
+                        Overload đa dự án
+                    </label>
+                    <button type="button" onclick="loadPmoRisk()"
+                            class="text-xs px-2 py-1 border rounded hover:bg-gray-50 no-print" title="Tải lại chiều PM">↻</button>
                     <button onclick="openDrillDown('risk', {level:'high'})" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded px-2 py-1 no-print">Chi tiết</button>
                     <button onclick="openExportModePicker(event, 'risk')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
                 </div>
             </div>
+            <!-- Phase D — Resource / Dependency dimension cards -->
+            <div id="riskDimensionCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">High-risk (≥50)</div>
+                    <div id="riskDimHigh" class="text-xl font-bold text-rose-700">—</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Resource (PIC overload)</div>
+                    <div id="riskDimResource" class="text-xl font-bold">—</div>
+                    <div id="riskDimResourceSub" class="text-[10px] text-gray-400">PIC</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Dependency (cascade)</div>
+                    <div id="riskDimDep" class="text-xl font-bold">—</div>
+                    <div id="riskDimDepSub" class="text-[10px] text-gray-400">module bị block</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Function LQ block</div>
+                    <div id="riskDimLq" class="text-xl font-bold text-amber-700">—</div>
+                    <div class="text-[10px] text-gray-400">Must-have bị chặn</div>
+                </div>
+            </div>
+            <div id="riskCascadeWrap" class="mb-3 text-xs hidden"></div>
+            <div class="mb-3">
+                <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+                    <h4 class="text-sm font-semibold text-gray-700" data-help-id="risk-trend">Xu hướng risk (snapshot)</h4>
+                    <span id="riskTrendMsg" class="text-[11px] text-gray-500"></span>
+                </div>
+                <div class="relative h-40 md:h-48">
+                    <canvas id="chartRiskTrend"></canvas>
+                </div>
+            </div>
+            <details class="mb-3">
+                <summary class="text-xs text-gray-600 cursor-pointer select-none">Theo module · ghi chú công thức</summary>
+                <div id="riskModuleWrap" class="overflow-x-auto mt-2 text-xs"></div>
+                <ul id="riskScoringNotes" class="mt-2 text-[11px] text-gray-500 list-disc pl-4 space-y-0.5"></ul>
+            </details>
             <div class="overflow-x-auto">
                 <table class="w-full text-sm">
                     <thead>
@@ -2857,6 +3101,7 @@
                             <th class="px-2 py-2">Priority</th>
                             <th class="px-2 py-2">Risk Score</th>
                             <th class="px-2 py-2 text-left">Yếu tố rủi ro</th>
+                            <th class="px-2 py-2 text-left">Mitigation</th>
                             <th class="px-2 py-2" title="Xem chi tiết">👁</th>
                         </tr>
                     </thead>
@@ -2997,6 +3242,9 @@
                             <th class="px-2 py-2 text-left" data-col="phase">Phase</th>
                             <th class="px-2 py-2 text-left" data-col="issue">Issue</th>
                             <th class="px-2 py-2 text-left" data-col="detail">Chi tiết</th>
+                            <th class="px-2 py-2 text-left" data-col="owner">PIC phụ trách</th>
+                            <th class="px-2 py-2 text-left" data-col="target">Hạn xử lý</th>
+                            <th class="px-2 py-2 text-left" data-col="sla">SLA</th>
                             <th class="px-2 py-2 text-left" data-col="hint">Gợi ý</th>
                         </tr>
                     </thead>
@@ -3039,6 +3287,7 @@
                                 <th class="px-2 py-2 text-center">Tiến độ</th>
                                 <th class="px-2 py-2 text-center">Đang ở</th>
                                 <th class="px-2 py-2 text-center">Trễ</th>
+                                <th class="px-2 py-2 text-center" title="Function chưa Closed phase cuối (hoặc MH còn lại nếu có Estimate)">Còn lại</th>
                         </tr>
                     </thead>
                         <tbody id="moduleTable"></tbody>
@@ -3090,6 +3339,7 @@
                 <table class="w-full text-sm" id="matrixTable">
                     <thead id="matrixHead"></thead>
                     <tbody id="matrixBody"></tbody>
+                    <tfoot id="matrixFoot"></tfoot>
                 </table>
             </div>
         </section>
@@ -3169,9 +3419,14 @@
                     <div class="text-xs bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded border border-emerald-200">
                         Tổng Closed: <b id="burndownTotal">—</b>
                     </div>
+                    <div class="text-xs bg-violet-50 text-violet-900 px-3 py-1.5 rounded border border-violet-200"
+                         title="Dự báo linear: remaining ÷ velocity 4 tuần">
+                        Dự báo xong: <b id="forecastCompletionDate">—</b>
+                    </div>
                     <button onclick="openExportModePicker(event, 'burndown')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel — Tổng hợp / Chi tiết">📥</button>
                 </div>
             </div>
+            <p id="forecastCompletionMsg" class="text-xs text-slate-600 mt-1 mb-0"></p>
             <p class="chart-scope"></p>
             <div class="chart-box mt-2" style="height:280px"><canvas id="chartBurndown"></canvas></div>
         </section>
@@ -3260,28 +3515,323 @@
             </p>
         </section>
 
+        <!-- BA/UX #9 — PIC × upcoming weeks -->
+        <section id="section-pic-upcoming" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="pic-upcoming">
+                        📅 PIC × tuần tới
+                        <button type="button" onclick="exportPicUpcoming(event)"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel PIC tuần tới">📥 Xuất</button>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Task chưa Closed/Cancelled có End (hoặc Start) rơi vào các tuần tới — theo PIC.
+                    </p>
+                </div>
+                <div class="flex items-center gap-2 text-xs no-print">
+                    <label class="flex items-center gap-1">
+                        Số tuần:
+                        <select id="picUpcomingWeeks" onchange="loadPicUpcoming()"
+                                class="border rounded px-2 py-1 bg-white">
+                            <option value="2">2</option>
+                            <option value="4" selected>4</option>
+                            <option value="6">6</option>
+                            <option value="8">8</option>
+                        </select>
+                    </label>
+                    <button type="button" onclick="loadPicUpcoming()"
+                            class="px-2.5 py-1 border rounded hover:bg-gray-50">↻</button>
+                </div>
+            </div>
+            <div id="picUpcomingWrap" class="overflow-x-auto text-sm"></div>
+        </section>
+
 <section id="section-baseline" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="baseline">
-                        📐 Baseline vs Actual — variance ngày
-                        <button onclick="exportSection('baseline')"
+                        📐 Baseline vs Actual — Schedule Variance
+                        <button onclick="exportBaselineSv(event)"
                                 class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
-                                title="Xuất Excel — áp bộ lọc, xuất TẤT CẢ record (FE chỉ hiện top 200 nhưng Excel xuất đầy đủ)">📥 Xuất Excel</button>
+                                title="Xuất Excel SV vs snapshot baseline">📥 Xuất SV</button>
+                        <button onclick="exportSection('baseline')"
+                                class="text-xs bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel Planned/Actual trong file (legacy)">📥 Legacy</button>
                     </h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Auto-detect <code>Planned</code>/<code>Actual</code> trong phase; fallback End vs Last Updated khi Closed</p>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        <b>SV = end hiện tại − end baseline</b> (ngày). Đánh dấu 1 snapshot làm kế hoạch gốc approved.
+                        SV&gt;0 = trễ · SV&lt;0 = sớm. (Phía dưới vẫn giữ bảng Planned/Actual trong cùng file nếu có.)
+                    </p>
                 </div>
-                <div class="flex items-center gap-3 text-xs">
-                    <span class="bg-gray-50 text-gray-700 px-3 py-1.5 rounded border">So sánh được: <b id="bslTotal">0</b></span>
+                <div class="flex flex-wrap items-center gap-2 text-xs no-print">
+                    <label class="flex items-center gap-1">
+                        <span class="text-gray-600">Baseline:</span>
+                        <select id="bslSnapshotSelect"
+                                class="border rounded px-2 py-1 bg-white max-w-[160px]"
+                                onchange="onBaselineSnapshotChange(this.value)"
+                                title="Chọn snapshot làm kế hoạch gốc">
+                            <option value="">— Chưa chọn —</option>
+                        </select>
+                    </label>
+                    <button type="button" onclick="clearProjectBaseline()"
+                            class="px-2 py-1 border rounded hover:bg-gray-50" title="Xóa baseline">✕</button>
+                    <span class="bg-amber-50 text-amber-800 px-2 py-1 rounded border border-amber-200">
+                        Gốc: <b id="bslSnapLabel">—</b>
+                    </span>
+                    <span class="bg-red-50 text-red-700 px-2 py-1 rounded border border-red-200">
+                        Trễ: <b id="bslSvLate">0</b>
+                    </span>
+                    <span class="bg-emerald-50 text-emerald-700 px-2 py-1 rounded border border-emerald-200">
+                        Sớm: <b id="bslSvEarly">0</b>
+                    </span>
+                    <span class="bg-blue-50 text-blue-700 px-2 py-1 rounded border border-blue-200">
+                        Avg SV: <b id="bslSvAvg">0</b>d
+                    </span>
+                </div>
+            </div>
+            <div id="bslSvMilestoneWrap" class="overflow-x-auto mb-3 text-xs"></div>
+            <div id="bslSvModuleWrap" class="overflow-x-auto mb-3 text-xs"></div>
+            <details class="mb-2">
+                <summary class="text-xs text-gray-600 cursor-pointer select-none">
+                    Chi tiết function×phase (SV vs baseline) · Planned/Actual trong file
+                </summary>
+                <div class="flex items-center gap-3 text-xs mt-2 mb-1">
+                    <span class="bg-gray-50 text-gray-700 px-3 py-1.5 rounded border">So sánh Planned/Actual: <b id="bslTotal">0</b></span>
                     <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200">Trễ: <b id="bslLate">0</b></span>
                     <span class="bg-blue-50 text-blue-700 px-3 py-1.5 rounded border border-blue-200">Avg: <b id="bslAvg">0</b>d</span>
                 </div>
-            </div>
-            <div id="baselineTableWrap" class="overflow-x-auto"></div>
-            <div id="baselinePagerWrap" class="mt-2"></div>
+                <div id="baselineTableWrap" class="overflow-x-auto"></div>
+                <div id="baselinePagerWrap" class="mt-2"></div>
+            </details>
         </section>
 
-        
+<section id="section-evm" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="earned-value">
+                        💹 Earned Value — SPI / CPI
+                        <button type="button" onclick="exportEarnedValue(event)"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel EVM">📥 Xuất</button>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        <b>SPI = EV÷PV</b> (tiến độ lịch) · <b>CPI = EV÷AC</b> (hiệu quả effort).
+                        EV từ Estimate MH × % status; PV cần baseline; AC ≈ ngày làm × 8 MH (proxy).
+                    </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <span id="evmBaselineBadge" class="bg-gray-50 text-gray-600 px-2 py-1 rounded border">Baseline: —</span>
+                    <button type="button" onclick="loadEarnedValue()"
+                            class="px-2.5 py-1 border rounded hover:bg-gray-50 no-print" title="Tải lại">↻</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-3">
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">BAC</div>
+                    <div id="evmBac" class="text-xl font-bold text-slate-700">—</div>
+                    <div class="text-[10px] text-gray-400">MH ngân sách</div>
+                </div>
+                <div class="delta-card delta-positive">
+                    <div class="text-xs text-gray-500">EV</div>
+                    <div id="evmEv" class="text-xl font-bold text-emerald-700">—</div>
+                    <div class="text-[10px] text-gray-400">Đã kiếm</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">PV</div>
+                    <div id="evmPv" class="text-xl font-bold text-blue-700">—</div>
+                    <div class="text-[10px] text-gray-400">Kế hoạch baseline</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">AC</div>
+                    <div id="evmAc" class="text-xl font-bold text-amber-700">—</div>
+                    <div class="text-[10px] text-gray-400">Proxy effort</div>
+                </div>
+                <div class="delta-card delta-neutral" id="evmSpiCard">
+                    <div class="text-xs text-gray-500">SPI</div>
+                    <div id="evmSpi" class="text-xl font-bold text-slate-600">—</div>
+                    <div id="evmSpiLabel" class="text-[10px] text-gray-400">EV÷PV</div>
+                </div>
+                <div class="delta-card delta-neutral" id="evmCpiCard">
+                    <div class="text-xs text-gray-500">CPI</div>
+                    <div id="evmCpi" class="text-xl font-bold text-slate-600">—</div>
+                    <div id="evmCpiLabel" class="text-[10px] text-gray-400">EV÷AC</div>
+                </div>
+            </div>
+            <div id="evmMessages" class="text-xs text-amber-800 mb-2 space-y-0.5"></div>
+            <div class="mt-3 mb-2">
+                <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+                    <h4 class="text-sm font-semibold text-gray-700" data-help-id="evm-scurve">S-curve EV / PV / AC (theo tuần)</h4>
+                    <button type="button" onclick="exportEvmScurve(event)"
+                            class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-0.5 no-print"
+                            title="Xuất Excel S-curve">📥 Xuất S-curve</button>
+                </div>
+                <p id="evmScurveMsg" class="text-[11px] text-gray-500 mb-1"></p>
+                <div class="relative h-56 md:h-64">
+                    <canvas id="chartEvmScurve"></canvas>
+                </div>
+            </div>
+            <details>
+                <summary class="text-xs text-gray-600 cursor-pointer select-none">Theo module · giả định công thức</summary>
+                <div id="evmModuleWrap" class="overflow-x-auto mt-2 text-xs"></div>
+                <ul id="evmAssumptions" class="mt-2 text-[11px] text-gray-500 list-disc pl-4 space-y-0.5"></ul>
+            </details>
+        </section>
+
+<section id="section-exec-dashboard" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="exec-dashboard">
+                        📋 PM Executive Dashboard
+                        <button type="button" onclick="exportExecutiveDashboard(event)"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel Executive">📥 Xuất</button>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Một trang cho PM: % xong · SPI/CPI · top rủi ro · milestone · forecast · scope creep.
+                    </p>
+                </div>
+                <button type="button" onclick="loadExecutiveDashboard()"
+                        class="px-2.5 py-1 border rounded hover:bg-gray-50 no-print text-xs" title="Tải lại">↻</button>
+            </div>
+            <div id="execSummaryCards" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-3"></div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-1">Milestone</h4>
+                    <div id="execMilestoneWrap" class="overflow-x-auto text-xs"></div>
+                </div>
+                <div>
+                    <h4 class="text-sm font-semibold text-gray-700 mb-1">Top 5 rủi ro</h4>
+                    <div id="execTopRisksWrap" class="overflow-x-auto text-xs"></div>
+                </div>
+            </div>
+            <div id="execMessages" class="text-xs text-amber-800 mt-2 space-y-0.5"></div>
+        </section>
+
+<section id="section-scope-creep" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="scope-creep">
+                        📐 Scope Creep — CR vs Scope gốc
+                        <button type="button" onclick="exportScopeCreep(event)"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel Scope Creep">📥 Xuất</button>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Phân biệt function <b>phát sinh (CR)</b> vs <b>scope gốc</b> để đàm phán effort với khách.
+                        Nguồn chính: cột Excel; fallback: tag CR / danh sách Mã CN trong Cài đặt.
+                    </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <span id="scDetectionBadge" class="bg-gray-50 text-gray-600 px-2 py-1 rounded border">Nguồn: —</span>
+                    <button type="button" onclick="openSettingsModal({ scrollTo: 'setScopeCreepSection' })"
+                            class="px-2.5 py-1 border rounded hover:bg-gray-50 no-print" title="Cài đặt mã CR">⚙️</button>
+                    <button type="button" onclick="loadScopeCreep()"
+                            class="px-2.5 py-1 border rounded hover:bg-gray-50 no-print" title="Tải lại">↻</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-3">
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Tổng function</div>
+                    <div id="scTotal" class="text-xl font-bold">—</div>
+                </div>
+                <div class="delta-card delta-negative">
+                    <div class="text-xs text-gray-500">CR (phát sinh)</div>
+                    <div id="scCrCount" class="text-xl font-bold text-rose-700">—</div>
+                </div>
+                <div class="delta-card delta-positive">
+                    <div class="text-xs text-gray-500">Scope gốc</div>
+                    <div id="scOrigCount" class="text-xl font-bold text-emerald-700">—</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Scope creep %</div>
+                    <div id="scCreepRate" class="text-xl font-bold">—</div>
+                    <div class="text-[10px] text-gray-400">CR ÷ tổng</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Effort CR</div>
+                    <div id="scMhCr" class="text-xl font-bold text-rose-700">—</div>
+                    <div id="scMhCrPct" class="text-[10px] text-gray-400">MH</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Effort gốc</div>
+                    <div id="scMhOrig" class="text-xl font-bold text-emerald-700">—</div>
+                    <div class="text-[10px] text-gray-400">MH</div>
+                </div>
+            </div>
+            <div id="scMessages" class="text-xs text-amber-800 mb-2 space-y-0.5"></div>
+            <details open>
+                <summary class="text-xs text-gray-600 cursor-pointer select-none">Theo module · danh sách CR (đàm phán)</summary>
+                <div class="grid md:grid-cols-2 gap-3 mt-2">
+                    <div id="scModuleWrap" class="overflow-x-auto text-xs"></div>
+                    <div id="scListWrap" class="overflow-x-auto text-xs max-h-64 overflow-y-auto"></div>
+                </div>
+                <ul id="scAssumptions" class="mt-2 text-[11px] text-gray-500 list-disc pl-4 space-y-0.5"></ul>
+            </details>
+        </section>
+
+<section id="section-uat-quality" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="uat-quality">
+                        🧪 UAT Quality — Defect / Reopen / Cycle
+                        <button type="button" onclick="exportUatQuality(event)"
+                                class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print font-normal"
+                                title="Xuất Excel UAT Quality">📥 Xuất</button>
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Đo <b>chất lượng giao hàng</b> (defect, feedback, reopen, vòng UAT) — không chỉ Open/Closed.
+                        Nguồn: cột Excel auto-detect; thiếu cột → empty (không bịa số) + tag «UAT issue».
+                    </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <span id="uqDetectionBadge" class="bg-gray-50 text-gray-600 px-2 py-1 rounded border">Nguồn: —</span>
+                    <button type="button" onclick="loadUatQuality()"
+                            class="px-2.5 py-1 border rounded hover:bg-gray-50 no-print" title="Tải lại">↻</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-3">
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Tổng defect</div>
+                    <div id="uqDefects" class="text-xl font-bold text-rose-700">—</div>
+                    <div id="uqDefectsSub" class="text-[10px] text-gray-400">—</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Feedback</div>
+                    <div id="uqFeedback" class="text-xl font-bold text-amber-700">—</div>
+                    <div class="text-[10px] text-gray-400">Phản hồi KH</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Reopen rate</div>
+                    <div id="uqReopenRate" class="text-xl font-bold">—</div>
+                    <div id="uqReopenSub" class="text-[10px] text-gray-400">fn reopen ÷ Closed UAT</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Tổng reopen</div>
+                    <div id="uqReopens" class="text-xl font-bold">—</div>
+                    <div class="text-[10px] text-gray-400">Σ lần reopen</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">TB vòng UAT</div>
+                    <div id="uqAvgCycle" class="text-xl font-bold text-teal-700">—</div>
+                    <div id="uqCycleSub" class="text-[10px] text-gray-400">—</div>
+                </div>
+                <div class="delta-card delta-neutral">
+                    <div class="text-xs text-gray-500">Tag UAT issue</div>
+                    <div id="uqTagged" class="text-xl font-bold text-teal-800">—</div>
+                    <div class="text-[10px] text-gray-400">qualitative</div>
+                </div>
+            </div>
+            <div id="uqMessages" class="text-xs text-amber-800 mb-2 space-y-0.5"></div>
+            <details open>
+                <summary class="text-xs text-gray-600 cursor-pointer select-none">Theo module · function nhiều issue</summary>
+                <div class="grid md:grid-cols-2 gap-3 mt-2">
+                    <div id="uqModuleWrap" class="overflow-x-auto text-xs"></div>
+                    <div id="uqListWrap" class="overflow-x-auto text-xs max-h-64 overflow-y-auto"></div>
+                </div>
+                <ul id="uqAssumptions" class="mt-2 text-[11px] text-gray-500 list-disc pl-4 space-y-0.5"></ul>
+            </details>
+        </section>
 
 <section id="section-effort" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
@@ -3459,7 +4009,7 @@
 <section id="section-forecast-gantt" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
             <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
                 <div class="min-w-0">
-                    <h3 class="text-lg font-semibold text-gray-800" data-help="section-forecast-gantt"
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2" data-help-id="forecast-gantt"
                         data-i18n="section.forecast_gantt_title">📆 Forecast — UAT / Golive theo tháng</h3>
                     <p class="text-xs text-gray-500 mt-0.5" data-i18n="section.forecast_gantt_sub">
                         Với hiện trạng Function List: tháng dự kiến UAT / Golive với KH (Gantt theo tháng).
@@ -3473,6 +4023,9 @@
                     </span>
                     <span class="bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded border border-emerald-200 text-xs">
                         Golive: <b id="fgGoliveMonth">—</b>
+                    </span>
+                    <span id="fgSvBadge" class="hidden bg-amber-50 text-amber-900 px-3 py-1.5 rounded border border-amber-200 text-xs">
+                        vs Baseline — Trễ: <b id="fgSvLate">0</b> · Sớm: <b id="fgSvEarly">0</b>
                     </span>
                     <button type="button" onclick="exportForecastGantt()"
                             class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1"
@@ -3492,9 +4045,15 @@
                 </div>
                 <button type="button" onclick="loadForecastGantt()"
                         class="px-2.5 py-1 border rounded hover:bg-gray-50">↻ Tải lại</button>
+                <div class="gantt-hz-zoom" title="Ctrl + lăn chuột để phóng to / thu nhỏ">
+                    <button type="button" onclick="fgZoomOut()" title="Thu nhỏ">Thu nhỏ</button>
+                    <button type="button" onclick="fgZoomReset()" title="Đặt lại 100%">Đặt lại</button>
+                    <button type="button" onclick="fgZoomIn()" title="Phóng to">Phóng to</button>
+                    <span id="fgZoomLabel" class="gantt-hz-zoom-label">100%</span>
+                </div>
             </div>
             <div id="fgSummaryCards" class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3 text-xs"></div>
-            <div id="fgGanttWrap" class="overflow-x-auto border rounded"></div>
+            <div id="fgGanttWrap" class="fg-gantt-wrap border rounded"></div>
             <div id="fgDetailWrap" class="overflow-x-auto mt-3"></div>
             <p id="fgEmptyHint" class="hidden text-sm text-gray-500 italic mt-2">
                 Chưa có dự án nào có End date cho milestone. Chọn dự án đã upload Function List.
@@ -3514,7 +4073,7 @@
                     </p>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 no-print shrink-0">
-                    <span class="bg-slate-50 text-slate-700 px-3 py-1.5 rounded border text-xs">
+                    <span class="bg-teal-50 text-teal-800 px-3 py-1.5 rounded border border-teal-200 text-xs">
                         Còn lại: <b id="fmRemainLabel">—</b>
                     </span>
                     <span class="bg-red-50 text-red-700 px-3 py-1.5 rounded border border-red-200 text-xs">
@@ -3574,6 +4133,99 @@
             <details class="mt-3 text-xs">
                 <summary class="cursor-pointer text-blue-700 hover:underline">Chi tiết function × phase (top 200)</summary>
                 <div id="fmDetailWrap" class="overflow-x-auto mt-2"></div>
+            </details>
+        </section>
+
+<section id="section-estimate-ratio" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6">
+            <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+                <div class="min-w-0">
+                    <h3 class="text-lg font-semibold text-gray-800 inline-flex items-center gap-2 flex-wrap" data-help-id="estimate-ratio">
+                        📐 Ước lượng theo hệ số
+                    </h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Parametric: seed BA/Dev (Estimate MH → lookup Complexity×FIT/GAP → mặc định) rồi áp hệ số
+                        Des/Test/Doc/UAT… <b>Không ghi đè</b> Function List và <b>không thay</b> Forecast Manpower.
+                        Hệ số chỉnh được trong <code class="text-[11px]">estimation_params.json</code>.
+                    </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 no-print shrink-0">
+                    <span class="bg-indigo-50 text-indigo-800 px-3 py-1.5 rounded border border-indigo-200 text-xs">
+                        Tổng: <b id="erTotalMm">—</b> MM · <b id="erTotalMh">—</b> MH
+                    </span>
+                    <span id="erDefaultWarn" class="hidden bg-amber-50 text-amber-900 px-3 py-1.5 rounded border border-amber-300 text-xs">
+                        Seed mặc định: <b id="erDefaultPct">0</b>%
+                    </span>
+                    <button type="button" onclick="copyEstimateRatioFeed()"
+                            class="text-xs bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded px-2 py-1"
+                            title="Sao chép MH theo công đoạn (đối chiếu Forecast, không ghi FL)">📋 Copy MH → Forecast</button>
+                    <button type="button" onclick="exportEstimateRatio(event)"
+                            class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1"
+                            title="Xuất Excel tổng / chi tiết">📥 Xuất</button>
+                    <button type="button" onclick="document.getElementById('section-forecast-manpower')?.scrollIntoView({behavior:'smooth'})"
+                            class="text-xs bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded px-2 py-1">→ Forecast Manpower</button>
+                </div>
+            </div>
+            <div class="flex flex-wrap items-end gap-2 mb-3 no-print text-xs">
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">BA mặc định (MD)</span>
+                    <input id="erSeedBa" type="number" min="0" step="0.25" value="0.5"
+                           class="border rounded px-2 py-1 w-20">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Dev mặc định (MD)</span>
+                    <input id="erSeedDev" type="number" min="0" step="0.25" value="2"
+                           class="border rounded px-2 py-1 w-20">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">MD / MM</span>
+                    <input id="erMdPerMm" type="number" min="1" step="1" value="22"
+                           class="border rounded px-2 py-1 w-20">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">MH / ngày</span>
+                    <input id="erMhPerDay" type="number" min="1" step="1" value="8"
+                           class="border rounded px-2 py-1 w-20">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Des÷BA</span>
+                    <input id="erDesOfBa" type="number" min="0" step="0.05" value="0.25"
+                           class="border rounded px-2 py-1 w-20">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Test÷Dev</span>
+                    <input id="erTestOfDev" type="number" min="0" step="0.05" value="0.30"
+                           class="border rounded px-2 py-1 w-20">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">Doc÷Dev</span>
+                    <input id="erDocOfDev" type="number" min="0" step="0.05" value="0.15"
+                           class="border rounded px-2 py-1 w-20">
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-gray-500">UAT (gồm UAT)</span>
+                    <input id="erUatRatio" type="number" min="0" max="0.99" step="0.01" value="0.15"
+                           class="border rounded px-2 py-1 w-20">
+                </div>
+                <label class="inline-flex items-center gap-1 border rounded px-2 py-1 bg-white cursor-pointer"
+                       title="Cộng UAT / Golive / PM theo hệ số">
+                    <input type="checkbox" id="erInclOverhead" class="accent-indigo-600" checked>
+                    <span>Overhead UAT/Golive/PM</span>
+                </label>
+                <button type="button" onclick="loadEstimateRatio()"
+                        class="px-2.5 py-1 border rounded hover:bg-gray-50">↻ Tính lại</button>
+                <button type="button" onclick="saveEstimateRatioParams()"
+                        class="px-2.5 py-1 border rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-200">💾 Lưu params dự án</button>
+            </div>
+            <p id="erHint" class="text-[11px] text-slate-500 mb-2"></p>
+            <div id="erWarnWrap" class="text-xs text-amber-900 mb-2 space-y-0.5"></div>
+            <div id="erPhaseWrap" class="overflow-x-auto mb-3"></div>
+            <details class="mt-2 text-xs">
+                <summary class="cursor-pointer text-blue-700 hover:underline">Map phase → bucket · chi tiết function (top 100) · forecast_feed</summary>
+                <div class="grid md:grid-cols-2 gap-3 mt-2">
+                    <div id="erMapWrap" class="overflow-x-auto"></div>
+                    <div id="erFeedWrap" class="overflow-x-auto"></div>
+                </div>
+                <div id="erDetailWrap" class="overflow-x-auto mt-2 max-h-72 overflow-y-auto"></div>
             </details>
         </section>
 
@@ -3703,6 +4355,12 @@
                         <button data-gcg="month" onclick="setGanttCalGranularity('month')"
                                 class="gantt-cal-gran-btn px-2 py-1 border-l hover:bg-blue-50">Month</button>
                     </div>
+                    <div class="gantt-hz-zoom" title="Ctrl + lăn chuột để phóng to / thu nhỏ">
+                        <button type="button" onclick="gcZoomOut()" title="Thu nhỏ">Thu nhỏ</button>
+                        <button type="button" onclick="gcZoomReset()" title="Đặt lại 100%">Đặt lại</button>
+                        <button type="button" onclick="gcZoomIn()" title="Phóng to">Phóng to</button>
+                        <span id="gcZoomLabel" class="gantt-hz-zoom-label">100%</span>
+                    </div>
                     <button onclick="scrollGanttCalToToday()"
                             class="text-xs bg-pink-600 hover:bg-pink-700 text-white rounded px-3 py-1"
                             title="Cuộn ngang đến cột Today (đường hồng)">🎯 Today</button>
@@ -3722,7 +4380,7 @@
                     </button>
             </div>
             <div id="ganttCalendarInfo" class="text-[11px] text-gray-500 mb-2"></div>
-            <div id="ganttCalendarContainer" class="gantt-calendar-container overflow-auto border rounded max-h-[70vh]">
+            <div id="ganttCalendarContainer" class="gantt-calendar-container border rounded">
                 <div class="text-gray-400 text-center py-10 text-sm">Đang tải…</div>
             </div>
             <!-- Legend -->

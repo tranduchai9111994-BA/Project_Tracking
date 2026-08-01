@@ -1,8 +1,7 @@
 # Data Model — Function List Excel + Project Store
 
-> Schema parse Excel (ổn định từ V2) + các file JSON / snapshot mở rộng tới
-> Archive, Public API, Integrations, Mapping presets (2026-07).
-> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> Schema parse Excel (ổn định từ V2) + JSON / snapshot / **`meta.db`** (Phase F).  
+> Cập nhật: **2026-08-01**. Kiến trúc → [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Cấu trúc file Excel đầu vào
 
@@ -247,13 +246,19 @@ uploads/
     projects.json                       # Index tất cả project
     <slug>/                             # VD "minh-phu-2026"
       meta.json
+      meta.db                           # Phase F — settings/bookmarks/tags (WAL)
       current.xlsx
       integrations.json                 # Registry API (no secrets)
       archive_settings.json
-      project_settings.json
-      bookmarks.json / function_notes.json / chart_notes.json / …
-      exports/
-      digests/
+      project_settings.json             # dual-write mirror của meta.db
+      bookmarks.json / tags…            # dual-write mirror
+      saved_views.json                  # file-only
+      section_order.json / module_order.json
+      capacity.json / chart_* / custom_dashboards.json
+      fl_export_schema.json
+      function_notes.json / upload_history.json / …
+      pm/                               # plan.json + weekly.* 
+      exports/ · digests/ · synced_*.xlsx
       snapshots/
         snapshot_index.json             # + source, archived
         YYYY-MM-DD_functionlist.xlsx|.parsed.pkl
@@ -261,6 +266,20 @@ uploads/
 ```
 
 Public tokens / PNG cache: `.project_store/<slug>/` (xem T33 bên dưới).
+
+### `meta.db` (Phase F — SQLite meta slice)
+
+Path: `uploads/projects/<slug>/meta.db` — module `analyzer/sqlite_store.py`.
+
+| Table | Nội dung |
+|-------|----------|
+| `schema_meta` | version / migration markers (`slice_meta_v1`) |
+| `project_settings` | blob JSON settings (gồm `baseline_snapshot_id`, …) |
+| `bookmarks` | `ma_cn` PK |
+| `function_tags` | `(ma_cn, tag)` |
+
+**Dual-write:** mọi ghi qua `project_store` vẫn mirror JSON. Đọc ưu tiên SQLite, fallback JSON nếu thiếu/lỗi DB.  
+**Không** lưu ParsedData, snapshots, metrics dashboard trong SQLite.
 
 ### `projects.json` format
 
@@ -411,7 +430,10 @@ Filter object accept 7 dimension list (T28) + 2 boolean toggle. Backend
 `_row_passes_filters` (`analyzer/generic_chart.py`) match với meta key
 `quy_trinh` / `fit_gap` (theo parser, không dùng `process` / `fitgap`).
 
-### `project_settings.json` (T26 + T29)
+### `project_settings.json` (T26 + T29 + PMO)
+
+> Phase F: nội dung cũng nằm trong `meta.db.project_settings` (dual-write).  
+> Field PMO thường gặp: `baseline_snapshot_id`, `cr_function_codes` (fallback scope creep).
 
 ```json
 {

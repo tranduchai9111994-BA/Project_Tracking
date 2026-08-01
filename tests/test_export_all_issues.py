@@ -217,19 +217,23 @@ class TestWorkbookShape:
         ws = wb["Tre_han"]
         # Row 1 = banner, Row 2 = header, Row 3+ = data
         # Data có 2 record của A.01 → chỉ còn 1 sau dedup
+        header = [c.value for c in ws[2]]
         data_rows = [row for row in ws.iter_rows(min_row=3, values_only=True) if row[0] is not None]
         assert len(data_rows) == 1
-        # Cột phase phải merged
-        # (col index 4 = "Phase trễ (gộp)" — 0-indexed 4)
-        phase_val = str(data_rows[0][4])
+        phase_idx = header.index("Phase trễ (gộp)")
+        phase_val = str(data_rows[0][phase_idx])
         assert "UAT" in phase_val and "Dev" in phase_val
+        assert "Quy trình" in header
+        assert "Lý do" in header
 
     def test_overdue_days_takes_max(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
         ws = wb["Tre_han"]
+        header = [c.value for c in ws[2]]
         data_rows = [row for row in ws.iter_rows(min_row=3, values_only=True) if row[0] is not None]
-        # Cột 6 = "Số ngày trễ (max)" — dedup nhận MAX(15, 5) = 15
-        assert data_rows[0][6] == 15
+        days_idx = header.index("Số ngày trễ (max)")
+        # Dedup nhận MAX(15, 5) = 15
+        assert data_rows[0][days_idx] == 15
 
     def test_all_sheets_have_banner_row_1(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)

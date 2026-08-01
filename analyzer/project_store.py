@@ -4,13 +4,27 @@ Project-scoped JSON stores — capacity, saved views, upload history, aliases, s
 Mỗi file nằm trong uploads/projects/<slug>/:
   capacity.json, saved_views.json, upload_history.json,
   phase_aliases.json, project_settings.json
+
+Phase F — settings / bookmarks / tags cũng mirror vào ``meta.db``
+(xem ``analyzer.sqlite_store``). JSON vẫn được ghi (dual-write);
+đọc ưu tiên SQLite, fallback JSON nếu DB thiếu/lỗi.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any, Optional
+
+
+def _sqlite_sync_safe(fn, *args, **kwargs):
+    """Gọi sqlite_store; nuốt lỗi để JSON path không bị phá."""
+    try:
+        from analyzer import sqlite_store as _sql
+        return fn(_sql, *args, **kwargs)
+    except Exception:
+        return None
 
 
 DEFAULT_PIC_MD_PER_WEEK = 5.0  # 5 MD = 40 MH
@@ -96,6 +110,9 @@ def capacity_mh_for_pic(capacity: dict[str, Any], pic: str) -> float:
 # insert/delete row Excel; Mã CN là identifier ổn định nhất).
 
 def load_bookmarks(project_dir: str) -> list[str]:
+    sql_bm = _sqlite_sync_safe(lambda s: s.load_bookmarks(project_dir))
+    if isinstance(sql_bm, list):
+        return sql_bm
     data = _read_json(_path(project_dir, "bookmarks.json"), {"functions": []})
     if not isinstance(data, dict):
         return []
@@ -119,6 +136,7 @@ def save_bookmarks(project_dir: str, ma_cns: list[str]) -> list[str]:
             seen.add(s)
             cleaned.append(s)
     _write_json(_path(project_dir, "bookmarks.json"), {"functions": cleaned})
+    _sqlite_sync_safe(lambda s: s.save_bookmarks(project_dir, cleaned))
     return cleaned
 
 
@@ -165,6 +183,271 @@ def save_function_note(project_dir: str, ma_cn: str, note: str) -> dict[str, dic
         del notes[ma_cn]
     _write_json(_path(project_dir, "function_notes.json"), notes)
     return notes
+
+
+# --- Function tags (bulk tag trong drill-down) -------------------------
+# tags.json: { "functions": { "MA_CN": ["đã review", "escalate"], ... } }
+VALID_FUNCTION_TAGS = ("đã review", "escalate", "chờ khách", "CR", "UAT issue")
+
+
+def load_function_tags(project_dir: str) -> dict[str, list[str]]:
+    sql_tags = _sqlite_sync_safe(lambda s: s.load_function_tags(project_dir))
+    if isinstance(sql_tags, dict):
+        return sql_tags
+    data = _read_json(_path(project_dir, "tags.json"), {"functions": {}})
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get("functions") or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for ma, tags in raw.items():
+        ma_s = str(ma).strip()
+        if not ma_s or not isinstance(tags, list):
+            continue
+        cleaned = []
+        seen = set()
+        for t in tags:
+            ts = str(t).strip()
+            if ts and ts not in seen:
+                seen.add(ts)
+                cleaned.append(ts)
+        if cleaned:
+            out[ma_s] = cleaned
+    return out
+
+
+def save_function_tags(project_dir: str, tags_map: dict[str, list[str]]) -> dict[str, list[str]]:
+    cleaned: dict[str, list[str]] = {}
+    for ma, tags in (tags_map or {}).items():
+        ma_s = str(ma).strip()
+        if not ma_s:
+            continue
+        seen, lst = set(), []
+        for t in (tags or []):
+            ts = str(t).strip()
+            if ts and ts not in seen:
+                seen.add(ts)
+                lst.append(ts)
+        if lst:
+            cleaned[ma_s] = lst
+    _write_json(_path(project_dir, "tags.json"), {"functions": cleaned})
+    _sqlite_sync_safe(lambda s: s.save_function_tags(project_dir, cleaned))
+    return cleaned
+
+
+def bulk_tag_functions(
+    project_dir: str,
+    ma_cns: list[str],
+    tag: str,
+    *,
+    action: str = "add",
+) -> dict[str, list[str]]:
+    """
+    Thêm/xoá 1 tag cho nhiều Mã CN.
+    action: 'add' | 'remove' | 'toggle'
+    """
+    tag = str(tag or "").strip()
+    if not tag:
+        return load_function_tags(project_dir)
+    tags_map = load_function_tags(project_dir)
+    for raw in ma_cns or []:
+        ma = str(raw or "").strip()
+        if not ma:
+            continue
+        cur = list(tags_map.get(ma) or [])
+        has = tag in cur
+        if action == "remove" or (action == "toggle" and has):
+            cur = [t for t in cur if t != tag]
+        elif action in ("add", "toggle") and not has:
+            cur.append(tag)
+        if cur:
+            tags_map[ma] = cur
+        elif ma in tags_map:
+            del tags_map[ma]
+    return save_function_tags(project_dir, tags_map)
+
+
+# --- Risk mitigations (note / owner / target_date) --------------------
+# risk_mitigations.json: { "items": { "MA_CN"| "module:X": {note, owner, target_date, ...} } }
+
+def load_risk_mitigations(project_dir: str) -> dict[str, dict]:
+    data = _read_json(_path(project_dir, "risk_mitigations.json"), {"items": {}})
+    raw = data.get("items") if isinstance(data, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not key or not isinstance(v, dict):
+            continue
+        out[key] = {
+            "note": str(v.get("note") or "").strip(),
+            "owner": str(v.get("owner") or "").strip(),
+            "target_date": str(v.get("target_date") or "").strip()[:10],
+            "updated_at": str(v.get("updated_at") or ""),
+            "updated_by": str(v.get("updated_by") or ""),
+        }
+    return out
+
+
+def save_risk_mitigation(
+    project_dir: str,
+    key: str,
+    *,
+    note: str = "",
+    owner: str = "",
+    target_date: str = "",
+    updated_by: str = "",
+    delete: bool = False,
+) -> dict[str, dict]:
+    """Upsert / xoá 1 mitigation theo ma_cn hoặc module:Name."""
+    key = str(key or "").strip()
+    items = load_risk_mitigations(project_dir)
+    if not key:
+        return items
+    if delete or (not note.strip() and not owner.strip() and not target_date.strip()):
+        items.pop(key, None)
+    else:
+        items[key] = {
+            "note": (note or "").strip(),
+            "owner": (owner or "").strip(),
+            "target_date": (target_date or "").strip()[:10],
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_by": (updated_by or "").strip(),
+        }
+    _write_json(_path(project_dir, "risk_mitigations.json"), {"items": items})
+    return items
+
+
+# --- Diff review audit (tag «đã review» + trail) -----------------------
+# diff_reviews.json: { "reviews": { "MA_CN": [{reviewed_at, reviewed_by, vs, action}] } }
+
+def load_diff_reviews(project_dir: str) -> dict[str, list[dict]]:
+    data = _read_json(_path(project_dir, "diff_reviews.json"), {"reviews": {}})
+    raw = data.get("reviews") if isinstance(data, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[dict]] = {}
+    for ma, logs in raw.items():
+        ma_s = str(ma).strip()
+        if not ma_s or not isinstance(logs, list):
+            continue
+        cleaned = []
+        for e in logs:
+            if not isinstance(e, dict):
+                continue
+            cleaned.append({
+                "reviewed_at": str(e.get("reviewed_at") or ""),
+                "reviewed_by": str(e.get("reviewed_by") or ""),
+                "vs": str(e.get("vs") or ""),
+                "action": str(e.get("action") or "review"),
+            })
+        if cleaned:
+            out[ma_s] = cleaned
+    return out
+
+
+def append_diff_review(
+    project_dir: str,
+    ma_cn: str,
+    *,
+    reviewed_by: str = "",
+    vs: str = "",
+    action: str = "review",
+) -> dict[str, list[dict]]:
+    ma = str(ma_cn or "").strip()
+    reviews = load_diff_reviews(project_dir)
+    if not ma:
+        return reviews
+    entry = {
+        "reviewed_at": datetime.now().isoformat(timespec="seconds"),
+        "reviewed_by": (reviewed_by or "").strip(),
+        "vs": (vs or "").strip(),
+        "action": (action or "review").strip(),
+    }
+    logs = list(reviews.get(ma) or [])
+    logs.append(entry)
+    # Giữ tối đa 20 entry / function
+    reviews[ma] = logs[-20:]
+    _write_json(_path(project_dir, "diff_reviews.json"), {"reviews": reviews})
+    return reviews
+
+
+# --- DQ ownership (PIC + target_date + resolved) -----------------------
+# dq_ownership.json: { "items": { "ma|phase|code": {...} } }
+
+def load_dq_ownership(project_dir: str) -> dict[str, dict]:
+    data = _read_json(_path(project_dir, "dq_ownership.json"), {"items": {}})
+    raw = data.get("items") if isinstance(data, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not key or not isinstance(v, dict):
+            continue
+        out[key] = {
+            "owner_pic": str(v.get("owner_pic") or "").strip(),
+            "target_date": str(v.get("target_date") or "").strip()[:10],
+            "assigned_at": str(v.get("assigned_at") or ""),
+            "assigned_by": str(v.get("assigned_by") or ""),
+            "resolved_at": str(v.get("resolved_at") or ""),
+            "note": str(v.get("note") or "").strip(),
+        }
+    return out
+
+
+def save_dq_ownership(
+    project_dir: str,
+    key: str,
+    *,
+    owner_pic: str = "",
+    target_date: str = "",
+    assigned_by: str = "",
+    note: str = "",
+    resolved: Optional[bool] = None,
+    delete: bool = False,
+) -> dict[str, dict]:
+    key = str(key or "").strip()
+    items = load_dq_ownership(project_dir)
+    if not key:
+        return items
+    if delete:
+        items.pop(key, None)
+        _write_json(_path(project_dir, "dq_ownership.json"), {"items": items})
+        return items
+    cur = dict(items.get(key) or {})
+    if owner_pic is not None:
+        cur["owner_pic"] = str(owner_pic or "").strip()
+    if target_date is not None:
+        cur["target_date"] = str(target_date or "").strip()[:10]
+    if note is not None:
+        cur["note"] = str(note or "").strip()
+    if not cur.get("assigned_at") and (cur.get("owner_pic") or cur.get("target_date")):
+        cur["assigned_at"] = datetime.now().isoformat(timespec="seconds")
+        cur["assigned_by"] = (assigned_by or "").strip()
+    elif assigned_by:
+        cur["assigned_by"] = assigned_by.strip()
+    if resolved is True:
+        cur["resolved_at"] = datetime.now().isoformat(timespec="seconds")
+    elif resolved is False:
+        cur["resolved_at"] = ""
+    # Xoá nếu trống hoàn toàn
+    if (not cur.get("owner_pic") and not cur.get("target_date")
+            and not cur.get("note") and not cur.get("resolved_at")):
+        items.pop(key, None)
+    else:
+        items[key] = {
+            "owner_pic": cur.get("owner_pic") or "",
+            "target_date": cur.get("target_date") or "",
+            "assigned_at": cur.get("assigned_at") or "",
+            "assigned_by": cur.get("assigned_by") or "",
+            "resolved_at": cur.get("resolved_at") or "",
+            "note": cur.get("note") or "",
+        }
+    _write_json(_path(project_dir, "dq_ownership.json"), {"items": items})
+    return items
 
 
 # ------------------------------------------------------------------
@@ -734,10 +1017,8 @@ def save_phase_aliases(project_dir: str, aliases: dict[str, str]) -> dict[str, s
 # Project settings (reminder days, SLA thresholds)
 # ------------------------------------------------------------------
 
-def load_project_settings(project_dir: str) -> dict[str, Any]:
-    """Trả về tất cả settings với default hợp lý — reminder / SLA /
-    digest schedule (T26) / thresholds (T29)."""
-    data = _read_json(_path(project_dir, "project_settings.json"), {})
+def _normalize_project_settings(data: dict[str, Any]) -> dict[str, Any]:
+    """Áp default / clamp lên raw settings dict (từ JSON hoặc SQLite)."""
     if not isinstance(data, dict):
         data = {}
     sla = dict(DEFAULT_SLA)
@@ -769,7 +1050,24 @@ def load_project_settings(project_dir: str) -> dict[str, Any]:
             "max_upload_history",
             data.get("max_snapshots", MAX_UPLOAD_HISTORY),
         )))),
+        # Phase A — snapshot baseline (YYYY-MM-DD) hoặc "" nếu chưa chọn
+        "baseline_snapshot_id": str(data.get("baseline_snapshot_id") or "").strip(),
+        # Phase C — Mã CN đánh dấu CR thủ công (fallback khi Excel không có cột CR)
+        "cr_function_codes": _normalize_cr_codes(data.get("cr_function_codes")),
     }
+
+
+def load_project_settings(project_dir: str) -> dict[str, Any]:
+    """Trả về tất cả settings với default hợp lý — reminder / SLA /
+    digest schedule (T26) / thresholds (T29).
+
+    Phase F: ưu tiên ``meta.db``, fallback ``project_settings.json``.
+    """
+    sql_raw = _sqlite_sync_safe(lambda s: s.load_settings_raw(project_dir))
+    if isinstance(sql_raw, dict):
+        return _normalize_project_settings(sql_raw)
+    data = _read_json(_path(project_dir, "project_settings.json"), {})
+    return _normalize_project_settings(data if isinstance(data, dict) else {})
 
 
 def save_project_settings(project_dir: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -816,8 +1114,46 @@ def save_project_settings(project_dir: str, payload: dict[str, Any]) -> dict[str
         current["max_upload_history"] = current["max_snapshots"]
     if "max_upload_history" in payload and "max_snapshots" not in payload:
         current["max_snapshots"] = current["max_upload_history"]
+    # Phase A — đánh dấu / xóa baseline snapshot ("" hoặc null → clear)
+    if "baseline_snapshot_id" in payload:
+        raw = payload.get("baseline_snapshot_id")
+        if raw is None or str(raw).strip() == "":
+            current["baseline_snapshot_id"] = ""
+        else:
+            current["baseline_snapshot_id"] = str(raw).strip()[:32]
+    # Phase C — danh sách Mã CN = CR (fallback)
+    if "cr_function_codes" in payload:
+        current["cr_function_codes"] = _normalize_cr_codes(payload.get("cr_function_codes"))
     _write_json(_path(project_dir, "project_settings.json"), current)
+    _sqlite_sync_safe(lambda s: s.save_settings_raw(project_dir, current))
     return current
+
+
+def _normalize_cr_codes(raw: Any) -> list[str]:
+    """Chuẩn hoá list / CSV Mã CN đánh dấu CR. Cap 2000 mã."""
+    items: list[str] = []
+    if raw is None:
+        return items
+    if isinstance(raw, str):
+        parts = re.split(r"[,;\n]+", raw)
+        items = [p.strip() for p in parts if p.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        for x in raw:
+            s = str(x or "").strip()
+            if s:
+                items.append(s)
+    # unique giữ thứ tự
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in items:
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s[:64])
+        if len(out) >= 2000:
+            break
+    return out
 
 
 # ------------------------------------------------------------------

@@ -187,6 +187,7 @@ def compute_data_quality(
         ma_cn = _row_ma_cn(row)
         ten_cn = _row_ten_cn(row)
         module = _row_module(row)
+        quy_trinh = _row_process(row)
 
         # ---- Row-level issues (không phụ thuộc phase) ----
         # Duplicate Mã CN
@@ -196,6 +197,7 @@ def compute_data_quality(
                 "ma_cn": ma_cn,
                 "ten_cn": ten_cn,
                 "module": module,
+                "quy_trinh": quy_trinh,
                 "phase": "",
                 "code": "duplicate_ma_cn",
                 "severity": ISSUE_META["duplicate_ma_cn"]["severity"],
@@ -209,7 +211,7 @@ def compute_data_quality(
             if not str(row.meta.get("priority") or "").strip():
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                    "module": module, "phase": "",
+                    "module": module, "quy_trinh": quy_trinh, "phase": "",
                     "code": "blank_priority",
                     "severity": ISSUE_META["blank_priority"]["severity"],
                     "label": ISSUE_META["blank_priority"]["label"],
@@ -219,7 +221,7 @@ def compute_data_quality(
             if not str(row.meta.get("complexity") or "").strip():
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                    "module": module, "phase": "",
+                    "module": module, "quy_trinh": quy_trinh, "phase": "",
                     "code": "blank_complexity",
                     "severity": ISSUE_META["blank_complexity"]["severity"],
                     "label": ISSUE_META["blank_complexity"]["label"],
@@ -229,7 +231,7 @@ def compute_data_quality(
             if not str(row.meta.get("fit_gap") or "").strip():
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                    "module": module, "phase": "",
+                    "module": module, "quy_trinh": quy_trinh, "phase": "",
                     "code": "blank_fitgap",
                     "severity": ISSUE_META["blank_fitgap"]["severity"],
                     "label": ISSUE_META["blank_fitgap"]["label"],
@@ -250,7 +252,7 @@ def compute_data_quality(
             if status and status not in VALID_STATUSES:
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                    "module": module, "phase": phase_name,
+                    "module": module, "quy_trinh": quy_trinh, "phase": phase_name,
                     "code": "invalid_status",
                     "severity": ISSUE_META["invalid_status"]["severity"],
                     "label": ISSUE_META["invalid_status"]["label"],
@@ -262,7 +264,7 @@ def compute_data_quality(
             if pd.start_date and pd.end_date and pd.end_date < pd.start_date:
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                    "module": module, "phase": phase_name,
+                    "module": module, "quy_trinh": quy_trinh, "phase": phase_name,
                     "code": "end_before_start",
                     "severity": ISSUE_META["end_before_start"]["severity"],
                     "label": ISSUE_META["end_before_start"]["label"],
@@ -274,7 +276,7 @@ def compute_data_quality(
             if _is_closed_status(status) and not pd.end_date and _has_planned_dates(pd):
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                    "module": module, "phase": phase_name,
+                    "module": module, "quy_trinh": quy_trinh, "phase": phase_name,
                     "code": "closed_no_end",
                     "severity": ISSUE_META["closed_no_end"]["severity"],
                     "label": ISSUE_META["closed_no_end"]["label"],
@@ -289,7 +291,7 @@ def compute_data_quality(
             ):
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                    "module": module, "phase": phase_name,
+                    "module": module, "quy_trinh": quy_trinh, "phase": phase_name,
                     "code": "missing_deadline",
                     "severity": ISSUE_META["missing_deadline"]["severity"],
                     "label": ISSUE_META["missing_deadline"]["label"],
@@ -301,7 +303,7 @@ def compute_data_quality(
             if is_unassigned_phase(row, phase_name, pd, phase_order, today):
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                    "module": module, "phase": phase_name,
+                    "module": module, "quy_trinh": quy_trinh, "phase": phase_name,
                     "code": "blank_pic",
                     "severity": ISSUE_META["blank_pic"]["severity"],
                     "label": ISSUE_META["blank_pic"]["label"],
@@ -322,7 +324,7 @@ def compute_data_quality(
                 if ratio >= 3.0 or ratio <= (1.0 / 3.0):
                     issues.append({
                         "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                        "module": module, "phase": phase_name,
+                        "module": module, "quy_trinh": quy_trinh, "phase": phase_name,
                         "code": "estimate_vs_duration",
                         "severity": ISSUE_META["estimate_vs_duration"]["severity"],
                         "label": ISSUE_META["estimate_vs_duration"]["label"],
@@ -350,7 +352,7 @@ def compute_data_quality(
                 if p1.start_date <= p2.end_date and p2.start_date <= p1.end_date:
                     issues.append({
                         "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                        "module": module,
+                        "module": module, "quy_trinh": quy_trinh,
                         "phase": f"{n1} ∩ {n2}",
                         "code": "phase_overlap",
                         "severity": ISSUE_META["phase_overlap"]["severity"],

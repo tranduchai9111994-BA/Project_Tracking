@@ -16,12 +16,36 @@ from typing import Any, Iterable, Optional
 
 from parser.excel_parser import ParsedData, FunctionRow, PhaseData
 
+# Đồng bộ CompareEngine — xác định status rollback (backward)
+_STATUS_ORDER = {
+    None: 0,
+    "": 0,
+    "Open": 1,
+    "Assigned": 2,
+    "In-progress": 3,
+    "Resolved": 4,
+    "Pending": 5,
+    "Cancelled": 6,
+    "Closed": 7,
+}
+
 
 # Field meta so sánh, tương ứng key trong FunctionRow.meta
 _PRI_COMPLEX_FIELDS = [
     ("priority", "Priority"),
     ("complexity", "Complexity"),
 ]
+
+
+def _status_direction(old_status: str, new_status: str) -> str:
+    """forward | backward | same — dùng để đếm status rollback."""
+    o = _STATUS_ORDER.get(old_status, 0)
+    n = _STATUS_ORDER.get(new_status, 0)
+    if n > o:
+        return "forward"
+    if n < o:
+        return "backward"
+    return "same"
 
 
 def _row_key(row: FunctionRow) -> str:
@@ -128,9 +152,12 @@ def compute_function_diff(
     prio_complex_changed: list[dict] = []
     fitgap_changed: list[dict] = []
     status_changed: list[dict] = []
+    status_rollback: list[dict] = []
 
     # Set để đếm distinct function bị đổi (không đếm lặp)
     changed_row_keys: set[str] = set()
+    rollback_row_keys: set[str] = set()
+    pic_changed_row_keys: set[str] = set()
 
     for k in common_keys:
         cur = cur_map[k]
@@ -191,6 +218,7 @@ def compute_function_diff(
                     "new": _fmt_pic_list(pics_b) or "(trống)",
                 })
             changed_row_keys.add(k)
+            pic_changed_row_keys.add(k)
 
         # 4) Status phase
         status_a = _row_status_by_phase(prv)
@@ -200,13 +228,19 @@ def compute_function_diff(
             sa = (status_a.get(phase_name) or "").strip()
             sb = (status_b.get(phase_name) or "").strip()
             if sa != sb:
-                status_changed.append({
+                direction = _status_direction(sa, sb)
+                entry = {
                     **disp,
                     "phase": phase_name,
                     "old": sa or "(trống)",
                     "new": sb or "(trống)",
-                })
+                    "direction": direction,
+                }
+                status_changed.append(entry)
                 changed_row_keys.add(k)
+                if direction == "backward":
+                    status_rollback.append(entry)
+                    rollback_row_keys.add(k)
 
     # Sort output: theo ma_cn để user dễ theo dõi. Fallback ma_cn empty đẩy cuối.
     def _sort_by_ma(rows):
@@ -218,6 +252,7 @@ def compute_function_diff(
     _sort_by_ma(prio_complex_changed)
     _sort_by_ma(fitgap_changed)
     _sort_by_ma(status_changed)
+    _sort_by_ma(status_rollback)
 
     return {
         "current_snapshot": current_meta or {},
@@ -225,10 +260,13 @@ def compute_function_diff(
         "counts": {
             "added": len(added),
             "deleted": len(deleted),
-            "pic_changed": len(pic_changed),
+            "pic_changed": len(pic_changed_row_keys),
+            "pic_changed_records": len(pic_changed),
             "prio_complex_changed": len(prio_complex_changed),
             "fitgap_changed": len(fitgap_changed),
             "status_changed": len(status_changed),
+            "status_rollback": len(rollback_row_keys),
+            "status_rollback_records": len(status_rollback),
             "total_changed": len(changed_row_keys),
             "current_total": len(current.rows),
             "previous_total": len(previous.rows),
@@ -239,4 +277,12 @@ def compute_function_diff(
         "priority_complexity_changed": prio_complex_changed,
         "fitgap_changed": fitgap_changed,
         "phase_status_changed": status_changed,
+        "status_rollback": status_rollback,
+        "badges": {
+            "added": len(added),
+            "status_rollback": len(rollback_row_keys),
+            "pic_changed": len(pic_changed_row_keys),
+            "deleted": len(deleted),
+            "status_changed": len(status_changed),
+        },
     }

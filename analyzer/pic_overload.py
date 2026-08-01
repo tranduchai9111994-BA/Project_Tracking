@@ -143,6 +143,7 @@ def _iter_active_assignments(
         ma = str(row.meta.get("ma_cn") or "")
         ten = str(row.meta.get("ten_cn") or "")
         module = str(row.meta.get("module") or "")
+        quy_trinh = str(row.meta.get("quy_trinh") or row.meta.get("process") or "")
         for phase_name, pd in row.phases.items():
             if not _phase_allowed(phase_name, phase_keywords):
                 continue
@@ -172,6 +173,7 @@ def _iter_active_assignments(
                         "ma_cn": ma,
                         "ten_cn": ten,
                         "module": module,
+                        "quy_trinh": quy_trinh,
                         "phase": phase_name,
                         "status": status,
                         "start": pd.start_date.isoformat(),
@@ -180,6 +182,51 @@ def _iter_active_assignments(
                         # unique task key trong 1 ngày (tránh đếm trùng multi-phase cùng CN)
                         "task_key": f"{project_slug}|{ma}|{phase_name}",
                     }
+
+
+def overloaded_pics_for_data(
+    data: ParsedData,
+    *,
+    today: Optional[date] = None,
+    thresholds: Optional[dict] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    project_slug: str = "_local",
+) -> set[str]:
+    """
+    Tập PIC overload trong **một** ParsedData (cùng rule day-grain với
+    compute_pic_overload). Dùng để feed vào risk_scorer khi không quét đa dự án.
+    """
+    thr = merge_thresholds(thresholds)
+    today = today or date.today()
+    d_from_default, d_to_default = default_date_range(today)
+    d_from = date_from or d_from_default
+    d_to = date_to or d_to_default
+    if d_from > d_to:
+        d_from, d_to = d_to, d_from
+
+    order = list(data.all_phases) if data.all_phases else list(
+        {ph for r in data.rows for ph in r.phases}
+    )
+    concurrent: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for asg in _iter_active_assignments(
+        data,
+        project_slug=project_slug,
+        project_name=project_slug,
+        range_from=d_from,
+        range_to=d_to,
+        today=today,
+        phase_keywords=thr["phase_keywords"],
+        phase_order=order,
+    ):
+        concurrent[asg["pic"]][asg["date"]].add(asg["task_key"])
+
+    day_max = thr["day_max_tasks"]
+    overloaded: set[str] = set()
+    for pic, days in concurrent.items():
+        if any(len(keys) > day_max for keys in days.values()):
+            overloaded.add(pic)
+    return overloaded
 
 
 def compute_pic_overload(
@@ -390,14 +437,19 @@ def compute_pic_overload(
         if not pic_filter_l:
             if pic not in overload_pic_set and d not in highlight_dates:
                 continue
+        day_count = pic_day_stats.get(pic, {}).get(d, {}).get("task_count", len(items))
         for item in items:
-            detail.append({
+            row = {
                 k: item[k] for k in (
                     "pic", "date", "project_slug", "project_name",
-                    "ma_cn", "ten_cn", "module", "phase", "status",
+                    "ma_cn", "ten_cn", "module", "quy_trinh", "phase", "status",
                     "start", "end", "is_overdue",
                 )
-            })
+            }
+            row["concurrent_count"] = day_count
+            row["threshold"] = day_max
+            row["is_day_overload"] = day_count > day_max
+            detail.append(row)
             if len(detail) >= detail_limit:
                 break
         if len(detail) >= detail_limit:

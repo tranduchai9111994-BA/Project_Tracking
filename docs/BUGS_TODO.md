@@ -1,73 +1,66 @@
-# Bug Tracker + TODO — cập nhật 29/07/2026 (sau batch T21–T29)
+# Bug Tracker + TODO — cập nhật 2026-08-01
 
-**Trạng thái**: Batch productivity + presentation (T21–T29, UX7, b8–b15)
-đã hoàn thành. Các bug lịch sử từ QA 28/07 đã được fix trong wave trước.
-File này giữ để track bug đang open + backlog nhỏ.
+**Trạng thái sản phẩm:** Core + multi-project + Forecast + Chiều PM + Integrations +
+Public API + LAN + Archive + **PMO A–F** + **BA UX** — **đã ship**.
 
-Test suite: `pytest -q` → **355 passed** (~172s trên Win10, Python 3.11).
+Kiến trúc: [`ARCHITECTURE.md`](ARCHITECTURE.md) · Catalog: [`FEATURE_CATALOG.md`](FEATURE_CATALOG.md) ·  
+Changelog PMO/BA: [`CHANGELOG_PMO_BA.md`](CHANGELOG_PMO_BA.md).
 
----
+Resume P2 còn lại: root `_WIP_RESUME_NOTES.md` (pointer ngắn).
 
-## ✅ Đã fix trong batch mới nhất (29/07/2026)
-
-| Bug ID | Mô tả ngắn                                                            | Commit           |
-|--------|-----------------------------------------------------------------------|------------------|
-| b8     | Help tooltip "?" không click được trong section Stalled + đổi Stalled → **Đình trệ** | `2336ef8`        |
-| b9     | Matrix Phase × Module toggle **Module / Quy trình** + apply global filter | `aa8904e`        |
-| b10    | Chart Tiến độ theo Phase: header wrap 3 dòng + thêm bucket **(Blank)** để tổng bằng total | `c0667ca`        |
-| b11    | Heatmap Quy trình: badge tổng + apply global filter                    | `ce0f0d7`        |
-| b12    | Burndown & Velocity: scope badge + toggle phạm vi theo Phase + global filter | `3b76390`        |
-| b13    | Unassigned drill mismatch — logic `_is_phase_active` không khớp `dashboard_engine._is_overdue` | `6706e89`        |
-| b14    | Data label toàn app (FIT/GAP aging, Burndown, Module delta…)          | `e70c077`        |
-| b15    | Custom Dashboard `pct_overdue` 100% sai + label tiếng Việt + format measure | `82262a3`        |
-| UX7    | Icon 👁 View column trong bảng lưới thay click-any-row                 | `539dad5`        |
-
-## ✅ Tính năng mới (batch cùng session)
-
-| Task | Mô tả                                                          | Commit           |
-|------|-----------------------------------------------------------------|------------------|
-| T21  | Data Quality panel + Excel export                              | `40e8b7a`        |
-| T22  | Aging WIP tracking + slider threshold                          | `2ef6dec`        |
-| T23  | Command Palette (Ctrl+K / Cmd+K / `/`)                         | `79777fe`        |
-| T24  | Bookmark + Notes per-function (⭐ 📝)                          | `e182ff3`        |
-| T25  | Presentation Mode (🎬 header, ← → điều hướng, Esc thoát)       | `af200b3`        |
-| T26  | Weekly Digest cron-lite (Excel, không PDF backend)             | `962ae66`        |
-| T27  | Drill-down inline cho custom dashboard chart                   | `b8330a7`        |
-| T28  | Chart Config filter multi-select + preview live                | `6b104a5`        |
-| T29  | Settings modal (thresholds / digest / SLA / reminder)          | `5fa7a0a`        |
+```bash
+pytest -q
+```
 
 ---
 
-## 🟢 Backlog nhỏ (nice-to-have, không blocker)
+## ✅ Đã ship (tóm tắt — không liệt kê hết commit)
 
-### Effort export chart 4 section
-Chưa có nút "📥 Xuất Excel" cho: SLA, Capacity PIC, PIC chậm heatmap, Baseline
-variance. Có thể tận dụng `export_chart_data` generic hoặc thêm 4 endpoint
-riêng nếu cần format đặc thù.
-
-### Gantt 3 modes (Function/Module/Process)
-Hiện có 2 mode (Module/Process). Có thể thêm chế độ per-function với phase
-segments. Ước lượng ~2h — chưa ưu tiên.
-
-### Auto-cleanup old digests
-`digests/YYYYMMDD.xlsx` không tự dọn. Nếu tệp tin phình to cần bổ sung
-`purge_old_digests(keep=10)` vào `analyzer/disk_janitor.py`.
-
-### Data Quality: rule mới
-Cân nhắc thêm rule mới nếu user gặp trường hợp thực tế:
-- Overlap giữa 2 phase cùng function (Start-End trùng)
-- Estimate MH quá lệch so với duration thực tế (>2× hoặc <0.3×)
-
-### Presentation Mode enhancements
-- Nút Prev/Next trong HUD (hiện chỉ dùng key)
-- Auto-advance mỗi N giây (dùng cho standup review)
+| Gói | Nội dung |
+|-----|----------|
+| Core / V3–V4 | Multi-project, DQ, bookmarks, digest, custom dash, palette, present… |
+| Integrations | Registry API, 4 auth + DB, Mapping Wizard, `verify_ssl`, sync polish |
+| Share | Public REST/iframe/PNG, LAN secure, Help unified |
+| Forecast / PM | Forecast Gantt/Manpower, PIC Overload, Rlog, Chiều PM, MoM |
+| Ops | Archive T-AA, disk janitor (synced prune + PPTX dedupe), history Nguồn |
+| **PMO A–F** | Baseline SV, completion forecast, EVM, scope creep, pmo-risk+cascade, UAT Quality, `meta.db` dual-write |
+| **BA UX** | Diff, saved views, insight trends, DQ highlights, bulk tags, critical path heuristic, FL verify, bottleneck, PIC upcoming, Module còn lại, insight strip collapse, DQ help |
 
 ---
 
-## 🚀 Instructions cho session tiếp theo
+## 🟡 P2 còn pending
 
-1. `git status` verify sạch.
-2. `pytest -q` chạy full suite (355 test).
-3. Đọc `docs/ARCHITECTURE.md` mục **V4 Wave — Productivity + Presentation**
-   để nhớ các API mới.
-4. Ctrl+Shift+R browser sau khi pull code mới để reload JS/CSS.
+### T-B. API Registry Catalog (`api-registry-catalog`)
+
+1. Column metadata: `source_app`, `visibility`, `owner_contact`, `env`, `docs_url`, health/latency…
+2. UI filter + detail (curl, schema preview, test connection)
+3. Export/Import registry JSON; Import Postman
+
+### T-C. Hoàn thiện `form_login` flow (`form-login-integration-flow`)
+
+1. UI wizard login → selectors → download URL → test  
+2. Cookie jar bền; CSRF UX; 2FA OTP optional  
+
+> `form_login` **đã dùng được** (POST form + CSRF cơ bản). T-C = wizard + jar bền + 2FA.
+
+---
+
+## 🟢 Nice-to-have / gaps sản phẩm
+
+| Item | Ghi chú |
+|------|---------|
+| SOVI-style ratio estimate (Manpower) | **Đã có** `estimate_ratio` (hệ số chỉnh được; không khóa số SOVI) |
+| SQLite cutover full | Chỉ meta slice hiện tại |
+| Critical path CPM thật | Hiện heuristic Gantt Calendar |
+| FL verify cell-diff tổng quát | Hiện chỉ yellow-hit PIC/Status |
+| Auto-cleanup digests | `purge_old_digests` còn mở |
+| Presentation HUD Prev/Next | Nice-to-have |
+
+---
+
+## Session tiếp theo
+
+1. Đọc [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) + [`FEATURE_CATALOG.md`](FEATURE_CATALOG.md) (không dùng UPGRADE_*.md làm SSOT).  
+2. `pytest -q` trước mỗi commit.  
+3. Ưu tiên **T-B** rồi **T-C**; xóa/ cập nhật `_WIP_RESUME_NOTES.md` khi xong.  
+4. Không push trừ khi user yêu cầu.

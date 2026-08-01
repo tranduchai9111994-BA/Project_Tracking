@@ -115,8 +115,22 @@ def metrics(parsed_data, today):
 
 
 @pytest.fixture
-def flask_client(tmp_path, sample_xlsx_path):
-    """Flask test client với upload folder tạm — mỗi test có project folder riêng biệt."""
+def auth_users_file(tmp_path, monkeypatch):
+    """Users file tạm + default admin/admin — không đụng `.project_store` thật."""
+    from analyzer import auth_store
+
+    path = tmp_path / "users.json"
+    monkeypatch.setenv("IHRP_USERS_FILE", str(path))
+    auth_store.ensure_default_admin(str(path))
+    return str(path)
+
+
+@pytest.fixture
+def flask_client(tmp_path, sample_xlsx_path, auth_users_file):
+    """Flask test client với upload folder tạm — mỗi test có project folder riêng biệt.
+
+    Tự đăng nhập admin/admin để tương thích test suite cũ (login gate).
+    """
     from app import app
     import app as app_module
     from analyzer.project_manager import ProjectManager
@@ -131,6 +145,30 @@ def flask_client(tmp_path, sample_xlsx_path):
     app_module._project_mgr = ProjectManager(app.config["PROJECTS_FOLDER"])
     app_module._project_mgr.get_or_create_default()
 
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        # Session login — gate sẽ 401/redirect nếu thiếu
+        r = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin"},
+        )
+        assert r.status_code == 200, r.get_data(as_text=True)
+        yield client
+
+
+@pytest.fixture
+def flask_client_anon(tmp_path, sample_xlsx_path, auth_users_file):
+    """Flask client chưa đăng nhập — dùng cho test auth gate."""
+    from app import app
+    import app as app_module
+    from analyzer.project_manager import ProjectManager
+
+    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["PROJECTS_FOLDER"] = str(tmp_path / "projects")
+    os.makedirs(app.config["PROJECTS_FOLDER"], exist_ok=True)
+    app_module._state.clear()
+    app_module._project_mgr = ProjectManager(app.config["PROJECTS_FOLDER"])
+    app_module._project_mgr.get_or_create_default()
     app.config["TESTING"] = True
     with app.test_client() as client:
         yield client

@@ -1,6 +1,7 @@
 # LAN Deploy Guide — Chia sẻ dashboard trong công ty
 
-> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md) mục Auth & security.
+> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md) mục Auth & security.  
+> Mục lục docs → [`README.md`](README.md).
 
 **T34 Task 2** — App được thiết kế cho mô hình "1 máy chủ, nhiều máy view":
 - Máy của bạn = server (chạy `start.bat`).

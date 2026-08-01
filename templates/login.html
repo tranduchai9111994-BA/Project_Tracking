@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Đăng nhập — iHRP Function List Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            min-height: 100vh;
+            background: linear-gradient(145deg, #1e3a8a 0%, #1d4ed8 45%, #0f766e 100%);
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-white rounded-xl shadow-2xl overflow-hidden">
+        <div class="bg-gradient-to-r from-blue-800 to-blue-600 text-white px-6 py-5">
+            <h1 class="text-xl font-bold">iHRP Function List Tracker</h1>
+            <p class="text-blue-200 text-sm mt-1">Đăng nhập để mở dashboard</p>
+        </div>
+        <form method="post" action="{{ url_for('login_page', next=request.args.get('next', '')) }}" class="px-6 py-6 space-y-4" autocomplete="username">
+            {% if error %}
+            <div class="rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2" role="alert">
+                {{ error }}
+            </div>
+            {% endif %}
+            {% if request.args.get('next') %}
+            <input type="hidden" name="next" value="{{ request.args.get('next') }}">
+            {% endif %}
+            <label class="block">
+                <span class="text-sm font-medium text-gray-700">Tên đăng nhập</span>
+                <input type="text" name="username" required autofocus
+                       class="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       placeholder="admin" autocomplete="username">
+            </label>
+            <label class="block">
+                <span class="text-sm font-medium text-gray-700">Mật khẩu</span>
+                <input type="password" name="password" required
+                       class="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       placeholder="••••••••" autocomplete="current-password">
+            </label>
+            <button type="submit"
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg py-2.5 text-sm transition">
+                Đăng nhập
+            </button>
+            <p class="text-[11px] text-gray-500 leading-relaxed">
+                Mặc định lần đầu: <code class="bg-slate-100 px-1 rounded">admin</code> /
+                <code class="bg-slate-100 px-1 rounded">admin</code>.
+                Đổi mật khẩu ngay trong menu <b>Tài khoản</b> sau khi vào app.
+            </p>
+        </form>
+    </div>
+</body>
+</html>

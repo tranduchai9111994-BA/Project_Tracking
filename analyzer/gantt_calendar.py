@@ -706,6 +706,10 @@ def compute_gantt_calendar(
             "segments": segments,
         })
 
+    # Critical path: row có chuỗi phase chưa xong kết thúc muộn nhất
+    # (blocking milestone). Highlight unfinished segments trên row đó.
+    _annotate_critical_path(rows_out, today=today)
+
     return {
         "group_by": gb,
         "granularity": granularity_final,
@@ -723,6 +727,59 @@ def compute_gantt_calendar(
         "skipped_dates": skipped_dates,
         "skipped_count": len(skipped_dates),
     }
+
+
+def _annotate_critical_path(rows_out: list[dict], *, today: date) -> None:
+    """
+    Đánh dấu critical path trên Gantt.
+
+    Heuristic: trong các row còn unfinished segments (pct < 100), chọn row
+    có end date muộn nhất (= chuỗi còn lại blocking milestone lâu nhất).
+    Flag `on_critical_path` trên row + `critical` trên từng unfinished segment.
+    """
+    best_idx = -1
+    best_end: Optional[date] = None
+    best_remain_days = -1
+
+    for i, row in enumerate(rows_out):
+        segs = row.get("segments") or []
+        unfinished = [s for s in segs if (s.get("pct") or 0) < 100]
+        if not unfinished:
+            row["on_critical_path"] = False
+            continue
+        # End muộn nhất của unfinished segments
+        ends = []
+        for s in unfinished:
+            try:
+                ends.append(date.fromisoformat(str(s.get("end") or "")[:10]))
+            except ValueError:
+                pass
+        if not ends:
+            row["on_critical_path"] = False
+            continue
+        row_end = max(ends)
+        remain = max(0, (row_end - today).days)
+        # Ưu tiên end muộn hơn; tie-break remain days
+        if (
+            best_end is None
+            or row_end > best_end
+            or (row_end == best_end and remain > best_remain_days)
+        ):
+            best_end = row_end
+            best_remain_days = remain
+            best_idx = i
+        row["on_critical_path"] = False
+
+    critical_name = None
+    if best_idx >= 0:
+        rows_out[best_idx]["on_critical_path"] = True
+        critical_name = rows_out[best_idx].get("name")
+        for s in rows_out[best_idx].get("segments") or []:
+            s["critical"] = (s.get("pct") or 0) < 100
+
+    # Gắn meta vào list (caller có thể đọc từ rows; cũng set trên first call site)
+    # Không mutate return ngoài rows — FE đọc row.on_critical_path / seg.critical
+    _ = critical_name
 
 
 def _cells_for_row(agg: _RowAgg, columns: list[dict]) -> tuple[list[bool], Optional[int], Optional[int]]:

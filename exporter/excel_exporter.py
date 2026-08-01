@@ -14,6 +14,18 @@ import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from exporter.reason_formatters import (
+    format_risk_factors_detailed,
+    process_code,
+    reason_aging_wip,
+    reason_capacity,
+    reason_duration,
+    reason_fitgap_aging,
+    reason_overdue,
+    reason_stalled,
+    reason_unassigned,
+)
+
 
 # === Styles chung ===
 HEADER_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=11)
@@ -110,6 +122,7 @@ COLUMNS = [
     ("Mã CN", 14),
     ("Tên chức năng", 40),
     ("Module", 10),
+    ("Quy trình", 22),
     ("Phase bị trễ", 16),
     ("Deadline", 13),
     ("Số ngày trễ", 12),
@@ -117,6 +130,7 @@ COLUMNS = [
     ("PIC phụ trách", 20),
     ("Priority", 12),
     ("Ghi chú", 30),
+    ("Lý do", 48),
 ]
 
 EXPORT_MODES = {"summary", "detail", "both"}
@@ -245,6 +259,7 @@ def export_overdue_report(
                 i.get("ma_cn", ""),
                 i.get("ten_cn", ""),
                 i.get("module", ""),
+                process_code(i),
                 i.get("phase", ""),
                 i.get("end_date", ""),
                 i.get("days_overdue", 0),
@@ -252,6 +267,7 @@ def export_overdue_report(
                 ", ".join(i.get("pic", []) if isinstance(i.get("pic"), list) else []),
                 i.get("priority", ""),
                 i.get("note", ""),
+                reason_overdue(i),
             ]
             for idx, i in enumerate(items)
         ]
@@ -317,8 +333,10 @@ def export_stalled_report(
     if _want_detail(mode):
         columns = [
             ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+            ("Quy trình", 22),
             ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
-            ("Chờ (ngày)", 12), ("Priority", 12),
+            ("End phase chờ", 13), ("Chờ (ngày)", 12), ("Priority", 12),
+            ("Lý do", 48),
         ]
         data_rows = [
             [
@@ -326,11 +344,14 @@ def export_stalled_report(
                 i.get("ma_cn", ""),
                 i.get("ten_cn", ""),
                 i.get("module", ""),
+                process_code(i),
                 i.get("completed_phase", ""),
                 i.get("waiting_phase", ""),
                 i.get("completed_date", ""),
+                i.get("waiting_end_date", ""),
                 i.get("wait_days", 0),
                 i.get("priority", ""),
+                reason_stalled(i),
             ]
             for idx, i in enumerate(items)
         ]
@@ -419,16 +440,20 @@ def export_full_report(
     ws = wb.create_sheet("Overdue_Report")
     columns = [
         ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+        ("Quy trình", 22),
         ("Phase", 16), ("Deadline", 13), ("Số ngày trễ", 12),
         ("Trạng thái", 13), ("PIC", 20), ("Priority", 12), ("Ghi chú", 30),
+        ("Lý do", 48),
     ]
     data_rows = [
         [
             idx + 1,
             i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+            process_code(i),
             i.get("phase", ""), i.get("end_date", ""), i.get("days_overdue", 0),
             i.get("status", ""), ", ".join(i.get("pic", [])),
             i.get("priority", ""), i.get("note", ""),
+            reason_overdue(i),
         ]
         for idx, i in enumerate(overdue_list)
     ]
@@ -441,16 +466,21 @@ def export_full_report(
     ws = wb.create_sheet("Unassigned_Tasks")
     columns = [
         ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40), ("Module", 10),
-        ("Phase", 16), ("Trạng thái", 13), ("Priority", 12), ("Complexity", 12),
-        ("Deadline", 13), ("Trễ (ngày)", 12),
+        ("Quy trình", 22), ("Phase trước", 16), ("Phase", 16), ("Trạng thái", 13),
+        ("Priority", 12), ("Complexity", 12),
+        ("Start", 13), ("Deadline", 13), ("Trễ (ngày)", 12), ("Lý do", 48),
     ]
     data_rows = [
         [
             idx + 1,
             i.get("ma_cn", ""), i.get("rlog_id", ""), i.get("ten_cn", ""), i.get("module", ""),
+            process_code(i),
+            i.get("predecessor_phase", ""),
             i.get("phase", ""), i.get("status", ""),
             i.get("priority", ""), i.get("complexity", ""),
+            i.get("start_date", ""),
             i.get("end_date", ""), i.get("days_overdue", 0),
+            reason_unassigned(i),
         ]
         for idx, i in enumerate(unassigned)
     ]
@@ -470,22 +500,27 @@ def export_full_report(
 
     # === Sheet 4: Long_Duration ===
     ws = wb.create_sheet("Long_Duration")
+    dur_thr = metrics.get("duration_analysis", {}).get("threshold_days")
     columns = [
         ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+        ("Quy trình", 22),
         ("Phase", 16), ("Start", 13), ("End", 13),
-        ("Duration (ngày)", 14), ("Loại", 10), ("Status", 12),
-        ("PIC", 20), ("Priority", 12), ("Estimate MH", 12),
+        ("Duration (ngày)", 14), ("Ngưỡng", 10), ("Loại", 10), ("Status", 12),
+        ("PIC", 20), ("Priority", 12), ("Estimate MH", 12), ("Lý do", 40),
     ]
     data_rows = [
         [
             idx + 1,
             i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+            process_code(i),
             i.get("phase", ""), i.get("start_date", ""), i.get("end_date", ""),
             i.get("duration_days", 0),
+            i.get("threshold_days", dur_thr),
             "Đang chạy" if i.get("duration_type") == "elapsed" else "Đã lên KH",
             i.get("status", ""),
             ", ".join(i.get("pic", [])),
             i.get("priority", ""), i.get("estimate_mh", ""),
+            reason_duration(i, dur_thr),
         ]
         for idx, i in enumerate(duration_items)
     ]
@@ -498,16 +533,20 @@ def export_full_report(
     ws = wb.create_sheet("Dinh_Tre")
     columns = [
         ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+        ("Quy trình", 22),
         ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
-        ("Chờ (ngày)", 12), ("Priority", 12),
+        ("End phase chờ", 13), ("Chờ (ngày)", 12), ("Priority", 12), ("Lý do", 48),
     ]
     data_rows = [
         [
             idx + 1,
             i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+            process_code(i),
             i.get("completed_phase", ""), i.get("waiting_phase", ""),
-            i.get("completed_date", ""), i.get("wait_days", 0),
+            i.get("completed_date", ""), i.get("waiting_end_date", ""),
+            i.get("wait_days", 0),
             i.get("priority", ""),
+            reason_stalled(i),
         ]
         for idx, i in enumerate(stalled_items)
     ]
@@ -520,16 +559,18 @@ def export_full_report(
     ws = wb.create_sheet("High_Risk")
     columns = [
         ("STT", 6), ("Risk Score", 12), ("Mã CN", 14),
-        ("Tên chức năng", 40), ("Module", 10),
+        ("Tên chức năng", 40), ("Module", 10), ("Quy trình", 22),
         ("Priority", 12), ("Complexity", 12),
-        ("Risk Factors", 45),
+        ("Risk Factors", 45), ("Yếu tố chi tiết", 60),
     ]
     data_rows = [
         [
             idx + 1, i.get("risk_score", 0),
             i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+            process_code(i),
             i.get("priority", ""), i.get("complexity", ""),
             " | ".join(i.get("risk_factors", [])),
+            format_risk_factors_detailed(i),
         ]
         for idx, i in enumerate(high_risk)
     ]
@@ -608,15 +649,18 @@ def export_by_pic(
     ws = wb.create_sheet("Overdue")
     columns = [
         ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+        ("Quy trình", 22),
         ("Phase", 16), ("Deadline", 13), ("Số ngày trễ", 12),
-        ("Trạng thái", 13), ("Priority", 12), ("Ghi chú", 30),
+        ("Trạng thái", 13), ("Priority", 12), ("Ghi chú", 30), ("Lý do", 48),
     ]
     data_rows = [
         [
             idx + 1,
             i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+            process_code(i),
             i.get("phase", ""), i.get("end_date", ""), i.get("days_overdue", 0),
             i.get("status", ""), i.get("priority", ""), i.get("note", ""),
+            reason_overdue(i),
         ]
         for idx, i in enumerate(my_overdue)
     ]
@@ -828,6 +872,7 @@ DRILL_COLUMNS = [
     ("Complexity", 12),
     ("FIT/GAP", 10),
     ("Estimate MH", 12),
+    ("Lý do", 40),
 ]
 
 
@@ -872,6 +917,18 @@ def export_drill_down(
     for idx, it in enumerate(items):
         pics = it.get("pics", []) or []
         pic_str = ", ".join(pics) if isinstance(pics, list) else str(pics)
+        # Lý do khi drill từ issue (overdue / unassigned / risk / …)
+        ly_do = it.get("ly_do") or it.get("reason") or ""
+        if not ly_do and (it.get("is_overdue") or (it.get("days_overdue") or 0) > 0):
+            ly_do = reason_overdue(it)
+        elif not ly_do and (
+            it.get("predecessor_phase")
+            or it.get("start_gate")
+            or it.get("is_first_phase") is True
+        ):
+            ly_do = reason_unassigned(it)
+        elif not ly_do and (it.get("risk_factors") or it.get("risk_factors_detail")):
+            ly_do = format_risk_factors_detailed(it)
         data_rows.append([
             idx + 1,
             it.get("ma_cn", ""),
@@ -889,6 +946,7 @@ def export_drill_down(
             it.get("complexity", ""),
             it.get("fit_gap", ""),
             it.get("estimate_mh", "") or "",
+            ly_do,
         ])
 
     _write_sheet(
@@ -1667,21 +1725,27 @@ def export_chart(
                    for idx, (k, v) in enumerate(sorted(type_c.items(), key=lambda x: -x[1]))]
             ) if items else [],
         )
+        dur_thr = d.get("threshold_days")
         detail_from_items(
             "CHI TIẾT TASK DURATION BẤT THƯỜNG",
             [
                 ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Quy trình", 22),
                 ("Phase", 16), ("Start", 13), ("End", 13),
-                ("Duration (ngày)", 14), ("Loại", 12), ("Status", 12), ("PIC", 20),
+                ("Duration (ngày)", 14), ("Ngưỡng", 10), ("Loại", 12),
+                ("Status", 12), ("PIC", 20), ("Lý do", 40),
             ],
             [
                 [
                     idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+                    process_code(i),
                     i.get("phase", ""), i.get("start_date", ""), i.get("end_date", ""),
                     i.get("duration_days", 0),
+                    i.get("threshold_days", dur_thr),
                     "Elapsed" if i.get("duration_type") == "elapsed" else "Planned",
                     i.get("status", ""),
                     ", ".join(i.get("pic") or []) if isinstance(i.get("pic"), list) else (i.get("pic") or ""),
+                    reason_duration(i, dur_thr),
                 ]
                 for idx, i in enumerate(items)
             ],
@@ -1703,16 +1767,21 @@ def export_chart(
             "CHI TIẾT TASK TRỄ DEADLINE",
             [
                 ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Quy trình", 22),
                 ("Phase", 16), ("Deadline", 13), ("Số ngày trễ", 12),
                 ("Status", 12), ("PIC", 20), ("Priority", 12),
+                ("Ghi chú", 30), ("Lý do", 48),
             ],
             [
                 [
                     idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+                    process_code(i),
                     i.get("phase", ""), i.get("end_date", ""), i.get("days_overdue", 0),
                     i.get("status", ""),
                     ", ".join(i.get("pic") or []) if isinstance(i.get("pic"), list) else "",
                     i.get("priority", ""),
+                    i.get("note", ""),
+                    reason_overdue(i),
                 ]
                 for idx, i in enumerate(items)
             ],
@@ -1789,13 +1858,17 @@ def export_chart(
             "CHI TIẾT FUNCTION RỦI RO CAO",
             [
                 ("STT", 6), ("Risk Score", 12), ("Mã CN", 14), ("Tên chức năng", 40),
-                ("Module", 10), ("Priority", 12), ("Complexity", 12), ("Risk Factors", 45),
+                ("Module", 10), ("Quy trình", 22),
+                ("Priority", 12), ("Complexity", 12), ("Risk Factors", 45),
+                ("Yếu tố chi tiết", 60),
             ],
             [
                 [
                     idx + 1, i.get("risk_score", 0), i.get("ma_cn", ""), i.get("ten_cn", ""),
-                    i.get("module", ""), i.get("priority", ""), i.get("complexity", ""),
+                    i.get("module", ""), process_code(i),
+                    i.get("priority", ""), i.get("complexity", ""),
                     " | ".join(i.get("risk_factors") or []),
+                    format_risk_factors_detailed(i),
                 ]
                 for idx, i in enumerate(items)
             ],
@@ -1822,14 +1895,19 @@ def export_chart(
             "CHI TIẾT TASK ĐÌNH TRỆ",
             [
                 ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 10),
+                ("Quy trình", 22),
                 ("Phase đã xong", 16), ("Phase chờ", 16), ("Xong ngày", 13),
-                ("Chờ (ngày)", 12), ("Priority", 12),
+                ("End phase chờ", 13), ("Chờ (ngày)", 12), ("Priority", 12),
+                ("Lý do", 48),
             ],
             [
                 [
                     idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+                    process_code(i),
                     i.get("completed_phase", ""), i.get("waiting_phase", ""),
-                    i.get("completed_date", ""), i.get("wait_days", 0), i.get("priority", ""),
+                    i.get("completed_date", ""), i.get("waiting_end_date", ""),
+                    i.get("wait_days", 0), i.get("priority", ""),
+                    reason_stalled(i),
                 ]
                 for idx, i in enumerate(items)
             ],
@@ -1849,14 +1927,19 @@ def export_chart(
             "CHI TIẾT TASK CHƯA CÓ PIC",
             [
                 ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40), ("Module", 10),
-                ("Phase", 16), ("Status", 12), ("Priority", 12),
-                ("Deadline", 13), ("Trễ (ngày)", 12),
+                ("Quy trình", 22), ("Phase trước", 16), ("Phase", 16), ("Status", 12),
+                ("Priority", 12), ("Start", 13), ("Deadline", 13), ("Trễ (ngày)", 12),
+                ("Lý do", 48),
             ],
             [
                 [
                     idx + 1, i.get("ma_cn", ""), i.get("rlog_id", ""), i.get("ten_cn", ""),
-                    i.get("module", ""), i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
+                    i.get("module", ""), process_code(i),
+                    i.get("predecessor_phase", ""),
+                    i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
+                    i.get("start_date", ""),
                     i.get("end_date", ""), i.get("days_overdue", 0),
+                    reason_unassigned(i),
                 ]
                 for idx, i in enumerate(items)
             ],
@@ -2044,10 +2127,14 @@ def export_audit_report(
     _write_sheet(
         ws, "UNASSIGNED",
         [("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên CN", 40), ("Module", 10),
-         ("Phase", 16), ("Status", 12), ("Priority", 12), ("Deadline", 13)],
+         ("Quy trình", 22), ("Phase trước", 16), ("Phase", 16), ("Status", 12),
+         ("Priority", 12), ("Start", 13), ("Deadline", 13), ("Lý do", 48)],
         [[idx + 1, i.get("ma_cn", ""), i.get("rlog_id", ""), i.get("ten_cn", ""),
-          i.get("module", ""), i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
-          i.get("end_date", "")] for idx, i in enumerate(items)],
+          i.get("module", ""), process_code(i),
+          i.get("predecessor_phase", ""),
+          i.get("phase", ""), i.get("status", ""), i.get("priority", ""),
+          i.get("start_date", ""), i.get("end_date", ""),
+          reason_unassigned(i)] for idx, i in enumerate(items)],
         subtitle=sub,
     )
 
@@ -2056,12 +2143,16 @@ def export_audit_report(
     items = issues["overdue"]
     _write_sheet(
         ws, "OVERDUE",
-        [("STT", 6), ("Mã CN", 14), ("Tên CN", 40), ("Module", 10), ("Phase", 16),
-         ("Deadline", 13), ("Ngày trễ", 10), ("Status", 12), ("PIC", 20)],
+        [("STT", 6), ("Mã CN", 14), ("Tên CN", 40), ("Module", 10), ("Quy trình", 22),
+         ("Phase", 16), ("Deadline", 13), ("Ngày trễ", 10), ("Status", 12),
+         ("PIC", 20), ("Ghi chú", 30), ("Lý do", 48)],
         [[idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+          process_code(i),
           i.get("phase", ""), i.get("end_date", ""), i.get("days_overdue", 0),
           i.get("status", ""),
-          ", ".join(i.get("pic") or []) if isinstance(i.get("pic"), list) else ""]
+          ", ".join(i.get("pic") or []) if isinstance(i.get("pic"), list) else "",
+          i.get("note", ""),
+          reason_overdue(i)]
          for idx, i in enumerate(items)],
         subtitle=sub,
         row_fill_fn=lambda ri, idx: _fill_by_days(items[idx].get("days_overdue", 0)),
@@ -2072,11 +2163,15 @@ def export_audit_report(
     items = issues["stalled"]
     _write_sheet(
         ws, "ĐÌNH TRỆ",
-        [("STT", 6), ("Mã CN", 14), ("Tên CN", 40), ("Module", 10),
-         ("Phase xong", 16), ("Phase chờ", 16), ("Chờ (ngày)", 12), ("Priority", 12)],
+        [("STT", 6), ("Mã CN", 14), ("Tên CN", 40), ("Module", 10), ("Quy trình", 22),
+         ("Phase xong", 16), ("Phase chờ", 16), ("End chờ", 13),
+         ("Chờ (ngày)", 12), ("Priority", 12), ("Lý do", 48)],
         [[idx + 1, i.get("ma_cn", ""), i.get("ten_cn", ""), i.get("module", ""),
+          process_code(i),
           i.get("completed_phase", ""), i.get("waiting_phase", ""),
-          i.get("wait_days", 0), i.get("priority", "")] for idx, i in enumerate(items)],
+          i.get("waiting_end_date", ""),
+          i.get("wait_days", 0), i.get("priority", ""),
+          reason_stalled(i)] for idx, i in enumerate(items)],
         subtitle=sub,
     )
 
@@ -2086,10 +2181,11 @@ def export_audit_report(
     _write_sheet(
         ws, "HIGH RISK (>=50)",
         [("STT", 6), ("Score", 10), ("Mã CN", 14), ("Tên CN", 40), ("Module", 10),
-         ("Priority", 12), ("Factors", 45)],
+         ("Quy trình", 22), ("Priority", 12), ("Factors", 45), ("Yếu tố chi tiết", 60)],
         [[idx + 1, i.get("risk_score", 0), i.get("ma_cn", ""), i.get("ten_cn", ""),
-          i.get("module", ""), i.get("priority", ""),
-          " | ".join(i.get("risk_factors") or [])] for idx, i in enumerate(items)],
+          i.get("module", ""), process_code(i), i.get("priority", ""),
+          " | ".join(i.get("risk_factors") or []),
+          format_risk_factors_detailed(i)] for idx, i in enumerate(items)],
         subtitle=sub,
         row_fill_fn=lambda ri, idx: _fill_by_risk(items[idx].get("risk_score", 0)),
     )
@@ -2184,6 +2280,7 @@ def export_sla_report(
             ("Mã CN", 14),
             ("Tên chức năng", 40),
             ("Module", 10),
+            ("Quy trình", 22),
             ("Priority", 14),
             ("Phase", 16),
             ("End (deadline)", 14),
@@ -2199,6 +2296,7 @@ def export_sla_report(
                 i.get("ma_cn", ""),
                 i.get("ten_cn", ""),
                 i.get("module", ""),
+                process_code(i),
                 i.get("priority", ""),
                 i.get("phase", ""),
                 i.get("end_date", ""),
@@ -2261,6 +2359,7 @@ def export_capacity_report(
             ("Capacity (MH/tuần)", 18),
             ("Số tuần cần", 14),
             ("Overload?", 12),
+            ("Lý do", 40),
         ],
         data_rows=[
             [
@@ -2271,6 +2370,7 @@ def export_capacity_report(
                 r.get("capacity_mh_per_week", 0),
                 r.get("weeks_needed") if r.get("weeks_needed") is not None else "",
                 "OVERLOAD" if r.get("overload") else "",
+                reason_capacity(r),
             ]
             for idx, r in enumerate(rows)
         ],
@@ -2459,6 +2559,7 @@ def export_baseline_variance_report(
             ("Mã CN", 14),
             ("Tên chức năng", 40),
             ("Module", 10),
+            ("Quy trình", 22),
             ("Phase", 16),
             ("Plan date", 14),
             ("Actual date", 14),
@@ -2472,6 +2573,7 @@ def export_baseline_variance_report(
                 i.get("ma_cn", ""),
                 i.get("ten_cn", ""),
                 i.get("module", ""),
+                process_code(i),
                 i.get("phase", ""),
                 i.get("plan_date", ""),
                 i.get("actual_date", ""),
@@ -2566,9 +2668,11 @@ def export_fitgap_report(
             ("Priority", 14),
             ("Ngày mở", 14),
             ("Aging (ngày)", 12),
+            ("Ngưỡng", 10),
             ("Phase đang mở", 14),
             ("Status", 12),
             ("PIC", 24),
+            ("Lý do", 40),
         ],
         data_rows=[
             [
@@ -2580,9 +2684,11 @@ def export_fitgap_report(
                 it.get("priority", ""),
                 it.get("opened_date") or "N/A",
                 it.get("aging_days") if it.get("aging_days") is not None else "N/A",
+                thr,
                 it.get("current_phase", ""),
                 it.get("status", ""),
                 ", ".join(it.get("pics") or []),
+                reason_fitgap_aging(it, thr),
             ]
             for idx, it in enumerate(aging_items)
         ],
@@ -2728,13 +2834,14 @@ def export_function_diff_report(
             ("Mã CN", 14),
             ("Tên chức năng", 30),
             ("Module", 10),
+            ("Quy trình", 22),
             ("Phase", 16),
             ("PIC cũ", 30),
             ("PIC mới", 30),
         ],
         data_rows=[
             [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
-             r.get("phase", ""), r.get("old", ""), r.get("new", "")]
+             process_code(r), r.get("phase", ""), r.get("old", ""), r.get("new", "")]
             for idx, r in enumerate(payload.get("pic_changed") or [])
         ],
     )
@@ -2750,13 +2857,14 @@ def export_function_diff_report(
             ("Mã CN", 14),
             ("Tên chức năng", 30),
             ("Module", 10),
+            ("Quy trình", 22),
             ("Field", 16),
             ("Cũ", 20),
             ("Mới", 20),
         ],
         data_rows=[
             [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
-             r.get("field", ""), r.get("old", ""), r.get("new", "")]
+             process_code(r), r.get("field", ""), r.get("old", ""), r.get("new", "")]
             for idx, r in enumerate(payload.get("priority_complexity_changed") or [])
         ],
     )
@@ -2772,12 +2880,13 @@ def export_function_diff_report(
             ("Mã CN", 14),
             ("Tên chức năng", 30),
             ("Module", 10),
+            ("Quy trình", 22),
             ("Cũ", 14),
             ("Mới", 14),
         ],
         data_rows=[
             [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
-             r.get("old", ""), r.get("new", "")]
+             process_code(r), r.get("old", ""), r.get("new", "")]
             for idx, r in enumerate(payload.get("fitgap_changed") or [])
         ],
     )
@@ -2793,13 +2902,14 @@ def export_function_diff_report(
             ("Mã CN", 14),
             ("Tên chức năng", 30),
             ("Module", 10),
+            ("Quy trình", 22),
             ("Phase", 16),
             ("Status cũ", 14),
             ("Status mới", 14),
         ],
         data_rows=[
             [idx + 1, r.get("ma_cn", ""), r.get("ten_cn", ""), r.get("module", ""),
-             r.get("phase", ""), r.get("old", ""), r.get("new", "")]
+             process_code(r), r.get("phase", ""), r.get("old", ""), r.get("new", "")]
             for idx, r in enumerate(payload.get("phase_status_changed") or [])
         ],
     )
@@ -2845,9 +2955,11 @@ def export_aging_wip_report(
         ("End", 12),
         ("PIC", 20),
         ("Aging (ngày)", 12),
+        ("Ngưỡng (ngày)", 12),
         ("Over ngưỡng", 12),
         ("Priority", 12),
         ("Complexity", 12),
+        ("Lý do", 40),
     ]
     data_rows = [
         [
@@ -2863,9 +2975,11 @@ def export_aging_wip_report(
             it.get("end_date", ""),
             it.get("pic", ""),
             it.get("aging_days", 0),
+            threshold,
             it.get("over_by_days", 0),
             it.get("priority", ""),
             it.get("complexity", ""),
+            reason_aging_wip(it, threshold),
         ]
         for idx, it in enumerate(items)
     ]
@@ -2970,7 +3084,9 @@ def export_data_quality_report(
         ("Mã CN", 14),
         ("Tên chức năng", 32),
         ("Module", 10),
+        ("Quy trình", 22),
         ("Phase", 16),
+        ("Mã lỗi", 22),
         ("Loại issue", 22),
         ("Severity", 10),
         ("Chi tiết", 30),
@@ -2983,7 +3099,9 @@ def export_data_quality_report(
             it.get("ma_cn", ""),
             it.get("ten_cn", ""),
             it.get("module", ""),
+            process_code(it),
             it.get("phase", ""),
+            it.get("code", ""),
             it.get("label", ""),
             it.get("severity", "").upper(),
             it.get("detail", ""),

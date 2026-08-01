@@ -1,6 +1,66 @@
-# Feature Catalog — Map UI · API · Module
+# Feature Catalog — Checklist · UI · API · Module
 
-> Cập nhật: **2026-07-31**. Catalog để tra cứu “section này do đâu / API nào / rule nào”.
+> Cập nhật: **2026-08-01**. Dùng để tra cứu “đã ship gì / section nào / API nào”.  
+> Rule chi tiết → [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md).
+
+---
+
+## 0. Checklist trạng thái (cho review)
+
+### Core
+
+| Feature | Status | Module / UI |
+|---------|--------|-------------|
+| Auto-detect cột FL + phase `Name - Attr` | ✅ | `parser/excel_parser.py` |
+| Overdue / Status chuẩn / PIC multi | ✅ | `overdue.py`, parser |
+| Multi-project | ✅ | `project_manager.py` |
+| Snapshots (+ source Upload/Sync) | ✅ | `snapshot_manager.py` |
+| Archive / restore / auto-archive | ✅ | `archive_manager.py` |
+| Disk janitor (exports, snapshots, synced_*.xlsx, PPTX weekly trùng) | ✅ | `disk_janitor.py` (startup) |
+| Column Mapping Wizard + sync integrations | ✅ | `column_mapping`, `integrations.py` |
+| Public API + LAN + Help | ✅ | `public_api`, `lan_security`, `help_content.js` |
+
+### Forecast / PM
+
+| Feature | Status | Module |
+|---------|--------|--------|
+| Forecast Gantt UAT/Golive theo tháng | ✅ | `forecast_gantt.py` |
+| Forecast Manpower MH/MD/MM + tuyển | ✅ | `forecast_manpower.py` |
+| Ước lượng theo hệ số (ratio/parametric) | ✅ | `estimate_ratio.py` · `section-estimate-ratio` · `estimation_params.json` |
+| PIC Overload đa dự án | ✅ | `pic_overload.py` |
+| Rlog tuần | ✅ | `rlog_weekly.py` · `section-rlog` |
+| Chiều PM (KeHoach + Weekly) | ✅ | `pm_store` + parsers |
+| Capacity PIC (1 project) | ✅ | `advanced_metrics.compute_capacity_load` |
+
+### PMO Phase A–F
+
+| Phase | Feature | Status | Module / API |
+|-------|---------|--------|--------------|
+| A | Baseline mark + SV cross-snapshot | ✅ | `baseline_sv.py` · `/baseline`, `/baseline-sv` |
+| B | Completion forecast (velocity) | ✅ | `completion_forecast.py` · `/completion-forecast` |
+| C | EVM EV/PV/AC/SPI/CPI | ✅ | `earned_value.py` · `/earned-value` · `section-evm` |
+| C | Scope creep / CR | ✅ | `scope_creep.py` · `/scope-creep` · `section-scope-creep` |
+| D | PMO risk + cascade + overload | ✅ | `risk_scorer.compute_pmo_risk`, `module_dependency` · `/pmo-risk` |
+| E | UAT Quality | ✅ | `uat_quality.py` · `/uat-quality` · `section-uat-quality` |
+| F | SQLite `meta.db` dual-write | 🔶 partial | `sqlite_store.py` — chỉ settings/bookmarks/tags |
+
+### BA UX 1–11 + polish
+
+| # | Feature | Status | Ghi chú |
+|---|---------|--------|---------|
+| 1 | Auto-diff vs snapshot trước | ✅ | `function_diff.py` · `section-function-diff` |
+| 2 | Saved filters / views | ✅ | `saved_views.json` · `/saved-views` |
+| 3 | Trends (insight chips) | 🔶 | Delta OD/UA/ST trên insight strip — không API trend riêng |
+| 4 | DQ highlights trên Module/Matrix | ✅ | FE + `data_quality.py` |
+| 5 | Bulk tags | ✅ | `/tags`, `/tags/bulk` (+ SQLite dual-write) |
+| 6 | Critical path | 🔶 | Heuristic trên Gantt Calendar |
+| 7 | FL re-import verify | 🔶 | Chỉ yellow-hit PIC/Status trước đó |
+| 8 | Bottleneck phase | ✅ | `phase_status_matrix.bottleneck` |
+| 9 | PIC upcoming (tuần tới) | ✅ | `pic_upcoming.py` · `section-pic-upcoming` |
+| 10 | Rlog visibility | 🔶 | Section + counts đầy đủ; không badge kiểu DQ khắp nơi |
+| 11 | Module còn lại (count + MH) | ✅ | `module_overview.remaining` / `remaining_mh` |
+| — | Insight strip collapse | ✅ | `ihrp.insightStrip.expanded` |
+| — | DQ help topic | ✅ | `help_content.js` → `dataquality` |
 
 ---
 
@@ -8,78 +68,78 @@
 
 | Thành phần | Mô tả |
 |------------|--------|
-| `templates/index.html` | SPA: header, sidebar, sticky filter, mọi section |
-| `static/js/dashboard.js` | Logic UI (~18k+ LOC) |
+| `templates/index.html` | SPA: header, sidebar, sticky filter, sections |
+| `static/js/dashboard.js` | Logic UI |
 | `static/js/i18n.js` | VI/EN |
 | `static/js/help_content.js` | Help `?` + Ctrl+/ |
-| `static/css/style.css` | Sticky, toolbar, Gantt, treemap… |
-| `app.py` | Toàn bộ HTTP routes |
+| `static/css/style.css` | Sticky, toolbar, Gantt… |
+| `app.py` | ~100 HTTP routes |
 
-**Header toolbar:** nhóm Import/Sync · Xuất ▾ · View · Thêm ▾ (không rainbow).  
-**Sidebar:** dropdown nhóm + All; ⚙ chỉnh nhóm VI/EN + chuyển section.
+**Header:** Import/Sync · Xuất ▾ · View · Thêm ▾ · Settings · Help.  
+**Sidebar:** nhóm Tracking / Forecast / Chất lượng / Phân tích / Chiều PM / Quản trị + All.  
+**Insight strip:** chip tóm tắt + toggle collapse.
 
 ---
 
-## 2. Tracking — tiến độ & vấn đề
+## 2. Tracking
 
-| Section ID | UI | Backend / metrics | Ghi chú |
-|------------|----|--------------------|---------|
-| `section-summary` | Cards tổng quan | `DashboardEngine` summary | Sticky compact |
+| Section ID | UI | Backend | Ghi chú |
+|------------|----|---------|---------|
+| `section-summary` | Cards tổng quan | `DashboardEngine` | Sticky compact |
 | `section-globalfilter` | Module/Process/PIC/Project | `_filter_parsed_data` | Luôn hiện khi lọc nhóm |
-| `section-module` | Bảng tiến độ module | module overview | Group Module/Process |
-| `section-tasktype` | Bar % Closed theo công việc | task_type metrics | Export Chi_tiet status |
-| `section-matrix` | Phase × Module heatmap | phase matrix | |
-| `section-phase` | Stacked status × phase | phase stacked | |
-| `section-giaidoan` | % Closed × giai đoạn | giai đoạn chart | Legend padding |
-| `section-rlog` | Rlog coded / plan tuần | `rlog_weekly.py` | Đầu Tracking sau progress |
-| `section-overdue` | Bảng trễ | `overdue.py` | Filter + cột picker |
-| `section-unassigned` | Thiếu PIC | `unassigned.py` | Pred Closed + Start; Rlog ID |
-| `section-stalled` | Đình trệ | `stalled.py` | End quá hạn; fully-closed exclude |
-| `section-aging-wip` | WIP già | `advanced_metrics` | |
-| `section-sla` | Vi phạm SLA | advanced | |
+| `section-module` | Bảng tiến độ module | module overview | Cột **còn lại** / MH còn lại |
+| `section-tasktype` | % Closed theo công việc | task_type | |
+| `section-matrix` | Phase × Module | phase matrix | DQ badge + bottleneck |
+| `section-phase` | Stacked status × phase | | Bottleneck highlight |
+| `section-giaidoan` | % Closed × giai đoạn | | |
+| `section-rlog` | Rlog coded / plan tuần | `rlog_weekly.py` | |
+| `section-overdue` | Bảng trễ | `overdue.py` | |
+| `section-unassigned` | Thiếu PIC | `unassigned.py` | |
+| `section-stalled` | Đình trệ | `stalled.py` | |
+| `section-aging-wip` | WIP già | advanced | |
+| `section-sla` | SLA | advanced | |
+| `section-pic-upcoming` | PIC × tuần tới | `pic_upcoming.py` | |
 
 ---
 
-## 3. Forecast
+## 3. Forecast + PMO lịch/effort
 
-| Section ID | UI | Backend | Export |
-|------------|----|---------|--------|
-| `section-gantt` | Timeline Gantt-style | timeline_data + FE filter | chart export |
-| `section-forecast-gantt` | UAT/Golive theo tháng + nested MS | `forecast_gantt.py` | `forecast_gantt_exporter` |
-| `section-forecast-manpower` | MH/MD/MM + tuyển | `forecast_manpower.py` | Tong_hop / Chi_tiet |
-| `section-gantt-calendar` | Calendar Excel-style | `gantt_calendar.py` | |
-| `section-burndown` | Burndown / velocity | advanced | |
-| `section-capacity` | Remaining MH vs capacity | `compute_capacity_load` | |
-| `section-pic-overload` | Overload đa dự án | `pic_overload.py` | + optional FL |
-| `section-baseline` | Variance baseline | advanced | |
+| Section ID | UI | Backend | Export / API |
+|------------|----|---------|--------------|
+| `section-gantt` | Timeline | timeline_data | chart export |
+| `section-forecast-gantt` | UAT/Golive tháng | `forecast_gantt.py` | `/api/forecast-gantt` |
+| `section-forecast-manpower` | MH/MD/MM + tuyển | `forecast_manpower.py` | `/forecast-manpower` |
+| `section-estimate-ratio` | Ước lượng theo hệ số | `estimate_ratio.py` | `/estimate-ratio` · params JSON |
+| `section-gantt-calendar` | Calendar Excel-style | `gantt_calendar.py` | Critical path flag |
+| `section-burndown` | Velocity | advanced | Dùng cho completion forecast |
+| `section-capacity` | Remaining vs capacity | advanced | |
+| `section-pic-overload` | Overload đa dự án | `pic_overload.py` | `/api/pic-overload` |
+| `section-baseline` | Baseline SV | `baseline_sv.py` + advanced variance | `/baseline`, `/baseline-sv` |
+| `section-evm` | SPI/CPI | `earned_value.py` | `/earned-value` |
+| `section-scope-creep` | CR vs baseline scope | `scope_creep.py` | `/scope-creep` |
 | `section-duration` | Duration analytics | advanced | |
 
-### API Forecast Manpower
+### API nhanh
 
 ```
+GET|POST /api/forecast-gantt?slugs=
 GET|POST /api/projects/<slug>/forecast-manpower
-  ?basis=unit|duration
-  &unit=manhour|manday|manmonth
-  &default_mh=8&target_months=1
-  &hc_dev=0&hc_impl_shared=0
-  &module=&process=&pic=
-
-GET|POST /api/projects/<slug>/export-forecast-manpower?mode=summary|detail|both
-```
-
-### API Forecast Gantt
-
-```
-GET|POST /api/forecast-gantt?slugs=a,b
-GET|POST /api/forecast-gantt/export
-```
-
-### API PIC Overload
-
-```
-GET /api/pic-overload?grain=day|week|month&from=&to=
-GET|PUT /api/pic-overload/settings
-POST /api/pic-overload/export
+GET|POST /api/projects/<slug>/estimate-ratio
+GET|PUT  /api/projects/<slug>/estimation-params
+GET     /api/pic-overload?grain=day|week|month
+GET|PUT /api/projects/<slug>/baseline
+GET     /api/projects/<slug>/baseline-sv
+GET     /api/projects/<slug>/completion-forecast
+GET     /api/projects/<slug>/earned-value
+GET     /api/projects/<slug>/scope-creep
+GET     /api/projects/<slug>/pmo-risk
+GET     /api/projects/<slug>/uat-quality
+GET     /api/projects/<slug>/pic-upcoming
+POST    /api/projects/<slug>/fl-reimport-verify
+GET     /api/projects/<slug>/function-diff
+GET|POST|DELETE /api/projects/<slug>/saved-views
+GET|PUT /api/projects/<slug>/tags
+POST    /api/projects/<slug>/tags/bulk
 ```
 
 ---
@@ -88,9 +148,10 @@ POST /api/pic-overload/export
 
 | Section | Module | Ghi chú |
 |---------|--------|---------|
-| Data Quality | `data_quality.py` | Filter Module/severityity/type; skip Config Local↔UAT overlap |
-| Risk Score | `risk_scorer.py` | |
-| Anomaly | data_quality / UI card | |
+| Data Quality | `data_quality.py` | Filter Module/severity; help `dataquality` |
+| Risk Score | `risk_scorer.py` | + PMO rollup `/pmo-risk` |
+| Anomaly | DQ / UI | |
+| UAT Quality | `uat_quality.py` | Cột Defect/Feedback/Reopen/Cycle hoặc tag |
 
 ---
 
@@ -98,39 +159,43 @@ POST /api/pic-overload/export
 
 | Section | Module |
 |---------|--------|
-| Quy trình | process analysis + treemap contrast |
+| Quy trình / treemap | process + generic |
 | PIC workload | dashboard_engine |
 | Priority / Complexity / FIT-GAP | pies + `fitgap_analytics` |
 | Effort MH | effort heatmap |
 | PIC chậm / Dependency | advanced |
-| Kanban tuần | `kanban.py` — local filter **AND** global |
+| Kanban tuần | `kanban.py` |
 | Function Diff | `function_diff.py` |
-| Bookmarks | project_store |
+| Bookmarks / Tags | `project_store` + `sqlite_store` |
 
 ---
 
 ## 6. Chiều PM & báo cáo tuần
 
-| Feature | Module | API / UI |
-|---------|--------|----------|
+| Feature | Module | API |
+|---------|--------|-----|
 | Chiều PM | `pm_store`, `pm_*_parser`, `pm_exporter` | `/api/projects/<slug>/pm*` |
-| MoM tuần | `weekly_mom.py` | `export-weekly-mom` + nút Xuất MoM |
-| Digest | `digest.py` | Weekly digest section |
+| MoM tuần | `weekly_mom.py` | `export-weekly-mom` |
+| Digest | `digest.py` | Weekly digest |
+
+→ [PM_DIMENSION_GUIDE.md](PM_DIMENSION_GUIDE.md).
 
 ---
 
-## 7. Import / Sync / Mapping
+## 7. Import / Sync / FL round-trip
 
 | Feature | Module | Ghi chú |
 |---------|--------|---------|
 | Excel upload | `excel_parser` | |
-| Column Mapping Wizard | `column_mapping`, `type_infer` | |
-| Integrations sync | `integrations.py` | auth + verify_ssl + project param |
-| FL export template | `fl_export_schema` | Settings upload + DnD review |
-| FL re-import export | `fl_reimport_export` | Issues → FL tô màu |
+| Mapping Wizard | `column_mapping`, `type_infer` | |
+| Integrations sync | `integrations.py` | `verify_ssl`, eager reload |
+| FL export template | `fl_export_schema` | |
+| FL re-import export | `fl_reimport_export` | Tô vàng/xanh |
+| FL re-import verify | `fl_reimport_verify` | So yellow-hit trước/sau |
 
 ```
 GET  /api/projects/<slug>/export-fl-reimport
+POST /api/projects/<slug>/fl-reimport-verify
 GET|POST|DELETE /api/projects/<slug>/fl-export-template
 ```
 
@@ -140,7 +205,7 @@ GET|POST|DELETE /api/projects/<slug>/fl-export-template
 
 **Module:** `exporter/excel_exporter.py` (`export_chart`)
 
-Charts: `module_overview`, `task_type`, `phase_matrix`, `phase_stacked`, `giai_doan`, `process`, `burndown`, `effort_*`, `duration`, `pic_workload`, `priority`, `complexity`, `fit_gap`, `unassigned`, `risk`, `overdue`, `stalled`, …
+Charts: module_overview, task_type, phase_matrix, phase_stacked, giai_doan, process, burndown, effort_*, duration, pic_workload, priority, complexity, fit_gap, unassigned, risk, overdue, stalled, …
 
 UI: 📥 → **Tổng hợp | Chi tiết | Cả hai** (`mode`).
 
@@ -152,23 +217,24 @@ UI: 📥 → **Tổng hợp | Chi tiết | Cả hai** (`mode`).
 |---------|----------------|
 | Project CRUD | `project_manager.py` |
 | Compare 2–4 project | `portfolio.py` |
-| Global search | `/api/portfolio/search` |
-| Rollup | `/api/portfolio/rollup` |
+| Global search / rollup | `/api/portfolio/*` |
 | PIC Overload / Forecast Gantt | cross-slug |
 
 ---
 
-## 10. Settings / vận hành
+## 10. Settings / vận hành / persistence
 
-| Tab / tính năng | Store / module |
-|-----------------|----------------|
-| Capacity, aliases, visibility | `project_store` |
-| Section order | `section_order.json` + `DEFAULT_SECTION_DOM_ORDER` |
-| Module order | `module_order.json` |
-| Archive | `archive_manager` |
-| Public tokens | `public_api` |
-| LAN bind | `lan_security.resolve_bind_host` |
-| Snapshot history + Nguồn | `snapshot_manager` |
+| Tính năng | Store |
+|-----------|--------|
+| Capacity, aliases, visibility | JSON (+ settings blob trong `meta.db`) |
+| Estimation ratios (BA/Dev seed + hệ số) | `estimation_params.json` (project + optional global) |
+| Baseline snapshot id | trong project settings |
+| Section / module order | `section_order.json`, `module_order.json` |
+| Saved views | `saved_views.json` |
+| Bookmarks / tags | JSON **+** `meta.db` dual-write |
+| Archive | `archive_settings.json` |
+| Public tokens | `.project_store/...` |
+| Disk janitor | startup (không UI riêng) |
 
 ---
 
@@ -176,30 +242,28 @@ UI: 📥 → **Tổng hợp | Chi tiết | Cả hai** (`mode`).
 
 ```
 ParsedData
-   ├── overdue ──────────────► summary card + bảng + MoM Risk
-   ├── unassigned ───────────► card + DQ gate + MoM Risk + FL reimport
-   ├── stalled ──────────────► funnel/table + MoM Risk + FL reimport
-   ├── data_quality ─────────► DQ UI + MoM Risk
-   ├── rlog_weekly ──────────► Rlog section + export
-   ├── forecast_gantt ───────► Forecast UAT/Golive
-   ├── forecast_manpower ────► Forecast Manpower
-   ├── pic_overload ─────────► cross-project (nhiều ParsedData)
-   └── dashboard_engine ─────► hầu hết chart còn lại
+   ├── overdue / unassigned / stalled / data_quality
+   ├── rlog_weekly · pic_upcoming · function_diff
+   ├── forecast_gantt · forecast_manpower · estimate_ratio · pic_overload
+   ├── baseline_sv · completion_forecast · earned_value · scope_creep
+   ├── risk_scorer (+ module_dependency cascade) · uat_quality
+   ├── gantt_calendar (+ critical path heuristic)
+   └── dashboard_engine (module remaining, bottleneck, charts…)
 ```
 
 ---
 
-## 12. File code “điểm vào” khi sửa
+## 12. Điểm vào khi sửa code
 
 | Muốn sửa… | Mở trước |
 |-----------|----------|
 | Rule overdue/unassigned/stalled | `analyzer/{overdue,unassigned,stalled}.py` |
-| Chart metrics chung | `analyzer/dashboard_engine.py` |
+| PMO A–F | `baseline_sv`, `completion_forecast`, `earned_value`, `scope_creep`, `risk_scorer`, `uat_quality`, `sqlite_store` |
+| BA UX | `function_diff`, `pic_upcoming`, `fl_reimport_verify`, `gantt_calendar`, `dashboard_engine`, FE insight strip |
+| Chart metrics chung | `dashboard_engine.py` |
 | Parse cột mới | `parser/excel_parser.py` |
-| Export MoM / FL / Manpower | `exporter/weekly_mom.py`, `fl_reimport_export.py`, `forecast_manpower_exporter.py` |
-| UI section mới | `templates/index.html` + `dashboard.js` + sidebar group |
-| Thứ tự mặc định | `DEFAULT_SECTION_DOM_ORDER` trong `dashboard.js` |
-| Bind/LAN | `analyzer/lan_security.py`, `app.py` |
+| UI section | `templates/index.html` + `dashboard.js` + sidebar group |
+| Thứ tự mặc định | `DEFAULT_SECTION_DOM_ORDER` / `DEFAULT_SIDEBAR_GROUP_DEFS` |
 
 ---
 
@@ -207,5 +271,5 @@ ParsedData
 
 - [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)  
 - [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md)  
+- [CHANGELOG_PMO_BA.md](CHANGELOG_PMO_BA.md)  
 - [ARCHITECTURE.md](ARCHITECTURE.md)  
-- [DASHBOARD_SPEC.md](DASHBOARD_SPEC.md)  

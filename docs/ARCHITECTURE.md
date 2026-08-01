@@ -1,7 +1,7 @@
 # Kiến trúc hệ thống — iHRP Function List Tracker
 
-> **Single source of truth** cho kiến trúc end-to-end (cập nhật 2026-07-30).
-> Chi tiết chuyên sâu → các guide ở mục [11. Tài liệu liên quan](#11-tài-liệu-liên-quan).
+> **Single source of truth** kỹ thuật (cập nhật **2026-08-01**).  
+> Tổng quan sản phẩm → [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md). Catalog feature → [FEATURE_CATALOG.md](FEATURE_CATALOG.md).
 
 ## Mục lục
 
@@ -11,7 +11,7 @@
 4. [Data flow end-to-end](#4-data-flow-end-to-end)
 5. [Project storage layout](#5-project-storage-layout)
 6. [Auth & security](#6-auth--security)
-7. [Module map (analyzer / parser / exporter)](#7-module-map)
+7. [Module map](#7-module-map)
 8. [API surface](#8-api-surface)
 9. [Frontend architecture](#9-frontend-architecture)
 10. [Testing](#10-testing)
@@ -22,14 +22,13 @@
 
 ## 1. Mục đích sản phẩm
 
-Ứng dụng **dashboard local** cho PM/BA dự án triển khai HRIS **iHRP** (Minh Phú / FIS).
+Ứng dụng **dashboard local** cho PM/BA dự án triển khai HRIS **iHRP**.
 
-- Nhận file Excel **Function List** (hoặc đồng bộ từ API/DB nguồn).
-- Auto-detect cột (không hardcode) → parse Phase / Status / Module / PIC.
-- Sinh dashboard tracking đa chiều, drill-down, so sánh snapshot, xuất Excel/PDF.
-- Hỗ trợ **multi-project**, chia sẻ **LAN read-only**, **Public API** (REST / iframe / PNG) cho partner.
+- Nhận Function List Excel (hoặc sync API/DB) → auto-detect cột → metrics đa chiều.
+- Multi-project, snapshot/archive, Forecast, PMO (SV/EVM/CR/Risk/UAT), BA UX, Chiều PM.
+- Export Excel/PDF/MoM; Public API / LAN read-only.
 
-Nguyên tắc gốc (`.cursorrules`): không hardcode cột; overdue = End < today và Status ∉ {Closed, Cancelled}; status chuẩn hóa; PIC tách bởi `, ; + \n`.
+Nguyên tắc `.cursorrules`: không hardcode cột; overdue = End < today ∧ Status ∉ {Closed, Cancelled}; status chuẩn hóa; PIC tách `, ; + \n`.
 
 ---
 
@@ -38,16 +37,16 @@ Nguyên tắc gốc (`.cursorrules`): không hardcode cột; overdue = End < tod
 | Lớp | Công nghệ |
 |-----|-----------|
 | Backend | Python 3.10+ / **Flask 3** |
-| Frontend | Vanilla ES6, **Tailwind CDN**, **Chart.js CDN** (không build step) |
-| Excel | **openpyxl** (không dùng pandas) |
+| Frontend | Vanilla ES6, Tailwind CDN, Chart.js CDN (không build step) |
+| Excel | **openpyxl** (không pandas) |
 | HTTP integrations | **requests** + **beautifulsoup4** (CSRF form login) |
-| PDF (client) | html2canvas + jsPDF (trong browser) |
+| PDF (client) | html2canvas + jsPDF |
 | PNG public (optional) | Playwright + Chromium |
-| DB integration (optional) | pyodbc / psycopg2 / pymysql — lazy import |
-| Persistence | File JSON + pickle + xlsx trên disk — **không database app** |
+| DB integration (optional) | pyodbc / psycopg2 / pymysql — lazy |
+| Persistence | File JSON + pickle + xlsx; **Phase F:** `meta.db` (SQLite WAL) dual-write cho settings/bookmarks/tags |
 | Test | pytest (+ pytest-cov, requests-mock) |
 
-Launcher: `start.bat` / `start.sh` (Windows tự kill port 5000 nếu conflict).
+Launcher: `start.bat` / `start.sh`.
 
 ---
 
@@ -55,51 +54,33 @@ Launcher: `start.bat` / `start.sh` (Windows tự kill port 5000 nếu conflict).
 
 ```
 Project_Tracking/
-├── start.bat / start.sh          # Launcher
-├── requirements.txt              # Runtime deps
-├── requirements-dev.txt          # Dev extras (nếu có)
-├── .env / .env.example           # Credential integrations (KHÔNG commit .env)
-├── app.py                        # Flask app — routes admin + public + embed
+├── start.bat / start.sh
+├── requirements.txt
+├── .env / .env.example          # KHÔNG commit .env
+├── app.py                       # ~100 routes admin + public + embed
 ├── parser/
-│   ├── excel_parser.py           # Auto-detect header + parse Function List
-│   └── column_mapping.py         # Fuzzy suggest + mapping wizard helpers
-├── analyzer/                     # Metrics, integrations, storage helpers
-│   ├── dashboard_engine.py       # compute_all() — metrics chính
-│   ├── risk_scorer.py            # Risk 0–100
-│   ├── snapshot_manager.py       # Snapshot hot + load (kể cả archived)
-│   ├── archive_manager.py        # Gzip archive / restore / purge
-│   ├── compare_engine.py         # So sánh 2 snapshot / cross-project
-│   ├── project_manager.py        # Multi-project CRUD + migrate legacy
-│   ├── project_store.py          # JSON store: settings, bookmarks, tokens…
-│   ├── integrations.py           # Registry API + sync (HTTP/DB)
-│   ├── public_api.py             # Token verify, scopes, rate limit, PNG
-│   ├── lan_security.py           # Localhost-only admin + access log
-│   ├── gantt_calendar.py         # Gantt Calendar Excel-style
-│   ├── data_quality.py           # DQ rules + export
-│   ├── drill_down.py             # Chart → function list
-│   ├── generic_chart.py          # Custom dashboard aggregate + drill
-│   ├── digest.py                 # Weekly digest cron-lite
-│   ├── kanban.py / palette.py / portfolio.py / …
-│   └── type_infer.py             # Suy đoán kiểu cột (smart mapping)
-├── exporter/
-│   ├── excel_exporter.py         # Overdue / full / by-pic / compare
-│   ├── weekly_mom.py             # Báo cáo tuần MoM (mẫu W30) + PM Dashboard
-│   └── export_all_issues.py      # Workbook multi-sheet “toàn bộ vấn đề”
-├── templates/
-│   ├── index.html                # SPA dashboard
-│   └── embed.html                # Public iframe chart
-├── static/
-│   ├── css/style.css
-│   └── js/
-│       ├── dashboard.js          # UI chính (~13k+ LOC)
-│       ├── help_content.js       # HELP_CONTENT topics
-│       └── palette.py → palette.js
-├── tests/                        # ~30 file test_*.py — ~790 passed
-├── uploads/
-│   ├── projects/                 # Per-project workspace
-│   └── tmp/                      # Upload-preview tạm (TTL 24h)
-├── .project_store/               # Digests / access.log (một số path legacy)
-└── docs/                         # Tài liệu (file này + guides)
+│   ├── excel_parser.py          # Auto-detect + parse FL
+│   ├── column_mapping.py
+│   ├── pm_plan_parser.py
+│   └── pm_weekly_parser.py
+├── analyzer/                    # Metrics, storage, integrations
+│   ├── dashboard_engine.py      # compute_all
+│   ├── overdue|unassigned|stalled|data_quality|rlog_weekly.py
+│   ├── forecast_gantt|forecast_manpower|estimate_ratio|pic_overload|pic_upcoming.py
+│   ├── baseline_sv|completion_forecast|earned_value|scope_creep.py
+│   ├── risk_scorer|module_dependency|uat_quality.py
+│   ├── gantt_calendar|function_diff|fl_reimport_verify.py
+│   ├── snapshot_manager|archive_manager|disk_janitor.py
+│   ├── project_manager|project_store|sqlite_store.py
+│   ├── integrations|public_api|lan_security|pm_store.py
+│   └── … (portfolio, kanban, digest, drill_down, …)
+├── exporter/                    # Excel MoM, FL, forecast, overload, chart…
+├── templates/                   # index.html SPA + embed.html
+├── static/css|js/               # dashboard.js, help_content.js, i18n.js
+├── tests/
+├── uploads/projects/            # Per-project workspace (+ meta.db)
+├── .project_store/              # users.json (hash MK), secret_key, tokens, access.log
+└── docs/
 ```
 
 ---
@@ -111,145 +92,107 @@ Project_Tracking/
 ```mermaid
 flowchart TB
     subgraph Sources
-        XLSX[Excel Function List]
-        API[HTTP API / JSON]
-        DB[(SQL View)]
+        XLSX[Excel FL]
+        API[HTTP/JSON]
+        DB[(SQL)]
+        PMFILES[KeHoach / Weekly]
     end
 
     subgraph Ingest
-        UP[Upload / Mapping Wizard]
+        UP[Upload / Mapping]
         SYNC[Integrations Sync]
         PARSE[FunctionListParser]
     end
 
     subgraph Store
         CUR[current.xlsx]
-        SNAP[snapshots/ + archive/]
-        JSON[project JSON store]
+        SNAP[snapshots + archive]
+        JSON[JSON stores]
+        SQLITE[(meta.db)]
     end
 
     subgraph Compute
-        ENG[DashboardEngine + modules]
-        MET[Metrics JSON]
+        ENG[DashboardEngine + PMO/BA modules]
     end
 
-    subgraph Outputs
-        UI[Dashboard SPA]
-        EXP[Excel / PDF export]
-        PUB[Public REST / iframe / PNG]
-        LAN[LAN read-only clients]
+    subgraph Out
+        UI[SPA]
+        EXP[Excel / PDF]
+        PUB[Public API]
     end
 
-    XLSX --> UP
-    API --> SYNC
+    XLSX --> UP --> PARSE
+    API --> SYNC --> PARSE
     DB --> SYNC
-    UP --> PARSE
-    SYNC --> PARSE
     PARSE --> CUR
     PARSE --> SNAP
     PARSE --> ENG
-    ENG --> MET
-    MET --> UI
-    MET --> EXP
-    MET --> PUB
-    UI --> LAN
-    JSON --> UI
+    PMFILES --> ENG
+    JSON --> ENG
+    SQLITE --> UI
+    ENG --> UI
+    ENG --> EXP
+    ENG --> PUB
 ```
 
-### 4.2 Upload thủ công
+### 4.2 Upload / Sync
 
 ```
-User chọn .xlsx
-  → (default) POST /api/upload-preview → tmp + fuzzy suggest + modal mapping
-  → POST /api/upload-confirm {tmp_id, column_mapping, project_slug}
-     hoặc POST /api/projects/<slug>/upload (skip wizard)
-  → FunctionListParser.parse(path, column_mapping?)
-  → DashboardEngine.compute_all(parsed)
-  → SnapshotManager.save_snapshot(..., source="upload")
-  → _state[slug] cache + trim payload → JSON dashboard
+Upload-preview → mapping confirm → parse → compute_all
+  → SnapshotManager.save (source=upload|sync:…)
+  → _state[slug] cache
+
+Sync: auth → fetch → parse → snapshot → eager-reload _state
+  → FE cacheBust + refresh
 ```
 
-### 4.3 Sync từ Registry API / DB
-
-```
-User bấm 🔄 Đồng bộ (dropdown hoặc modal)
-  → FE mở Sync Progress modal (các bước UI)
-  → POST .../integrations/<id>/sync {endpoint_id}
-  → integrations: auth (.env) → fetch excel|json|SQL
-  → (json) field_mapping → build xlsx
-  → parse + metrics + snapshot (source="sync:<integ>:<ep>")
-  → optional replace current.xlsx
-  → FE refresh dashboard + cập nhật upload-history (cột Nguồn)
-```
-
-### 4.4 Đọc dashboard / public
+### 4.3 Đọc dashboard
 
 ```
 GET /api/projects/<slug>/dashboard?module=&process=&pic=
-  → load state (memory hoặc disk pickle)
-  → optional _filter_parsed_data
-  → compute_all + trim → UI
+  → load state → optional filter → compute_all → JSON
 
-GET /public/api/v1/... + X-API-Key
-  → verify token hash + scope + rate limit
-  → trả subset metrics / functions / PNG
+PMO/BA routes riêng: /baseline-sv, /earned-value, /scope-creep,
+  /completion-forecast, /pmo-risk, /uat-quality, /pic-upcoming,
+  /function-diff, /fl-reimport-verify, …
 ```
 
 ---
 
 ## 5. Project storage layout
 
-Mỗi project = 1 folder dưới `uploads/projects/<slug>/`:
-
 ```
 uploads/projects/
-├── projects.json                 # Index toàn bộ project
+├── projects.json
 └── <slug>/
     ├── meta.json
-    ├── current.xlsx              # File hiện hành
-    ├── integrations.json         # Registry API (KHÔNG chứa secret)
-    ├── archive_settings.json     # Auto-archive thresholds
-    ├── project_settings.json     # Digest, SLA, thresholds…
-    ├── bookmarks.json
-    ├── function_notes.json
-    ├── chart_notes.json          # PDF comments
-    ├── chart_configs.json        # Visibility / per-chart config
-    ├── custom_dashboards.json
-    ├── excel_mapping_presets.json
-    ├── capacity.json / pic_roles / …
-    ├── exports/                  # Excel xuất ra
-    ├── digests/                  # Weekly digest YYYYMMDD.xlsx
-    ├── synced_*.xlsx             # File tạm từ sync (nếu còn)
+    ├── meta.db                      # Phase F — settings / bookmarks / tags
+    ├── current.xlsx
+    ├── integrations.json
+    ├── archive_settings.json
+    ├── project_settings.json        # dual-write mirror
+    ├── bookmarks.json               # dual-write mirror
+    ├── tags.json / function tags    # dual-write mirror
+    ├── saved_views.json             # file-only
+    ├── section_order.json / module_order.json
+    ├── capacity.json / chart_* / custom_dashboards.json
+    ├── fl_export_schema.json
+    ├── upload_history.json
+    ├── exports/ · digests/ · synced_*.xlsx
+    ├── pm/                          # plan + weekly (+ janitor dedupe PPTX)
     └── snapshots/
-        ├── snapshot_index.json   # + field source, archived
-        ├── YYYY-MM-DD_functionlist.xlsx
-        ├── YYYY-MM-DD_functionlist.parsed.pkl
-        └── archive/              # *.xlsx.gz + *.pkl.gz (T-AA)
+        ├── snapshot_index.json      # source, archived, …
+        ├── YYYY-MM-DD_*.xlsx + .parsed.pkl
+        └── archive/                 # *.gz
 ```
 
-**Public tokens** (và một số cache PNG): `.project_store/<slug>/public_tokens.json`,
-`public_cache/`. Mapping presets JSON API: theo integration trong project store.
+| Lớp | Nội dung |
+|-----|----------|
+| **SQLite dual-write** | `project_settings`, bookmarks, function_tags — đọc ưu tiên `meta.db`, fallback JSON |
+| **File-only** | FL/snapshots, saved_views, section/module order, capacity, charts, integrations, PM, archive settings, history… |
+| **Janitor (startup)** | exports cũ; excess snapshots; `synced_*.xlsx` (keep ≤5); duplicate `*weekly*.pptx` khi đã có `weekly.pptx` |
 
-**Snapshot entry** (rút gọn):
-
-```json
-{
-  "date": "2026-07-30",
-  "filename": "2026-07-30_functionlist.xlsx",
-  "pickle": "2026-07-30_functionlist.parsed.pkl",
-  "total_functions": 375,
-  "overall_pct": 50.4,
-  "overdue_count": 44,
-  "source": "upload",
-  "archived": false,
-  "upload_time": "2026-07-30T08:40:37"
-}
-```
-
-- `source`: `"upload"` | `"sync:<integ_id>:<endpoint_id>"`
-- `archived`: `true` → file nằm trong `snapshots/archive/*.gz`; load vẫn transparent
-
-Chi tiết schema JSON → [`DATA_MODEL.md`](DATA_MODEL.md).
+Snapshot entry: `source` (`upload` \| `sync:…`), `archived`, metrics tóm tắt. Chi tiết → [DATA_MODEL.md](DATA_MODEL.md).
 
 ---
 
@@ -257,121 +200,94 @@ Chi tiết schema JSON → [`DATA_MODEL.md`](DATA_MODEL.md).
 
 | Cơ chế | Mô tả |
 |--------|--------|
-| **`.env` credentials** | Username/password/token/API key theo prefix integration. Không lưu trong `integrations.json`. |
-| **Admin localhost-only** | `lan_security.install_admin_guard`: POST/PUT/DELETE `/api/*` (trừ export) chỉ từ `127.0.0.1` / `::1` (hoặc `IHRP_LAN_ADMIN_ALLOW`). |
-| **LAN bind** | Mặc định `127.0.0.1:5000` (solo-safe). Mở LAN: `IHRP_LAN=1` hoặc `IHRP_BIND_LOCAL_ONLY=0` → `0.0.0.0`. Helper: `lan_security.resolve_bind_host`. |
-| **Public API tokens** | `pub_<40 hex>`, lưu SHA-256; scope ACL; rate limit 60 req/60s/token; CORS GET. |
-| **verify_ssl** | Per-integration `auth.verify_ssl` (default `true`). Tắt chỉ khi cert nội bộ thiếu CA. |
-| **Access log** | `.project_store/access.log` — LAN + admin deny events. |
-| **Upload tmp** | `tmp_id` hex-only (chống path traversal); TTL 24h. |
-
-Guides: [`LAN_DEPLOY_GUIDE.md`](LAN_DEPLOY_GUIDE.md), [`PUBLIC_API_GUIDE.md`](PUBLIC_API_GUIDE.md), [`INTEGRATIONS_GUIDE.md`](INTEGRATIONS_GUIDE.md).
+| `.env` credentials | Không lưu trong `integrations.json` |
+| Admin localhost-only | Mutation `/api/*` (trừ export) chỉ loopback / allowlist |
+| LAN bind | Default `127.0.0.1`; `IHRP_LAN=1` → `0.0.0.0` |
+| Public tokens | SHA-256, scope, rate limit |
+| `verify_ssl` | Per-integration (default true) |
+| Access log | `.project_store/access.log` |
 
 ---
 
 ## 7. Module map
 
-### Core parse & metrics
+### Parse & core metrics
 
 | Module | Trách nhiệm |
 |--------|-------------|
-| `parser/excel_parser.py` | Header detect, phase groups `"Name - Attr"`, normalize date/status/PIC |
-| `parser/column_mapping.py` | Fuzzy + bilingual alias cho Mapping Wizard |
-| `analyzer/type_infer.py` | Suy đoán kiểu cột (date/PIC/status/number) — smart mapping |
-| `analyzer/dashboard_engine.py` | `compute_all` — summary, matrix, PIC, overdue, effort, timeline… |
-| `analyzer/risk_scorer.py` | Risk score 0–100 (8 yếu tố) |
-| `analyzer/advanced_metrics.py` | Burndown, SLA, capacity load, slow heatmap, baseline… |
-| `analyzer/drill_down.py` | Chart cell → list function |
-| `analyzer/generic_chart.py` | Custom dashboard aggregate + drill |
-| `analyzer/data_quality.py` | DQ issues + filter Module |
-| `analyzer/gantt_calendar.py` | Timeline Excel-style (day/week/month) |
-| `analyzer/compare_engine.py` | Delta 2 snapshot |
-| `analyzer/fitgap_analytics.py` | FIT/GAP chuyên sâu |
-| `analyzer/function_diff.py` / `function_traceability.py` | Diff / trace |
-| `analyzer/kanban.py` | Board theo status/PIC |
-| `analyzer/digest.py` | Weekly digest generate + startup schedule |
-| `analyzer/portfolio.py` | Cross-project search / rollup / compare |
+| `parser/excel_parser.py` | Header detect, phase groups, status/PIC/date |
+| `parser/column_mapping.py` | Mapping Wizard |
+| `dashboard_engine.py` | `compute_all` — summary, matrix, PIC, module remaining, bottleneck… |
+| `overdue` / `unassigned` / `stalled` / `data_quality` | Rule cảnh báo |
+| `rlog_weekly.py` | Rlog coded / plan tuần |
+| `advanced_metrics.py` | Burndown, SLA, capacity, aging, slow, baseline-in-file |
+| `drill_down` / `generic_chart` / `kanban` / `fitgap_analytics` | Phân tích |
+
+### Forecast / PMO / BA
+
+| Module | Trách nhiệm |
+|--------|-------------|
+| `forecast_gantt.py` | Milestone theo tháng đa dự án |
+| `forecast_manpower.py` | MH/MD/MM + hire |
+| `estimate_ratio.py` | Ước lượng theo hệ số (parametric) |
+| `pic_overload.py` | Overload đa dự án |
+| `pic_upcoming.py` | PIC × tuần tới |
+| `baseline_sv.py` | SV cross-snapshot |
+| `completion_forecast.py` | Ngày xong từ velocity |
+| `earned_value.py` | EVM |
+| `scope_creep.py` | CR / scope creep |
+| `risk_scorer.py` | Risk + `compute_pmo_risk` |
+| `module_dependency.py` | Cascade delay heuristic |
+| `uat_quality.py` | Defect / reopen / cycle |
+| `gantt_calendar.py` | Timeline + critical path heuristic |
+| `function_diff.py` | Diff vs snapshot |
+| `fl_reimport_verify.py` | Verify yellow-hit sau re-import |
 
 ### Storage & ops
 
 | Module | Trách nhiệm |
 |--------|-------------|
-| `project_manager.py` | CRUD project, slugify, migrate V2→V3 |
-| `snapshot_manager.py` | Save/load/list; `source`; load archived gzip in-memory |
-| `archive_manager.py` | Archive / restore / auto-archive / purge + checksum |
-| `project_store.py` | Mọi JSON per-project + archive_settings + mapping presets |
-| `disk_janitor.py` | Dọn file tạm / dung lượng |
-| `lan_security.py` | Admin guard + access log + detect LAN IPs |
+| `project_manager.py` | CRUD project |
+| `snapshot_manager.py` | Snapshot + load archived |
+| `archive_manager.py` | Gzip archive / restore / purge |
+| `project_store.py` | JSON + cầu nối SQLite |
+| `sqlite_store.py` | `meta.db` WAL meta slice |
+| `disk_janitor.py` | Dọn đĩa startup |
+| `pm_store.py` | Chiều PM |
+| `lan_security.py` / `public_api.py` / `integrations.py` | Secure share / sync |
 
-### Integrations & public
+### Exporter (chọn lọc)
 
-| Module | Trách nhiệm |
-|--------|-------------|
-| `integrations.py` | 4 HTTP auth + `database`; excel/json sync; `verify_ssl` |
-| `public_api.py` | Token CRUD helpers, scopes, rate limit, PNG render |
-| `exporter/excel_exporter.py` | Overdue / full / by-pic / compare |
-| `exporter/weekly_mom.py` | Báo cáo tuần MoM (Cover + Master plan khung + MoM_Wxx + PM Dashboard) |
-| `exporter/export_all_issues.py` | 8-sheet “toàn bộ vấn đề” |
-
-### Frontend JS
-
-| File | Trách nhiệm |
-|------|-------------|
-| `static/js/dashboard.js` | Toàn bộ section, sync modal, settings, mapping wizard… |
-| `static/js/help_content.js` | Nội dung help + categories |
-| `static/js/palette.js` | Semantic colors (progress tiers…) |
+`excel_exporter`, `weekly_mom`, `fl_reimport_export`, `forecast_*_exporter`, `pic_overload_exporter`, `pm_exporter`, `rlog_exporter`, `export_all_issues`…
 
 ---
 
 ## 8. API surface
 
-Ba lớp route (chi tiết đầy đủ nằm trong `app.py`):
+~**100** `@app.route` trong `app.py`. Ba lớp:
 
 ### A. Admin (localhost mutations)
 
-**Projects:** `GET/POST /api/projects`, `GET/PUT/DELETE /api/projects/<slug>`, restore.
+**Projects / ingest:** CRUD, upload, mapping, integrations sync.
 
-**Ingest:** upload, upload-preview/confirm, mapping-presets, validate-mapping,
-integrations CRUD + test + sync + preview-json + mapping-presets per integration.
+**Analytics (GET, LAN-readable):** dashboard, overdue, unassigned, stalled, risk-scores, drill-down, gantt-calendar, data-quality, aging-wip, kanban, burndown, sla, capacity-load, fitgap, function-diff, custom-dashboard, **baseline(-sv), completion-forecast, earned-value, scope-creep, pmo-risk, uat-quality, pic-upcoming, fl-reimport-verify, saved-views, tags…**
 
-**Analytics (GET, LAN-readable):** dashboard, overdue, unassigned, long-duration,
-stalled, risk-scores, drill-down, gantt-calendar, data-quality, aging-wip,
-kanban, burndown, sla, capacity-load, fitgap, function-diff, custom-dashboard…
+**Cross-project:** `/api/forecast-gantt`, `/api/pic-overload`, `/api/portfolio/*`.
 
-**Snapshots / compare / archive:** snapshots list/delete, compare, upload-compare,
-archive-settings, archive-run, snapshot archive/restore.
+**Snapshots / archive / compare:** list, compare, archive-settings, archive-run, restore.
 
-**Exports:** overdue, full, by-pic, compare, all-issues, gantt-calendar,
-data-quality, aging-wip, chart, audit-report, package zip…
+**Exports:** overdue, full, by-pic, compare, all-issues, MoM, FL re-import, chart, audit, Rlog, manpower, overload…
 
-**Settings / UX state:** settings, chart-notes, chart-config, bookmarks, notes,
-digests, capacity, saved-views, section-order, module-order, pic-roles, phase-aliases.
-
-**Module order** (`GET|PUT /api/projects/<slug>/module-order`,
-`POST .../module-order/reset`): persist `module_order.json` → reorder
-`ParsedData.all_modules` cho mọi list/sort theo module (filter dropdown,
-overview, matrix, process tiles, gantt, export). Default alphabetical.
-Chi tiết schema: [`DATA_MODEL.md`](DATA_MODEL.md#module_orderjson--thứ-tự-module-toàn-dashboard).
-
-Default section order (khi chưa có `section_order.json`): summary → **tiến độ tổng thể**
-(module / tasktype / matrix / phase / giaidoan / gantt / forecast) → rlog →
-cảnh báo (overdue → unassigned → stalled → …), rồi phân tích sâu / PM / quản trị.
-Chi tiết: [`DASHBOARD_SPEC.md`](DASHBOARD_SPEC.md#default-section-order-ux--tiến-độ-trước).
-
-**Public token admin:** `GET/POST/DELETE .../public-tokens`, `GET .../public-scopes`.
-
-**LAN info:** `GET /api/lan/info`, `GET /api/lan/access-log` (admin).
+**Settings / UX:** settings, chart-notes/config, bookmarks, notes, digests, capacity, section-order, module-order, phase-aliases, public-tokens, LAN info.
 
 ### B. Public (token)
 
 ```
 GET /public/api/v1/projects/<slug>/summary
 GET /public/api/v1/projects/<slug>/charts/<chart_id>
-GET /public/api/v1/projects/<slug>/charts/<chart_id>/image   # optional Playwright
+GET /public/api/v1/projects/<slug>/charts/<chart_id>/image
 GET /public/api/v1/projects/<slug>/functions?page=&size=
 ```
-
-Auth: header `X-API-Key` hoặc `?token=`.
 
 ### C. Embed
 
@@ -379,42 +295,31 @@ Auth: header `X-API-Key` hoặc `?token=`.
 GET /embed/<slug>/<chart_id>?token=&bg=
 ```
 
-→ `templates/embed.html` (Chart.js tối giản).
-
-Legacy routes không có `/projects/<slug>/` vẫn trỏ project `"default"`.
+Legacy routes không có `/projects/<slug>/` → project `"default"`.
 
 ---
 
 ## 9. Frontend architecture
 
-Single page `templates/index.html` + `dashboard.js`.
+SPA: `templates/index.html` + `dashboard.js` + `help_content.js` + `i18n.js`.
 
-### Shell UI
+### Shell
 
-- Header: project selector, search, dark mode, 🔌 API Registry, 🔄 Sync ▾,
-  📄 PDF, 📊 Xuất vấn đề, 🎬 Trình chiếu, ⚙️ Cài đặt, ❓ Help, Ctrl+K palette.
-- Sidebar nav jump section.
-- Global filter: Module × Quy trình × PIC → recompute backend.
-- Sync Progress modal: các bước Auth → Fetch → Parse → Snapshot → Refresh.
-- `apiJson()` helper: lỗi HTML từ server → message thân thiện (không crash JSON.parse).
+- Header: project, search, dark mode, API Registry, Sync, PDF, Xuất, Present, Settings, Help, Ctrl+K.
+- **Insight strip:** chips tóm tắt (+ delta OD/UA/ST); collapse → `localStorage` `ihrp.insightStrip.expanded`.
+- Sidebar nhóm: Tracking / Forecast / Chất lượng / Phân tích / Chiều PM / Quản trị (`DEFAULT_SIDEBAR_GROUP_DEFS`).
+- Global filter Module × Process × PIC × Project.
+- `apiJson()` — lỗi HTML → message thân thiện.
 
-### Section groups (ẩn/hiện qua Settings)
+### Default section order
 
-1. **Tổng quan** — summary cards, module overview, phase matrix…
-2. **Tiến độ & Timeline** — stacked phase, giai đoạn, Gantt Calendar, burndown, SLA…
-3. **Phân tích** — PIC, priority/complexity, FIT/GAP, effort, duration, process treemap…
-4. **Danh sách & cảnh báo** — overdue, unassigned, stalled, risk, aging WIP, DQ, bookmarks, digests, upload history (cột **Nguồn**)
-5. **Tùy chỉnh** — custom dashboards, kanban, compare, portfolio…
+Tiến độ (module…gantt…forecast…rlog) → vấn đề (overdue…DQ…**uat-quality**) → phân tích (capacity…overload…**baseline/evm/scope-creep**…diff) → PM → admin.
 
-### Help system
+Chi tiết ID → [FEATURE_CATALOG.md](FEATURE_CATALOG.md) · [DASHBOARD_SPEC.md](DASHBOARD_SPEC.md).
 
-- Nút `?` per-section → modal từ `HELP_CONTENT`.
-- Global Help (Ctrl+/) + onboarding tour 8 bước.
-- Xem [`HELP_CONTENT_GUIDE.md`](HELP_CONTENT_GUIDE.md).
+### Help
 
-### Spec chi tiết từng section
-
-→ [`DASHBOARD_SPEC.md`](DASHBOARD_SPEC.md).
+Section `?` + Ctrl+/ + onboarding. Topic DQ: `dataquality`. Guide: [HELP_CONTENT_GUIDE.md](HELP_CONTENT_GUIDE.md).
 
 ---
 
@@ -422,12 +327,13 @@ Single page `templates/index.html` + `dashboard.js`.
 
 ```bash
 pytest -q
-# hoặc có coverage:
-pytest tests/ --cov=parser --cov=analyzer --cov=exporter --cov-report=term-missing
+pytest tests/test_baseline_sv_forecast.py tests/test_earned_value.py \
+  tests/test_scope_creep.py tests/test_pmo_risk_phase_d.py \
+  tests/test_uat_quality.py tests/test_sqlite_store.py \
+  tests/test_ba_ux_backlog.py -q
 ```
 
-- ~**790** tests passed (2026-07-30).
-- Coverage các module core parser / engine / integrations / public_api / archive / LAN.
+Suite lớn (hàng trăm test) phủ parser, engine, integrations, archive, PMO, BA UX.
 
 ---
 
@@ -435,48 +341,31 @@ pytest tests/ --cov=parser --cov=analyzer --cov=exporter --cov-report=term-missi
 
 | File | Nội dung |
 |------|----------|
-| [`README.md`](README.md) | Mục lục docs + cách chạy + feature overview |
-| [`DATA_MODEL.md`](DATA_MODEL.md) | Schema Excel parse + JSON store |
-| [`DASHBOARD_SPEC.md`](DASHBOARD_SPEC.md) | Spec UI từng section |
-| [`INTEGRATIONS_GUIDE.md`](INTEGRATIONS_GUIDE.md) | Registry API, auth, mapping, verify_ssl |
-| [`PUBLIC_API_GUIDE.md`](PUBLIC_API_GUIDE.md) | REST / iframe / PNG + token |
-| [`LAN_DEPLOY_GUIDE.md`](LAN_DEPLOY_GUIDE.md) | Chia sẻ LAN + firewall + admin guard |
-| [`ARCHIVE_GUIDE.md`](ARCHIVE_GUIDE.md) | Auto-archive / restore / purge |
-| [`HELP_CONTENT_GUIDE.md`](HELP_CONTENT_GUIDE.md) | Thêm topic help |
-| [`IHRP_TASKDAILY_API_SETUP.md`](IHRP_TASKDAILY_API_SETUP.md) | Ví dụ sync Task Daily |
-| [`BUGS_TODO.md`](BUGS_TODO.md) | Done / backlog / P2 |
-| [`UPGRADE_V2.md`](UPGRADE_V2.md) / [`UPGRADE_MULTIPROJECT.md`](UPGRADE_MULTIPROJECT.md) | Historical |
+| [README.md](README.md) | Index + reading order cho review |
+| [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) | Big picture + gaps |
+| [FEATURE_CATALOG.md](FEATURE_CATALOG.md) | Checklist feature |
+| [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md) | Công thức / rule |
+| [CHANGELOG_PMO_BA.md](CHANGELOG_PMO_BA.md) | PMO/BA đã ship |
+| [DATA_MODEL.md](DATA_MODEL.md) | Schema |
+| [DASHBOARD_SPEC.md](DASHBOARD_SPEC.md) | Spec UI |
+| Guides | Integrations, Public API, LAN, Archive, PM, Help |
+| [BUGS_TODO.md](BUGS_TODO.md) | P2 backlog |
+| UPGRADE_*.md | Historical |
 
 ---
 
 ## 12. Roadmap còn lại (P2)
 
-Đã ship gần đây (không liệt kê hết): Public API 2A–2C, LAN secure, Smart mapping,
-Gantt Calendar, Help unified, Archive auto, Sync progress UI, Export all issues,
-verify_ssl, cột Nguồn lịch sử, DQ filter Module…
+**Đã ship:** Core multi-project, Forecast, Chiều PM, Archive, Public/LAN, **PMO A–F**, **BA UX**, disk janitor, insight strip, DQ help…  
+→ [CHANGELOG_PMO_BA.md](CHANGELOG_PMO_BA.md).
 
-**Còn pending** (xem `_WIP_RESUME_NOTES.md` / `BUGS_TODO.md`):
+**Pending:**
 
 | ID | Mô tả |
 |----|--------|
-| **T-B** | API Registry Catalog — metadata đầy đủ, filter, health, Postman import |
-| **T-C** | Hoàn thiện `form_login` wizard (cookie jar, CSRF UX, 2FA optional) |
+| **T-B** | API Registry Catalog — metadata, filter, health, Postman import |
+| **T-C** | `form_login` wizard đầy đủ (cookie jar bền, CSRF UX, 2FA optional) — form_login cơ bản đã dùng được |
 
-Nice-to-have nhỏ: auto-cleanup digests, presentation HUD buttons, thêm DQ rules…
+**Không có trong backlog hiện tại (gap sản phẩm):** SQLite cutover full; CPM critical path thật. (Ước lượng theo hệ số: `estimate_ratio.py`.)
 
----
-
-## Phụ lục — Risk score (nhắc nhanh)
-
-| Yếu tố | Điểm |
-|--------|------|
-| Priority Must / Should | +20 / +10 |
-| Complexity High / Medium | +15 / +5 |
-| Có phase overdue | +20 |
-| Mỗi 7 ngày overdue | +10 (cap +30) |
-| Phase active không PIC | +15 |
-| Duration > threshold | +10 |
-| Đình trệ | +10 |
-| Risk/Blocker note | +5 |
-
-Cap 100. Chi tiết implement: `analyzer/risk_scorer.py`.
+Resume pointer: root `_WIP_RESUME_NOTES.md` (chỉ P2 — không phải mô tả kiến trúc).

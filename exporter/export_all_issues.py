@@ -43,6 +43,14 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
 from analyzer.i18n import normalize_lang, sheet_name as _sn, t as _t
+from exporter.reason_formatters import (
+    format_risk_factors_detailed,
+    process_code,
+    reason_aging_wip,
+    reason_overdue,
+    reason_stalled,
+    reason_unassigned,
+)
 
 
 # ==========================================================================
@@ -423,15 +431,19 @@ def _write_overdue_sheet(wb, items: list[dict], *, lang: str = "vi", name: str =
     if lang == "en":
         cols = [
             ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
+            ("Process", 22),
             ("Overdue phases", 28), ("Deadline (max)", 13), ("Days late (max)", 15),
             ("Status", 13), ("PIC", 22), ("Priority", 12), ("Note", 30),
+            ("Reason", 48),
         ]
         title = "🔴 OVERDUE TASKS (dedup by Code)"
     else:
         cols = [
             ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
+            ("Quy trình", 22),
             ("Phase trễ (gộp)", 28), ("Deadline (max)", 13), ("Số ngày trễ (max)", 15),
             ("Status", 13), ("PIC", 22), ("Priority", 12), ("Ghi chú", 30),
+            ("Lý do", 48),
         ]
         title = "🔴 TASK TRỄ DEADLINE (dedup theo Mã CN)"
     _write_banner(ws, title, len(items), "overdue", len(cols), lang=lang)
@@ -442,9 +454,11 @@ def _write_overdue_sheet(wb, items: list[dict], *, lang: str = "vi", name: str =
         rows.append([
             idx + 1,
             it.get("ma_cn", ""), it.get("ten_cn", ""), it.get("module", ""),
+            process_code(it),
             it.get("phase", ""), it.get("end_date", ""), it.get("days_overdue", 0),
             it.get("status", ""), ", ".join(it.get("pic", [])),
             it.get("priority", ""), it.get("note", ""),
+            reason_overdue(it),
         ])
 
     _write_data(
@@ -460,15 +474,17 @@ def _write_unassigned_sheet(wb, items: list[dict], *, lang: str = "vi", name: st
     if lang == "en":
         cols = [
             ("#", 6), ("Code", 14), ("Rlog ID", 14), ("Function Name", 40), ("Module", 12),
-            ("Phase", 16), ("Status", 16), ("Priority", 12), ("Complexity", 12),
-            ("Deadline", 13), ("Days late", 12),
+            ("Process", 22), ("Prev phase", 16), ("Phase", 16), ("Status", 16),
+            ("Priority", 12), ("Complexity", 12),
+            ("Start", 13), ("Deadline", 13), ("Days late", 12), ("Reason", 48),
         ]
         title = "🟠 UNASSIGNED TASKS"
     else:
         cols = [
             ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40), ("Module", 12),
-            ("Phase", 16), ("Status", 16), ("Priority", 12), ("Complexity", 12),
-            ("Deadline", 13), ("Trễ (ngày)", 12),
+            ("Quy trình", 22), ("Phase trước", 16), ("Phase", 16), ("Status", 16),
+            ("Priority", 12), ("Complexity", 12),
+            ("Start", 13), ("Deadline", 13), ("Trễ (ngày)", 12), ("Lý do", 48),
         ]
         title = "🟠 TASK CHƯA CÓ PIC PHỤ TRÁCH"
     _write_banner(ws, title, len(items), "unassigned", len(cols), lang=lang)
@@ -480,9 +496,13 @@ def _write_unassigned_sheet(wb, items: list[dict], *, lang: str = "vi", name: st
             idx + 1,
             it.get("ma_cn", ""), it.get("rlog_id", ""), it.get("ten_cn", ""),
             it.get("module", ""),
+            process_code(it),
+            it.get("predecessor_phase", ""),
             it.get("phase", ""), it.get("status", ""),
             it.get("priority", ""), it.get("complexity", ""),
+            it.get("start_date", ""),
             it.get("end_date", ""), it.get("days_overdue", 0),
+            reason_unassigned(it),
         ])
 
     def _fill(i):
@@ -502,15 +522,19 @@ def _write_stalled_sheet(wb, items: list[dict], *, lang: str = "vi", name: str =
     if lang == "en":
         cols = [
             ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
+            ("Process", 22),
             ("Completed phase", 18), ("Waiting phase", 18),
-            ("Completed on", 13), ("Wait days", 12), ("Priority", 12),
+            ("Completed on", 13), ("Wait end", 13), ("Wait days", 12),
+            ("Priority", 12), ("Reason", 48),
         ]
         title = "🟡 STALLED TASKS (BETWEEN PHASES)"
     else:
         cols = [
             ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
+            ("Quy trình", 22),
             ("Phase đã xong", 18), ("Phase chờ", 18),
-            ("Xong ngày", 13), ("Số ngày chờ", 12), ("Priority", 12),
+            ("Xong ngày", 13), ("End phase chờ", 13), ("Số ngày chờ", 12),
+            ("Priority", 12), ("Lý do", 48),
         ]
         title = "🟡 TASK ĐÌNH TRỆ (KẸT GIỮA 2 PHASE)"
     _write_banner(ws, title, len(items), "stalled", len(cols), lang=lang)
@@ -521,9 +545,12 @@ def _write_stalled_sheet(wb, items: list[dict], *, lang: str = "vi", name: str =
         rows.append([
             idx + 1,
             it.get("ma_cn", ""), it.get("ten_cn", ""), it.get("module", ""),
+            process_code(it),
             it.get("completed_phase", ""), it.get("waiting_phase", ""),
-            it.get("completed_date", ""), it.get("wait_days", 0),
+            it.get("completed_date", ""), it.get("waiting_end_date", ""),
+            it.get("wait_days", 0),
             it.get("priority", ""),
+            reason_stalled(it),
         ])
     _write_data(
         ws, rows,
@@ -538,15 +565,17 @@ def _write_risk_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = ""
     if lang == "en":
         cols = [
             ("#", 6), ("Risk Score", 12), ("Code", 14),
-            ("Function Name", 40), ("Module", 12),
+            ("Function Name", 40), ("Module", 12), ("Process", 22),
             ("Priority", 12), ("Complexity", 12), ("Risk Factors", 50),
+            ("Detailed factors", 60),
         ]
         title = "🔺 HIGH RISK FUNCTIONS (≥30)"
     else:
         cols = [
             ("STT", 6), ("Risk Score", 12), ("Mã CN", 14),
-            ("Tên chức năng", 40), ("Module", 12),
+            ("Tên chức năng", 40), ("Module", 12), ("Quy trình", 22),
             ("Priority", 12), ("Complexity", 12), ("Risk Factors", 50),
+            ("Yếu tố chi tiết", 60),
         ]
         title = "🔺 FUNCTION CÓ ĐIỂM RỦI RO CAO (≥30)"
     _write_banner(ws, title, len(items), "high_risk", len(cols), lang=lang)
@@ -557,8 +586,10 @@ def _write_risk_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = ""
         rows.append([
             idx + 1, it.get("risk_score", 0),
             it.get("ma_cn", ""), it.get("ten_cn", ""), it.get("module", ""),
+            process_code(it),
             it.get("priority", ""), it.get("complexity", ""),
             " | ".join(it.get("risk_factors", [])),
+            format_risk_factors_detailed(it),
         ])
     _write_data(
         ws, rows,
@@ -575,8 +606,8 @@ def _write_aging_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "
             ("#", 6), ("Code", 14), ("Function Name", 40), ("Module", 12),
             ("Process", 20), ("Phase", 16), ("Status", 13),
             ("Start", 13), ("End (plan)", 13), ("PIC", 22),
-            ("Aging (days)", 12), ("Over by (days)", 12),
-            ("Priority", 12), ("Complexity", 12),
+            ("Aging (days)", 12), ("Threshold", 10), ("Over by (days)", 12),
+            ("Priority", 12), ("Complexity", 12), ("Reason", 40),
         ]
         title = "🟡 AGING WIP (In-progress too long)"
     else:
@@ -584,8 +615,8 @@ def _write_aging_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "
             ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 40), ("Module", 12),
             ("Quy trình", 20), ("Phase", 16), ("Status", 13),
             ("Start", 13), ("End (plan)", 13), ("PIC", 22),
-            ("Aging (ngày)", 12), ("Over by (ngày)", 12),
-            ("Priority", 12), ("Complexity", 12),
+            ("Aging (ngày)", 12), ("Ngưỡng", 10), ("Over by (ngày)", 12),
+            ("Priority", 12), ("Complexity", 12), ("Lý do", 40),
         ]
         title = "🟡 TASK AGING WIP (In-progress quá lâu)"
     _write_banner(ws, title, len(items), "aging", len(cols), lang=lang)
@@ -593,14 +624,17 @@ def _write_aging_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "
 
     rows = []
     for idx, it in enumerate(items):
+        thr = it.get("threshold_days")
         rows.append([
             idx + 1,
             it.get("ma_cn", ""), it.get("ten_cn", ""), it.get("module", ""),
             it.get("quy_trinh", ""), it.get("phase", ""), it.get("status", ""),
             it.get("start_date", ""), it.get("end_date", ""),
             ", ".join(it.get("pic", []) if isinstance(it.get("pic"), list) else [str(it.get("pic") or "")]),
-            it.get("aging_days", 0), it.get("over_by_days", 0),
+            it.get("aging_days", 0), thr if thr is not None else "",
+            it.get("over_by_days", 0),
             it.get("priority", ""), it.get("complexity", ""),
+            reason_aging_wip(it, thr),
         ])
     _write_data(
         ws, rows,
@@ -615,6 +649,7 @@ def _write_dq_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") 
     if lang == "en":
         cols = [
             ("#", 6), ("Code", 14), ("Function Name", 32), ("Module", 12),
+            ("Process", 22),
             ("Phase", 14), ("Issue code", 22), ("Severity", 8),
             ("Label", 40), ("Detail", 40), ("Suggestion", 30),
         ]
@@ -622,6 +657,7 @@ def _write_dq_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") 
     else:
         cols = [
             ("STT", 6), ("Mã CN", 14), ("Tên chức năng", 32), ("Module", 12),
+            ("Quy trình", 22),
             ("Phase", 14), ("Mã lỗi", 22), ("Mức", 8),
             ("Mô tả", 40), ("Chi tiết", 40), ("Gợi ý", 30),
         ]
@@ -634,6 +670,7 @@ def _write_dq_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") 
         rows.append([
             idx + 1,
             it.get("ma_cn", ""), it.get("ten_cn", ""), it.get("module", ""),
+            process_code(it),
             it.get("phase", ""), it.get("code", ""), it.get("severity", ""),
             it.get("label", ""), it.get("detail", ""), it.get("suggestion", ""),
         ])

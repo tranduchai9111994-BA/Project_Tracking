@@ -35,6 +35,9 @@ _pdf_downloads/
 _flask_*.log
 server*.log
 
+# Session auth + LAN access log + secret_key (không commit)
+.project_store/
+
 # === Project data (per-user, không đưa vào repo) ===
 # Uploads root: chỉ commit files trong uploads/ nếu là sample cho test;
 # tất cả nội dung project-scoped (project_store) NẰM TRONG uploads/projects/

@@ -1,29 +1,32 @@
-# Dashboard Specification — V3 (18 sections + drill-down + global filter)
+# Dashboard Specification
 
-Dashboard chia thành 3 nhóm section:
-- **Core V1** (10 sections): summary, module, task-type, matrix, phase stack, PIC, priority/complexity/fitgap, giai đoạn, overdue
-- **Advanced V2 P1** (4 sections): unassigned, duration, stalled, risk
-- **Advanced V2 P2-P3** (4 sections): effort, process, timeline, compare + weekly digest
+> Cập nhật đầu file: **2026-08-01**. Spec chi tiết từng chart V1–V4 bên dưới vẫn đúng hướng;  
+> **catalog section mới (PMO/BA)** và map API → [`FEATURE_CATALOG.md`](FEATURE_CATALOG.md).  
+> Sidebar nhóm hiện tại: Tracking / Forecast / Chất lượng / Phân tích / Chiều PM / Quản trị.
 
-Ngoài ra có các thành phần UX toàn cục: sidebar nav, search bar, dark mode toggle, fullscreen chart, refresh reminder.
+Lịch sử mở rộng: Core V1 → Advanced V2 → V3 multi-project/filter/drill-down → Forecast/PM → **PMO A–F + BA UX**.
 
-**V3 mở rộng UX:**
-- 🗂️ Project selector + Project Manager Modal (dropdown header)
-- 🎯 Global filter (Module × Quy trình) — apply cho toàn dashboard, `applied_filter` badge hiện row count
-- 🔍 Drill-down modal — click cell/segment/row biểu đồ → hiện table function chi tiết, sort/lọc, xuất Excel riêng
-- 📱 Chart responsive — dùng CSS clamp() để scale mượt theo viewport, resize handler cho window
+UX toàn cục: sidebar nhóm, insight strip (collapse), search, dark mode, fullscreen chart, Help `?`, saved views.
+
+**V3+ UX:**
+- Project selector + Project Manager
+- Global filter (Module × Quy trình × PIC × Project) + **saved views**
+- Drill-down modal; chart responsive (`clamp`)
+- Insight strip chips (+ delta OD/UA/ST vs snapshot trước)
 
 ### Default section order (UX — tiến độ trước)
 
-Thứ tự DOM + sidebar mặc định (khi project **chưa** có `section_order.json`).
-Đã save order → giữ nguyên; nút **↺ Mặc định** xoá custom order và áp layout này.
+Thứ tự DOM mặc định (`DEFAULT_SECTION_DOM_ORDER` trong `dashboard.js`) khi chưa có `section_order.json`.  
+Nút **↺ Mặc định** áp lại layout này.
 
 | Nhóm | Sections |
 |------|----------|
 | **A — Tiến độ tổng thể** | summary (+ global filter) → module + tasktype → matrix → phase → giaidoan → gantt → forecast UAT/Golive → forecast manpower → gantt-calendar → burndown → rlog |
-| **B — Vấn đề / cảnh báo** | overdue → unassigned → stalled → risk → aging-wip → sla → dataquality |
-| **C — Phân tích sâu** | process → capacity → pic-overload → baseline → effort → duration → slow → deps → kanban → pic → priority → fitgap → function-diff → bookmarks |
+| **B — Vấn đề / cảnh báo** | overdue → unassigned → stalled → risk → aging-wip → sla → dataquality → **uat-quality** |
+| **C — Phân tích sâu** | process → capacity → pic-overload → **baseline** → **evm** → **scope-creep** → effort → duration → slow → deps → kanban → pic → priority → fitgap → function-diff → bookmarks |
 | **D — Chiều PM / Quản trị** | pm → digest → my-digests → compare → custom-dashboards → history |
+
+**Sidebar Tracking** cũng gồm `section-pic-upcoming`. **Forecast** gồm baseline / evm / scope-creep. **Chất lượng** gồm uat-quality.
 
 ---
 
@@ -1022,3 +1025,25 @@ Cột **Link** dùng `openpyxl.Hyperlink(location=f"'<sheet>'!A1")` — click
 - `templates/index.html` — nút `📊 Xuất vấn đề` ở header (red-500).
 - `static/js/dashboard.js` — `exportAllIssues()` + Command Palette entry
   `act.export-all-issues`.
+
+---
+
+## Phụ lục — Section PMO / BA UX (tóm tắt 2026-08)
+
+Spec dài ở các mục trên chủ yếu mô tả V1–V4. Section sau đã ship; chi tiết rule/API → [FEATURE_CATALOG.md](FEATURE_CATALOG.md) · [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md).
+
+| Section ID | Tên UI | Payload chính |
+|------------|--------|----------------|
+| `section-baseline` | Baseline Variance / SV | Cross-snapshot SV ngày (`baseline_sv`) |
+| `section-evm` | Earned Value (SPI/CPI) | BAC, EV, PV, AC, SPI, CPI |
+| `section-scope-creep` | Scope Creep / CR | % CR, MH CR vs gốc |
+| `section-uat-quality` | UAT Quality | Defect / feedback / reopen / cycle |
+| `section-pic-upcoming` | PIC tuần tới | Ma trận PIC × tuần |
+| `section-function-diff` | Diff | Added/removed/changed vs snapshot trước |
+| `section-forecast-manpower` | Forecast Manpower | MH/MD/MM + hire |
+| `section-estimate-ratio` | Ước lượng theo hệ số | Parametric BA/Dev + ratios; `estimation_params.json` |
+| `section-gantt-calendar` | Gantt Calendar | + flag `on_critical_path` (heuristic) |
+| `section-module` | Module overview | + `remaining` / `remaining_mh` |
+| Insight strip | Header chips | OD/UA/ST + delta; collapse LS |
+
+Help: topic `dataquality`, `baseline`, `earned-value`, `scope-creep` trong `help_content.js`.

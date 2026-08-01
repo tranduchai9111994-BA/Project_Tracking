@@ -1,7 +1,8 @@
 # Registry API Integrations — Hướng dẫn cấu hình (T30 + T30b)
 
-> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md).
-> Schema storage → [`DATA_MODEL.md`](DATA_MODEL.md) mục `integrations.json`.
+> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md).  
+> Schema storage → [`DATA_MODEL.md`](DATA_MODEL.md) mục `integrations.json`.  
+> Mục lục docs → [`README.md`](README.md). P2 catalog Registry còn pending → [`BUGS_TODO.md`](BUGS_TODO.md).
 
 Tính năng "🔌 API Registry + Đồng bộ dữ liệu" cho phép PM/BA cấu hình 1 lần rồi
 sau đó chỉ cần bấm 1 nút để tự động:

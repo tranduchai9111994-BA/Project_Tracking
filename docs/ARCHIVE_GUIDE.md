@@ -1,5 +1,9 @@
 # Archive Guide — Auto-archive snapshots (T-AA)
 
+> Kiến trúc tổng thể → [`ARCHITECTURE.md`](ARCHITECTURE.md) mục storage + security.  
+> Schema `archive_settings.json` → [`DATA_MODEL.md`](DATA_MODEL.md).  
+> Cập nhật: **2026-08-01** (+ ghi chú Disk janitor).
+
 Hướng dẫn dùng tính năng **auto-archive** snapshot cũ để giải phóng dung lượng đĩa mà vẫn giữ data để so sánh / load.
 
 ## Mục đích
@@ -61,9 +65,22 @@ Khi Flask start (và `auto_run_on_startup=True` + `enabled=True`):
 Trước khi xóa bản hot, app verify SHA-256 của nội dung sau gzip khớp hash gốc.
 Restore cũng verify lại trước khi xóa `.gz`.
 
+## Disk janitor (khác Archive)
+
+Khi Flask **start**, `analyzer/disk_janitor.py` còn:
+
+| Việc | Hành vi |
+|------|---------|
+| `purge_old_exports` | Xóa file trong `exports/` cũ hơn N ngày (mặc định 7) |
+| `purge_excess_snapshots` | Giữ tối đa ~15 snapshot hot mới nhất / project (kèm `.pkl`) |
+| `purge_excess_synced_*` | Giữ tối đa **5** file `synced_*.xlsx` / project |
+| `purge_duplicate_pm_weekly_*` | Nếu đã có `pm/weekly.pptx` → xóa PPTX `*weekly*` tên dài khác |
+
+Archive (gzip + `archived=true`) và janitor (xóa file tạm/dư) **bổ sung nhau** — không thay thế.
+
 ## Lưu ý
 
-- **Purge là destructive** — không khôi phục được. Chỉ bật khi chắc chắn không cần snapshot quá cũ.
+- **Purge archive là destructive** — không khôi phục được. Chỉ bật khi chắc chắn không cần snapshot quá cũ.
 - Entry cũ không có `archived`/`source` → default `archived=false`, `source=upload`.
 - Không thêm dependency ngoài (stdlib `gzip` + `hashlib`).
 

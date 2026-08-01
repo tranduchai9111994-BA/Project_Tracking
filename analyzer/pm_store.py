@@ -110,6 +110,12 @@ def save_weekly(
                 shutil.copy2(source_path, dest)
         except shutil.SameFileError:
             pass
+        # Chỉ giữ weekly.pptx — tên gốc nằm trong source_filename (weekly.json)
+        try:
+            from analyzer.disk_janitor import purge_duplicate_pm_weekly
+            purge_duplicate_pm_weekly(project_dir)
+        except Exception:
+            pass
     return payload
 
 

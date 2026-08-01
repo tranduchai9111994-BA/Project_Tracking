@@ -43,6 +43,37 @@ META_KEYWORDS = {
     "remark": ["Remark", "Ghi chú chung"],
     # Mã dự án (iHRP Task Daily API: JSON key `project`, VD "MPHG_IHRP_2025_PM")
     "ma_du_an": ["Mã dự án", "Project Code", "Project"],
+    # Phase C — Change Request / scope creep (KHÔNG dùng keyword ngắn "CR"
+    # trong list này vì partial match sẽ dính "Description"; exact "CR"
+    # được xử lý riêng trong _detect_meta_columns).
+    "is_cr": [
+        "Change Request", "Phát sinh", "Phat sinh", "Scope Creep",
+        "Is CR", "CR Flag", "CR?", "CR No", "CR Number", "CR ID",
+    ],
+    "cr_date": [
+        "Ngày phát sinh", "Ngay phat sinh", "CR Date", "CR Raised",
+        "Change Request Date", "Ngày CR", "Ngay CR",
+    ],
+    # Phase E — UAT / customer feedback quality (KHÔNG dùng keyword ngắn "Bug"
+    # trong partial match vì dính "Debug"; exact Bug/Defect xử lý riêng).
+    "defect_count": [
+        "Defect Count", "Bug Count", "Số lỗi", "So loi", "Số bug", "So bug",
+        "Số Defect", "So Defect", "Defect Qty", "Bug Qty",
+        "Defects", "Defect/Bug", "Bug/Defect", "Số Defects",
+    ],
+    "feedback_count": [
+        "Feedback Count", "Số phản hồi", "So phan hoi",
+        "Customer Feedback", "Phản hồi", "Phan hoi", "Feedback",
+    ],
+    "reopen_count": [
+        "Reopen Count", "Re-open Count", "Số lần reopen", "So lan reopen",
+        "Số reopen", "So reopen", "Reopen Times", "Reopens",
+        "Re-open", "Reopen",
+    ],
+    "uat_cycle": [
+        "UAT Cycle Count", "UAT Cycles", "Số vòng UAT", "So vong UAT",
+        "Vòng UAT", "Vong UAT", "UAT Cycle", "Cycle UAT", "UAT vòng",
+    ],
 }
 
 # === Mapping phase name → task type (tiếng Việt) ===
@@ -344,6 +375,24 @@ class FunctionListParser:
                 if found:
                     break
             result[meta_key] = found
+
+        # Exact header "CR" — không dùng partial (tránh "Description" chứa "cr")
+        if result.get("is_cr") is None:
+            for h, idx in headers.items():
+                if " - " in h:
+                    continue
+                if h.strip().upper() == "CR":
+                    result["is_cr"] = idx
+                    break
+
+        # Exact Bug/Defect — không partial (tránh "Debug" chứa "bug")
+        if result.get("defect_count") is None:
+            for h, idx in headers.items():
+                if " - " in h:
+                    continue
+                if h.strip().lower() in ("bug", "bugs", "defect", "defects"):
+                    result["defect_count"] = idx
+                    break
 
         return result
 

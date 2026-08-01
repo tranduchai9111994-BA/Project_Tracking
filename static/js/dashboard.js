@@ -132,6 +132,12 @@ async function apiJson(url, opts = {}) {
     }
 
     if (!resp.ok) {
+        // Session hết hạn / chưa login → về trang đăng nhập
+        if (resp.status === 401 && data && data.code === "AUTH_REQUIRED") {
+            const next = encodeURIComponent(location.pathname + location.search);
+            location.href = `/login?next=${next}`;
+            throw new Error("Chưa đăng nhập — đang chuyển tới trang đăng nhập…");
+        }
         const msg = (data && (data.error || data.message)) || `HTTP ${resp.status}`;
         const err = new Error(msg);
         err.status = resp.status;
@@ -146,6 +152,11 @@ window.apiJson = apiJson;
 // INIT
 // ========================================================================
 document.addEventListener("DOMContentLoaded", () => {
+    // Session user label trên header (best-effort)
+    if (typeof _authRefreshHeader === "function") {
+        _authRefreshHeader().catch(() => {});
+    }
+
     const zone = document.getElementById("uploadZone");
     const input = document.getElementById("fileInput");
 
@@ -263,6 +274,18 @@ async function loadProjectList() {
     } catch (err) {
         console.error("Không load được project list", err);
         showToast(err.message || "Không load được danh sách project", "red");
+        // Đừng để selector kẹt chữ «Đang tải…» — vẫn cho upload vào Default
+        const sel = document.getElementById("projectSelector");
+        if (sel && (!sel.options.length || sel.options[0].textContent.includes("Đang tải"))) {
+            sel.innerHTML = "";
+            const opt = document.createElement("option");
+            opt.value = currentProjectSlug || "default";
+            opt.textContent = "Default";
+            sel.appendChild(opt);
+            sel.value = opt.value;
+        }
+        updateUploadTargetLabel();
+        syncUploadZoneVisibility(false);
     }
 }
 
@@ -555,6 +578,13 @@ function applyDashboardResponse(data) {
 
     _step("picBlacklist", () => _updatePicBlacklistBadge(data.pic_blacklist_count || 0));
 
+    _step("autoDiff", () => {
+        if (data.auto_diff) {
+            window._lastAutoDiff = data.auto_diff;
+            if (typeof renderAutoDiffBadges === "function") renderAutoDiffBadges(data.auto_diff);
+        }
+    });
+
     _step("structureCache", () => {
         // Cache structure gốc (full list) từ lần load đầu (không có filter)
         // để filter dropdown luôn giữ nguyên option kể cả khi backend
@@ -590,14 +620,25 @@ function applyDashboardResponse(data) {
 
     // P3/P4 hooks — lazy analytics + saved views + deep-link URL.
     try { if (typeof loadBurndownAndSLA === "function") setTimeout(loadBurndownAndSLA, 100); } catch (e) {}
+    try { if (typeof refreshProjectBaseline === "function") setTimeout(refreshProjectBaseline, 120); } catch (e) {}
     try { if (typeof loadPicOverload === "function") setTimeout(loadPicOverload, 150); } catch (e) {}
     try { if (typeof loadForecastGantt === "function") setTimeout(loadForecastGantt, 160); } catch (e) {}
+    try { if (typeof loadForecastManpower === "function") setTimeout(loadForecastManpower, 170); } catch (e) {}
+    try {
+        if (typeof loadEstimateRatio === "function") {
+            setTimeout(() => loadEstimateRatio({ fromServerOnly: true }), 180);
+        }
+    } catch (e) {}
     // Task 2 — FIT/GAP Dashboard: fetch riêng như SLA/Capacity vì compute nặng
     // (đi qua tất cả rows) và support aging_threshold_days configurable.
     try { if (typeof loadFitgapDashboard === "function") setTimeout(loadFitgapDashboard, 120); } catch (e) {}
     // Task 3 — Function Diff: fetch riêng vì cần load snapshot pickle (chậm hơn dashboard)
     try { if (typeof loadFunctionDiff === "function") setTimeout(loadFunctionDiff, 150); } catch (e) {}
     try { if (typeof loadSavedViews === "function") setTimeout(loadSavedViews, 120); } catch (e) {}
+    try { if (typeof loadFlReimportVerify === "function") setTimeout(loadFlReimportVerify, 200); } catch (e) {}
+    try { if (typeof loadPicUpcoming === "function") setTimeout(loadPicUpcoming, 220); } catch (e) {}
+    try { if (typeof loadInsightModuleDeltas === "function") setTimeout(loadInsightModuleDeltas, 240); } catch (e) {}
+    try { if (typeof loadExecutiveDashboard === "function") setTimeout(loadExecutiveDashboard, 260); } catch (e) {}
     try { if (typeof _updateDeepLink === "function") _updateDeepLink(); } catch (e) {}
     // Task 4b: Load custom section order (nếu user đã customize) — apply DOM reorder
     // TRƯỚC khi user nhìn thấy dashboard (idempotent: nếu order khớp default sẽ no-op).
@@ -2183,6 +2224,9 @@ function renderSummaryCards() {
         ? `${pct(s.anomaly_count || 0)}% tổng · overlap / estimate…`
         : "click → Data Quality");
 
+    // BA/UX #3 — Trends từ snapshot history
+    try { if (typeof renderSummaryTrends === "function") renderSummaryTrends(); } catch (e) {}
+
     // Wire click drill-down cho Unassigned / High-risk cards
     const uaEl = document.getElementById("cardUnassigned")?.closest("div[onclick]");
     const hrEl = document.getElementById("cardHighRisk")?.closest("div[onclick]");
@@ -2337,10 +2381,20 @@ function _mgRowHtml(r, opts = {}) {
         ? `onclick="${opts.onclick}"`
         : `onclick="_moduleRowClickGeneric(this)"`;
     const dataAttrs = `data-mod="${escapeAttr(r.module || "")}" data-proc="${escapeAttr(r.process || "")}"`;
-    return `<tr class="border-b hover:bg-blue-50 cursor-pointer" ${dataAttrs} ${clickAttr}>
+    const rem = r.remaining != null ? r.remaining : "—";
+    const remN = Number(r.remaining) || 0;
+    const remCls = remN > 0 ? "fc-num fc-num-remain" : "fc-num fc-num-muted";
+    const remMh = (r.remaining_mh != null && r.remaining_mh > 0)
+        ? `<div class="text-[10px] text-teal-600/80">${r.remaining_mh} MH</div>` : "";
+    const dqN = _dqCountForModule(r.module);
+    const dqBadge = dqN > 0
+        ? `<span class="dq-hit-badge" onclick="event.stopPropagation(); openDqForModule('${escapeAttr(r.module)}')" title="${dqN} DQ issue">DQ ${dqN}</span>`
+        : "";
+    const dqCls = dqN > 0 ? "dq-mod-hit" : "";
+    return `<tr class="border-b hover:bg-blue-50 cursor-pointer ${dqCls}" ${dataAttrs} ${clickAttr}>
         <td class="px-2 py-2 text-center">${r.stt}</td>
         <td class="px-2 py-2 font-semibold text-blue-700 ${indent}">
-            ${opts.prefix || ""}${escapeHtml(r.label || r.module)}
+            ${opts.prefix || ""}${escapeHtml(r.label || r.module)}${dqBadge}
         </td>
         <td class="px-2 py-2 text-center">${r.total}</td>
         <td class="px-2 py-2 text-center">${r.quy_trinh_count}</td>
@@ -2353,6 +2407,7 @@ function _mgRowHtml(r, opts = {}) {
         </td>
         <td class="px-2 py-2 text-center text-xs">${escapeHtml(r.active_phase || "")}</td>
         <td class="px-2 py-2 text-center ${r.overdue_count > 0 ? 'text-red-600 font-bold' : ''}">${r.overdue_count}</td>
+        <td class="px-2 py-2 text-center"><span class="${remCls}">${rem}</span>${remMh}</td>
     </tr>`;
 }
 
@@ -2418,11 +2473,21 @@ function renderModuleTable() {
     const rows = metricsData.module_overview;
     tbody.innerHTML = rows.map(r => {
         const color = _mgProgressColor(r.progress_pct);
-        return `<tr class="border-b hover:bg-blue-50 cursor-pointer"
+        const rem = r.remaining != null ? r.remaining : "—";
+        const remN = Number(r.remaining) || 0;
+        const remCls = remN > 0 ? "fc-num fc-num-remain" : "fc-num fc-num-muted";
+        const remMh = (r.remaining_mh != null && r.remaining_mh > 0)
+            ? `<div class="text-[10px] text-teal-600/80">${r.remaining_mh} MH</div>` : "";
+        const dqN = _dqCountForModule(r.module);
+        const dqBadge = dqN > 0
+            ? `<span class="dq-hit-badge" onclick="event.stopPropagation(); openDqForModule('${escapeAttr(r.module)}')" title="${dqN} DQ issue">DQ ${dqN}</span>`
+            : "";
+        const dqCls = dqN > 0 ? "dq-mod-hit" : "";
+        return `<tr class="border-b hover:bg-blue-50 cursor-pointer ${dqCls}"
                     data-mod="${escapeAttr(r.module)}" onclick="_moduleRowClick(this)"
                     title="Click để xem chi tiết ${escapeAttr(r.total)} function của module ${escapeAttr(r.module)}">
             <td class="px-2 py-2 text-center">${r.stt}</td>
-            <td class="px-2 py-2 font-semibold text-blue-700">${escapeHtml(r.module)}</td>
+            <td class="px-2 py-2 font-semibold text-blue-700">${escapeHtml(r.module)}${dqBadge}</td>
             <td class="px-2 py-2 text-center">${r.total}</td>
             <td class="px-2 py-2 text-center">${r.quy_trinh_count}</td>
             <td class="px-2 py-2">
@@ -2434,6 +2499,7 @@ function renderModuleTable() {
             </td>
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(r.active_phase)}</td>
             <td class="px-2 py-2 text-center ${r.overdue_count > 0 ? 'text-red-600 font-bold' : ''}">${r.overdue_count}</td>
+            <td class="px-2 py-2 text-center"><span class="${remCls}">${rem}</span>${remMh}</td>
         </tr>`;
     }).join("");
 }
@@ -2614,6 +2680,7 @@ function _renderPhaseMatrixFrom(m) {
     const rowLabels = m.row_labels || m.modules || [];
     const gb = m.group_by || "module";
     const rowHeader = gb === "process" ? "Quy trình" : "Module";
+    const bottleneck = m.bottleneck || {};
 
     const thead = document.getElementById("matrixHead");
     thead.innerHTML = `<tr class="bg-gray-800 text-white text-xs">
@@ -2640,23 +2707,40 @@ function _renderPhaseMatrixFrom(m) {
             const tooltip = total > 0
                 ? `${label} × ${ph} · ${closed}/${total} Closed (${pct}%) · In-prog: ${inprog} · Assign: ${assigned} · Open: ${open}`
                 : "Không có dữ liệu";
-            // b9: click → drill (phase_matrix). Với mode process, filter dùng
-            // process; mode module dùng module. openDrillDown('phase_matrix', ...)
-            // supported params: module, phase.
+            const dqN = (gb === "module") ? _dqCountForModulePhase(label, ph) : 0;
+            const dqCls = dqN > 0 ? "dq-cell-hit" : "";
+            const dqTip = dqN > 0 ? ` · DQ: ${dqN} issue` : "";
             const clickAttr = total > 0
-                ? `data-key="${escapeAttr(label)}" data-ph="${escapeAttr(ph)}" data-gb="${gb}" onclick="_matrixCellClick(this)" style="cursor:pointer"`
+                ? `data-key="${escapeAttr(label)}" data-ph="${escapeAttr(ph)}" data-gb="${gb}" data-dq="${dqN}" onclick="_matrixCellClick(this)" style="cursor:pointer"`
                 : "";
-            return `<td class="px-1 py-1 text-center" ${clickAttr} title="${escapeAttr(tooltip)}">
+            return `<td class="px-1 py-1 text-center ${dqCls}" ${clickAttr} title="${escapeAttr(tooltip + dqTip)}">
                 <div class="heatmap-cell rounded px-2 py-2 text-xs font-semibold"
                      style="background:${bg};color:${total === 0 ? '#9ca3af' : textColor}">
                     ${total > 0 ? pct + "%" : "-"}
-                    <div class="heatmap-tooltip">${escapeHtml(tooltip)}${total > 0 ? "<br>💡 Click để xem chi tiết" : ""}</div>
+                    ${dqN > 0 ? `<div class="text-[9px] opacity-90">DQ ${dqN}</div>` : ""}
+                    <div class="heatmap-tooltip">${escapeHtml(tooltip)}${dqTip}${total > 0 ? "<br>💡 Click để xem chi tiết" : ""}</div>
                 </div>
             </td>`;
         }).join("");
-        // Cột đầu: tên đầy đủ (không truncate) — với mode process là "PRM.BP.03 - …"
         return `<tr class="border-b"><td class="px-2 py-2 font-semibold text-sm" title="${escapeAttr(label)}">${escapeHtml(label)}</td>${cells}</tr>`;
     }).join("");
+
+    // BA/UX #8 — Bottleneck footer row
+    const tfoot = document.getElementById("matrixFoot");
+    if (tfoot) {
+        const hasBn = phases.some(ph => (bottleneck[ph] || 0) > 0);
+        if (hasBn || Object.keys(bottleneck).length) {
+            tfoot.innerHTML = `<tr class="bg-amber-50 border-t-2 border-amber-300 text-xs font-semibold">
+                <td class="px-2 py-2 text-amber-900" title="Module/QT còn phase ≠ Closed và (overdue hoặc stalled)">Bottleneck (stuck)</td>
+                ${phases.map(ph => {
+                    const n = bottleneck[ph] || 0;
+                    return `<td class="px-1 py-2 text-center ${n > 0 ? 'text-red-700' : 'text-gray-400'}">${n}</td>`;
+                }).join("")}
+            </tr>`;
+        } else {
+            tfoot.innerHTML = "";
+        }
+    }
 
     _syncMatrixToggleBtns();
 }
@@ -3280,7 +3364,7 @@ function renderRlogWeekly() {
         const items = coded.items || [];
         codedBody.innerHTML = items.length
             ? items.map(it => `<tr class="border-b hover:bg-emerald-50/50">
-                <td class="px-2 py-1.5 font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}</td>
+                <td class="px-2 py-1.5 font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}${_rlogIssueBadges(it)}</td>
                 <td class="px-2 py-1.5">${escapeHtml(it.rlog_id || "—")}</td>
                 <td class="px-2 py-1.5">${escapeHtml(it.module || "")}</td>
                 <td class="px-2 py-1.5">${escapeHtml((it.pic || []).join(", "))}</td>
@@ -3294,7 +3378,7 @@ function renderRlogWeekly() {
         const items = plan.items || [];
         planBody.innerHTML = items.length
             ? items.map(it => `<tr class="border-b hover:bg-sky-50/50">
-                <td class="px-2 py-1.5 font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}</td>
+                <td class="px-2 py-1.5 font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}${_rlogIssueBadges(it)}</td>
                 <td class="px-2 py-1.5">${escapeHtml(it.rlog_id || "—")}</td>
                 <td class="px-2 py-1.5">${escapeHtml(it.module || "")}</td>
                 <td class="px-2 py-1.5">${escapeHtml((it.pic || []).join(", "))}</td>
@@ -4284,17 +4368,136 @@ async function exportStalled(mode) {
 window.exportStalled = exportStalled;
 
 // ========================================================================
-// V2: RISK SCORE
+// V2 + Phase D: RISK SCORE (+ Resource / Dependency dimensions)
 // ========================================================================
+let _lastPmoRisk = null;
+
+function _riskLevelClass(level) {
+    if (level === "cao") return "text-red-600";
+    if (level === "trung bình") return "text-amber-600";
+    return "text-emerald-700";
+}
+
+function renderPmoRiskDimensions(pmo) {
+    _lastPmoRisk = pmo;
+    const set = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    };
+    if (!pmo || !pmo.summary) {
+        set("riskDimHigh", "—");
+        set("riskDimResource", "—");
+        set("riskDimDep", "—");
+        set("riskDimLq", "—");
+        const cw = document.getElementById("riskCascadeWrap");
+        if (cw) { cw.classList.add("hidden"); cw.innerHTML = ""; }
+        const mw = document.getElementById("riskModuleWrap");
+        if (mw) mw.innerHTML = "";
+        return;
+    }
+    const sm = pmo.summary;
+    const res = (pmo.dimensions && pmo.dimensions.resource) || {};
+    const dep = (pmo.dimensions && pmo.dimensions.dependency) || {};
+
+    set("riskDimHigh", sm.high_risk_count != null ? sm.high_risk_count : "—");
+    set("riskDimResource", res.risk_level || "—");
+    const resEl = document.getElementById("riskDimResource");
+    if (resEl) resEl.className = "text-xl font-bold " + _riskLevelClass(res.risk_level);
+    set("riskDimResourceSub",
+        `${res.overload_pic_count || 0} PIC · ${res.functions_touched || 0} CN`
+        + (pmo.overload_source === "cross_project" ? " · đa dự án" : ""));
+
+    set("riskDimDep", dep.risk_level || "—");
+    const depEl = document.getElementById("riskDimDep");
+    if (depEl) depEl.className = "text-xl font-bold " + _riskLevelClass(dep.risk_level);
+    set("riskDimDepSub",
+        `${(dep.modules_blocked || []).length} module`
+        + (dep.gate_phase ? ` · gate «${dep.gate_phase}»` : ""));
+    set("riskDimLq", dep.function_lq_blocker_count != null ? dep.function_lq_blocker_count : "—");
+
+    const cw = document.getElementById("riskCascadeWrap");
+    if (cw) {
+        const warns = dep.warnings || [];
+        if (!warns.length) {
+            cw.classList.add("hidden");
+            cw.innerHTML = "";
+        } else {
+            cw.classList.remove("hidden");
+            cw.innerHTML = `<div class="bg-amber-50 border border-amber-200 rounded p-2 space-y-1">
+                <div class="font-semibold text-amber-900">⚠ Cascade delay (${warns.length})</div>
+                ${warns.slice(0, 8).map(w =>
+                    `<div class="text-amber-800">${escapeHtml(w.message || "")}</div>`
+                ).join("")}
+                ${warns.length > 8 ? `<div class="text-amber-700 italic">… và ${warns.length - 8} cảnh báo khác</div>` : ""}
+            </div>`;
+        }
+    }
+
+    const notes = document.getElementById("riskScoringNotes");
+    if (notes) {
+        const lines = [
+            ...(pmo.scoring_notes || []),
+            ...((dep.assumptions) || []),
+        ];
+        notes.innerHTML = lines.map(a => `<li>${escapeHtml(a)}</li>`).join("");
+    }
+
+    const modWrap = document.getElementById("riskModuleWrap");
+    if (modWrap) {
+        const mods = pmo.modules || [];
+        if (!mods.length) {
+            modWrap.innerHTML = `<p class="text-gray-400 italic">Không có module.</p>`;
+        } else {
+            modWrap.innerHTML = `
+                <table class="w-full text-xs">
+                    <thead class="bg-rose-50 text-rose-900">
+                        <tr>
+                            <th class="px-2 py-1 text-left">Module</th>
+                            <th class="px-2 py-1 text-right">TB risk</th>
+                            <th class="px-2 py-1 text-right">Max</th>
+                            <th class="px-2 py-1 text-right">High≥50</th>
+                            <th class="px-2 py-1 text-center">Resource</th>
+                            <th class="px-2 py-1 text-center">Dependency</th>
+                        </tr>
+                    </thead>
+                    <tbody>${mods.slice(0, 40).map(m => `
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="px-2 py-1">${escapeHtml(m.module)}</td>
+                            <td class="px-2 py-1 text-right font-semibold">${m.avg_risk}</td>
+                            <td class="px-2 py-1 text-right">${m.max_risk}</td>
+                            <td class="px-2 py-1 text-right">${m.high_risk_count}</td>
+                            <td class="px-2 py-1 text-center">${m.resource_flag ? "⚠" : "—"}</td>
+                            <td class="px-2 py-1 text-center" title="${escapeHtml(m.blocked_by || "")}">${m.dependency_flag ? "⚠ " + escapeHtml(m.blocked_by || "") : "—"}</td>
+                        </tr>`).join("")}
+                    </tbody>
+                </table>`;
+        }
+    }
+}
+
 function renderRiskSection() {
     const all = metricsData.risk_scores || [];
     const total = metricsData.risk_scores_total || all.length;
     const tbody = document.getElementById("riskTable");
+    if (!tbody) return;
     const { start, end, pageItems } = _pageSlice("risk", all);
     tbody.innerHTML = pageItems.map((r, idx) => {
         const color = r.risk_score >= 80 ? "#ef4444"
                     : r.risk_score >= 50 ? "#f97316"
                     : r.risk_score >= 30 ? "#eab308" : "#22c55e";
+        const mit = r.mitigation || {};
+        const mitHtml = `
+            <div class="text-[10px] space-y-0.5 max-w-[180px]">
+                <input type="text" class="border rounded px-1 py-0.5 w-full text-[10px]"
+                       placeholder="Owner" value="${escapeAttr(mit.owner || "")}"
+                       onchange="saveRiskMitigation('${escapeAttr(r.ma_cn)}', {owner: this.value})" />
+                <input type="date" class="border rounded px-1 py-0.5 w-full text-[10px]"
+                       value="${escapeAttr((mit.target_date || "").slice(0, 10))}"
+                       onchange="saveRiskMitigation('${escapeAttr(r.ma_cn)}', {target_date: this.value})" />
+                <input type="text" class="border rounded px-1 py-0.5 w-full text-[10px]"
+                       placeholder="Ghi chú mitigation" value="${escapeAttr(mit.note || "")}"
+                       onchange="saveRiskMitigation('${escapeAttr(r.ma_cn)}', {note: this.value})" />
+            </div>`;
         return `<tr class="border-b">
             <td class="px-2 py-2 text-center">${start + idx + 1}</td>
             <td class="px-2 py-2 font-mono text-xs">${escapeHtml(r.ma_cn)}</td>
@@ -4310,6 +4513,7 @@ function renderRiskSection() {
             <td class="px-2 py-2 text-xs">
                 ${(r.risk_factors || []).map(f => `<span class="inline-block bg-red-100 text-red-700 rounded px-1.5 py-0.5 mr-1 mb-0.5">${escapeHtml(f)}</span>`).join("")}
             </td>
+            <td class="px-2 py-2">${mitHtml}</td>
             ${_viewIconCell(r.ma_cn, {title: "Xem chi tiết function rủi ro"})}
         </tr>`;
     }).join("");
@@ -4320,7 +4524,145 @@ function renderRiskSection() {
             ? "Không có function rủi ro"
             : `Đang xem ${start + 1}–${end}/${total} function rủi ro`;
     }
+    // Dimensions từ metrics payload (upload) nếu chưa load API riêng
+    if (metricsData.pmo_risk && !_lastPmoRisk) {
+        renderPmoRiskDimensions(metricsData.pmo_risk);
+    }
 }
+
+async function saveRiskMitigation(maCn, patch) {
+    if (!currentProjectSlug || !maCn) return;
+    const existing = (window._lastRiskMitigations || {})[maCn] || {};
+    const body = {
+        key: maCn,
+        owner: patch.owner != null ? patch.owner : (existing.owner || ""),
+        target_date: patch.target_date != null ? patch.target_date : (existing.target_date || ""),
+        note: patch.note != null ? patch.note : (existing.note || ""),
+    };
+    try {
+        const r = await fetch(_apiUrl("risk-mitigation"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        window._lastRiskMitigations = data.items || {};
+        // Cập nhật cache trên risk_scores
+        (metricsData.risk_scores || []).forEach(row => {
+            if (row.ma_cn === maCn) row.mitigation = (data.items || {})[maCn] || null;
+        });
+        if (typeof showToast === "function") showToast("Đã lưu mitigation", "green");
+    } catch (err) {
+        if (typeof showToast === "function") showToast("Lỗi mitigation: " + err.message, "red");
+    }
+}
+window.saveRiskMitigation = saveRiskMitigation;
+
+function renderRiskTrend(trend) {
+    const msg = document.getElementById("riskTrendMsg");
+    const pts = (trend && trend.points) || [];
+    if (msg) msg.textContent = (trend && trend.message) || "";
+    if (trend && trend.mitigations) window._lastRiskMitigations = trend.mitigations;
+    if (trend && Array.isArray(trend.risk_scores) && trend.risk_scores.length) {
+        // Merge mitigation vào bảng risk hiện tại
+        const byMa = {};
+        trend.risk_scores.forEach(r => { if (r.ma_cn) byMa[r.ma_cn] = r; });
+        (metricsData.risk_scores || []).forEach(r => {
+            if (byMa[r.ma_cn] && byMa[r.ma_cn].mitigation) {
+                r.mitigation = byMa[r.ma_cn].mitigation;
+            }
+        });
+    }
+    const ctx = getCanvas("chartRiskTrend");
+    if (!ctx || pts.length < 1) return;
+    createChart(ctx, "line", {
+        labels: pts.map(p => (p.date || "").slice(5)),
+        datasets: [
+            {
+                label: "Avg score",
+                data: pts.map(p => p.avg_score),
+                borderColor: "#e11d48",
+                backgroundColor: "rgba(225, 29, 72, 0.1)",
+                borderWidth: 2,
+                pointRadius: 2,
+                tension: 0.25,
+                yAxisID: "y",
+            },
+            {
+                label: "High-risk count",
+                data: pts.map(p => p.high_risk_count),
+                borderColor: "#f59e0b",
+                borderWidth: 2,
+                borderDash: [4, 3],
+                pointRadius: 2,
+                tension: 0.25,
+                yAxisID: "y1",
+            },
+        ],
+    }, {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 10 } } } },
+        scales: {
+            y: { beginAtZero: true, position: "left", title: { display: true, text: "Avg", font: { size: 10 } } },
+            y1: { beginAtZero: true, position: "right", grid: { drawOnChartArea: false },
+                  title: { display: true, text: "High", font: { size: 10 } } },
+        },
+    });
+}
+
+async function loadRiskTrend() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(_apiUrl("risk-trend"));
+        const data = r.ok ? await r.json() : null;
+        if (data && Array.isArray(data.risk_scores)) {
+            const byMa = {};
+            data.risk_scores.forEach(row => { byMa[row.ma_cn] = row.mitigation || null; });
+            (metricsData.risk_scores || []).forEach(row => {
+                if (Object.prototype.hasOwnProperty.call(byMa, row.ma_cn)) {
+                    row.mitigation = byMa[row.ma_cn];
+                }
+            });
+            window._lastRiskMitigations = data.mitigations || {};
+            renderRiskSection();
+        }
+        renderRiskTrend(data);
+    } catch (err) {
+        console.warn("[risk-trend]", err);
+    }
+}
+window.loadRiskTrend = loadRiskTrend;
+
+async function loadPmoRisk() {
+    if (!currentProjectSlug) return;
+    const cross = document.getElementById("riskCrossProject");
+    let url = _apiUrl("pmo-risk");
+    const parts = [];
+    const qs = typeof _buildFilterQuery === "function" ? _buildFilterQuery() : "";
+    if (qs) parts.push(qs.replace(/^\?/, ""));
+    if (cross && cross.checked) parts.push("cross_project=1");
+    if (parts.length) url += "?" + parts.join("&");
+    try {
+        const r = await fetch(url);
+        const data = r.ok ? await r.json() : null;
+        if (data && data.risk_scores) {
+            metricsData.risk_scores = data.risk_scores;
+            metricsData.risk_scores_total = data.risk_scores.length;
+            if (metricsData.summary) {
+                metricsData.summary.high_risk_count =
+                    (data.summary && data.summary.high_risk_count) || 0;
+            }
+            renderRiskSection();
+        }
+        renderPmoRiskDimensions(data);
+        try { loadRiskTrend(); } catch (e) {}
+    } catch (err) {
+        console.warn("[pmo-risk]", err);
+    }
+}
+window.loadPmoRisk = loadPmoRisk;
 
 // ========================================================================
 // V2: EFFORT — đơn vị MH/MD/MM + filter status PIC
@@ -6836,6 +7178,7 @@ async function openDrillDown(chart, filters, titleOverride) {
     drillState.sortKey = null;
     drillState.sortDir = "asc";
     pageState.drill.page = 1;
+    window._drillSelectedMas = new Set();
 
     const modal = document.getElementById("drillDownModal");
     modal.classList.remove("hidden");
@@ -7096,6 +7439,9 @@ function renderDrillTable() {
 
     const thead = `<thead class="bg-gray-100 dark:bg-slate-700 sticky top-0 z-10">
         <tr class="text-xs">
+            <th class="px-2 py-2 text-center w-8">
+                <input type="checkbox" id="drillSelectAll" onchange="toggleDrillSelectAll(this.checked)" title="Chọn tất cả trang này" />
+            </th>
             <th class="px-2 py-2 text-center w-10">#</th>
             ${DRILL_COLUMNS.map(c => `
                 <th class="px-2 py-2 text-left cursor-pointer hover:bg-gray-200 dark:hover:bg-slate-600 ${c.width}"
@@ -7110,7 +7456,13 @@ function renderDrillTable() {
         const rowCls = it.is_overdue ? "bg-red-50 dark:bg-red-900/20"
             : (it.status || "").toLowerCase() === "closed" ? "bg-green-50 dark:bg-green-900/10"
             : "";
+        const ma = it.ma_cn || "";
+        const checked = (_drillSelectedMas || new Set()).has(ma) ? "checked" : "";
         return `<tr class="text-xs border-b dark:border-slate-700 ${rowCls}">
+            <td class="px-2 py-1 text-center">
+                <input type="checkbox" class="drill-row-cb" data-ma="${escapeAttr(ma)}"
+                       ${checked} onchange="toggleDrillSelect('${escapeAttr(ma)}', this.checked)" />
+            </td>
             <td class="px-2 py-1 text-center text-gray-500">${start + idx + 1}</td>
             ${DRILL_COLUMNS.map(c => {
                 const v = it[c.key];
@@ -7224,22 +7576,29 @@ function _chartClickHandler(chart, buildFilterFn) {
 
 // Click handler cho ô Phase Matrix (HTML table)
 function _matrixCellClick(el) {
+    // BA/UX #4: cell có DQ → drill vào Data Quality; không thì phase_matrix drill.
+    const dqN = parseInt(el.dataset.dq || "0", 10) || 0;
+    const gb = el.dataset.gb || "module";
+    const key = el.dataset.key ?? el.dataset.mod;
+    const ph = el.dataset.ph;
+    if (dqN > 0 && gb === "module" && typeof openDqForModulePhase === "function") {
+        openDqForModulePhase(key, ph);
+        return;
+    }
     // b9: hỗ trợ cả mode module + process (drill 'phase_matrix' chỉ nhận
     // module + phase; với mode process, chuyển key sang param 'process' để
     // FE openDrillDown thêm filter tương ứng qua drill-adapter).
-    const gb = el.dataset.gb || "module";
-    const key = el.dataset.key ?? el.dataset.mod;
     if (gb === "process") {
         openDrillDown("phase_matrix", {
             process: key,
-            phase: el.dataset.ph,
+            phase: ph,
         });
-    } else {
-        openDrillDown("phase_matrix", {
-            module: key,
-            phase: el.dataset.ph,
-        });
+        return;
     }
+    openDrillDown("phase_matrix", {
+        module: key,
+        phase: ph,
+    });
 }
 
 /**
@@ -8110,6 +8469,7 @@ const DEFAULT_SIDEBAR_GROUP_DEFS = [
             "section-rlog",
             "section-overdue", "section-unassigned", "section-stalled",
             "section-aging-wip", "section-sla",
+            "section-pic-upcoming",
         ],
     },
     {
@@ -8118,8 +8478,10 @@ const DEFAULT_SIDEBAR_GROUP_DEFS = [
         name_en: "Forecast",
         sections: [
             "section-gantt", "section-forecast-gantt", "section-forecast-manpower",
+            "section-estimate-ratio",
             "section-gantt-calendar", "section-burndown",
             "section-capacity", "section-pic-overload", "section-baseline",
+            "section-evm", "section-exec-dashboard", "section-scope-creep",
             "section-duration",
         ],
     },
@@ -8129,6 +8491,7 @@ const DEFAULT_SIDEBAR_GROUP_DEFS = [
         name_en: "Quality",
         sections: [
             "section-dataquality", "section-anomaly", "section-risk",
+            "section-uat-quality",
         ],
     },
     {
@@ -8175,6 +8538,7 @@ const DEFAULT_SECTION_DOM_ORDER = [
     "section-gantt",
     "section-forecast-gantt",
     "section-forecast-manpower",
+    "section-estimate-ratio",
     "section-gantt-calendar",
     "section-burndown",
     "section-rlog",
@@ -8186,12 +8550,15 @@ const DEFAULT_SECTION_DOM_ORDER = [
     "section-aging-wip",
     "section-sla",
     "section-dataquality",
-    "section-anomaly",
+    "section-uat-quality",
     // Phân tích sâu
     "section-process",
     "section-capacity",
     "section-pic-overload",
     "section-baseline",
+    "section-evm",
+    "section-exec-dashboard",
+    "section-scope-creep",
     "section-effort",
     "section-duration",
     "section-slow",
@@ -8823,11 +9190,11 @@ const CHART_HELP = {
         note: "Chờ > 7 ngày tô cam, > 14 ngày tô đỏ. Danh sách transitions cho biết chặng chuyển giao nào tắc nhiều nhất."
     },
     "section-risk": {
-        title: "⚡ Top 20 Functions rủi ro cao",
-        meaning: "Xếp hạng function cần chú ý trước, gộp nhiều yếu tố rủi ro thành một điểm 0–100.",
-        logic: "Cộng điểm: Must-have +20 / Should-have +10; Complexity High +15 / Medium +5; có phase overdue +20; thêm +10 mỗi 7 ngày trễ (tối đa +30); phase active chưa có PIC +15; duration vượt ngưỡng +10; bị đình trệ +10; có ghi chú Risk/Blocker +5. Tổng bị chặn ở 100.",
-        example: "Must-have (20) + High (15) + overdue 15 ngày (20+20) + chưa PIC (15) = 90 điểm.",
-        note: "Card “High-risk” ở Summary đếm function từ 50 điểm trở lên."
+        title: "⚡ Top Functions rủi ro cao",
+        meaning: "Xếp hạng function cần chú ý trước; gộp nhiều yếu tố thành điểm 0–100. Phase D thêm chiều Resource (PIC overload) và Dependency (cascade module).",
+        logic: "Cộng điểm: Must-have +20 / Should-have +10; Complexity High +15 / Medium +5; có phase overdue +20; thêm +10 mỗi 7 ngày trễ (tối đa +30); phase active chưa có PIC +15; duration vượt ngưỡng +10; bị đình trệ +10; có ghi chú Risk/Blocker +5; PIC đang overload +15; module bị cascade từ predecessor chưa Closed gate +10. Tổng cap 100.",
+        example: "Must-have (20) + High (15) + overdue 15 ngày (20+20) + PIC overload (15) = 90 điểm.",
+        note: "Card Resource/Dependency tóm tắt mức rủi ro PM. Cascade dùng thứ tự module (Cài đặt) + phase Config làm cổng."
     },
     "section-effort": {
         title: "📊 Phân tích Effort (Man-hour)",
@@ -9011,7 +9378,7 @@ async function loadBurndownAndSLA() {
         };
         const burndownExtras = _burndownScopePhase
             ? "phase=" + encodeURIComponent(_burndownScopePhase) : null;
-        const [bd, sla, cap, slow, deps, bsl, hist] = await Promise.all([
+        const [bd, sla, cap, slow, deps, bsl, hist, forecast, bslSv, evm, sc, pmo, uq] = await Promise.all([
             safeJson("burndown", true, burndownExtras),
             safeJson("sla"),
             safeJson("capacity-load"),
@@ -9019,6 +9386,12 @@ async function loadBurndownAndSLA() {
             safeJson("dependency-blockers"),
             safeJson("baseline-variance"),
             safeJson("upload-history", false),
+            safeJson("completion-forecast", true, burndownExtras),
+            safeJson("baseline-sv"),
+            safeJson("earned-value", true),
+            safeJson("scope-creep", true),
+            safeJson("pmo-risk", true),
+            safeJson("uat-quality", true),
         ]);
         renderBurndownSection(bd);
         renderSLASection(sla);
@@ -9026,7 +9399,18 @@ async function loadBurndownAndSLA() {
         renderSlowHeatmapSection(slow);
         renderDependencySection(deps);
         renderBaselineSection(bsl);
+        renderBaselineSvSection(bslSv);
+        renderEarnedValueSection(evm);
+        renderScopeCreepSection(sc);
+        renderUatQualitySection(uq);
+        if (pmo && pmo.risk_scores) {
+            metricsData.risk_scores = pmo.risk_scores;
+            metricsData.risk_scores_total = pmo.risk_scores.length;
+            renderRiskSection();
+        }
+        if (typeof renderPmoRiskDimensions === "function") renderPmoRiskDimensions(pmo);
         renderUploadHistorySection(hist);
+        renderCompletionForecast(forecast);
         // PIC Overload là cross-project — load song song, không phụ thuộc capacity
         try { loadPicOverload(); } catch (e) {}
     } catch (err) {
@@ -9136,22 +9520,24 @@ function _populateBurndownPhaseSelector() {
     else sel.value = "";
 }
 
-/** Handler khi user đổi phase scope — refetch burndown. */
+/** Handler khi user đổi phase scope — refetch burndown + completion forecast. */
 window.onBurndownPhaseChange = async function (phase) {
     _burndownScopePhase = (phase || "").trim();
-    // Reload chỉ burndown, không đụng SLA/Capacity (không phụ thuộc phase).
+    // Reload burndown + forecast completion (cùng phase scope).
     if (!currentProjectSlug) return;
     try {
         const qs = _buildFilterQuery();
-        let url = _apiUrl("burndown");
         const parts = [];
         if (qs) parts.push(qs);
         if (_burndownScopePhase) parts.push("phase=" + encodeURIComponent(_burndownScopePhase));
-        if (parts.length) url += "?" + parts.join("&");
-        const r = await fetch(url);
-        if (!r.ok) throw new Error(await r.text());
-        const bd = await r.json();
-        renderBurndownSection(bd);
+        const q = parts.length ? "?" + parts.join("&") : "";
+        const [rBd, rFc] = await Promise.all([
+            fetch(_apiUrl("burndown") + q),
+            fetch(_apiUrl("completion-forecast") + q),
+        ]);
+        if (!rBd.ok) throw new Error(await rBd.text());
+        renderBurndownSection(await rBd.json());
+        if (rFc.ok) renderCompletionForecast(await rFc.json());
     } catch (err) {
         showToast("Lỗi tải Burndown: " + err.message, "red");
     }
@@ -9443,8 +9829,42 @@ async function loadFunctionDiff() {
             return;
         }
         const data = await r.json();
+        // Diff approval — tags «đã review» + audit
+        try {
+            const rr = await fetch(`/api/projects/${currentProjectSlug}/diff-review`);
+            if (rr.ok) {
+                const rev = await rr.json();
+                data._review_tags = rev.tags || {};
+                data._review_logs = rev.reviews || {};
+                window._lastDiffReviews = rev;
+            }
+        } catch (_) {}
         _lastFdiffData = data;
         _renderFunctionDiff(data);
+        // BA/UX #1 — push badges lên summary (sau sync / load)
+        try {
+            const auto = {
+                available: true,
+                badges: data.badges || {
+                    added: data.counts?.added || 0,
+                    status_rollback: data.counts?.status_rollback || 0,
+                    pic_changed: data.counts?.pic_changed || 0,
+                    deleted: data.counts?.deleted || 0,
+                },
+                counts: data.counts,
+                lists: {
+                    added: data.added || [],
+                    status_rollback: data.status_rollback || [],
+                    pic_changed: data.pic_changed || [],
+                    deleted: data.deleted || [],
+                },
+                previous_date: data.previous_snapshot?.date,
+                current_date: data.current_snapshot?.date,
+                review_tags: data._review_tags || {},
+            };
+            window._lastAutoDiff = auto;
+            if (typeof renderAutoDiffBadges === "function") renderAutoDiffBadges(auto);
+        } catch (_) {}
     } catch (e) {
         console.error("[loadFunctionDiff]", e);
     }
@@ -9511,8 +9931,8 @@ function _renderFunctionDiff(data) {
         _fdiffCard("+ Mới thêm", c.added, "bg-green-100 text-green-800"),
         _fdiffCard("- Bị xoá", c.deleted, "bg-red-100 text-red-800"),
         _fdiffCard("⇄ Function đổi", c.total_changed, "bg-amber-100 text-amber-800"),
-        _fdiffCard("Đổi PIC (bản ghi)", c.pic_changed, "bg-blue-100 text-blue-800"),
-        _fdiffCard("Đổi Prio/Complex", c.prio_complex_changed, "bg-purple-100 text-purple-800"),
+        _fdiffCard("Đổi PIC", c.pic_changed, "bg-blue-100 text-blue-800"),
+        _fdiffCard("Status rollback", c.status_rollback || 0, "bg-rose-100 text-rose-800"),
         _fdiffCard("Đổi Status phase", c.status_changed, "bg-indigo-100 text-indigo-800"),
     ].join("");
 
@@ -9576,13 +9996,16 @@ function _renderFdiffTable(data) {
 
     const tab = FDIFF_TABS.find(t => t.id === _fdiffActiveTab) || FDIFF_TABS[0];
     const items = (data && data[tab.dataKey]) || [];
+    const reviewTags = (data && data._review_tags) || {};
+    const reviewLogs = (data && data._review_logs) || {};
+    const colCount = tab.columns.length + 1;
 
     head.innerHTML = tab.columns.map(col =>
         `<th class="px-2 py-2 text-left">${escapeHtml(col.label)}</th>`
-    ).join("");
+    ).join("") + `<th class="px-2 py-2 text-left" title="BA Lead đã review">✓ Review</th>`;
 
     if (items.length === 0) {
-        body.innerHTML = `<tr><td colspan="${tab.columns.length}" class="px-2 py-4 text-center text-gray-400 italic">
+        body.innerHTML = `<tr><td colspan="${colCount}" class="px-2 py-4 text-center text-gray-400 italic">
             Không có thay đổi nào trong nhóm này
         </td></tr>`;
         pager.innerHTML = "";
@@ -9594,16 +10017,56 @@ function _renderFdiffTable(data) {
             const val = it[col.key];
             return `<td class="px-2 py-1.5 ${col.cls}">${escapeHtml(val ?? "—")}</td>`;
         }).join("");
-        // Click row → mở function detail (nếu có ma_cn và row_num — hầu hết đều có)
+        const ma = (it.ma_cn || "").trim();
+        const reviewed = ma && Array.isArray(reviewTags[ma]) && reviewTags[ma].includes("đã review");
+        const logs = reviewLogs[ma] || [];
+        const last = logs.length ? logs[logs.length - 1] : null;
+        const audit = last
+            ? ` title="${escapeAttr((last.reviewed_by || "") + " · " + (last.reviewed_at || ""))}"`
+            : "";
+        const reviewCell = ma
+            ? `<td class="px-2 py-1.5" onclick="event.stopPropagation()"${audit}>
+                <label class="text-[11px] inline-flex items-center gap-1 cursor-pointer">
+                    <input type="checkbox" ${reviewed ? "checked" : ""}
+                           onchange="toggleDiffReview('${escapeAttr(ma)}', this.checked)" />
+                    đã review
+                </label>
+               </td>`
+            : `<td class="px-2 py-1.5 text-gray-400">—</td>`;
         const rowNum = it.row_num;
         const clickable = rowNum
             ? `onclick="openFunctionDetail(${rowNum})" class="border-b dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer"`
             : `class="border-b dark:border-slate-700"`;
-        return `<tr ${clickable}>${cells}</tr>`;
+        return `<tr ${clickable}>${cells}${reviewCell}</tr>`;
     }).join("");
 
     renderPager("fdiffPagerWrap", "fdiff", items.length, () => _renderFdiffTable(data));
 }
+
+window.toggleDiffReview = async function (maCn, reviewed) {
+    if (!currentProjectSlug || !maCn) return;
+    const sel = document.getElementById("fdiffVsSelect");
+    const vs = sel ? (sel.value || "previous") : "previous";
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/diff-review`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ma_cns: [maCn], reviewed: !!reviewed, vs }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        if (_lastFdiffData) {
+            _lastFdiffData._review_tags = data.tags || {};
+            _lastFdiffData._review_logs = data.reviews || {};
+            _renderFdiffTable(_lastFdiffData);
+        }
+        if (typeof showToast === "function") {
+            showToast(reviewed ? `Đã review ${maCn}` : `Bỏ review ${maCn}`, "green");
+        }
+    } catch (err) {
+        if (typeof showToast === "function") showToast("Review lỗi: " + err.message, "red");
+    }
+};
 
 async function exportFunctionDiff() {
     const sel = document.getElementById("fdiffVsSelect");
@@ -10351,19 +10814,24 @@ function renderBaselineSection(bsl) {
     _lastBaselineData = bsl;
     const section = document.getElementById("section-baseline");
     if (!section) return;
-    if (!bsl || bsl.total_compared === 0) {
-        section.classList.add("hidden");
-        return;
-    }
+    // Phase A: luôn hiện section để user chọn baseline snapshot (kể cả khi
+    // Planned/Actual trong file trống).
     section.classList.remove("hidden");
-    document.getElementById("bslTotal").textContent = bsl.total_compared ?? 0;
-    document.getElementById("bslLate").textContent = bsl.late_count ?? 0;
-    document.getElementById("bslAvg").textContent = bsl.avg_variance_days ?? 0;
+    _populateBaselineSnapshotSelect();
 
-    const allRows = bsl.items || [];
+    document.getElementById("bslTotal").textContent = bsl?.total_compared ?? 0;
+    document.getElementById("bslLate").textContent = bsl?.late_count ?? 0;
+    document.getElementById("bslAvg").textContent = bsl?.avg_variance_days ?? 0;
+
+    const allRows = bsl?.items || [];
     const { pageItems } = _pageSlice("baseline", allRows);
     const wrap = document.getElementById("baselineTableWrap");
     if (!wrap) return;
+    if (!allRows.length) {
+        wrap.innerHTML = `<p class="text-xs text-gray-400 italic px-1">Không có Planned/Actual trong file hiện tại (bảng legacy).</p>`;
+        renderPager("baselinePagerWrap", "baseline", 0, () => renderBaselineSection(_lastBaselineData));
+        return;
+    }
     wrap.innerHTML = `
         <table class="w-full text-xs">
             <thead class="bg-gray-100 text-gray-700">
@@ -10394,6 +10862,1028 @@ function renderBaselineSection(bsl) {
     renderPager("baselinePagerWrap", "baseline", allRows.length,
         () => renderBaselineSection(_lastBaselineData));
 }
+
+/** Phase A — fill select snapshot baseline từ snapshotsData. */
+function _populateBaselineSnapshotSelect() {
+    const sel = document.getElementById("bslSnapshotSelect");
+    if (!sel) return;
+    const snaps = snapshotsData || [];
+    const cur = sel.value || _baselineSnapId || "";
+    sel.innerHTML = `<option value="">— Chưa chọn —</option>`
+        + snaps.map(s =>
+            `<option value="${escapeAttr(s.date)}">${escapeHtml(s.date)}`
+            + `${s.archived ? " 📦" : ""} (${s.overall_pct ?? "?"}%)</option>`
+        ).join("");
+    if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
+let _baselineSnapId = "";
+let _lastBaselineSv = null;
+
+async function refreshProjectBaseline() {
+    if (!currentProjectSlug) return;
+    try {
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/baseline`);
+        _baselineSnapId = data.baseline_snapshot_id || "";
+        const label = document.getElementById("bslSnapLabel");
+        if (label) label.textContent = _baselineSnapId || "—";
+        _populateBaselineSnapshotSelect();
+        const sel = document.getElementById("bslSnapshotSelect");
+        if (sel) sel.value = _baselineSnapId || "";
+        // Đồng bộ badge trên archive table
+        _archRenderTable();
+    } catch (err) {
+        console.warn("[baseline]", err);
+    }
+}
+
+async function onBaselineSnapshotChange(val) {
+    if (!currentProjectSlug) return;
+    const snapId = (val || "").trim();
+    try {
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/baseline`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ baseline_snapshot_id: snapId || null }),
+        });
+        _baselineSnapId = data.baseline_snapshot_id || "";
+        const label = document.getElementById("bslSnapLabel");
+        if (label) label.textContent = _baselineSnapId || "—";
+        showToast(data.message || (_baselineSnapId ? `Baseline = ${_baselineSnapId}` : "Đã xóa baseline"));
+        // Reload SV + Forecast Gantt
+        await _reloadBaselineSvAndForecast();
+        _archRenderTable();
+    } catch (err) {
+        showToast("Lỗi đặt baseline: " + err.message, "red");
+    }
+}
+window.onBaselineSnapshotChange = onBaselineSnapshotChange;
+
+async function clearProjectBaseline() {
+    const sel = document.getElementById("bslSnapshotSelect");
+    if (sel) sel.value = "";
+    await onBaselineSnapshotChange("");
+}
+window.clearProjectBaseline = clearProjectBaseline;
+
+async function setProjectBaseline(snapDate) {
+    const sel = document.getElementById("bslSnapshotSelect");
+    if (sel) {
+        _populateBaselineSnapshotSelect();
+        sel.value = snapDate || "";
+    }
+    await onBaselineSnapshotChange(snapDate || "");
+}
+window.setProjectBaseline = setProjectBaseline;
+
+async function _reloadBaselineSvAndForecast() {
+    if (!currentProjectSlug) return;
+    const qs = _buildFilterQuery();
+    let url = _apiUrl("baseline-sv");
+    if (qs) url += "?" + qs;
+    try {
+        const r = await fetch(url);
+        const data = r.ok ? await r.json() : null;
+        renderBaselineSvSection(data);
+    } catch (e) { /* ignore */ }
+    try { await loadEarnedValue(); } catch (e) {}
+    try { await loadScopeCreep(); } catch (e) {}
+    try { await loadPmoRisk(); } catch (e) {}
+    try { if (typeof loadForecastGantt === "function") loadForecastGantt(); } catch (e) {}
+}
+
+function renderBaselineSvSection(sv) {
+    _lastBaselineSv = sv;
+    const lateEl = document.getElementById("bslSvLate");
+    const earlyEl = document.getElementById("bslSvEarly");
+    const avgEl = document.getElementById("bslSvAvg");
+    const label = document.getElementById("bslSnapLabel");
+    const msWrap = document.getElementById("bslSvMilestoneWrap");
+    const modWrap = document.getElementById("bslSvModuleWrap");
+
+    if (!sv || sv.error || !sv.summary) {
+        if (lateEl) lateEl.textContent = "0";
+        if (earlyEl) earlyEl.textContent = "0";
+        if (avgEl) {
+            avgEl.textContent = "0";
+            avgEl.className = "text-blue-700";
+        }
+        if (label && !_baselineSnapId) label.textContent = "—";
+        if (msWrap) {
+            msWrap.innerHTML = sv && sv.error
+                ? `<p class="text-xs text-amber-700 italic">${escapeHtml(sv.error)}</p>`
+                : `<p class="text-xs text-gray-400 italic">Chưa có baseline — chọn snapshot ở trên hoặc Settings → Archive.</p>`;
+        }
+        if (modWrap) modWrap.innerHTML = "";
+        return;
+    }
+
+    if (sv.baseline_snapshot_id) {
+        _baselineSnapId = sv.baseline_snapshot_id;
+        if (label) label.textContent = _baselineSnapId;
+        const sel = document.getElementById("bslSnapshotSelect");
+        if (sel && sel.value !== _baselineSnapId) {
+            _populateBaselineSnapshotSelect();
+            sel.value = _baselineSnapId;
+        }
+    }
+
+    const sm = sv.summary;
+    if (lateEl) lateEl.textContent = sm.late_count ?? 0;
+    if (earlyEl) earlyEl.textContent = sm.early_count ?? 0;
+    if (avgEl) {
+        const avg = sm.avg_sv_days ?? 0;
+        avgEl.textContent = avg;
+        const avgCls = avg > 0 ? "text-red-700" : avg < 0 ? "text-emerald-700" : "text-blue-700";
+        avgEl.className = avgCls;
+    }
+
+    // Milestone SV table
+    if (msWrap) {
+        const ms = sv.milestones || {};
+        const rows = Object.values(ms);
+        if (!rows.length) {
+            msWrap.innerHTML = "";
+        } else {
+            msWrap.innerHTML = `
+                <div class="font-semibold text-gray-700 mb-1">Milestone vs Baseline</div>
+                <table class="fc-table text-xs mb-2">
+                    <thead>
+                        <tr>
+                            <th>Milestone</th>
+                            <th class="fc-th-right">Baseline</th>
+                            <th class="fc-th-right">Hiện tại</th>
+                            <th class="fc-th-right">SV (ngày)</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows.map(m => {
+                        const svD = m.sv_days;
+                        const numCls = m.late ? "fc-num fc-num-late" : m.early ? "fc-num fc-num-early" : "fc-num fc-num-muted";
+                        const txt = svD == null ? "—" : ((svD > 0 ? "+" : "") + svD);
+                        return `<tr>
+                            <td>${escapeHtml(m.label || m.id)}</td>
+                            <td class="text-right"><span class="fc-num fc-num-month">${escapeHtml(m.baseline?.month || "—")}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-neutral">${escapeHtml(m.current?.month || "—")}</span></td>
+                            <td class="text-right"><span class="${numCls}">${txt}</span></td>
+                        </tr>`;
+                    }).join("")}
+                    </tbody>
+                </table>`;
+        }
+    }
+
+    // Module SV summary
+    if (modWrap) {
+        const mods = sv.modules || [];
+        if (!mods.length) {
+            modWrap.innerHTML = "";
+        } else {
+            modWrap.innerHTML = `
+                <div class="font-semibold text-gray-700 mb-1">Module — avg SV</div>
+                <table class="fc-table text-xs">
+                    <thead>
+                        <tr>
+                            <th>Module</th>
+                            <th class="fc-th-right">So sánh</th>
+                            <th class="fc-th-right">Trễ</th>
+                            <th class="fc-th-right">Sớm</th>
+                            <th class="fc-th-right">Avg SV</th>
+                        </tr>
+                    </thead>
+                    <tbody>${mods.slice(0, 30).map(m => {
+                        const avg = m.avg_sv_days || 0;
+                        const avgCls = avg > 0 ? "fc-num fc-num-late" : avg < 0 ? "fc-num fc-num-early" : "fc-num fc-num-muted";
+                        const lateN = m.late_count || 0;
+                        const earlyN = m.early_count || 0;
+                        return `<tr>
+                            <td>${escapeHtml(m.module)}</td>
+                            <td class="text-right"><span class="fc-num fc-num-hc">${m.compared}</span></td>
+                            <td class="text-right"><span class="fc-num ${lateN > 0 ? "fc-num-late" : "fc-num-muted"}">${lateN}</span></td>
+                            <td class="text-right"><span class="fc-num ${earlyN > 0 ? "fc-num-early" : "fc-num-muted"}">${earlyN}</span></td>
+                            <td class="text-right"><span class="${avgCls}">${avg > 0 ? "+" : ""}${avg}</span></td>
+                        </tr>`;
+                    }).join("")}
+                    </tbody>
+                </table>`;
+        }
+    }
+}
+
+/** Phase A — Predictive completion date từ velocity. */
+function renderCompletionForecast(fc) {
+    const fmt = (iso) => {
+        if (!iso) return "—";
+        try {
+            const [y, m, d] = iso.split("-");
+            return `${d}/${m}/${y}`;
+        } catch (e) { return iso; }
+    };
+    const dateEl = document.getElementById("cardForecastDate");
+    const subEl = document.getElementById("cardForecastSub");
+    const bandEl = document.getElementById("cardForecastBand");
+    const bdDate = document.getElementById("forecastCompletionDate");
+    const bdMsg = document.getElementById("forecastCompletionMsg");
+    const banner = document.getElementById("forecastCompletionBanner");
+
+    if (!fc) {
+        if (dateEl) {
+            dateEl.textContent = "—";
+            dateEl.className = "text-base";
+        }
+        if (subEl) subEl.textContent = "";
+        if (bdDate) {
+            bdDate.textContent = "—";
+            bdDate.className = "";
+        }
+        if (bdMsg) bdMsg.textContent = "";
+        if (bandEl) bandEl.classList.add("hidden");
+        try { if (typeof updateInsightStripChips === "function") updateInsightStripChips(); } catch (e) {}
+        return;
+    }
+
+    const status = fc.status || "ok";
+    const msg = fc.message || "";
+    let display = "—";
+    if (status === "done") display = "Đã xong";
+    else if (status === "ok" && fc.forecast_date) display = fmt(fc.forecast_date);
+    else if (status === "zero_velocity") display = "Không dự báo (v=0)";
+    else if (status === "no_history") display = "Thiếu lịch sử";
+
+    const statusCls = status === "done" ? "fc-status-done"
+        : (status === "ok" ? "fc-status-ok" : "fc-status-warn");
+    if (dateEl) {
+        dateEl.textContent = display;
+        dateEl.className = "text-base " + statusCls;
+    }
+    if (bdDate) {
+        bdDate.textContent = display;
+        bdDate.className = statusCls;
+    }
+    if (subEl) subEl.textContent = msg;
+    if (bdMsg) bdMsg.textContent = msg;
+
+    if (bandEl) {
+        if (fc.confidence_band && status === "ok") {
+            bandEl.classList.remove("hidden");
+            bandEl.textContent = `Khoảng tin cậy (${fc.confidence}): `
+                + `${fmt(fc.confidence_band.low)} → ${fmt(fc.confidence_band.high)}`;
+        } else {
+            bandEl.classList.add("hidden");
+        }
+    }
+    const scenEl = document.getElementById("cardForecastScenarios");
+    if (scenEl) {
+        const sc = fc.scenarios || {};
+        if (status === "ok" && (sc.optimistic || sc.most_likely || sc.pessimistic)) {
+            const chip = (key, cls) => {
+                const s = sc[key];
+                if (!s || !s.forecast_date) return "";
+                return `<span class="px-2 py-0.5 rounded border ${cls}" title="v=${s.velocity}">`
+                    + `${escapeHtml(s.label || key)}: <b>${fmt(s.forecast_date)}</b></span>`;
+            };
+            scenEl.innerHTML =
+                chip("optimistic", "bg-emerald-50 border-emerald-200 text-emerald-800") +
+                chip("most_likely", "bg-violet-50 border-violet-200 text-violet-900") +
+                chip("pessimistic", "bg-amber-50 border-amber-200 text-amber-900");
+            scenEl.classList.remove("hidden");
+        } else {
+            scenEl.innerHTML = "";
+            scenEl.classList.add("hidden");
+        }
+    }
+    if (banner) {
+        banner.classList.toggle("opacity-70", status !== "ok" && status !== "done");
+    }
+    try { if (typeof updateInsightStripChips === "function") updateInsightStripChips(); } catch (e) {}
+}
+
+/** Phase B — Earned Value (SPI / CPI). */
+function _evmFmtIndex(v) {
+    if (v == null || Number.isNaN(Number(v))) return "N/A";
+    return Number(v).toFixed(2);
+}
+
+function _evmIndexClass(v) {
+    if (v == null) return "text-gray-500";
+    if (v < 0.9) return "text-red-600";
+    if (v >= 1) return "text-emerald-600";
+    return "text-amber-600";
+}
+
+function _evmIndexNumClass(v) {
+    if (v == null) return "fc-num fc-num-muted";
+    if (v < 0.9) return "fc-num fc-num-bad";
+    if (v >= 1) return "fc-num fc-num-good";
+    return "fc-num fc-num-warn";
+}
+
+function _evmCardTone(v) {
+    if (v == null) return "delta-neutral";
+    if (v < 0.9) return "delta-negative";
+    if (v >= 1) return "delta-positive";
+    return "delta-warning";
+}
+
+function renderEarnedValueSection(evm) {
+    const section = document.getElementById("section-evm");
+    if (!section) return;
+    section.classList.remove("hidden");
+
+    const set = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    };
+
+    if (!evm || !evm.summary) {
+        set("evmBac", "—");
+        set("evmEv", "—");
+        set("evmPv", "—");
+        set("evmAc", "—");
+        set("evmSpi", "—");
+        set("evmCpi", "—");
+        set("evmSpiLabel", "EV÷PV");
+        set("evmCpiLabel", "EV÷AC");
+        const badge = document.getElementById("evmBaselineBadge");
+        if (badge) badge.textContent = "Baseline: —";
+        const msg = document.getElementById("evmMessages");
+        if (msg) msg.innerHTML = `<p class="italic text-gray-400">Chưa có dữ liệu EVM.</p>`;
+        const mod = document.getElementById("evmModuleWrap");
+        if (mod) mod.innerHTML = "";
+        return;
+    }
+
+    const sm = evm.summary;
+    set("evmBac", sm.bac != null ? sm.bac : "—");
+    set("evmEv", sm.ev != null ? sm.ev : "—");
+    set("evmPv", sm.pv != null ? sm.pv : "N/A");
+    set("evmAc", sm.ac != null ? sm.ac : "—");
+    set("evmSpi", _evmFmtIndex(sm.spi));
+    set("evmCpi", _evmFmtIndex(sm.cpi));
+
+    const bacEl = document.getElementById("evmBac");
+    if (bacEl) bacEl.className = "text-xl font-bold text-slate-700";
+    const evEl = document.getElementById("evmEv");
+    if (evEl) evEl.className = "text-xl font-bold text-emerald-700";
+    const pvEl = document.getElementById("evmPv");
+    if (pvEl) pvEl.className = "text-xl font-bold text-blue-700";
+    const acEl = document.getElementById("evmAc");
+    if (acEl) acEl.className = "text-xl font-bold text-amber-700";
+
+    const spiEl = document.getElementById("evmSpi");
+    if (spiEl) {
+        spiEl.className = "text-xl font-bold " + _evmIndexClass(sm.spi);
+        const spiCard = spiEl.closest(".delta-card");
+        if (spiCard) spiCard.className = "delta-card " + _evmCardTone(sm.spi);
+    }
+    const cpiEl = document.getElementById("evmCpi");
+    if (cpiEl) {
+        cpiEl.className = "text-xl font-bold " + _evmIndexClass(sm.cpi);
+        const cpiCard = cpiEl.closest(".delta-card");
+        if (cpiCard) cpiCard.className = "delta-card " + _evmCardTone(sm.cpi);
+    }
+
+    set("evmSpiLabel", sm.spi_label ? `EV÷PV · ${sm.spi_label}` : "EV÷PV");
+    set("evmCpiLabel", sm.cpi_label ? `EV÷AC · ${sm.cpi_label}` : "EV÷AC");
+
+    const badge = document.getElementById("evmBaselineBadge");
+    if (badge) {
+        badge.textContent = evm.has_baseline && evm.baseline_snapshot_id
+            ? `Baseline: ${evm.baseline_snapshot_id}`
+            : "Baseline: chưa chọn (SPI = N/A)";
+        badge.className = evm.has_baseline
+            ? "bg-amber-50 text-amber-800 px-2 py-1 rounded border border-amber-200"
+            : "bg-gray-50 text-gray-600 px-2 py-1 rounded border";
+    }
+
+    const msgWrap = document.getElementById("evmMessages");
+    if (msgWrap) {
+        const msgs = evm.messages || [];
+        msgWrap.innerHTML = msgs.length
+            ? msgs.map(m => `<p>⚠ ${escapeHtml(m)}</p>`).join("")
+            : "";
+    }
+
+    const assum = document.getElementById("evmAssumptions");
+    if (assum) {
+        assum.innerHTML = (evm.assumptions || [])
+            .map(a => `<li>${escapeHtml(a)}</li>`).join("");
+    }
+
+    const modWrap = document.getElementById("evmModuleWrap");
+    if (modWrap) {
+        const mods = evm.modules || [];
+        if (!mods.length) {
+            modWrap.innerHTML = `<p class="text-gray-400 italic">Không có module.</p>`;
+        } else {
+            modWrap.innerHTML = `
+                <table class="fc-table text-xs">
+                    <thead>
+                        <tr>
+                            <th>Module</th>
+                            <th class="fc-th-right">BAC</th>
+                            <th class="fc-th-right">EV</th>
+                            <th class="fc-th-right">PV</th>
+                            <th class="fc-th-right">AC</th>
+                            <th class="fc-th-right">SPI</th>
+                            <th class="fc-th-right">CPI</th>
+                        </tr>
+                    </thead>
+                    <tbody>${mods.slice(0, 40).map(m => `
+                        <tr>
+                            <td>${escapeHtml(m.module)}</td>
+                            <td class="text-right"><span class="fc-num fc-num-hc">${m.bac}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-closed">${m.ev}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-neutral">${m.pv != null ? m.pv : "N/A"}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-warn">${m.ac}</span></td>
+                            <td class="text-right"><span class="${_evmIndexNumClass(m.spi)}">${_evmFmtIndex(m.spi)}</span></td>
+                            <td class="text-right"><span class="${_evmIndexNumClass(m.cpi)}">${_evmFmtIndex(m.cpi)}</span></td>
+                        </tr>`).join("")}
+                    </tbody>
+                </table>`;
+        }
+    }
+}
+
+async function loadEarnedValue() {
+    if (!currentProjectSlug) return;
+    const qs = _buildFilterQuery();
+    let url = _apiUrl("earned-value");
+    if (qs) url += "?" + qs;
+    try {
+        const r = await fetch(url);
+        const data = r.ok ? await r.json() : null;
+        renderEarnedValueSection(data);
+        try { loadEvmScurve(); } catch (e) {}
+    } catch (err) {
+        console.warn("[earned-value]", err);
+    }
+}
+window.loadEarnedValue = loadEarnedValue;
+
+function renderEvmScurve(sc) {
+    const msg = document.getElementById("evmScurveMsg");
+    const pts = (sc && sc.points) || [];
+    if (msg) msg.textContent = (sc && sc.message) || (pts.length ? "" : "Chưa có snapshot để vẽ S-curve.");
+    const ctx = getCanvas("chartEvmScurve");
+    if (!ctx) return;
+    if (!pts.length) {
+        try {
+            const c = ctx.canvas.getContext("2d");
+            c.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        } catch (e) {}
+        return;
+    }
+    createChart(ctx, "line", {
+        labels: pts.map(p => (p.date || "").slice(5)),
+        datasets: [
+            {
+                label: "EV",
+                data: pts.map(p => p.ev),
+                borderColor: "#059669",
+                backgroundColor: "rgba(5, 150, 105, 0.12)",
+                borderWidth: 2,
+                pointRadius: 2,
+                tension: 0.25,
+                fill: false,
+            },
+            {
+                label: "PV",
+                data: pts.map(p => p.pv),
+                borderColor: "#2563eb",
+                backgroundColor: "rgba(37, 99, 235, 0.08)",
+                borderWidth: 2,
+                borderDash: [5, 4],
+                pointRadius: 2,
+                tension: 0.25,
+                fill: false,
+                spanGaps: true,
+            },
+            {
+                label: "AC",
+                data: pts.map(p => p.ac),
+                borderColor: "#d97706",
+                backgroundColor: "rgba(217, 119, 6, 0.08)",
+                borderWidth: 2,
+                pointRadius: 2,
+                tension: 0.25,
+                fill: false,
+            },
+        ],
+    }, {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 10 } } } },
+        scales: {
+            y: { beginAtZero: true, title: { display: true, text: "MH", font: { size: 10 } } },
+        },
+    });
+}
+
+async function loadEvmScurve() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(_apiUrl("earned-value-scurve"));
+        const data = r.ok ? await r.json() : null;
+        renderEvmScurve(data);
+    } catch (err) {
+        console.warn("[evm-scurve]", err);
+    }
+}
+window.loadEvmScurve = loadEvmScurve;
+
+function exportEvmScurve(ev) {
+    _exportPmoAnalytics(ev, "export-earned-value-scurve", "EVM_SCurve.xlsx");
+}
+window.exportEvmScurve = exportEvmScurve;
+
+function _execFmtDate(iso) {
+    if (!iso) return "—";
+    try {
+        const [y, m, d] = String(iso).split("-");
+        return `${d}/${m}/${y}`;
+    } catch (e) { return iso; }
+}
+
+function renderExecutiveDashboard(payload) {
+    const section = document.getElementById("section-exec-dashboard");
+    if (!section) return;
+    section.classList.remove("hidden");
+    const sm = (payload && payload.summary) || {};
+    const cards = document.getElementById("execSummaryCards");
+    if (cards) {
+        const spiCls = _evmIndexClass(sm.spi);
+        const cpiCls = _evmIndexClass(sm.cpi);
+        const band = sm.forecast_band || {};
+        cards.innerHTML = `
+            <div class="delta-card delta-positive"><div class="text-xs text-gray-500">% xong</div>
+                <div class="text-xl font-bold text-emerald-700">${sm.pct_done != null ? sm.pct_done + "%" : "—"}</div></div>
+            <div class="delta-card ${_evmCardTone(sm.spi)}"><div class="text-xs text-gray-500">SPI</div>
+                <div class="text-xl font-bold ${spiCls}">${_evmFmtIndex(sm.spi)}</div></div>
+            <div class="delta-card ${_evmCardTone(sm.cpi)}"><div class="text-xs text-gray-500">CPI</div>
+                <div class="text-xl font-bold ${cpiCls}">${_evmFmtIndex(sm.cpi)}</div></div>
+            <div class="delta-card delta-neutral"><div class="text-xs text-gray-500">Forecast</div>
+                <div class="text-sm font-bold text-violet-800">${_execFmtDate(sm.forecast_date)}</div>
+                <div class="text-[10px] text-gray-500">Opt ${_execFmtDate(band.optimistic)} · Pes ${_execFmtDate(band.pessimistic)}</div></div>
+            <div class="delta-card delta-warning"><div class="text-xs text-gray-500">Scope creep</div>
+                <div class="text-xl font-bold text-amber-700">${sm.scope_creep_pct != null ? sm.scope_creep_pct + "%" : "—"}</div>
+                <div class="text-[10px] text-gray-400">${sm.cr_count || 0} CR</div></div>
+            <div class="delta-card delta-negative"><div class="text-xs text-gray-500">High risk</div>
+                <div class="text-xl font-bold text-rose-700">${sm.high_risk_count != null ? sm.high_risk_count : "—"}</div>
+                <div class="text-[10px] text-gray-400">OD ${sm.total_overdue || 0}</div></div>`;
+    }
+    const msWrap = document.getElementById("execMilestoneWrap");
+    if (msWrap) {
+        const ms = payload.milestones || [];
+        msWrap.innerHTML = ms.length ? `<table class="fc-table text-xs w-full"><thead><tr>
+            <th>Milestone</th><th>Tháng</th><th>Status</th><th>Ghi chú</th></tr></thead><tbody>
+            ${ms.map(m => `<tr><td>${escapeHtml(m.label || m.id || "")}</td>
+                <td>${escapeHtml(m.month || m.date || "—")}</td>
+                <td>${escapeHtml(m.status || "—")}</td>
+                <td class="text-gray-500">${escapeHtml(m.text || "")}</td></tr>`).join("")}
+            </tbody></table>` : `<p class="text-gray-400 italic">Chưa có milestone.</p>`;
+    }
+    const riskWrap = document.getElementById("execTopRisksWrap");
+    if (riskWrap) {
+        const risks = payload.top_risks || [];
+        riskWrap.innerHTML = risks.length ? `<table class="fc-table text-xs w-full"><thead><tr>
+            <th>Mã</th><th>Module</th><th class="fc-th-right">Score</th><th>Mitigation</th></tr></thead><tbody>
+            ${risks.map(r => {
+                const mit = r.mitigation || {};
+                const mitTxt = [mit.owner, mit.target_date, mit.note].filter(Boolean).join(" · ") || "—";
+                return `<tr><td class="font-mono">${escapeHtml(r.ma_cn || "")}</td>
+                    <td>${escapeHtml(r.module || "")}</td>
+                    <td class="text-right font-bold">${r.risk_score || 0}</td>
+                    <td class="text-gray-600">${escapeHtml(mitTxt)}</td></tr>`;
+            }).join("")}</tbody></table>` : `<p class="text-gray-400 italic">Không có risk cao.</p>`;
+    }
+    const msg = document.getElementById("execMessages");
+    if (msg) {
+        msg.innerHTML = (payload.messages || []).slice(0, 3).map(m => `<p>⚠ ${escapeHtml(m)}</p>`).join("");
+    }
+}
+
+async function loadExecutiveDashboard() {
+    if (!currentProjectSlug) return;
+    try {
+        const qs = _buildFilterQuery();
+        let url = _apiUrl("executive-dashboard");
+        if (qs) url += "?" + qs;
+        const r = await fetch(url);
+        const data = r.ok ? await r.json() : null;
+        renderExecutiveDashboard(data || {});
+    } catch (err) {
+        console.warn("[executive-dashboard]", err);
+    }
+}
+window.loadExecutiveDashboard = loadExecutiveDashboard;
+
+function exportExecutiveDashboard(ev) {
+    _exportPmoAnalytics(ev, "export-executive-dashboard", "PM_Executive.xlsx");
+}
+window.exportExecutiveDashboard = exportExecutiveDashboard;
+
+
+// ========================================================================
+// PHASE C — SCOPE CREEP / CHANGE REQUEST
+// ========================================================================
+
+function _scCreepClass(pct) {
+    if (pct == null) return "fc-num fc-num-muted";
+    if (pct >= 15) return "fc-num fc-num-bad";
+    if (pct >= 8) return "fc-num fc-num-warn";
+    return "fc-num fc-num-good";
+}
+
+function renderScopeCreepSection(sc) {
+    const section = document.getElementById("section-scope-creep");
+    if (!section) return;
+    section.classList.remove("hidden");
+
+    const set = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    };
+
+    if (!sc || !sc.summary) {
+        set("scTotal", "—");
+        set("scCrCount", "—");
+        set("scOrigCount", "—");
+        set("scCreepRate", "—");
+        set("scMhCr", "—");
+        set("scMhOrig", "—");
+        set("scMhCrPct", "MH");
+        const badge = document.getElementById("scDetectionBadge");
+        if (badge) badge.textContent = "Nguồn: —";
+        const msg = document.getElementById("scMessages");
+        if (msg) msg.innerHTML = `<p class="italic text-gray-400">Chưa có dữ liệu Scope Creep.</p>`;
+        const mod = document.getElementById("scModuleWrap");
+        if (mod) mod.innerHTML = "";
+        const list = document.getElementById("scListWrap");
+        if (list) list.innerHTML = "";
+        return;
+    }
+
+    const sm = sc.summary;
+    set("scTotal", sm.total_functions != null ? sm.total_functions : "—");
+    set("scCrCount", sm.cr_count != null ? sm.cr_count : "—");
+    set("scOrigCount", sm.original_count != null ? sm.original_count : "—");
+    const rate = sm.creep_rate_pct;
+    set("scCreepRate", rate != null ? `${rate}%` : "—");
+    const rateEl = document.getElementById("scCreepRate");
+    if (rateEl) {
+        // Card dùng text-* ; bảng dùng fc-num — map semantic
+        const cardCls = rate == null ? "text-gray-500"
+            : rate >= 15 ? "text-red-600" : rate >= 8 ? "text-amber-600" : "text-emerald-700";
+        rateEl.className = "text-xl font-bold " + cardCls;
+    }
+    set("scMhCr", sm.mh_cr != null ? sm.mh_cr : "—");
+    set("scMhOrig", sm.mh_original != null ? sm.mh_original : "—");
+    set("scMhCrPct", sm.mh_cr_pct != null ? `${sm.mh_cr_pct}% tổng MH` : "MH");
+
+    const det = sc.detection || {};
+    const badge = document.getElementById("scDetectionBadge");
+    if (badge) {
+        if (det.mode === "column" && det.column_header) {
+            badge.textContent = `Nguồn: cột «${det.column_header}»`;
+            badge.className = "bg-violet-50 text-violet-800 px-2 py-1 rounded border border-violet-200";
+        } else if (det.mode === "tag_or_settings") {
+            badge.textContent = "Nguồn: tag CR / Cài đặt";
+            badge.className = "bg-amber-50 text-amber-800 px-2 py-1 rounded border border-amber-200";
+        } else {
+            badge.textContent = "Nguồn: chưa có (mọi function = gốc)";
+            badge.className = "bg-gray-50 text-gray-600 px-2 py-1 rounded border";
+        }
+    }
+
+    const msgWrap = document.getElementById("scMessages");
+    if (msgWrap) {
+        const msgs = sc.messages || [];
+        msgWrap.innerHTML = msgs.length
+            ? msgs.map(m => `<p>⚠ ${escapeHtml(m)}</p>`).join("")
+            : "";
+    }
+
+    const assum = document.getElementById("scAssumptions");
+    if (assum) {
+        assum.innerHTML = (sc.assumptions || [])
+            .map(a => `<li>${escapeHtml(a)}</li>`).join("");
+    }
+
+    const modWrap = document.getElementById("scModuleWrap");
+    if (modWrap) {
+        const mods = sc.modules || [];
+        if (!mods.length) {
+            modWrap.innerHTML = `<p class="text-gray-400 italic">Không có module.</p>`;
+        } else {
+            modWrap.innerHTML = `
+                <table class="fc-table text-xs">
+                    <thead>
+                        <tr>
+                            <th>Module</th>
+                            <th class="fc-th-right">Tổng</th>
+                            <th class="fc-th-right">CR</th>
+                            <th class="fc-th-right">Creep %</th>
+                            <th class="fc-th-right">MH CR</th>
+                            <th class="fc-th-right">MH gốc</th>
+                        </tr>
+                    </thead>
+                    <tbody>${mods.slice(0, 40).map(m => `
+                        <tr>
+                            <td>${escapeHtml(m.module)}</td>
+                            <td class="text-right"><span class="fc-num fc-num-hc">${m.total}</span></td>
+                            <td class="text-right"><span class="fc-num ${(m.cr || 0) > 0 ? "fc-num-bad" : "fc-num-muted"}">${m.cr}</span></td>
+                            <td class="text-right"><span class="${_scCreepClass(m.creep_rate_pct)}">${m.creep_rate_pct != null ? m.creep_rate_pct + "%" : "—"}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-warn">${m.mh_cr}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-good">${m.mh_original}</span></td>
+                        </tr>`).join("")}
+                    </tbody>
+                </table>`;
+        }
+    }
+
+    const listWrap = document.getElementById("scListWrap");
+    if (listWrap) {
+        const items = sc.cr_functions || [];
+        if (!items.length) {
+            listWrap.innerHTML = `<p class="text-gray-400 italic px-1">Không có function CR — tốt cho đàm phán scope.</p>`;
+        } else {
+            const trunc = sc.cr_functions_truncated || 0;
+            listWrap.innerHTML = `
+                <table class="fc-table text-xs">
+                    <thead>
+                        <tr>
+                            <th>Mã CN</th>
+                            <th>Tên</th>
+                            <th>Module</th>
+                            <th class="fc-th-right">MH</th>
+                            <th>Ngày PS</th>
+                        </tr>
+                    </thead>
+                    <tbody>${items.slice(0, 80).map(it => `
+                        <tr>
+                            <td class="font-mono">${escapeHtml(it.ma_cn || "")}</td>
+                            <td class="truncate max-w-[12rem]" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ten_cn || "")}</td>
+                            <td>${escapeHtml(it.module || "")}</td>
+                            <td class="text-right"><span class="fc-num fc-num-mh">${it.mh}</span></td>
+                            <td><span class="fc-num fc-num-neutral">${it.cr_raised_date || "—"}</span></td>
+                        </tr>`).join("")}
+                    </tbody>
+                </table>
+                ${trunc ? `<p class="text-[10px] text-gray-400 mt-1">… và ${trunc} CR nữa (đã cắt payload)</p>` : ""}`;
+        }
+    }
+}
+
+async function loadScopeCreep() {
+    if (!currentProjectSlug) return;
+    const qs = _buildFilterQuery();
+    let url = _apiUrl("scope-creep");
+    if (qs) url += "?" + qs;
+    try {
+        const r = await fetch(url);
+        const data = r.ok ? await r.json() : null;
+        renderScopeCreepSection(data);
+    } catch (err) {
+        console.warn("[scope-creep]", err);
+    }
+}
+window.loadScopeCreep = loadScopeCreep;
+
+
+function _uqReopenClass(rate) {
+    if (rate == null) return "fc-num fc-num-muted";
+    if (rate >= 20) return "fc-num fc-num-bad";
+    if (rate >= 10) return "fc-num fc-num-warn";
+    return "fc-num fc-num-good";
+}
+
+function renderUatQualitySection(uq) {
+    const section = document.getElementById("section-uat-quality");
+    if (!section) return;
+    section.classList.remove("hidden");
+
+    const set = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    };
+
+    if (!uq || !uq.summary) {
+        set("uqDefects", "—");
+        set("uqFeedback", "—");
+        set("uqReopenRate", "—");
+        set("uqReopens", "—");
+        set("uqAvgCycle", "—");
+        set("uqTagged", "—");
+        set("uqDefectsSub", "—");
+        set("uqReopenSub", "fn reopen ÷ Closed UAT");
+        set("uqCycleSub", "—");
+        const badge = document.getElementById("uqDetectionBadge");
+        if (badge) {
+            badge.textContent = "Nguồn: —";
+            badge.className = "bg-gray-50 text-gray-600 px-2 py-1 rounded border";
+        }
+        const msg = document.getElementById("uqMessages");
+        if (msg) msg.innerHTML = `<p class="italic text-gray-400">Chưa có dữ liệu UAT Quality.</p>`;
+        const mod = document.getElementById("uqModuleWrap");
+        if (mod) mod.innerHTML = "";
+        const list = document.getElementById("uqListWrap");
+        if (list) list.innerHTML = "";
+        return;
+    }
+
+    const sm = uq.summary;
+    const det = uq.detection || {};
+
+    set("uqDefects", sm.total_defects != null ? sm.total_defects : "—");
+    set("uqDefectsSub", sm.fns_with_defects != null
+        ? `${sm.fns_with_defects} fn có lỗi` + (sm.avg_defects_per_fn != null ? ` · TB ${sm.avg_defects_per_fn}` : "")
+        : (det.has_quality_columns ? "—" : "Chưa có cột"));
+    set("uqFeedback", sm.total_feedback != null ? sm.total_feedback : "—");
+    const rate = sm.reopen_rate_pct;
+    set("uqReopenRate", rate != null ? `${rate}%` : "—");
+    const rateEl = document.getElementById("uqReopenRate");
+    if (rateEl) {
+        const cardCls = rate == null ? "text-gray-700"
+            : rate >= 20 ? "text-rose-700" : rate >= 10 ? "text-amber-700" : "text-emerald-700";
+        rateEl.className = "text-xl font-bold " + cardCls;
+    }
+    set("uqReopenSub", sm.reopen_denom != null
+        ? `${sm.fns_with_reopen || 0}/${sm.reopen_denom} fn`
+        : "fn reopen ÷ Closed UAT");
+    set("uqReopens", sm.total_reopens != null ? sm.total_reopens : "—");
+    set("uqAvgCycle", sm.avg_uat_cycles != null ? sm.avg_uat_cycles : "—");
+    set("uqCycleSub", sm.multi_cycle_count != null
+        ? `${sm.multi_cycle_count} fn ≥2 vòng` + (sm.max_uat_cycles != null ? ` · max ${sm.max_uat_cycles}` : "")
+        : "—");
+    set("uqTagged", sm.tagged_uat_issue != null ? sm.tagged_uat_issue : "—");
+
+    const badge = document.getElementById("uqDetectionBadge");
+    if (badge) {
+        if (det.mode === "column") {
+            const bits = [det.defect_header, det.feedback_header, det.reopen_header, det.uat_cycle_header]
+                .filter(Boolean);
+            badge.textContent = bits.length
+                ? `Nguồn: cột «${bits[0]}»` + (bits.length > 1 ? ` +${bits.length - 1}` : "")
+                : "Nguồn: cột";
+            badge.className = "bg-teal-50 text-teal-800 px-2 py-1 rounded border border-teal-200";
+        } else if (det.mode === "tag") {
+            badge.textContent = "Nguồn: tag UAT issue";
+            badge.className = "bg-amber-50 text-amber-800 px-2 py-1 rounded border border-amber-200";
+        } else {
+            badge.textContent = "Nguồn: chưa có cột chất lượng";
+            badge.className = "bg-gray-50 text-gray-600 px-2 py-1 rounded border";
+        }
+    }
+
+    const msgWrap = document.getElementById("uqMessages");
+    if (msgWrap) {
+        const msgs = uq.messages || [];
+        msgWrap.innerHTML = msgs.length
+            ? msgs.map(m => `<p>⚠ ${escapeHtml(m)}</p>`).join("")
+            : "";
+    }
+
+    const assum = document.getElementById("uqAssumptions");
+    if (assum) {
+        assum.innerHTML = (uq.assumptions || [])
+            .map(a => `<li>${escapeHtml(a)}</li>`).join("");
+    }
+
+    const modWrap = document.getElementById("uqModuleWrap");
+    if (modWrap) {
+        const mods = uq.modules || [];
+        if (!mods.length) {
+            modWrap.innerHTML = `<p class="text-gray-400 italic">Không có module.</p>`;
+        } else {
+            modWrap.innerHTML = `
+                <table class="fc-table text-xs">
+                    <thead>
+                        <tr>
+                            <th>Module</th>
+                            <th class="fc-th-right">Defect</th>
+                            <th class="fc-th-right">FB</th>
+                            <th class="fc-th-right">Reopen %</th>
+                            <th class="fc-th-right">TB cycle</th>
+                            <th class="fc-th-right">≥2 vòng</th>
+                        </tr>
+                    </thead>
+                    <tbody>${mods.slice(0, 40).map(m => `
+                        <tr>
+                            <td>${escapeHtml(m.module)}</td>
+                            <td class="text-right"><span class="fc-num ${(m.defects || 0) > 0 ? "fc-num-bad" : "fc-num-muted"}">${m.defects}</span></td>
+                            <td class="text-right"><span class="fc-num ${(m.feedback || 0) > 0 ? "fc-num-warn" : "fc-num-muted"}">${m.feedback}</span></td>
+                            <td class="text-right"><span class="${_uqReopenClass(m.reopen_rate_pct)}">${m.reopen_rate_pct != null ? m.reopen_rate_pct + "%" : "—"}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-neutral">${m.avg_uat_cycles != null ? m.avg_uat_cycles : "—"}</span></td>
+                            <td class="text-right"><span class="fc-num ${(m.multi_cycle || 0) > 0 ? "fc-num-warn" : "fc-num-muted"}">${m.multi_cycle}</span></td>
+                        </tr>`).join("")}
+                    </tbody>
+                </table>`;
+        }
+    }
+
+    const listWrap = document.getElementById("uqListWrap");
+    if (listWrap) {
+        const items = uq.functions || [];
+        if (!items.length) {
+            listWrap.innerHTML = det.has_quality_columns
+                ? `<p class="text-gray-400 italic px-1">Không có function có dữ liệu chất lượng.</p>`
+                : `<p class="text-gray-400 italic px-1">Thêm cột Defect/Reopen/UAT cycle hoặc gắn tag «UAT issue».</p>`;
+        } else {
+            const trunc = uq.functions_truncated || 0;
+            listWrap.innerHTML = `
+                <table class="fc-table text-xs">
+                    <thead>
+                        <tr>
+                            <th>Mã CN</th>
+                            <th>Module</th>
+                            <th class="fc-th-right">Defect</th>
+                            <th class="fc-th-right">Reopen</th>
+                            <th class="fc-th-right">Cycle</th>
+                            <th>UAT</th>
+                        </tr>
+                    </thead>
+                    <tbody>${items.slice(0, 80).map(it => `
+                        <tr>
+                            <td class="font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}${it.tagged_uat_issue ? " 🏷" : ""}</td>
+                            <td>${escapeHtml(it.module || "")}</td>
+                            <td class="text-right"><span class="fc-num ${(it.defect_count || 0) > 0 ? "fc-num-bad" : "fc-num-muted"}">${it.defect_count != null ? it.defect_count : "—"}</span></td>
+                            <td class="text-right"><span class="fc-num ${(it.reopen_count || 0) > 0 ? "fc-num-warn" : "fc-num-muted"}">${it.reopen_count != null ? it.reopen_count : "—"}</span></td>
+                            <td class="text-right"><span class="fc-num ${(it.uat_cycle || 0) >= 2 ? "fc-num-warn" : "fc-num-neutral"}">${it.uat_cycle != null ? it.uat_cycle : "—"}</span></td>
+                            <td>${escapeHtml(it.uat_status || "—")}</td>
+                        </tr>`).join("")}
+                    </tbody>
+                </table>
+                ${trunc ? `<p class="text-[10px] text-gray-400 mt-1">… và ${trunc} function nữa (đã cắt payload)</p>` : ""}`;
+        }
+    }
+}
+
+async function loadUatQuality() {
+    if (!currentProjectSlug) return;
+    const qs = _buildFilterQuery();
+    let url = _apiUrl("uat-quality");
+    if (qs) url += "?" + qs;
+    try {
+        const r = await fetch(url);
+        const data = r.ok ? await r.json() : null;
+        renderUatQualitySection(data);
+    } catch (err) {
+        console.warn("[uat-quality]", err);
+    }
+}
+window.loadUatQuality = loadUatQuality;
+
+
+/** Helper xuất Excel PMO analytics (mode picker → download). */
+function _exportPmoAnalytics(ev, endpoint, defaultName, extraParams) {
+    if (!currentProjectSlug) return;
+    openExportModePicker(ev, null, async (mode) => {
+        const qs = typeof _buildFilterQuery === "function" ? _buildFilterQuery() : "";
+        const params = new URLSearchParams(qs || "");
+        params.set("mode", mode || "both");
+        if (extraParams) {
+            Object.entries(extraParams).forEach(([k, v]) => {
+                if (v != null && v !== "") params.set(k, v);
+            });
+        }
+        await downloadFile(
+            `/api/projects/${encodeURIComponent(currentProjectSlug)}/${endpoint}?` + params.toString(),
+            defaultName
+        );
+    });
+}
+
+async function exportBaselineSv(ev) {
+    _exportPmoAnalytics(ev, "export-baseline-sv", "Baseline_SV.xlsx");
+}
+window.exportBaselineSv = exportBaselineSv;
+
+async function exportEarnedValue(ev) {
+    _exportPmoAnalytics(ev, "export-earned-value", "Earned_Value.xlsx");
+}
+window.exportEarnedValue = exportEarnedValue;
+
+async function exportScopeCreep(ev) {
+    _exportPmoAnalytics(ev, "export-scope-creep", "Scope_Creep.xlsx");
+}
+window.exportScopeCreep = exportScopeCreep;
+
+async function exportUatQuality(ev) {
+    _exportPmoAnalytics(ev, "export-uat-quality", "UAT_Quality.xlsx");
+}
+window.exportUatQuality = exportUatQuality;
+
+async function exportCompletionForecast(ev) {
+    const phase = document.getElementById("burndownPhaseSelector")?.value || "";
+    _exportPmoAnalytics(ev, "export-completion-forecast", "Completion_Forecast.xlsx", { phase });
+}
+window.exportCompletionForecast = exportCompletionForecast;
+
+async function exportPicUpcoming(ev) {
+    const weeks = document.getElementById("picUpcomingWeeks")?.value || "4";
+    _exportPmoAnalytics(ev, "export-pic-upcoming", "PIC_Upcoming.xlsx", { weeks });
+}
+window.exportPicUpcoming = exportPicUpcoming;
 
 
 // ========================================================================
@@ -10428,6 +11918,15 @@ function _renderSavedViewsSelect() {
         ).join("");
     if (current && _savedViewsCache.some(v => v.id === current)) {
         sel.value = current;
+    }
+    // Quick-switch chips
+    const chips = document.getElementById("savedViewChips");
+    if (chips) {
+        chips.innerHTML = _savedViewsCache.slice(0, 8).map(v =>
+            `<button type="button" onclick="applySavedView('${escapeAttr(v.id)}')"
+                     class="px-2 py-0.5 rounded-full text-[11px] border border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100"
+                     title="Áp filter: ${(v.modules||[]).join(',') || 'all'}">${escapeHtml(v.name)}</button>`
+        ).join("");
     }
 }
 
@@ -13170,9 +14669,13 @@ const _PRESENT_LAZY_LOADERS = {
     "section-pic-overload":   "loadPicOverload",
     "section-forecast-gantt": "loadForecastGantt",
     "section-forecast-manpower": "loadForecastManpower",
+    "section-estimate-ratio": "loadEstimateRatio",
     "section-fitgap-dashboard": "loadFitgapDashboard",
     "section-function-diff":  "loadFunctionDiff",
     "section-custom-dashboards": "loadCustomDashboards",
+    "section-evm":            "loadEarnedValue",
+    "section-exec-dashboard": "loadExecutiveDashboard",
+    "section-risk":           "loadPmoRisk",
 };
 
 function _presentApplyIndex() {
@@ -13409,6 +14912,7 @@ async function loadDataQuality() {
         const d = await apiJson(url);
         _dqState.issues = d.issues || [];
         _dqState.summary = d.summary || null;
+        _dqState.ownershipStats = d.ownership_stats || null;
         _dqState.page = 1;
 
         // Populate code + module filters
@@ -13421,6 +14925,11 @@ async function loadDataQuality() {
         section.classList.remove("hidden");
         _dqRenderSummaryCards();
         _dqRenderTable();
+        // BA/UX #4 — refresh Module/Matrix highlights sau khi có DQ
+        try {
+            if (typeof renderModuleTable === "function" && metricsData?.module_overview) renderModuleTable();
+            if (typeof renderPhaseMatrix === "function") renderPhaseMatrix();
+        } catch (_) {}
     } catch (err) {
         console.error("[loadDataQuality]", err);
         section.classList.add("hidden");
@@ -13532,6 +15041,20 @@ function _dqRenderSummaryCards() {
             <div class="text-2xl font-bold text-yellow-700">${sev.low || 0}</div>
         </div>
     `;
+    const os = _dqState.ownershipStats;
+    if (os) {
+        const rate = os.resolution_rate_wow_pct;
+        wrap.innerHTML += `
+            <div class="bg-indigo-50 rounded-lg p-3 border border-indigo-200 col-span-2 md:col-span-3 lg:col-span-3">
+                <div class="text-xs text-indigo-800 font-semibold" data-help-id="dq-ownership">DQ Ownership / SLA</div>
+                <div class="text-sm text-indigo-900 mt-1">
+                    Gán ${os.assigned_count || 0}/${os.open_issues || 0}
+                    · SLA trễ <b>${os.sla_overdue_count || 0}</b>
+                    · Resolved tuần này <b>${os.resolved_this_week || 0}</b>
+                    · Rate WoW <b>${rate != null ? rate + "%" : "—"}</b>
+                </div>
+            </div>`;
+    }
 }
 
 function _dqFilteredIssues() {
@@ -13560,7 +15083,7 @@ function _dqRenderTable() {
     if (!tbody) return;
     const items = _dqFilteredIssues();
     if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-green-600">
+        tbody.innerHTML = `<tr><td colspan="11" class="text-center py-6 text-green-600">
             ✅ Không có issue nào phù hợp filter. Dữ liệu clean!
         </td></tr>`;
         const pager = document.getElementById("dqPagerWrap");
@@ -13579,7 +15102,20 @@ function _dqRenderTable() {
         };
         return `<span class="inline-block text-xs px-2 py-0.5 rounded border ${map[sev] || ""}">${sev.toUpperCase()}</span>`;
     };
-    tbody.innerHTML = pageItems.map(it => `
+    const slaBadge = (st) => {
+        const map = {
+            overdue: "bg-red-100 text-red-700",
+            due_soon: "bg-amber-100 text-amber-800",
+            on_track: "bg-emerald-100 text-emerald-700",
+            resolved: "bg-slate-100 text-slate-600",
+            no_target: "bg-gray-100 text-gray-600",
+            unassigned: "bg-orange-50 text-orange-700",
+        };
+        return `<span class="text-[10px] px-1.5 py-0.5 rounded ${map[st] || "bg-gray-100"}">${escapeHtml(st || "—")}</span>`;
+    };
+    tbody.innerHTML = pageItems.map(it => {
+        const key = escapeAttr(it.ownership_key || "");
+        return `
         <tr class="border-b hover:bg-slate-50">
             <td class="px-2 py-1.5 text-gray-500">${it.row_num}</td>
             <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.ma_cn || "—")}</td>
@@ -13588,9 +15124,23 @@ function _dqRenderTable() {
             <td class="px-2 py-1.5 text-xs">${escapeHtml(it.phase || "")}</td>
             <td class="px-2 py-1.5">${sevBadge(it.severity)} ${escapeHtml(it.label)}</td>
             <td class="px-2 py-1.5 text-xs text-gray-600">${escapeHtml(it.detail)}</td>
+            <td class="px-2 py-1.5">
+                <input type="text" class="border rounded px-1 py-0.5 text-[10px] w-24"
+                       value="${escapeAttr(it.owner_pic || "")}" placeholder="PIC"
+                       onchange="saveDqOwnership('${key}', {owner_pic: this.value})" />
+            </td>
+            <td class="px-2 py-1.5">
+                <input type="date" class="border rounded px-1 py-0.5 text-[10px]"
+                       value="${escapeAttr((it.target_date || "").slice(0, 10))}"
+                       onchange="saveDqOwnership('${key}', {target_date: this.value})" />
+            </td>
+            <td class="px-2 py-1.5">${slaBadge(it.sla_status)}
+                <label class="ml-1 text-[10px]"><input type="checkbox" ${it.resolved ? "checked" : ""}
+                    onchange="saveDqOwnership('${key}', {resolved: this.checked})" /> xong</label>
+            </td>
             <td class="px-2 py-1.5 text-xs text-gray-700">${escapeHtml(it.suggestion)}</td>
-        </tr>
-    `).join("");
+        </tr>`;
+    }).join("");
     // Pager đơn giản
     const totalPages = Math.max(1, Math.ceil(items.length / _dqState.pageSize));
     const pager = document.getElementById("dqPagerWrap");
@@ -13613,6 +15163,29 @@ window._dqGoPage = function (p) {
     const totalPages = Math.max(1, Math.ceil(items.length / _dqState.pageSize));
     _dqState.page = Math.max(1, Math.min(p, totalPages));
     _dqRenderTable();
+};
+
+window.saveDqOwnership = async function (key, patch) {
+    if (!currentProjectSlug || !key) return;
+    const cur = (_dqState.issues || []).find(i => i.ownership_key === key) || {};
+    const body = {
+        key,
+        owner_pic: patch.owner_pic != null ? patch.owner_pic : (cur.owner_pic || ""),
+        target_date: patch.target_date != null ? patch.target_date : (cur.target_date || ""),
+        resolved: patch.resolved,
+    };
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/dq-ownership`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        await loadDataQuality();
+        if (typeof showToast === "function") showToast("Đã lưu DQ ownership", "green");
+    } catch (err) {
+        if (typeof showToast === "function") showToast("Lỗi DQ ownership: " + err.message, "red");
+    }
 };
 
 window.exportDataQuality = function () {
@@ -14130,6 +15703,11 @@ function _fillSettingsForm(s) {
     set("setProgHigh", pt.closed_soon ?? 70);
     set("setAgingWip", s.aging_wip_threshold ?? 14);
     set("setReminderDays", s.upload_reminder_days ?? 7);
+    const crEl = document.getElementById("setCrCodes");
+    if (crEl) {
+        const codes = s.cr_function_codes || [];
+        crEl.value = Array.isArray(codes) ? codes.join("\n") : String(codes || "");
+    }
     const sla = s.sla || {};
     set("setSlaMust", sla.must_have_days ?? 3);
     set("setSlaShould", sla.should_have_days ?? 7);
@@ -14185,6 +15763,9 @@ window.saveSettings = async function () {
         // U27 — cùng 1 số cho snapshot + upload history
         max_snapshots: int0("setRetention", 10),
         max_upload_history: int0("setRetention", 10),
+        // Phase C — Mã CN = CR (fallback)
+        cr_function_codes: (document.getElementById("setCrCodes")?.value || "")
+            .split(/[,;\n]+/).map(s => s.trim()).filter(Boolean),
     };
     const poPayload = {
         day_max_tasks: int0("setPoDayMax", 5),
@@ -14247,6 +15828,7 @@ window.saveSettings = async function () {
                 if (typeof _agingFetch === "function") _agingFetch();
             }
         } catch (e) { /* aging WIP not loaded yet */ }
+        try { if (typeof loadScopeCreep === "function") loadScopeCreep(); } catch (e) {}
         closeSettingsModal();
     } catch (err) {
         showToast("Lưu cài đặt lỗi: " + err.message, "red");
@@ -14447,6 +16029,9 @@ const _VISIBILITY_GROUPS = [
             { id: "section-capacity",         label: "Capacity",                 desc: "So sánh capacity vs load thực tế của PIC" },
             { id: "section-pic-overload",     label: "PIC Overload · Đa dự án",  desc: "Phát hiện PIC overload theo ngày/tuần/tháng trên mọi dự án" },
             { id: "section-baseline",         label: "Baseline Variance",        desc: "Chênh lệch baseline vs actual date" },
+            { id: "section-evm",              label: "Earned Value (SPI/CPI)",   desc: "EV / PV / AC → SPI / CPI + S-curve theo tuần" },
+            { id: "section-exec-dashboard",   label: "PM Executive Dashboard",  desc: "% xong · SPI/CPI · top risk · milestone · forecast · scope creep" },
+            { id: "section-scope-creep",      label: "Scope Creep / CR",         desc: "Tỷ lệ phát sinh (CR) vs scope gốc + effort MH" },
         ],
     },
     {
@@ -14455,9 +16040,10 @@ const _VISIBILITY_GROUPS = [
             { id: "section-overdue",     label: "Danh sách Overdue",   desc: "Bảng function trễ theo phase" },
             { id: "section-unassigned",  label: "Chưa phân công",      desc: "Bảng task chưa gán PIC" },
             { id: "section-stalled",     label: "Task bị đình trệ",    desc: "Pred Closed + phase chờ quá hạn End mà chưa bắt đầu" },
-            { id: "section-risk",        label: "High Risk",           desc: "Function rủi ro cao (Priority × Complexity × Overdue)" },
+            { id: "section-risk",        label: "High Risk",           desc: "Function rủi ro cao + trend + mitigation tracking" },
+            { id: "section-uat-quality", label: "UAT Quality",         desc: "Defect / feedback / reopen rate / vòng UAT" },
             { id: "section-aging-wip",   label: "Aging WIP",           desc: "Task In-progress quá lâu (vượt ngưỡng ngày)" },
-            { id: "section-dataquality", label: "Data Quality",        desc: "Bảng dữ liệu thiếu / không hợp lệ để dọn dẹp Excel" },
+            { id: "section-dataquality", label: "Data Quality",        desc: "Bảng dữ liệu thiếu / không hợp lệ + ownership/SLA" },
         ],
     },
     {
@@ -17035,9 +18621,36 @@ document.addEventListener("DOMContentLoaded", () => {
 // Bar tô màu theo phase category, text % completion trong cell giữa bar,
 // dùng chung state global filter. Rebuild bằng /api/.../gantt-calendar.
 // ==========================================================================
+/** Ctrl+wheel zoom — chỉ khi hover container, không đụng scroll trang. */
+function _bindGanttHzZoomWheel(el, onZoomDelta) {
+    if (!el || el.dataset.hzZoomBound === "1") return;
+    el.dataset.hzZoomBound = "1";
+    el.addEventListener("wheel", (e) => {
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        onZoomDelta(e.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
+}
+
+const _GC_ZOOM_KEY = "ganttCal:zoomScale";
+const _GC_CELL_BASE = 28;
+const _GC_ROW_H = 34;
+const _GC_ZOOM_MIN = 0.5;
+const _GC_ZOOM_MAX = 2.5;
+const _GC_ZOOM_STEP = 0.25;
+
+function _gcLoadZoomScale() {
+    try {
+        const v = parseFloat(localStorage.getItem(_GC_ZOOM_KEY));
+        if (Number.isFinite(v) && v >= _GC_ZOOM_MIN && v <= _GC_ZOOM_MAX) return v;
+    } catch (e) { /* ignore */ }
+    return 1;
+}
+
 const _ganttCalState = {
     group_by: "module",
     granularity: "week",
+    zoomScale: _gcLoadZoomScale(),
 };
 
 function _gcKey() { return `ganttCal:${currentProjectSlug || "default"}`; }
@@ -17050,10 +18663,45 @@ function _loadGanttCalState() {
             if (j.granularity) _ganttCalState.granularity = j.granularity;
         }
     } catch (e) { /* ignore */ }
+    // Zoom theo chart type (không theo project)
+    _ganttCalState.zoomScale = _gcLoadZoomScale();
 }
 function _saveGanttCalState() {
-    try { localStorage.setItem(_gcKey(), JSON.stringify(_ganttCalState)); } catch (e) {}
+    try { localStorage.setItem(_gcKey(), JSON.stringify({
+        group_by: _ganttCalState.group_by,
+        granularity: _ganttCalState.granularity,
+    })); } catch (e) {}
 }
+function _gcCellW() {
+    return Math.max(16, Math.round(_GC_CELL_BASE * (_ganttCalState.zoomScale || 1)));
+}
+function _updateGcZoomLabel() {
+    const el = document.getElementById("gcZoomLabel");
+    if (el) el.textContent = Math.round((_ganttCalState.zoomScale || 1) * 100) + "%";
+}
+function _applyGanttCalZoomVars(container) {
+    const el = container || document.getElementById("ganttCalendarContainer");
+    if (!el) return;
+    el.style.setProperty("--gantt-cal-cell-w", _gcCellW() + "px");
+    el.style.setProperty("--gantt-cal-row-h", _GC_ROW_H + "px");
+    el.style.setProperty("--gantt-cal-hdr-h", "28px");
+    _updateGcZoomLabel();
+    _bindGanttHzZoomWheel(el, (dir) => {
+        if (dir > 0) gcZoomIn(); else gcZoomOut();
+    });
+}
+function setGcZoomScale(scale) {
+    const stepped = Math.round(scale / _GC_ZOOM_STEP) * _GC_ZOOM_STEP;
+    _ganttCalState.zoomScale = Math.min(_GC_ZOOM_MAX, Math.max(_GC_ZOOM_MIN, Number(stepped.toFixed(2))));
+    try { localStorage.setItem(_GC_ZOOM_KEY, String(_ganttCalState.zoomScale)); } catch (e) { /* ignore */ }
+    _applyGanttCalZoomVars();
+}
+function gcZoomIn() { setGcZoomScale((_ganttCalState.zoomScale || 1) + _GC_ZOOM_STEP); }
+function gcZoomOut() { setGcZoomScale((_ganttCalState.zoomScale || 1) - _GC_ZOOM_STEP); }
+function gcZoomReset() { setGcZoomScale(1); }
+window.gcZoomIn = gcZoomIn;
+window.gcZoomOut = gcZoomOut;
+window.gcZoomReset = gcZoomReset;
 function _syncGanttCalButtons() {
     document.querySelectorAll(".gantt-cal-groupby-btn").forEach(b => {
         const active = b.dataset.gcb === _ganttCalState.group_by;
@@ -17091,6 +18739,7 @@ async function loadGanttCalendar() {
     _syncGanttCalButtons();
     const container = document.getElementById("ganttCalendarContainer");
     if (!container) return;
+    _applyGanttCalZoomVars(container);
     container.innerHTML = `<div class="text-gray-400 text-center py-10 text-sm">⏳ Đang tải…</div>`;
 
     const qsFilter = (typeof _buildFilterQuery === "function") ? _buildFilterQuery() : "";
@@ -17115,6 +18764,7 @@ function _renderGanttCalendar(data) {
     // T35 Task 2 — Render banner cảnh báo outlier dates (nếu có).
     // Lưu skipped_dates vào window scope để modal chi tiết đọc lại.
     _renderGanttCalOutlierBanner(data.skipped_dates || [], data.skipped_count || 0);
+    _applyGanttCalZoomVars(container);
 
     if (data.empty || !(data.rows || []).length || !(data.columns || []).length) {
         container.innerHTML = `<div class="text-gray-400 text-center py-10 text-sm">
@@ -17180,18 +18830,20 @@ function _renderGanttCalendar(data) {
     let tbodyHtml = "";
     data.rows.forEach(row => {
         const isAgg = row.is_aggregate === true || (data.group_by !== "function");
-        const rowCls = isAgg ? "summary-row" : "";
+        const isCrit = !!row.on_critical_path;
+        const rowCls = [isAgg ? "summary-row" : "", isCrit ? "gantt-cal-critical" : ""].filter(Boolean).join(" ");
         const labelExtras = [];
         if (row.func_count) labelExtras.push(`${row.func_count} func`);
         if (row.overdue_count) labelExtras.push(`<span class="text-red-600">⚠ ${row.overdue_count} trễ</span>`);
         const labelSuffix = labelExtras.length ? `<span class="text-[10px] text-gray-500 ml-1">(${labelExtras.join(" · ")})</span>` : "";
         const activePhaseTag = row.active_phase ? `<span class="text-[9px] text-gray-500 ml-1">[${escapeHtml(row.active_phase)}]</span>` : "";
+        const critBadge = isCrit ? `<span class="gantt-cal-crit-badge" title="Critical path — chuỗi phase chưa xong kết thúc muộn nhất">CRITICAL</span>` : "";
         const segTitle = (row.segments || []).map(s =>
-            `${s.phase}: ${s.start}→${s.end} (${s.pct}%)`
+            `${s.phase}: ${s.start}→${s.end} (${s.pct}%)${s.critical ? " ★" : ""}`
         ).join(" · ") || `${row.start || "-"} → ${row.end || "-"}`;
         tbodyHtml += `<tr class="${rowCls}">
             <td class="gantt-cal-label" title="${escapeAttr(segTitle)} · overall ${row.pct}%">
-                ${escapeHtml(row.name)}${activePhaseTag}${labelSuffix}
+                ${escapeHtml(row.name)}${critBadge}${activePhaseTag}${labelSuffix}
             </td>`;
         const cells = row.cells || [];
         const cellCats = row.cell_categories || [];
@@ -18195,24 +19847,35 @@ function _archRenderTable() {
     }
     tbody.innerHTML = rows.map(s => {
         const archived = !!s.archived;
+        const isBaseline = _baselineSnapId && s.date === _baselineSnapId;
         const status = archived
             ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 border">📦 Archived</span>`
             : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 border border-orange-300">🔥 Hot</span>`;
+        const blBadge = isBaseline
+            ? ` <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">📐 Baseline</span>`
+            : "";
         const src = (s.source || "upload").startsWith("sync:")
             ? `<span class="text-cyan-700">🔄 Sync</span>`
             : `<span class="text-gray-600">📄 Upload</span>`;
-        const action = archived
+        const archBtn = archived
             ? `<button type="button" onclick="_archRestoreOne('${escapeAttr(s.date)}')"
                        class="text-[10px] px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded">🔓 Rã đông</button>`
             : `<button type="button" onclick="_archOne('${escapeAttr(s.date)}')"
                        class="text-[10px] px-2 py-0.5 border rounded hover:bg-amber-50">📦 Archive</button>`;
-        return `<tr class="border-b ${archived ? "opacity-70 bg-slate-50" : "hover:bg-white"}">
-            <td class="px-2 py-1 font-mono">${escapeHtml(s.date)}</td>
+        const blBtn = isBaseline
+            ? `<button type="button" onclick="clearProjectBaseline()"
+                       class="text-[10px] px-2 py-0.5 border border-amber-400 text-amber-800 rounded hover:bg-amber-50"
+                       title="Bỏ đánh dấu baseline">✕ Baseline</button>`
+            : `<button type="button" onclick="setProjectBaseline('${escapeAttr(s.date)}')"
+                       class="text-[10px] px-2 py-0.5 border rounded hover:bg-amber-50"
+                       title="Đánh dấu làm kế hoạch gốc (baseline)">📐 Baseline</button>`;
+        return `<tr class="border-b ${archived ? "opacity-70 bg-slate-50" : "hover:bg-white"}${isBaseline ? " bg-amber-50/60" : ""}">
+            <td class="px-2 py-1 font-mono">${escapeHtml(s.date)}${blBadge}</td>
             <td class="px-2 py-1">${src}</td>
             <td class="px-2 py-1">${status}</td>
             <td class="px-2 py-1 text-right">${s.total_functions ?? "—"}</td>
             <td class="px-2 py-1 text-right">${s.overall_pct ?? "—"}%</td>
-            <td class="px-2 py-1">${action}</td>
+            <td class="px-2 py-1 flex flex-wrap gap-1">${blBtn}${archBtn}</td>
         </tr>`;
     }).join("");
 }
@@ -18303,12 +19966,50 @@ window._archOne = _archOne;
 // FORECAST GANTT — UAT / Golive theo tháng (đa dự án)
 // Section: #section-forecast-gantt — ids fg* riêng, tránh đụng Gantt khác
 // ========================================================================
+const _FG_ZOOM_KEY = "fgGantt:zoomScale";
+const _FG_CELL_BASE = 56;
+const _FG_ZOOM_MIN = 0.5;
+const _FG_ZOOM_MAX = 2.5;
+const _FG_ZOOM_STEP = 0.25;
+
+function _fgLoadZoomScale() {
+    try {
+        const v = parseFloat(localStorage.getItem(_FG_ZOOM_KEY));
+        if (Number.isFinite(v) && v >= _FG_ZOOM_MIN && v <= _FG_ZOOM_MAX) return v;
+    } catch (e) { /* ignore */ }
+    return 1;
+}
+
 const _fgState = {
     data: null,
     rowMode: "project", // project = tree project→milestone | milestone = flat
     selectedSlugs: null, // null = chưa init → mặc định current project
     folded: {}, // slug → true = ẩn hàng milestone con
+    zoomScale: _fgLoadZoomScale(),
 };
+
+function _fgCellW() {
+    return Math.max(24, Math.round(_FG_CELL_BASE * (_fgState.zoomScale || 1)));
+}
+
+function _updateFgZoomLabel() {
+    const el = document.getElementById("fgZoomLabel");
+    if (el) el.textContent = Math.round((_fgState.zoomScale || 1) * 100) + "%";
+}
+
+function setFgZoomScale(scale) {
+    const stepped = Math.round(scale / _FG_ZOOM_STEP) * _FG_ZOOM_STEP;
+    _fgState.zoomScale = Math.min(_FG_ZOOM_MAX, Math.max(_FG_ZOOM_MIN, Number(stepped.toFixed(2))));
+    try { localStorage.setItem(_FG_ZOOM_KEY, String(_fgState.zoomScale)); } catch (e) { /* ignore */ }
+    _updateFgZoomLabel();
+    if (_fgState.data) renderForecastGantt(_fgState.data);
+}
+function fgZoomIn() { setFgZoomScale((_fgState.zoomScale || 1) + _FG_ZOOM_STEP); }
+function fgZoomOut() { setFgZoomScale((_fgState.zoomScale || 1) - _FG_ZOOM_STEP); }
+function fgZoomReset() { setFgZoomScale(1); }
+window.fgZoomIn = fgZoomIn;
+window.fgZoomOut = fgZoomOut;
+window.fgZoomReset = fgZoomReset;
 
 const _FG_MS_COLORS = {
     analysis: "#8b5cf6",
@@ -18375,6 +20076,7 @@ async function loadForecastGantt() {
     const section = document.getElementById("section-forecast-gantt");
     if (!section) return;
     _fgEnsureProjectMS();
+    _updateFgZoomLabel();
     const selected = _msInstances.fgProjects?.getSelected?.() || _fgState.selectedSlugs || [];
     const params = new URLSearchParams();
     if (selected.length) params.set("slugs", selected.join(","));
@@ -18398,7 +20100,11 @@ function renderForecastGantt(data) {
     if (!section || !data) return;
     const projects = data.projects || [];
     const ruleEl = document.getElementById("fgRuleHint");
-    if (ruleEl) ruleEl.textContent = data.rule || "";
+    if (ruleEl) {
+        let rule = data.rule || "";
+        if (data.sv_definition) rule += " · " + data.sv_definition;
+        ruleEl.textContent = rule;
+    }
 
     const uatEl = document.getElementById("fgUatMonth");
     const glEl = document.getElementById("fgGoliveMonth");
@@ -18415,6 +20121,21 @@ function renderForecastGantt(data) {
         if (glEl) {
             glEl.textContent = _fgFmtMonth(agg.golive?.month)
                 + (projects.length ? ` (${projects.length} DA)` : "");
+        }
+    }
+
+    // Phase A — SV summary badge
+    const svBadge = document.getElementById("fgSvBadge");
+    const svLate = document.getElementById("fgSvLate");
+    const svEarly = document.getElementById("fgSvEarly");
+    const blSum = (data.summary || {}).baseline_sv;
+    if (svBadge) {
+        if (blSum && blSum.projects_with_baseline > 0) {
+            svBadge.classList.remove("hidden");
+            if (svLate) svLate.textContent = blSum.milestone_late ?? 0;
+            if (svEarly) svEarly.textContent = blSum.milestone_early ?? 0;
+        } else {
+            svBadge.classList.add("hidden");
         }
     }
 
@@ -18447,20 +20168,20 @@ function _renderFgSummaryCards(data) {
     const gl = sum.golive_by_month || {};
     const uatHtml = Object.keys(uat).length
         ? Object.entries(uat).map(([mk, names]) =>
-            `<div class="fg-month-chip"><b>${_fgFmtMonth(mk)}</b>: `
+            `<div class="fg-month-chip"><span class="fc-num fc-num-month-uat">${_fgFmtMonth(mk)}</span>: `
             + `${escapeHtml((names || []).join(", "))}</div>`
           ).join("")
         : "<span class=\"text-gray-400\">Chưa có dữ liệu UAT</span>";
     const glHtml = Object.keys(gl).length
         ? Object.entries(gl).map(([mk, names]) =>
-            `<div class="fg-month-chip"><b>${_fgFmtMonth(mk)}</b>: `
+            `<div class="fg-month-chip"><span class="fc-num fc-num-month-gl">${_fgFmtMonth(mk)}</span>: `
             + `${escapeHtml((names || []).join(", "))}</div>`
           ).join("")
         : "<span class=\"text-gray-400\">Chưa có dữ liệu Golive</span>";
     wrap.innerHTML =
-        `<div class="border rounded p-2 bg-violet-50/50">`
+        `<div class="border rounded p-2 bg-violet-50/50 border-violet-100">`
         + `<div class="font-semibold text-violet-900 mb-1">UAT với KH theo tháng</div>${uatHtml}</div>`
-        + `<div class="border rounded p-2 bg-emerald-50/50">`
+        + `<div class="border rounded p-2 bg-emerald-50/50 border-emerald-100">`
         + `<div class="font-semibold text-emerald-900 mb-1">Golive với KH theo tháng</div>${glHtml}</div>`;
 }
 
@@ -18494,7 +20215,7 @@ function _fgAssessmentHtml(assess) {
     return `<span class="fg-assess ${cls}" title="${escapeHtml(text)}">${escapeHtml(text)}</span>`;
 }
 
-function _fgBarHtml(m, info, months, cellW, tipExtra) {
+function _fgBarHtml(m, info, months, cellW, tipExtra, baselineInfo) {
     const span = _fgSpanIndices(months, info);
     if (!span) return "";
     const color = _FG_MS_COLORS[m.id] || "#64748b";
@@ -18502,8 +20223,14 @@ function _fgBarHtml(m, info, months, cellW, tipExtra) {
     const width = Math.max(cellW - 6, (span.i1 - span.i0 + 1) * cellW - 6);
     const letter = m.id === "uat" ? "U" : m.id === "golive" ? "G" : m.id.charAt(0).toUpperCase();
     const mi = _fgMonthIndex(months, info.month);
+    let svTip = "";
+    if (baselineInfo && baselineInfo.sv_days != null) {
+        const s = baselineInfo.sv_days;
+        svTip = ` · SV ${s > 0 ? "+" : ""}${s}d vs baseline ${baselineInfo.baseline_month || ""}`;
+    }
     const title = `${m.label}: ${_fgFmtMonth(info.span_start) || "?"}→${_fgFmtMonth(info.span_end) || "?"} · `
         + `tháng ${_fgFmtMonth(info.month)} (${info.source || ""}) · Closed ${info.closed ?? 0}/${info.total ?? 0}`
+        + svTip
         + (tipExtra ? ` · ${tipExtra}` : "");
     let html = `<div class="fg-bar${m.highlight ? " fg-bar-hi" : ""}" `
         + `style="left:${left}px;width:${width}px;background:${color}" `
@@ -18513,6 +20240,26 @@ function _fgBarHtml(m, info, months, cellW, tipExtra) {
         html += `<div class="fg-marker${m.highlight ? " fg-marker-hi" : ""}" `
             + `style="left:${mLeft}px;background:${color}" title="${escapeHtml(title)}">`
             + `${escapeHtml(letter)}</div>`;
+    }
+    // Phase A — baseline diamond marker + SV chip
+    if (baselineInfo && baselineInfo.baseline_month) {
+        const bi = _fgMonthIndex(months, baselineInfo.baseline_month);
+        if (bi >= 0) {
+            const bLeft = bi * cellW + cellW / 2 - 5;
+            const late = baselineInfo.late;
+            const early = baselineInfo.early;
+            const bCls = late ? "fg-bl-late" : early ? "fg-bl-early" : "fg-bl-ok";
+            html += `<div class="fg-baseline-mark ${bCls}" style="left:${bLeft}px" `
+                + `title="Baseline ${escapeHtml(baselineInfo.baseline_month)}`
+                + `${baselineInfo.sv_days != null ? " · SV " + (baselineInfo.sv_days > 0 ? "+" : "") + baselineInfo.sv_days + "d" : ""}"></div>`;
+        }
+        if (baselineInfo.sv_days != null && mi >= 0) {
+            const s = baselineInfo.sv_days;
+            const chipCls = baselineInfo.late ? "fg-sv-late" : baselineInfo.early ? "fg-sv-early" : "fg-sv-ok";
+            const chipLeft = mi * cellW + cellW - 2;
+            html += `<span class="fg-sv-chip ${chipCls}" style="left:${chipLeft}px">`
+                + `${s > 0 ? "+" : ""}${s}d</span>`;
+        }
     }
     return html;
 }
@@ -18559,10 +20306,14 @@ function _renderFgGanttByProject(data) {
     }
     // Label rộng hơn để indent milestone con
     const labelW = 200;
-    const cellW = 56;
+    const cellW = _fgCellW();
     const today = new Date();
     const todayMk = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
     const todayIdx = _fgMonthIndex(months, todayMk);
+    _updateFgZoomLabel();
+    _bindGanttHzZoomWheel(wrap, (dir) => {
+        if (dir > 0) fgZoomIn(); else fgZoomOut();
+    });
 
     let html = `<div class="fg-gantt" style="--fg-label-w:${labelW}px;--fg-cell-w:${cellW}px">`;
     html += `<div class="fg-gantt-ruler"><div class="fg-gantt-label">Dự án</div>`
@@ -18580,6 +20331,7 @@ function _renderFgGanttByProject(data) {
         const union = _fgProjectSpanUnion(proj, milestones);
         const sumTitle = `${proj.name || slug}: ${_fgFmtMonth(union.span_start) || "?"}→`
             + `${_fgFmtMonth(union.span_end) || "?"}`;
+        html += `<div class="fg-gantt-project-block">`;
         html += `<div class="fg-gantt-row fg-gantt-row-parent"${folded ? ' data-folded="true"' : ""}>`
              + `<div class="fg-gantt-label" title="${escapeHtml(slug)}">`
              + `<button type="button" class="fg-fold-btn" aria-label="Thu gọn/mở rộng" `
@@ -18597,15 +20349,19 @@ function _renderFgGanttByProject(data) {
                      + `<div class="fg-gantt-label fg-gantt-label-child" title="${escapeHtml(m.label)}">`
                      + `<span class="fg-tree-prefix">└</span> ${escapeHtml(m.label)}</div>`;
                 html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
-                html += _fgBarHtml(m, info, months, cellW);
+                const blInfo = ((proj.baseline_sv || {}).milestones || {})[m.id];
+                html += _fgBarHtml(m, info, months, cellW, null, blInfo);
                 html += `</div></div>`;
             }
         }
+        html += `</div>`;
     }
     html += `</div>`;
     html += `<div class="fg-legend mt-2">` + milestones.map(m =>
         `<span><i style="background:${_FG_MS_COLORS[m.id] || "#64748b"}"></i>${escapeHtml(m.label)}</span>`
-    ).join("") + `</div>`;
+    ).join("")
+        + `<span class="ml-2"><i class="fg-legend-bl"></i>Baseline</span>`
+        + `</div>`;
     wrap.innerHTML = html;
 }
 
@@ -18616,10 +20372,14 @@ function _renderFgGanttByMilestone(data) {
     const milestones = data.milestones || [];
     const projects = data.projects || [];
     const labelW = 160;
-    const cellW = 56;
+    const cellW = _fgCellW();
     const today = new Date();
     const todayMk = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
     const todayIdx = _fgMonthIndex(months, todayMk);
+    _updateFgZoomLabel();
+    _bindGanttHzZoomWheel(wrap, (dir) => {
+        if (dir > 0) fgZoomIn(); else fgZoomOut();
+    });
 
     let html = `<div class="fg-gantt" style="--fg-label-w:${labelW}px;--fg-cell-w:${cellW}px">`;
     html += `<div class="fg-gantt-ruler"><div class="fg-gantt-label">Milestone</div>`
@@ -18676,41 +20436,56 @@ function _renderFgDetailTable(data) {
     if (projects.length === 1) {
         const proj = projects[0];
         const ms = proj.milestones || {};
+        const blMs = (proj.baseline_sv || {}).milestones || {};
+        const hasBl = Object.keys(blMs).length > 0;
         const rows = milestones.map(m => {
             const info = ms[m.id] || {};
+            const bl = blMs[m.id] || {};
             const src = info.source === "open_max" ? "max End còn mở"
                       : info.source === "closed_max" ? "max End Closed"
                       : "không có End";
             const spanTxt = (info.span_start || info.span_end)
                 ? `${_fgFmtMonth(info.span_start)} → ${_fgFmtMonth(info.span_end)}`
                 : "—";
+            const sv = bl.sv_days;
+            const svNum = sv == null ? "fc-num fc-num-muted"
+                : bl.late ? "fc-num fc-num-late" : bl.early ? "fc-num fc-num-early" : "fc-num fc-num-warn";
+            const svTxt = sv == null ? "—" : ((sv > 0 ? "+" : "") + sv);
+            const monthCls = m.id === "uat" ? "fc-num fc-num-month-uat"
+                : m.id === "golive" ? "fc-num fc-num-month-gl" : "fc-num fc-num-month";
+            const closed = info.closed ?? 0;
+            const total = info.total ?? 0;
             return `<tr>
-                <td class="px-2 py-1.5 font-medium">${escapeHtml(m.label)}</td>
-                <td class="px-2 py-1.5 text-center">${_fgFmtMonth(info.month)}</td>
-                <td class="px-2 py-1.5 text-center text-xs">${spanTxt}</td>
-                <td class="px-2 py-1.5 text-center text-xs">${info.date || "—"}</td>
-                <td class="px-2 py-1.5 text-xs">${src}</td>
-                <td class="px-2 py-1.5 text-center text-xs">${info.closed ?? 0}/${info.total ?? 0}</td>
-                <td class="px-2 py-1.5 text-xs">${_fgAssessmentHtml(info.assessment)}</td>
-                <td class="px-2 py-1.5 text-xs text-gray-500">${escapeHtml((info.phases || []).join(", ") || "—")}</td>
+                <td class="font-medium">${escapeHtml(m.label)}</td>
+                <td class="text-center"><span class="${monthCls}">${_fgFmtMonth(info.month)}</span></td>
+                <td class="text-center text-xs text-slate-600">${spanTxt}</td>
+                <td class="text-center text-xs"><span class="fc-num fc-num-neutral">${info.date || "—"}</span></td>
+                ${hasBl ? `<td class="text-center text-xs"><span class="fc-num fc-num-hc">${_fgFmtMonth(bl.baseline_month)}</span></td>
+                <td class="text-center text-xs"><span class="${svNum}">${svTxt}</span></td>` : ""}
+                <td class="text-xs text-slate-600">${src}</td>
+                <td class="text-center text-xs"><span class="fc-num fc-num-closed">${closed}</span><span class="text-slate-400">/</span><span class="fc-num fc-num-hc">${total}</span></td>
+                <td class="text-xs">${_fgAssessmentHtml(info.assessment)}</td>
+                <td class="text-xs text-gray-500">${escapeHtml((info.phases || []).join(", ") || "—")}</td>
             </tr>`;
         }).join("");
-        wrap.innerHTML = `<table class="w-full text-sm"><thead><tr class="bg-slate-700 text-white">
-            <th class="px-2 py-2 text-left">Milestone</th>
-            <th class="px-2 py-2">Tháng</th>
-            <th class="px-2 py-2">Span</th>
-            <th class="px-2 py-2">Ngày</th>
-            <th class="px-2 py-2 text-left">Nguồn</th>
-            <th class="px-2 py-2">Closed/Tổng</th>
-            <th class="px-2 py-2 text-left">Đánh giá lý do hợp lý</th>
-            <th class="px-2 py-2 text-left">Phase</th>
+        wrap.innerHTML = `<table class="fc-table text-sm">
+            <thead><tr>
+            <th>Milestone</th>
+            <th class="fc-th-center">Tháng</th>
+            <th class="fc-th-center">Span</th>
+            <th class="fc-th-center">Ngày</th>
+            ${hasBl ? `<th class="fc-th-center">Baseline</th><th class="fc-th-center">SV (ngày)</th>` : ""}
+            <th>Nguồn</th>
+            <th class="fc-th-center">Closed/Tổng</th>
+            <th>Đánh giá lý do hợp lý</th>
+            <th>Phase</th>
         </tr></thead><tbody>${rows}</tbody></table>`;
         return;
     }
     // Multi-project: tháng + đánh giá ngắn dưới mỗi ô milestone
-    const head = `<th class="px-2 py-2 text-left">Dự án</th>`
-        + milestones.map(m => `<th class="px-2 py-2">${escapeHtml(m.label)}</th>`).join("")
-        + `<th class="px-2 py-2 text-left">Đánh giá lý do hợp lý (UAT / Golive)</th>`;
+    const head = `<th>Dự án</th>`
+        + milestones.map(m => `<th class="fc-th-center">${escapeHtml(m.label)}</th>`).join("")
+        + `<th>Đánh giá lý do hợp lý (UAT / Golive)</th>`;
     const body = projects.map(proj => {
         const ms = proj.milestones || {};
         const uatA = (ms.uat || {}).assessment;
@@ -18720,17 +20495,18 @@ function _renderFgDetailTable(data) {
             + `<div><span class="text-violet-700 font-medium">UAT:</span> ${_fgAssessmentHtml(uatA)}</div>`
             + `<div><span class="text-emerald-700 font-medium">Golive:</span> ${_fgAssessmentHtml(glA)}</div>`
             + `</div>`;
-        return `<tr><td class="px-2 py-1.5 font-medium">${escapeHtml(proj.name)}</td>`
+        return `<tr><td class="font-medium">${escapeHtml(proj.name)}</td>`
             + milestones.map(m => {
                 const info = ms[m.id] || {};
-                const cls = m.highlight ? "font-semibold text-violet-800" : "";
+                const monthCls = m.id === "uat" || m.highlight ? "fc-num fc-num-month-uat"
+                    : m.id === "golive" ? "fc-num fc-num-month-gl" : "fc-num fc-num-month";
                 const tip = `${info.source || ""} · ${(info.assessment || {}).text || ""}`;
-                return `<td class="px-2 py-1.5 text-center ${cls}" title="${escapeHtml(tip)}">`
-                     + `${_fgFmtMonth(info.month)}</td>`;
+                return `<td class="text-center" title="${escapeHtml(tip)}">`
+                     + `<span class="${monthCls}">${_fgFmtMonth(info.month)}</span></td>`;
             }).join("")
-            + `<td class="px-2 py-1.5 text-xs">${assessCell}</td></tr>`;
+            + `<td class="text-xs">${assessCell}</td></tr>`;
     }).join("");
-    wrap.innerHTML = `<table class="w-full text-sm"><thead><tr class="bg-slate-700 text-white">${head}</tr></thead>`
+    wrap.innerHTML = `<table class="fc-table text-sm"><thead><tr>${head}</tr></thead>`
         + `<tbody>${body}</tbody></table>`;
 }
 
@@ -18868,8 +20644,16 @@ function renderForecastManpower(data) {
     if (remainEl) remainEl.textContent = `${_fmFmt(tot.display_remaining)} ${unit}`;
     const hd = document.getElementById("fmHireDev");
     const hi = document.getElementById("fmHireImpl");
-    if (hd) hd.textContent = String(tot.hire_dev ?? 0);
-    if (hi) hi.textContent = String(tot.hire_impl ?? 0);
+    const hireDev = Number(tot.hire_dev ?? 0);
+    const hireImpl = Number(tot.hire_impl ?? 0);
+    if (hd) {
+        hd.textContent = String(hireDev);
+        hd.className = hireDev > 0 ? "text-red-700" : "text-emerald-700";
+    }
+    if (hi) {
+        hi.textContent = String(hireImpl);
+        hi.className = hireImpl > 0 ? "text-red-700" : "text-emerald-700";
+    }
     const hint = document.getElementById("fmBasisHint");
     if (hint) {
         hint.textContent = (data.basis_label || "") + " · "
@@ -18890,26 +20674,68 @@ function renderForecastManpower(data) {
         ["method_note", "Ghi chú / phương pháp"],
     ];
 
+    function _fmNumCell(k, v, r) {
+        const hire = Number(r.hire_needed || 0);
+        const needed = Number(r.people_needed || 0);
+        const txt = escapeHtml(v == null ? "" : String(v));
+        if (k === "display_total") {
+            return `<td class="text-right"><span class="fc-num fc-num-mh">${txt}</span></td>`;
+        }
+        if (k === "display_remaining") {
+            return `<td class="text-right"><span class="fc-num fc-num-remain">${txt}</span></td>`;
+        }
+        if (k === "display_closed") {
+            return `<td class="text-right"><span class="fc-num fc-num-closed">${txt}</span></td>`;
+        }
+        if (k === "count_remaining") {
+            return `<td class="text-right"><span class="fc-num fc-num-warn">${txt}</span></td>`;
+        }
+        if (k === "count_defaulted") {
+            const n = Number(r.count_defaulted || 0);
+            return `<td class="text-right"><span class="fc-num ${n > 0 ? "fc-num-warn" : "fc-num-muted"}">${txt}</span></td>`;
+        }
+        if (k === "headcount_current") {
+            return `<td class="text-right"><span class="fc-num fc-num-hc">${txt}</span></td>`;
+        }
+        if (k === "people_needed") {
+            return `<td class="text-right"><span class="fc-num ${needed > 0 ? "fc-num-neutral" : "fc-num-muted"}">${txt}</span></td>`;
+        }
+        if (k === "hire_needed") {
+            return `<td class="text-right"><span class="fc-num ${hire > 0 ? "fc-num-hire" : "fc-num-good"}">${txt}</span></td>`;
+        }
+        if (k === "months_with_current") {
+            const mo = Number(r.months_with_current);
+            const cls = (!Number.isFinite(mo) || mo <= 0) ? "fc-num-muted"
+                : mo > Number(document.getElementById("fmTargetMonths")?.value || 1) ? "fc-num-warn"
+                : "fc-num-remain";
+            return `<td class="text-right"><span class="fc-num ${cls}">${txt}</span></td>`;
+        }
+        return `<td>${txt}</td>`;
+    }
+
     function tableHtml(rows, title) {
-        const head = cols.map(c => `<th class="px-2 py-1.5 text-left">${c[1]}</th>`).join("");
+        const head = cols.map(([k, label]) => {
+            const right = k !== "label" && k !== "method_note";
+            return `<th${right ? ' class="fc-th-right"' : ""}>${label}</th>`;
+        }).join("");
         const body = (rows || []).map(r => {
             const hire = Number(r.hire_needed || 0);
-            return `<tr class="border-b hover:bg-slate-50 ${hire > 0 ? "bg-red-50/40" : ""}">`
+            return `<tr${hire > 0 ? ' class="fc-row-hire"' : ""}>`
                 + cols.map(([k]) => {
                     let v = r[k];
                     if (k.startsWith("display_") || k === "months_with_current") v = _fmFmt(v);
                     if (k === "method_note") {
-                        return `<td class="px-2 py-1 text-[11px] text-slate-600 max-w-md">${escapeHtml(v || "")}</td>`;
+                        return `<td class="text-[11px] text-slate-600 max-w-md">${escapeHtml(v || "")}</td>`;
                     }
-                    if (k === "hire_needed" && hire > 0) {
-                        return `<td class="px-2 py-1.5 font-semibold text-red-700">${escapeHtml(String(v))}</td>`;
+                    if (k === "label") {
+                        return `<td class="font-medium text-slate-800">${escapeHtml(v == null ? "" : String(v))}</td>`;
                     }
-                    return `<td class="px-2 py-1.5">${escapeHtml(v == null ? "" : String(v))}</td>`;
+                    return _fmNumCell(k, v, r);
                 }).join("")
                 + `</tr>`;
         }).join("");
         return `<h4 class="text-sm font-semibold text-slate-700 mb-1">${title}</h4>`
-            + `<table class="w-full text-sm mb-2"><thead><tr class="bg-slate-700 text-white">${head}</tr></thead>`
+            + `<table class="fc-table text-sm mb-2"><thead><tr>${head}</tr></thead>`
             + `<tbody>${body || `<tr><td colspan="${cols.length}" class="px-2 py-3 text-gray-400 italic">Không có dữ liệu</td></tr>`}</tbody></table>`;
     }
 
@@ -18922,20 +20748,20 @@ function renderForecastManpower(data) {
     if (detailWrap) {
         const items = (data.detail || []).slice(0, 200);
         const dhead = ["Mã CN", "Tên", "Module", "Phase", "Công đoạn", "Pool", "Status", "MH", "Default?", "Phương pháp"];
-        detailWrap.innerHTML = `<table class="w-full text-xs"><thead><tr class="bg-slate-600 text-white">`
-            + dhead.map(h => `<th class="px-1.5 py-1">${h}</th>`).join("")
+        detailWrap.innerHTML = `<table class="fc-table text-xs"><thead><tr>`
+            + dhead.map((h, i) => `<th${i === 7 ? ' class="fc-th-right"' : ""}>${h}</th>`).join("")
             + `</tr></thead><tbody>`
-            + items.map(d => `<tr class="border-b">`
-                + `<td class="px-1.5 py-1">${escapeHtml(d.ma_cn || "")}</td>`
-                + `<td class="px-1.5 py-1 max-w-[180px] truncate">${escapeHtml(d.ten_cn || "")}</td>`
-                + `<td class="px-1.5 py-1">${escapeHtml(d.module || "")}</td>`
-                + `<td class="px-1.5 py-1">${escapeHtml(d.phase || "")}</td>`
-                + `<td class="px-1.5 py-1">${escapeHtml(d.task_type || "")}</td>`
-                + `<td class="px-1.5 py-1">${escapeHtml(d.pool || "")}</td>`
-                + `<td class="px-1.5 py-1">${escapeHtml(d.status || "")}</td>`
-                + `<td class="px-1.5 py-1 text-right">${_fmFmt(d.mh)}</td>`
-                + `<td class="px-1.5 py-1">${d.used_default ? "Yes" : ""}</td>`
-                + `<td class="px-1.5 py-1 text-slate-500">${escapeHtml(d.method_note || "")}</td>`
+            + items.map(d => `<tr>`
+                + `<td>${escapeHtml(d.ma_cn || "")}</td>`
+                + `<td class="max-w-[180px] truncate">${escapeHtml(d.ten_cn || "")}</td>`
+                + `<td>${escapeHtml(d.module || "")}</td>`
+                + `<td>${escapeHtml(d.phase || "")}</td>`
+                + `<td>${escapeHtml(d.task_type || "")}</td>`
+                + `<td><span class="fc-num fc-num-hc">${escapeHtml(d.pool || "")}</span></td>`
+                + `<td>${escapeHtml(d.status || "")}</td>`
+                + `<td class="text-right"><span class="fc-num fc-num-mh">${_fmFmt(d.mh)}</span></td>`
+                + `<td>${d.used_default ? '<span class="fc-num fc-num-warn">Yes</span>' : ""}</td>`
+                + `<td class="text-slate-500">${escapeHtml(d.method_note || "")}</td>`
                 + `</tr>`).join("")
             + `</tbody></table>`
             + (data.detail && data.detail.length > 200
@@ -18956,6 +20782,316 @@ async function exportForecastManpower(ev) {
     });
 }
 window.exportForecastManpower = exportForecastManpower;
+
+// ========================================================================
+// ƯỚC LƯỢNG THEO HỆ SỐ — parametric BA/Dev + ratios
+// Section: #section-estimate-ratio
+// ========================================================================
+const _erState = { data: null, filling: false };
+
+function _erNum(id, fallback) {
+    const el = document.getElementById(id);
+    const v = Number(el?.value);
+    return Number.isFinite(v) ? v : fallback;
+}
+
+function _erCollectParamsFromForm() {
+    const incl = !!document.getElementById("erInclOverhead")?.checked;
+    return {
+        seed_defaults: {
+            ba_md: _erNum("erSeedBa", 0.5),
+            dev_md: _erNum("erSeedDev", 2),
+        },
+        md_per_mm: _erNum("erMdPerMm", 22),
+        mh_per_day: _erNum("erMhPerDay", 8),
+        ratios: {
+            des_of_ba: _erNum("erDesOfBa", 0.25),
+            test_of_dev: _erNum("erTestOfDev", 0.3),
+            doc_of_dev: _erNum("erDocOfDev", 0.15),
+            uat_of_total_incl_uat: _erNum("erUatRatio", 0.15),
+        },
+        overhead: {
+            include_uat: incl,
+            include_golive: incl,
+            include_pm: incl,
+        },
+    };
+}
+
+function _erFillFormFromParams(params) {
+    if (!params) return;
+    _erState.filling = true;
+    const sd = params.seed_defaults || {};
+    const r = params.ratios || {};
+    const oh = params.overhead || {};
+    const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (el && v != null && v !== "") el.value = v;
+    };
+    set("erSeedBa", sd.ba_md);
+    set("erSeedDev", sd.dev_md);
+    set("erMdPerMm", params.md_per_mm);
+    set("erMhPerDay", params.mh_per_day);
+    set("erDesOfBa", r.des_of_ba);
+    set("erTestOfDev", r.test_of_dev);
+    set("erDocOfDev", r.doc_of_dev);
+    set("erUatRatio", r.uat_of_total_incl_uat);
+    const cb = document.getElementById("erInclOverhead");
+    if (cb) {
+        cb.checked = !!(oh.include_uat || oh.include_golive || oh.include_pm);
+    }
+    _erState.filling = false;
+}
+
+function _erFmt(n, digits) {
+    if (n == null || n === "") return "—";
+    const x = Number(n);
+    if (Number.isNaN(x)) return escapeHtml(String(n));
+    const d = digits == null ? 2 : digits;
+    return x % 1 === 0 ? String(x) : x.toFixed(d);
+}
+
+async function loadEstimateRatio(opts) {
+    if (!currentProjectSlug) return;
+    const section = document.getElementById("section-estimate-ratio");
+    if (!section) return;
+    const useForm = !(opts && opts.fromServerOnly);
+    const params = new URLSearchParams();
+    if (typeof globalFilters !== "undefined" && globalFilters) {
+        if (globalFilters.modules?.length) params.set("module", globalFilters.modules.join(","));
+        if (globalFilters.processes?.length) params.set("process", globalFilters.processes.join(","));
+        if (globalFilters.pics?.length) params.set("pic", globalFilters.pics.join(","));
+    }
+    try {
+        let data;
+        if (useForm && !_erState.filling) {
+            const r = await fetch(
+                `/api/projects/${encodeURIComponent(currentProjectSlug)}/estimate-ratio?` + params.toString(),
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ params: _erCollectParamsFromForm() }),
+                }
+            );
+            if (!r.ok) {
+                console.warn("[estimate-ratio]", r.status);
+                return;
+            }
+            data = await r.json();
+        } else {
+            const r = await fetch(
+                `/api/projects/${encodeURIComponent(currentProjectSlug)}/estimate-ratio?` + params.toString()
+            );
+            if (!r.ok) {
+                console.warn("[estimate-ratio]", r.status);
+                return;
+            }
+            data = await r.json();
+            _erFillFormFromParams(data.params);
+        }
+        _erState.data = data;
+        renderEstimateRatio(data);
+    } catch (err) {
+        console.error("[loadEstimateRatio]", err);
+    }
+}
+window.loadEstimateRatio = loadEstimateRatio;
+
+function renderEstimateRatio(data) {
+    const section = document.getElementById("section-estimate-ratio");
+    if (!section || !data) return;
+    const tot = data.totals || {};
+    const mmEl = document.getElementById("erTotalMm");
+    const mhEl = document.getElementById("erTotalMh");
+    if (mmEl) mmEl.textContent = _erFmt(tot.mm, 3);
+    if (mhEl) mhEl.textContent = _erFmt(tot.mh, 1);
+    const warnBadge = document.getElementById("erDefaultWarn");
+    const pctEl = document.getElementById("erDefaultPct");
+    const pct = Number(tot.pct_default_seed || 0);
+    if (warnBadge && pctEl) {
+        pctEl.textContent = String(pct);
+        warnBadge.classList.toggle("hidden", !(pct > 0));
+    }
+    const hint = document.getElementById("erHint");
+    if (hint) {
+        const src = data.params_meta?.source || data.params?._source || "builtin";
+        const paths = data.params_meta?.paths || data.params?._paths || {};
+        hint.textContent = (data.basis_label || "Ước lượng theo hệ số")
+            + ` · nguồn params: ${src}`
+            + (paths.project ? ` · project: …/${String(paths.project).split(/[/\\\\]/).slice(-2).join("/")}` : "")
+            + " · " + (data.hints || []).join(" ");
+    }
+    const warnWrap = document.getElementById("erWarnWrap");
+    if (warnWrap) {
+        const ws = data.warnings || [];
+        warnWrap.innerHTML = ws.map(w =>
+            `<div class="bg-amber-50 border border-amber-200 rounded px-2 py-1">⚠ ${escapeHtml(w)}</div>`
+        ).join("");
+    }
+
+    const phaseWrap = document.getElementById("erPhaseWrap");
+    if (phaseWrap) {
+        const rows = data.by_phase || [];
+        phaseWrap.innerHTML = `<table class="fc-table text-sm"><thead><tr>`
+            + ["Công đoạn", "MD", "MH", "MM", "Loại"].map((h, i) =>
+                `<th${i > 0 && i < 4 ? ' class="fc-th-right"' : ""}>${h}</th>`).join("")
+            + `</tr></thead><tbody>`
+            + rows.map(r => `<tr${r.is_overhead ? ' class="bg-slate-50"' : ""}>`
+                + `<td class="font-medium">${escapeHtml(r.label || r.bucket)}</td>`
+                + `<td class="text-right"><span class="fc-num">${_erFmt(r.md, 3)}</span></td>`
+                + `<td class="text-right"><span class="fc-num fc-num-mh">${_erFmt(r.mh, 1)}</span></td>`
+                + `<td class="text-right"><span class="fc-num fc-num-remain">${_erFmt(r.mm, 3)}</span></td>`
+                + `<td class="text-[11px] text-slate-500">${r.is_overhead ? "Overhead" : "Bottom-up / ratio"}</td>`
+                + `</tr>`).join("")
+            + `<tr class="font-semibold border-t">`
+            + `<td>TỔNG</td>`
+            + `<td class="text-right">${_erFmt(tot.md, 3)}</td>`
+            + `<td class="text-right">${_erFmt(tot.mh, 1)}</td>`
+            + `<td class="text-right">${_erFmt(tot.mm, 3)}</td>`
+            + `<td></td></tr>`
+            + `</tbody></table>`;
+    }
+
+    const mapWrap = document.getElementById("erMapWrap");
+    if (mapWrap) {
+        const maps = data.phase_mapping || [];
+        mapWrap.innerHTML = `<h4 class="text-xs font-semibold text-slate-700 mb-1">Phase → bucket</h4>`
+            + `<table class="fc-table text-xs"><thead><tr><th>Phase FL</th><th>Task type</th><th>Bucket</th></tr></thead><tbody>`
+            + maps.map(m => `<tr>`
+                + `<td>${escapeHtml(m.phase || "")}</td>`
+                + `<td>${escapeHtml(m.task_type || "")}</td>`
+                + `<td>${escapeHtml(m.label || m.bucket || "")}</td>`
+                + `</tr>`).join("")
+            + `</tbody></table>`;
+    }
+
+    const feedWrap = document.getElementById("erFeedWrap");
+    if (feedWrap) {
+        const feed = data.forecast_feed || {};
+        const keys = Object.keys(feed);
+        feedWrap.innerHTML = `<h4 class="text-xs font-semibold text-slate-700 mb-1">MH gợi ý cho Forecast (không ghi FL)</h4>`
+            + (keys.length
+                ? `<table class="fc-table text-xs"><thead><tr><th>Công đoạn</th><th class="fc-th-right">MH</th></tr></thead><tbody>`
+                    + keys.map(k => `<tr><td>${escapeHtml(k)}</td>`
+                        + `<td class="text-right"><span class="fc-num fc-num-mh">${_erFmt(feed[k], 1)}</span></td></tr>`).join("")
+                    + `</tbody></table>`
+                : `<p class="text-gray-400 italic">Không có</p>`);
+    }
+
+    const detailWrap = document.getElementById("erDetailWrap");
+    if (detailWrap) {
+        const items = (data.detail || []).slice(0, 100);
+        detailWrap.innerHTML = `<h4 class="text-xs font-semibold text-slate-700 mb-1">Chi tiết function</h4>`
+            + `<table class="fc-table text-xs"><thead><tr>`
+            + ["Mã CN", "Module", "BA MD", "Dev MD", "Build MD", "Seed", "Nguồn BA/Dev"].map((h, i) =>
+                `<th${i >= 2 && i <= 4 ? ' class="fc-th-right"' : ""}>${h}</th>`).join("")
+            + `</tr></thead><tbody>`
+            + items.map(d => {
+                const b = d.buckets_md || {};
+                const def = d.used_default_seed;
+                return `<tr${def ? ' class="bg-amber-50/60"' : ""}>`
+                    + `<td>${escapeHtml(d.ma_cn || "")}</td>`
+                    + `<td>${escapeHtml(d.module || "")}</td>`
+                    + `<td class="text-right">${_erFmt(b.ba, 3)}</td>`
+                    + `<td class="text-right">${_erFmt(b.dev, 3)}</td>`
+                    + `<td class="text-right">${_erFmt(d.build_md, 3)}</td>`
+                    + `<td>${def ? '<span class="fc-num fc-num-warn">default</span>' : ""}</td>`
+                    + `<td class="text-slate-500">${escapeHtml((d.ba_source || "") + " / " + (d.dev_source || ""))}</td>`
+                    + `</tr>`;
+            }).join("")
+            + `</tbody></table>`
+            + (data.detail && data.detail.length > 100
+                ? `<p class="text-[11px] text-gray-500 mt-1">Hiển thị 100/${data.detail.length}.</p>`
+                : "");
+    }
+}
+
+async function saveEstimateRatioParams() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(
+            `/api/projects/${encodeURIComponent(currentProjectSlug)}/estimate-ratio`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "save",
+                    scope: "project",
+                    params: _erCollectParamsFromForm(),
+                }),
+            }
+        );
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            showToast(err.error || "Lưu params thất bại", "red");
+            return;
+        }
+        const data = await r.json();
+        _erState.data = data;
+        _erFillFormFromParams(data.params);
+        renderEstimateRatio(data);
+        showToast("Đã lưu estimation_params.json (project)", "green");
+    } catch (err) {
+        showToast("Lưu params lỗi: " + err.message, "red");
+    }
+}
+window.saveEstimateRatioParams = saveEstimateRatioParams;
+
+async function copyEstimateRatioFeed() {
+    const feed = _erState.data?.forecast_feed || {};
+    const lines = Object.entries(feed).map(([k, v]) => `${k}\t${v}`);
+    const text = lines.length
+        ? "Công đoạn\tMH\n" + lines.join("\n")
+        : "";
+    if (!text) {
+        showToast("Chưa có forecast_feed — bấm Tính lại trước", "red");
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(text);
+        showToast("Đã copy MH theo công đoạn (đối chiếu Forecast, không ghi FL)", "green");
+    } catch (e) {
+        showToast("Không copy được clipboard", "red");
+    }
+}
+window.copyEstimateRatioFeed = copyEstimateRatioFeed;
+
+async function exportEstimateRatio(ev) {
+    if (!currentProjectSlug) return;
+    openExportModePicker(ev, null, async (mode) => {
+        const params = new URLSearchParams();
+        params.set("mode", mode || "both");
+        if (typeof globalFilters !== "undefined" && globalFilters) {
+            if (globalFilters.modules?.length) params.set("module", globalFilters.modules.join(","));
+            if (globalFilters.processes?.length) params.set("process", globalFilters.processes.join(","));
+            if (globalFilters.pics?.length) params.set("pic", globalFilters.pics.join(","));
+        }
+        const url = `/api/projects/${encodeURIComponent(currentProjectSlug)}/export-estimate-ratio?` + params.toString();
+        try {
+            const resp = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ params: _erCollectParamsFromForm() }),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                showToast("Lỗi: " + (err.error || "Không thể xuất file"), "red");
+                return;
+            }
+            const blob = await resp.blob();
+            const objUrl = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = objUrl;
+            a.download = "Estimate_Ratio.xlsx";
+            a.click();
+            URL.revokeObjectURL(objUrl);
+            showToast("Đã tải file: Estimate_Ratio.xlsx");
+        } catch (err) {
+            showToast("Lỗi: " + err.message, "red");
+        }
+    });
+}
+window.exportEstimateRatio = exportEstimateRatio;
 
 // ========================================================================
 // COLUMN PICKER — ẩn/hiện cột bảng, localStorage per table id
@@ -19128,3 +21264,559 @@ if (document.readyState === "loading") {
     try { initAllColumnPickers(); } catch (e) {}
 }
 
+
+// ========================================================================
+
+// ========================================================================
+// BA/UX backlog helpers (#1 auto-diff, #3 trends, #4 DQ, #5 tags, #7 FL verify, #9 PIC weeks, #10 rlog)
+// ========================================================================
+
+window._lastAutoDiff = null;
+window._lastFlVerify = null;
+window._drillSelectedMas = window._drillSelectedMas || new Set();
+
+// ---- Insight strip (thu gọn trends / forecast / FL verify) ----
+const INSIGHT_STRIP_LS_KEY = "ihrp.insightStrip.expanded";
+
+function _insightStripIsExpanded() {
+    try {
+        return localStorage.getItem(INSIGHT_STRIP_LS_KEY) === "1";
+    } catch (e) {
+        return false;
+    }
+}
+
+function _applyInsightStripState(expanded) {
+    const strip = document.getElementById("insightStrip");
+    const btn = document.getElementById("insightStripToggle");
+    const label = document.getElementById("insightStripToggleLabel");
+    if (!strip) return;
+    strip.classList.toggle("expanded", !!expanded);
+    strip.classList.toggle("collapsed", !expanded);
+    strip.dataset.collapsed = expanded ? "0" : "1";
+    if (btn) btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    if (label) label.textContent = expanded ? "Thu gọn" : "Mở rộng";
+    // Sticky height đổi → cập nhật scroll-margin
+    requestAnimationFrame(() => {
+        if (typeof _updateStickyHeaderVar === "function") _updateStickyHeaderVar();
+    });
+}
+
+function initInsightStrip() {
+    _applyInsightStripState(_insightStripIsExpanded());
+    updateInsightStripChips();
+}
+
+function toggleInsightStrip() {
+    const strip = document.getElementById("insightStrip");
+    if (!strip) return;
+    const next = strip.classList.contains("collapsed");
+    try {
+        localStorage.setItem(INSIGHT_STRIP_LS_KEY, next ? "1" : "0");
+    } catch (e) { /* ignore */ }
+    _applyInsightStripState(next);
+}
+window.toggleInsightStrip = toggleInsightStrip;
+
+function updateInsightStripChips() {
+    const chips = document.getElementById("insightStripChips");
+    if (!chips) return;
+    const parts = [];
+
+    // Forecast
+    const fcDate = (document.getElementById("cardForecastDate")?.textContent || "").trim();
+    if (fcDate && fcDate !== "—") {
+        parts.push(`<span class="insight-strip-chip forecast" title="Dự báo ngày xong">📅 ${escapeHtml(fcDate)}</span>`);
+    }
+
+    // FL verify
+    const flBanner = document.getElementById("flVerifyBanner");
+    const fl = window._lastFlVerify;
+    if (flBanner && !flBanner.classList.contains("hidden") && fl?.summary) {
+        const s = fl.summary;
+        const fixed = s.fixed || 0;
+        const total = s.total_yellow || (fixed + (s.still_empty || 0));
+        parts.push(`<span class="insight-strip-chip fl-verify" title="FL re-import verify">🟨 FL verify ${fixed}/${total}</span>`);
+    }
+
+    // Trend deltas (Overdue / Unassigned / Stalled)
+    const snaps = Array.isArray(snapshotsData) ? snapshotsData : [];
+    if (snaps.length >= 2) {
+        const cur = snaps[0] || {};
+        const prev = snaps[1] || {};
+        const deltaChip = (label, a, b) => {
+            const av = Number(a) || 0;
+            const bv = Number(b) || 0;
+            const d = av - bv;
+            const arrow = d > 0 ? "↑" : d < 0 ? "↓" : "→";
+            return `<span class="insight-strip-chip trend">${escapeHtml(label)} ${arrow}${Math.abs(d)}</span>`;
+        };
+        parts.push(deltaChip("OD", cur.overdue_count, prev.overdue_count));
+        parts.push(deltaChip("UA", cur.unassigned_count, prev.unassigned_count));
+        const stalledCur = cur.stalled_count ?? (metricsData?.stalled_tasks?.items || []).length;
+        if (prev.stalled_count != null) {
+            parts.push(deltaChip("ST", stalledCur, prev.stalled_count));
+        }
+    }
+
+    // Auto-diff badge counts (compact)
+    const auto = window._lastAutoDiff;
+    if (auto?.available && auto.badges) {
+        const b = auto.badges;
+        const bits = [];
+        if (b.added) bits.push(`+${b.added}`);
+        if (b.deleted) bits.push(`−${b.deleted}`);
+        if (b.status_rollback) bits.push(`${b.status_rollback} rb`);
+        if (b.pic_changed) bits.push(`${b.pic_changed} PIC`);
+        if (bits.length) {
+            parts.push(`<span class="insight-strip-chip diff" title="So với snapshot trước">Δ ${bits.join(" · ")}</span>`);
+        }
+    }
+
+    // Module-level OD/UA/ST (compact top movers)
+    const modD = window._lastModuleDeltas;
+    if (modD?.available && Array.isArray(modD.modules) && modD.modules.length) {
+        const top = modD.modules.slice(0, 3).map(m => {
+            const bits = [];
+            if (m.overdue_delta) bits.push(`OD${m.overdue_delta > 0 ? "+" : ""}${m.overdue_delta}`);
+            if (m.unassigned_delta) bits.push(`UA${m.unassigned_delta > 0 ? "+" : ""}${m.unassigned_delta}`);
+            if (m.stalled_delta) bits.push(`ST${m.stalled_delta > 0 ? "+" : ""}${m.stalled_delta}`);
+            return bits.length ? `${m.module}: ${bits.join("/")}` : "";
+        }).filter(Boolean);
+        if (top.length) {
+            parts.push(`<span class="insight-strip-chip trend" title="Delta theo module">Δmod ${escapeHtml(top.join(" · "))}</span>`);
+        }
+    }
+
+    chips.innerHTML = parts.length
+        ? parts.join("")
+        : `<span class="text-gray-400 text-[11px]">Không có insight</span>`;
+}
+window.updateInsightStripChips = updateInsightStripChips;
+
+function renderModuleDeltaStrip(data) {
+    const el = document.getElementById("moduleDeltaStrip");
+    if (!el) return;
+    window._lastModuleDeltas = data;
+    if (!data || !data.available || !(data.modules || []).length) {
+        el.classList.add("hidden");
+        el.innerHTML = "";
+        try { updateInsightStripChips(); } catch (e) {}
+        return;
+    }
+    const rows = (data.modules || []).slice(0, 8);
+    el.innerHTML = `<div class="font-semibold text-slate-600 mb-1">Δ theo module (vs snapshot trước)</div>
+        <div class="overflow-x-auto"><table class="text-[11px] w-full"><thead><tr class="text-gray-500">
+            <th class="text-left py-0.5 pr-2">Module</th>
+            <th class="text-right px-1">OD</th><th class="text-right px-1">Δ</th>
+            <th class="text-right px-1">UA</th><th class="text-right px-1">Δ</th>
+            <th class="text-right px-1">ST</th><th class="text-right px-1">Δ</th>
+        </tr></thead><tbody>${rows.map(m => {
+            const dCls = (d) => d > 0 ? "text-red-600" : d < 0 ? "text-emerald-600" : "text-gray-400";
+            return `<tr class="border-t border-gray-100">
+                <td class="py-0.5 pr-2 font-medium">${escapeHtml(m.module)}</td>
+                <td class="text-right px-1">${m.overdue_cur}</td>
+                <td class="text-right px-1 ${dCls(m.overdue_delta)}">${m.overdue_delta > 0 ? "+" : ""}${m.overdue_delta}</td>
+                <td class="text-right px-1">${m.unassigned_cur}</td>
+                <td class="text-right px-1 ${dCls(m.unassigned_delta)}">${m.unassigned_delta > 0 ? "+" : ""}${m.unassigned_delta}</td>
+                <td class="text-right px-1">${m.stalled_cur}</td>
+                <td class="text-right px-1 ${dCls(m.stalled_delta)}">${m.stalled_delta > 0 ? "+" : ""}${m.stalled_delta}</td>
+            </tr>`;
+        }).join("")}</tbody></table></div>
+        <div class="text-[10px] text-gray-400 mt-0.5">${escapeHtml(data.message || "")}</div>`;
+    el.classList.remove("hidden");
+    try { updateInsightStripChips(); } catch (e) {}
+}
+
+async function loadInsightModuleDeltas() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/insight-module-deltas?vs=previous`);
+        const data = r.ok ? await r.json() : null;
+        renderModuleDeltaStrip(data);
+    } catch (e) {
+        console.warn("[insight-module-deltas]", e);
+    }
+}
+window.loadInsightModuleDeltas = loadInsightModuleDeltas;
+
+function dismissFlVerifyBanner() {
+    const banner = document.getElementById("flVerifyBanner");
+    if (banner) banner.classList.add("hidden");
+    updateInsightStripChips();
+}
+window.dismissFlVerifyBanner = dismissFlVerifyBanner;
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+        try { initInsightStrip(); } catch (e) {}
+    });
+} else {
+    try { initInsightStrip(); } catch (e) {}
+}
+
+function _sparkSvg(values, w = 48, h = 16) {
+    const nums = (values || []).map(Number).filter(n => !Number.isNaN(n));
+    if (nums.length < 2) return "";
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+    const span = Math.max(1, max - min);
+    const pts = nums.map((v, i) => {
+        const x = (i / (nums.length - 1)) * (w - 2) + 1;
+        const y = h - 1 - ((v - min) / span) * (h - 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+    return `<svg class="sparkline" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline fill="none" stroke="#64748b" stroke-width="1.5" points="${pts}"/></svg>`;
+}
+
+function renderSummaryTrends() {
+    const el = document.getElementById("summaryTrends");
+    const helpRow = document.getElementById("summaryTrendsHelpRow");
+    if (!el) return;
+    const snaps = Array.isArray(snapshotsData) ? snapshotsData : [];
+    if (snaps.length < 2) {
+        el.classList.add("hidden");
+        el.innerHTML = "";
+        if (helpRow) helpRow.classList.add("hidden");
+        try { updateInsightStripChips(); } catch (e) {}
+        return;
+    }
+    const cur = snaps[0] || {};
+    const prev = snaps[1] || {};
+    const series = (key) => snaps.slice(0, 6).map(s => s[key] ?? 0).reverse();
+    const chip = (label, curV, prevV, key) => {
+        const a = Number(curV) || 0;
+        const b = Number(prevV) || 0;
+        const delta = a - b;
+        const cls = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+        const arrow = delta > 0 ? "↑" : delta < 0 ? "↓" : "→";
+        return `<span class="trend-chip" title="Snapshot ${prev.date || "?"} → ${cur.date || "?"}">
+            <b>${escapeHtml(label)}</b>
+            <span class="${cls}">${b}→${a} ${arrow}${Math.abs(delta)}</span>
+            ${_sparkSvg(series(key))}
+        </span>`;
+    };
+    const stalledCur = cur.stalled_count ?? (metricsData?.stalled_tasks?.items || []).length;
+    const stalledPrev = prev.stalled_count;
+    el.innerHTML =
+        chip("Overdue", cur.overdue_count, prev.overdue_count, "overdue_count") +
+        chip("Unassigned", cur.unassigned_count, prev.unassigned_count, "unassigned_count") +
+        (stalledPrev != null
+            ? chip("Stalled", stalledCur, stalledPrev, "stalled_count")
+            : `<span class="trend-chip"><b>Stalled</b> <span class="flat">${stalledCur}</span></span>`);
+    el.classList.remove("hidden");
+    if (helpRow) helpRow.classList.remove("hidden");
+    try {
+        updateInsightStripChips();
+        if (typeof attachUnifiedSectionHelp === "function") attachUnifiedSectionHelp();
+    } catch (e) {}
+}
+
+function renderAutoDiffBadges(auto) {
+    const wrap = document.getElementById("autoDiffBadges");
+    const helpRow = document.getElementById("autoDiffHelpRow");
+    if (!wrap) return;
+    if (!auto || !auto.available || !auto.badges) {
+        wrap.classList.add("hidden");
+        wrap.innerHTML = "";
+        if (helpRow) helpRow.classList.add("hidden");
+        try { updateInsightStripChips(); } catch (e) {}
+        return;
+    }
+    const b = auto.badges;
+    const parts = [];
+    if (b.added) parts.push(`<button type="button" class="auto-diff-badge added" onclick="openAutoDiffList('added')">↑${b.added} function mới</button>`);
+    if (b.status_rollback) parts.push(`<button type="button" class="auto-diff-badge rollback" onclick="openAutoDiffList('status_rollback')">${b.status_rollback} status rollback</button>`);
+    if (b.pic_changed) parts.push(`<button type="button" class="auto-diff-badge pic" onclick="openAutoDiffList('pic_changed')">${b.pic_changed} PIC đổi</button>`);
+    if (b.deleted) parts.push(`<button type="button" class="auto-diff-badge deleted" onclick="openAutoDiffList('deleted')">↓${b.deleted} bị xoá</button>`);
+    if (!parts.length) {
+        wrap.classList.add("hidden");
+        wrap.innerHTML = "";
+        if (helpRow) helpRow.classList.add("hidden");
+        try { updateInsightStripChips(); } catch (e) {}
+        return;
+    }
+    const range = (auto.previous_date && auto.current_date)
+        ? `<span class="text-gray-500 mr-1">So với ${escapeHtml(auto.previous_date)}:</span>` : "";
+    wrap.innerHTML = range + parts.join("") +
+        ` <button type="button" class="text-xs text-indigo-600 underline ml-1" onclick="scrollToSection('section-function-diff')">Xem Function Diff</button>`;
+    wrap.classList.remove("hidden");
+    if (helpRow) helpRow.classList.remove("hidden");
+    try {
+        updateInsightStripChips();
+        if (typeof attachUnifiedSectionHelp === "function") attachUnifiedSectionHelp();
+    } catch (e) {}
+}
+
+window.openAutoDiffList = function (kind) {
+    const auto = window._lastAutoDiff || {};
+    const lists = auto.lists || {};
+    const rows = lists[kind] || [];
+    const titles = {
+        added: "Function mới",
+        status_rollback: "Status rollback",
+        pic_changed: "PIC đổi",
+        deleted: "Function bị xoá",
+    };
+    let modal = document.getElementById("autoDiffModal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "autoDiffModal";
+        modal.className = "fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4";
+        modal.onclick = (e) => { if (e.target === modal) modal.classList.add("hidden"); };
+        modal.innerHTML = `<div class="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-3xl w-full max-h-[80vh] flex flex-col">
+            <div class="flex items-center justify-between px-4 py-3 border-b dark:border-slate-700">
+                <h3 id="autoDiffModalTitle" class="font-semibold"></h3>
+                <button type="button" class="text-2xl leading-none px-2" onclick="document.getElementById('autoDiffModal').classList.add('hidden')">×</button>
+            </div>
+            <div id="autoDiffModalBody" class="overflow-auto p-4 text-sm"></div>
+        </div>`;
+        document.body.appendChild(modal);
+    }
+    document.getElementById("autoDiffModalTitle").textContent =
+        `${titles[kind] || kind} (${rows.length})`;
+    const body = document.getElementById("autoDiffModalBody");
+    if (!rows.length) {
+        body.innerHTML = `<p class="text-gray-400 text-center py-6">Không có bản ghi.</p>`;
+    } else {
+        const tags = (auto.review_tags || window._lastDiffReviews?.tags || {});
+        body.innerHTML = `<table class="w-full text-xs"><thead class="bg-gray-100 sticky top-0"><tr>
+            <th class="px-2 py-1 text-left">✓</th>
+            <th class="px-2 py-1 text-left">Mã CN</th>
+            <th class="px-2 py-1 text-left">Tên</th>
+            <th class="px-2 py-1 text-left">Module</th>
+            <th class="px-2 py-1 text-left">Chi tiết</th>
+        </tr></thead><tbody>${rows.map(r => {
+            let detail = "";
+            if (r.phase) detail += `Phase: ${r.phase}`;
+            if (r.old != null || r.new != null) detail += ` · ${r.old || "—"} → ${r.new || "—"}`;
+            if (r.field) detail += ` · ${r.field}`;
+            const ma = (r.ma_cn || "").trim();
+            const reviewed = ma && Array.isArray(tags[ma]) && tags[ma].includes("đã review");
+            return `<tr class="border-b">
+                <td class="px-2 py-1">${ma ? `<input type="checkbox" ${reviewed ? "checked" : ""}
+                    onchange="toggleDiffReview('${escapeAttr(ma)}', this.checked)" />` : ""}</td>
+                <td class="px-2 py-1 font-mono">${escapeHtml(r.ma_cn || "")}</td>
+                <td class="px-2 py-1">${escapeHtml(r.ten_cn || "")}</td>
+                <td class="px-2 py-1">${escapeHtml(r.module || "")}</td>
+                <td class="px-2 py-1 text-gray-600">${escapeHtml(detail)}</td></tr>`;
+        }).join("")}</tbody></table>`;
+    }
+    modal.classList.remove("hidden");
+};
+
+function _dqCountForModule(mod) {
+    if (!mod || !_dqState || !Array.isArray(_dqState.issues)) return 0;
+    return _dqState.issues.filter(it => it.module === mod).length;
+}
+
+function _dqCountForModulePhase(mod, phase) {
+    if (!mod || !_dqState || !Array.isArray(_dqState.issues)) return 0;
+    return _dqState.issues.filter(it =>
+        it.module === mod && (!phase || !it.phase || String(it.phase).includes(phase) || it.phase === phase)
+    ).length;
+}
+
+window.openDqForModule = async function (mod) {
+    await loadDataQuality();
+    _dqState.filterModules = mod ? [mod] : [];
+    _dqState.filterCode = "all";
+    _dqState.page = 1;
+    if (_dqModuleMs && typeof _dqModuleMs.setSelected === "function") {
+        _dqModuleMs.setSelected(_dqState.filterModules, true);
+    }
+    _dqRenderTable();
+    if (typeof scrollToSection === "function") scrollToSection("section-dataquality");
+};
+
+window.openDqForModulePhase = async function (mod, phase) {
+    await openDqForModule(mod);
+    const filtered = (_dqState.issues || []).filter(it =>
+        (!mod || it.module === mod) &&
+        (!phase || !it.phase || String(it.phase).includes(phase) || it.phase === phase)
+    );
+    showToast(`DQ · ${mod} × ${phase || "all"}: ${filtered.length} issue`);
+};
+
+window.toggleDrillSelect = function (ma, on) {
+    if (!window._drillSelectedMas) window._drillSelectedMas = new Set();
+    if (!ma) return;
+    if (on) window._drillSelectedMas.add(ma);
+    else window._drillSelectedMas.delete(ma);
+};
+
+window.toggleDrillSelectAll = function (on) {
+    if (!window._drillSelectedMas) window._drillSelectedMas = new Set();
+    document.querySelectorAll(".drill-row-cb").forEach(cb => {
+        const ma = cb.dataset.ma;
+        cb.checked = !!on;
+        if (ma) {
+            if (on) window._drillSelectedMas.add(ma);
+            else window._drillSelectedMas.delete(ma);
+        }
+    });
+};
+
+window.bulkTagSelected = async function (tag) {
+    const mas = [...(window._drillSelectedMas || [])].filter(Boolean);
+    if (!mas.length) {
+        showToast("Chọn ít nhất 1 function (checkbox)", "red");
+        return;
+    }
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(_apiUrl("tags/bulk"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ma_cns: mas, tag, action: "add" }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        showToast(`Đã gắn "${tag}" cho ${mas.length} function`);
+    } catch (err) {
+        showToast("Tag thất bại: " + err.message, "red");
+    }
+};
+
+function _rlogIssueBadges(it) {
+    const ma = (it.ma_cn || "").trim();
+    const pics = it.pic || [];
+    const overdueSet = new Set(
+        (metricsData?.overdue_list || []).map(o => (o.ma_cn || "").trim()).filter(Boolean)
+    );
+    const isOd = it.is_overdue || (ma && overdueSet.has(ma));
+    const noPic = !pics.length || pics.every(p => !String(p || "").trim());
+    let html = "";
+    if (isOd) html += ` <span class="text-[9px] font-bold text-red-700 bg-red-50 border border-red-200 rounded px-1" title="Đang overdue">OVERDUE</span>`;
+    if (noPic) html += ` <span class="text-[9px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded px-1" title="Thiếu PIC">NO PIC</span>`;
+    return html;
+}
+
+async function loadFlReimportVerify() {
+    const banner = document.getElementById("flVerifyBanner");
+    if (!banner || !currentProjectSlug) return;
+    try {
+        let url = `/api/projects/${currentProjectSlug}/fl-reimport-verify?vs=previous`;
+        url = typeof _appendCacheBust === "function" ? _appendCacheBust(url) : url;
+        const r = await fetch(url);
+        if (!r.ok) {
+            banner.classList.add("hidden");
+            try { updateInsightStripChips(); } catch (e) {}
+            return;
+        }
+        const data = await r.json();
+        window._lastFlVerify = data;
+        const s = data.summary || {};
+        const hasSignal = (s.total_yellow > 0) || (s.cell_changed > 0)
+            || (s.cell_added > 0) || (s.cell_removed > 0);
+        if (!hasSignal) {
+            banner.classList.add("hidden");
+            try { updateInsightStripChips(); } catch (e) {}
+            return;
+        }
+        const msg = document.getElementById("flVerifyMsg");
+        if (msg) {
+            const cellN = s.cell_changed || 0;
+            const parts = [];
+            if (s.total_yellow > 0) {
+                parts.push(`Sửa được ${s.fixed || 0} ô vàng · còn ${s.still_empty || 0} trống/bất thường`
+                    + (s.unchanged ? ` (${s.unchanged} không đổi)` : ""));
+            }
+            if (cellN || s.cell_added || s.cell_removed) {
+                parts.push(`cell-diff ${cellN} ô đổi`
+                    + (s.cell_added ? ` · +${s.cell_added}` : "")
+                    + (s.cell_removed ? ` · −${s.cell_removed}` : ""));
+            }
+            msg.textContent = parts.join(" · ") || (data.message || "");
+        }
+        banner.classList.remove("hidden");
+        try { updateInsightStripChips(); } catch (e) {}
+    } catch (e) {
+        console.warn("[loadFlReimportVerify]", e);
+        banner.classList.add("hidden");
+        try { updateInsightStripChips(); } catch (e2) {}
+    }
+}
+window.loadFlReimportVerify = loadFlReimportVerify;
+
+window.openFlVerifyDetail = function () {
+    const data = window._lastFlVerify;
+    if (!data) return;
+    let modal = document.getElementById("autoDiffModal");
+    if (!modal) {
+        window._lastAutoDiff = { lists: { added: [] } };
+        openAutoDiffList("added");
+        modal = document.getElementById("autoDiffModal");
+    }
+    const cd = data.cell_diff || {};
+    document.getElementById("autoDiffModalTitle").textContent =
+        `FL re-import · yellow ${data.summary?.fixed || 0}/${data.summary?.still_empty || 0}`
+        + ` · cell ${cd.summary?.changed || data.summary?.cell_changed || 0}`;
+    const body = document.getElementById("autoDiffModalBody");
+    const blocks = [
+        ["Đã sửa (ô vàng)", data.fixed || [], "text-emerald-700"],
+        ["Còn trống / bất thường", data.still_empty || [], "text-amber-800"],
+        ["Full cell-diff (đổi)", cd.changes || [], "text-indigo-800"],
+    ];
+    body.innerHTML = blocks.map(([title, rows, cls]) =>
+        `<h4 class="font-semibold mt-2 mb-1 ${cls}">${title} (${rows.length})</h4>` +
+        (rows.length
+            ? `<table class="w-full text-xs mb-3"><thead><tr>
+                <th class="px-2 py-1 text-left">Mã</th><th class="px-2 py-1 text-left">Phase</th>
+                <th class="px-2 py-1 text-left">Field</th><th class="px-2 py-1 text-left">Cũ → Mới</th>
+               </tr></thead><tbody>${rows.slice(0, 200).map(r =>
+                `<tr class="border-b"><td class="px-2 py-1 font-mono">${escapeHtml(r.ma_cn || "")}</td>
+                 <td class="px-2 py-1">${escapeHtml(r.phase || "")}</td>
+                 <td class="px-2 py-1">${escapeHtml(r.field || "")}</td>
+                 <td class="px-2 py-1">${escapeHtml(r.old || "")} → ${escapeHtml(r.new || "")}</td></tr>`
+            ).join("")}</tbody></table>`
+            : `<p class="text-gray-400 text-xs mb-2">—</p>`)
+    ).join("");
+    modal.classList.remove("hidden");
+};
+
+async function loadPicUpcoming() {
+    const wrap = document.getElementById("picUpcomingWrap");
+    if (!wrap || !currentProjectSlug) return;
+    const weeksEl = document.getElementById("picUpcomingWeeks");
+    const weeks = weeksEl ? (weeksEl.value || 4) : 4;
+    try {
+        const qsFilter = typeof _buildFilterQuery === "function" ? _buildFilterQuery() : "";
+        let url = `/api/projects/${currentProjectSlug}/pic-upcoming?weeks=${encodeURIComponent(weeks)}`;
+        if (qsFilter) url += "&" + qsFilter;
+        url = typeof _appendCacheBust === "function" ? _appendCacheBust(url) : url;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        const weeksArr = d.weeks || [];
+        const pics = d.pics || [];
+        if (!pics.length) {
+            wrap.innerHTML = `<p class="text-gray-400 text-sm py-4 text-center">Không có task đến hạn trong ${weeks} tuần tới.</p>`;
+            return;
+        }
+        wrap.innerHTML = `<table class="fc-table text-xs">
+            <thead><tr>
+                <th>PIC</th>
+                ${weeksArr.map(w => `<th class="fc-th-center" title="${escapeAttr(w.range_label || "")}">${escapeHtml(w.label)}<div class="font-normal text-[9px] text-indigo-400">${escapeHtml(w.range_label || "")}</div></th>`).join("")}
+                <th class="fc-th-center">Tổng</th>
+            </tr></thead>
+            <tbody>${pics.map(pic => {
+                const row = d.matrix[pic] || {};
+                const total = (d.totals?.by_pic || {})[pic] || 0;
+                const totalCls = total >= 8 ? "fc-num fc-num-bad" : total >= 4 ? "fc-num fc-num-warn" : "fc-num fc-num-hc";
+                return `<tr>
+                    <td class="font-medium">${escapeHtml(pic)}</td>
+                    ${weeksArr.map(w => {
+                        const n = row[w.key] || 0;
+                        const cellCls = n >= 5 ? "fc-num fc-num-bad" : n >= 3 ? "fc-num fc-num-warn" : n > 0 ? "fc-num fc-num-neutral" : "fc-num fc-num-muted";
+                        return `<td class="text-center ${n > 0 ? "cursor-pointer" : ""}"
+                                   ${n > 0 ? `onclick="openDrillDown('pic_workload',{pic:'${escapeAttr(pic)}'})" title="Click xem drill"` : ""}><span class="${cellCls}">${n || "—"}</span></td>`;
+                    }).join("")}
+                    <td class="text-center"><span class="${totalCls}">${total}</span></td>
+                </tr>`;
+            }).join("")}</tbody>
+        </table>`;
+    } catch (e) {
+        wrap.innerHTML = `<p class="text-red-500 text-sm">Lỗi tải PIC tuần tới: ${escapeHtml(e.message)}</p>`;
+    }
+}
+window.loadPicUpcoming = loadPicUpcoming;
