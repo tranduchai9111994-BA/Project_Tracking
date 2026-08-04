@@ -331,22 +331,54 @@ def _filter_giai_doan(data: ParsedData, filters: dict, today: date) -> list[dict
     return result
 
 
+def _is_remaining_function(row: FunctionRow, all_phases: list[str]) -> bool:
+    """Khớp cột «Còn lại» module overview: chưa Closed ở phase cuối."""
+    if not all_phases:
+        return True
+    last = all_phases[-1]
+    st = (row.phases.get(last, PhaseData()).status or "")
+    return st != "Closed"
+
+
+def _scope_wants_remaining(filters: dict) -> bool:
+    """scope=remaining|con_lai → chỉ function còn lại; mặc định/all → tất cả."""
+    scope = str(filters.get("scope") or "all").strip().lower()
+    return scope in ("remaining", "con_lai", "open")
+
+
 def _filter_module(data: ParsedData, filters: dict, today: date) -> list[dict]:
     module = filters.get("module", "")
-    return [
-        _row_to_dict(row, today=today)
-        for row in data.rows
-        if row.meta.get("module") == module
-    ]
+    process = filters.get("process", "")
+    only_remaining = _scope_wants_remaining(filters)
+    result = []
+    for row in data.rows:
+        if row.meta.get("module") != module:
+            continue
+        if process and (row.meta.get("quy_trinh") or "") != process:
+            continue
+        is_rem = _is_remaining_function(row, data.all_phases)
+        if only_remaining and not is_rem:
+            continue
+        item = _row_to_dict(row, today=today, phase_order=data.all_phases)
+        item["is_remaining"] = is_rem
+        result.append(item)
+    return result
 
 
 def _filter_process(data: ParsedData, filters: dict, today: date) -> list[dict]:
     process = filters.get("process", "")
-    return [
-        _row_to_dict(row, today=today)
-        for row in data.rows
-        if row.meta.get("quy_trinh") == process
-    ]
+    only_remaining = _scope_wants_remaining(filters)
+    result = []
+    for row in data.rows:
+        if row.meta.get("quy_trinh") != process:
+            continue
+        is_rem = _is_remaining_function(row, data.all_phases)
+        if only_remaining and not is_rem:
+            continue
+        item = _row_to_dict(row, today=today, phase_order=data.all_phases)
+        item["is_remaining"] = is_rem
+        result.append(item)
+    return result
 
 
 def _phases_for_task_type(data: ParsedData, task_type: str) -> list[str]:
@@ -811,9 +843,17 @@ def build_title(chart: str, filters: dict) -> str:
         p = filters.get("phase", "")
         return f"Giai đoạn {gd}" + (f" — Phase {p}" if p else "")
     if chart == "module":
-        return f"Module: {filters.get('module', '')}"
+        title = f"Module: {filters.get('module', '')}"
+        if filters.get("process"):
+            title += f" · {filters['process']}"
+        if _scope_wants_remaining(filters):
+            title += " — Còn lại"
+        return title
     if chart == "process":
-        return f"Quy trình: {filters.get('process', '')}"
+        title = f"Quy trình: {filters.get('process', '')}"
+        if _scope_wants_remaining(filters):
+            title += " — Còn lại"
+        return title
     if chart == "task_type":
         tt = filters.get("task_type", "")
         m = filters.get("module", "")

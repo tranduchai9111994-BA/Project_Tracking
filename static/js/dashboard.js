@@ -3165,14 +3165,15 @@ window.toggleModuleRiskSort = function () {
     else _fetchModuleOverview();
 };
 
-function _riskBadgeHtml(level) {
+function _riskBadgeHtml(level, reason) {
     const map = {
         risk: { cls: "risk-badge--risk", label: "🔴 Rủi ro" },
         warning: { cls: "risk-badge--warning", label: "🟡 Cần theo dõi" },
         safe: { cls: "risk-badge--safe", label: "🟢 An toàn" },
     };
     const m = map[level] || map.safe;
-    return `<span class="risk-badge ${m.cls}">${m.label}</span>`;
+    const tip = reason ? ` title="${escapeAttr(reason)}"` : "";
+    return `<span class="risk-badge ${m.cls}"${tip}>${m.label}</span>`;
 }
 
 function _sortRowsByRisk(rows) {
@@ -3208,6 +3209,8 @@ function _mgRowHtml(r, opts = {}) {
         ? `<span class="dq-hit-badge" onclick="event.stopPropagation(); openDqForModule('${escapeAttr(r.module)}')" title="${dqN} DQ issue">DQ ${dqN}</span>`
         : "";
     const dqCls = dqN > 0 ? "dq-mod-hit" : "";
+    // Còn lại: click → drill scope=remaining (khớp số đếm); không bubble lên row All.
+    const remClick = `onclick="event.stopPropagation();_moduleRemainingClick('${escapeAttr(r.module)}','${escapeAttr(r.process || "")}')"`;
     return `<tr class="border-b hover:bg-blue-50 cursor-pointer ${dqCls}" ${dataAttrs} ${clickAttr}>
         <td class="px-2 py-2 text-center">${r.stt}</td>
         <td class="px-2 py-2 font-semibold text-blue-700 ${indent}">
@@ -3224,8 +3227,11 @@ function _mgRowHtml(r, opts = {}) {
         </td>
         <td class="px-2 py-2 text-center text-xs">${escapeHtml(r.active_phase || "")}</td>
         <td class="px-2 py-2 text-center ${r.overdue_count > 0 ? 'text-red-600 font-bold' : ''}">${r.overdue_count}</td>
-        <td class="px-2 py-2 text-center">${_riskBadgeHtml(r.risk_level)}</td>
-        <td class="px-2 py-2 text-center"><span class="${remCls}">${rem}</span>${remMh}</td>
+        <td class="px-2 py-2 text-center">${_riskBadgeHtml(r.risk_level, r.risk_reason)}</td>
+        <td class="px-2 py-2 text-center cursor-pointer hover:bg-amber-50" ${remClick}
+            title="Click xem ${remN} function còn lại (chưa Closed phase cuối)">
+            <span class="${remCls}">${rem}</span>${remMh}
+        </td>
     </tr>`;
 }
 
@@ -3280,11 +3286,23 @@ window._moToggleExpand = function (el) {
     _fetchModuleOverview();
 };
 
+/** Drill mặc định = còn lại (khớp cột Còn lại). scope=all xem toàn module. */
+window._moduleRemainingClick = function (mod, proc) {
+    const filters = { module: mod, scope: "remaining" };
+    if (proc) filters.process = proc;
+    const title = proc
+        ? `Module ${mod} · ${proc} — Còn lại`
+        : `Module ${mod} — Còn lại`;
+    return openDrillDown("module", filters, title);
+};
+
 window._moduleRowClickGeneric = function (el) {
     const mod = el.dataset.mod;
     const proc = el.dataset.proc;
-    if (proc) return openDrillDown("module", { module: mod, process: proc });
-    if (mod)  return openDrillDown("module", { module: mod });
+    // Mặc định còn lại — khớp số «Còn lại»; dùng filter All trong modal để xem hết.
+    const filters = { module: mod, scope: "remaining" };
+    if (proc) filters.process = proc;
+    if (mod) return openDrillDown("module", filters);
 };
 
 function renderModuleTable() {
@@ -3302,9 +3320,10 @@ function renderModuleTable() {
             ? `<span class="dq-hit-badge" onclick="event.stopPropagation(); openDqForModule('${escapeAttr(r.module)}')" title="${dqN} DQ issue">DQ ${dqN}</span>`
             : "";
         const dqCls = dqN > 0 ? "dq-mod-hit" : "";
+        const remClick = `onclick="event.stopPropagation();_moduleRemainingClick('${escapeAttr(r.module)}','')"`;
         return `<tr class="border-b hover:bg-blue-50 cursor-pointer ${dqCls}"
                     data-mod="${escapeAttr(r.module)}" onclick="_moduleRowClick(this)"
-                    title="Click để xem chi tiết ${escapeAttr(r.total)} function của module ${escapeAttr(r.module)}">
+                    title="Click để xem function còn lại của module ${escapeAttr(r.module)}">
             <td class="px-2 py-2 text-center">${r.stt}</td>
             <td class="px-2 py-2 font-semibold text-blue-700">${escapeHtml(r.module)}${dqBadge}</td>
             <td class="px-2 py-2 text-center">${r.total}</td>
@@ -3318,16 +3337,19 @@ function renderModuleTable() {
             </td>
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(r.active_phase)}</td>
             <td class="px-2 py-2 text-center ${r.overdue_count > 0 ? 'text-red-600 font-bold' : ''}">${r.overdue_count}</td>
-            <td class="px-2 py-2 text-center">${_riskBadgeHtml(r.risk_level)}</td>
-            <td class="px-2 py-2 text-center"><span class="${remCls}">${rem}</span>${remMh}</td>
+            <td class="px-2 py-2 text-center">${_riskBadgeHtml(r.risk_level, r.risk_reason)}</td>
+            <td class="px-2 py-2 text-center cursor-pointer hover:bg-amber-50" ${remClick}
+                title="Click xem ${remN} function còn lại (chưa Closed phase cuối)">
+                <span class="${remCls}">${rem}</span>${remMh}
+            </td>
         </tr>`;
     }).join("");
 }
 
-// Click 1 row Module Overview → drill-down full list function của module đó
+// Click 1 row Module Overview → drill còn lại (mặc định); All trong modal.
 function _moduleRowClick(el) {
     const mod = el.dataset.mod;
-    if (mod) openDrillDown("module", { module: mod });
+    if (mod) openDrillDown("module", { module: mod, scope: "remaining" });
 }
 
 /**
@@ -8286,6 +8308,8 @@ async function openDrillDown(chart, filters, titleOverride) {
     document.getElementById("drillSubtitle").textContent = "";
     // Reset filter panel về default mỗi khi mở drill mới
     _resetDrillFilterState();
+    // Scope select: hiện với module/process; đồng bộ giá trị từ filters.
+    _syncDrillScopeUI(chart, filters || {});
 
     // Merge chart filter + global filter (prefix _g_ để không đè chart filter).
     // Global filter đảm bảo drill-down luôn scope theo bộ lọc chính hiện tại
@@ -8359,6 +8383,35 @@ function _resetDrillFilterState() {
     const $af = document.getElementById("drillActiveFilters");
     if ($af) $af.textContent = "";
 }
+
+/** Hiện/ẩn select Phạm vi (module/process) và set remaining|all. */
+function _syncDrillScopeUI(chart, filters) {
+    const wrap = document.getElementById("drillScopeWrap");
+    const sel = document.getElementById("drillScopeSelect");
+    const show = chart === "module" || chart === "process";
+    if (wrap) wrap.classList.toggle("hidden", !show);
+    if (!sel) return;
+    const scope = String((filters && filters.scope) || "all").toLowerCase();
+    sel.value = (scope === "remaining" || scope === "con_lai" || scope === "open")
+        ? "remaining" : "all";
+}
+
+/** Đổi Phạm vi → re-fetch drill với scope mới (All / Chỉ còn lại). */
+window._onDrillScopeChange = async function () {
+    const sel = document.getElementById("drillScopeSelect");
+    if (!sel || !drillState.chart) return;
+    const scope = sel.value === "remaining" ? "remaining" : "all";
+    const filters = { ...(drillState.filters || {}), scope };
+    if (scope === "all") {
+        // Giữ key để UI sync; backend coi all = không lọc remaining.
+        filters.scope = "all";
+    }
+    const titleBase = (drillState.title || "").replace(/\s*—\s*Còn lại\s*$/, "");
+    const title = scope === "remaining"
+        ? (titleBase.includes("Còn lại") ? titleBase : `${titleBase} — Còn lại`)
+        : titleBase;
+    await openDrillDown(drillState.chart, filters, title);
+};
 
 /** Populate status dropdown menu từ unique status trong drillState.items. */
 function _buildDrillStatusMenu() {

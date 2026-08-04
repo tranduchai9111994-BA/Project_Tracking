@@ -143,6 +143,26 @@ def test_giai_doan_with_phase(parsed_data, today):
 def test_module_filter(parsed_data, today):
     items = drill_down(parsed_data, "module", {"module": "TMS"}, today)
     assert len(items) == 2
+    assert all("is_remaining" in it for it in items)
+
+
+def test_module_scope_remaining_matches_last_phase(parsed_data, today):
+    """scope=remaining = chưa Closed phase cuối — khớp cột Còn lại."""
+    from parser.excel_parser import PhaseData
+
+    all_items = drill_down(parsed_data, "module", {"module": "TMS", "scope": "all"}, today)
+    rem_items = drill_down(parsed_data, "module", {"module": "TMS", "scope": "remaining"}, today)
+    last = parsed_data.all_phases[-1]
+    expected_codes = set()
+    for r in parsed_data.rows:
+        if r.meta.get("module") != "TMS":
+            continue
+        st = (r.phases.get(last, PhaseData()).status or "")
+        if st != "Closed":
+            expected_codes.add(r.meta.get("ma_cn"))
+    assert {i["ma_cn"] for i in rem_items} == expected_codes
+    assert len(rem_items) <= len(all_items)
+    assert "Còn lại" in build_title("module", {"module": "TMS", "scope": "remaining"})
 
 
 def test_process_filter(parsed_data, today):

@@ -822,6 +822,17 @@
                     </label>
                 </div>
 
+                <!-- Scope: Còn lại / Tất cả (module · process drill) -->
+                <div id="drillScopeWrap" class="flex flex-col gap-1 hidden">
+                    <label class="text-[10px] font-semibold text-gray-600 dark:text-gray-400 uppercase">📦 Phạm vi</label>
+                    <select id="drillScopeSelect" onchange="_onDrillScopeChange()"
+                            class="border dark:bg-slate-700 dark:border-slate-600 rounded px-3 py-1.5 text-sm"
+                            title="Còn lại = chưa Closed phase cuối (khớp cột Còn lại)">
+                        <option value="remaining">Chỉ còn lại</option>
+                        <option value="all">Tất cả</option>
+                    </select>
+                </div>
+
                 <!-- BA/UX #5 — Bulk tag -->
                 <div class="flex flex-col gap-1">
                     <label class="text-[10px] font-semibold text-gray-600 dark:text-gray-400 uppercase">🏷 Tag hàng loạt</label>
@@ -3694,7 +3705,7 @@
                                 <th class="px-2 py-2 text-center">Đang ở</th>
                                 <th class="px-2 py-2 text-center">Trễ</th>
                                 <th class="px-2 py-2 text-center cursor-pointer" onclick="toggleModuleRiskSort()" title="Bấm để sắp xếp module rủi ro lên đầu">Đánh giá <span id="moduleRiskSortIcon">⇅</span></th>
-                                <th class="px-2 py-2 text-center" title="Function chưa Closed phase cuối (hoặc MH còn lại nếu có Estimate)">Còn lại</th>
+                                <th class="px-2 py-2 text-center" title="Function chưa Closed phase cuối. Click số → drill đúng tập còn lại. Trong modal chọn «Tất cả» để xem hết.">Còn lại</th>
                         </tr>
                     </thead>
                         <tbody id="moduleTable"></tbody>

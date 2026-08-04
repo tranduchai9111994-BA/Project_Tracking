@@ -181,7 +181,39 @@ class TestModuleRemainingAndBottleneck:
         mo = {r["module"]: r for r in metrics["module_overview"]}
         assert mo["MOD1"]["remaining"] == 1
         assert mo["MOD2"]["remaining"] == 0
+        # Drill scope=remaining phải khớp số Còn lại
+        from analyzer.drill_down import drill_down
+        rem_items = drill_down(_data(rows), "module", {"module": "MOD1", "scope": "remaining"}, TODAY)
+        all_items = drill_down(_data(rows), "module", {"module": "MOD1", "scope": "all"}, TODAY)
+        assert len(rem_items) == mo["MOD1"]["remaining"] == 1
+        assert rem_items[0]["ma_cn"] == "A1"
+        assert rem_items[0]["is_remaining"] is True
+        assert len(all_items) == 2
         bn = metrics["phase_status_matrix"].get("bottleneck") or {}
         assert "Dev" in bn
         # MOD1 stuck on Dev (overdue) → at least 1
         assert bn["Dev"] >= 1
+
+    def test_risk_level_not_flagged_by_single_stalled(self):
+        """1 stalled / module gần xong → không thành risk (dùng % chứ không count>0)."""
+        # 10 function: 9 fully closed, 1 remaining+stalled-ish → stalled_pct=10% → warning max, not risk
+        rows = []
+        for i in range(9):
+            rows.append(_row(f"C{i}", "APP", {
+                "Analysis": PhaseData(status="Closed"),
+                "Dev": PhaseData(status="Closed"),
+                "UAT": PhaseData(status="Closed"),
+            }))
+        rows.append(_row("OPEN1", "APP", {
+            "Analysis": PhaseData(status="Closed", end_date=TODAY - timedelta(days=20)),
+            "Dev": PhaseData(status="Open", end_date=TODAY - timedelta(days=5)),
+            "UAT": PhaseData(status=""),
+        }))
+        engine = DashboardEngine(today=TODAY)
+        metrics = engine.compute_all(_data(rows))
+        app = next(r for r in metrics["module_overview"] if r["module"] == "APP")
+        assert app["remaining"] == 1
+        assert app["stalled_count"] >= 1
+        assert app["stalled_pct"] <= 20
+        assert app["risk_level"] in ("safe", "warning")  # không phải risk chỉ vì 1 stalled
+        assert app["risk_level"] != "risk"

@@ -411,7 +411,7 @@ class DashboardEngine:
         overdue_count = sum(
             1 for r in rows if self._row_has_overdue(r, data.all_phases)
         )
-        # Còn lại = function chưa Closed phase cuối
+        # Còn lại = function chưa Closed phase cuối (khớp drill scope=remaining).
         remaining = 0
         last_phase = data.all_phases[-1] if data.all_phases else None
         for r in rows:
@@ -440,13 +440,26 @@ class DashboardEngine:
             if open_phases > 0:
                 remaining_mh += est_f * (open_phases / len(data.all_phases))
         overdue_pct = round(overdue_count / total * 100, 2) if total else 0
-        # A2 — risk_level per module: overdue/stalled cao → risk; progress thấp → warning.
-        if overdue_pct > 20 or stalled_count > 0:
+        # % function đình trệ — dùng tỷ lệ, không flag risk chỉ vì 1 item còn lại.
+        stalled_pct = round(stalled_count / total * 100, 2) if total else 0
+        # A2 — risk_level: overdue/stalled theo %, progress thấp → warning.
+        # Ngưỡng: risk nếu overdue>20% hoặc stalled>20%; warning nếu overdue>10%
+        # hoặc stalled>10% hoặc progress<50%. Remaining/DQ không tự thành risk.
+        reasons: list[str] = []
+        if overdue_pct > 20:
+            reasons.append(f"Trễ {overdue_pct}% (>20%)")
+        if stalled_pct > 20:
+            reasons.append(f"Đình trệ {stalled_pct}% (>20%)")
+        if reasons:
             risk_level = "risk"
-        elif overdue_pct > 10 or progress_pct < 50:
-            risk_level = "warning"
         else:
-            risk_level = "safe"
+            if overdue_pct > 10:
+                reasons.append(f"Trễ {overdue_pct}% (>10%)")
+            if stalled_pct > 10:
+                reasons.append(f"Đình trệ {stalled_pct}% (>10%)")
+            if progress_pct < 50:
+                reasons.append(f"Tiến độ {progress_pct}% (<50%)")
+            risk_level = "warning" if reasons else "safe"
         return {
             "stt": idx,
             "module": module,
@@ -459,7 +472,10 @@ class DashboardEngine:
             "overdue_count": overdue_count,
             "overdue_pct": overdue_pct,
             "stalled_count": stalled_count,
+            "stalled_pct": stalled_pct,
             "risk_level": risk_level,
+            "risk_reason": "; ".join(reasons) if reasons else "An toàn",
+            # Còn lại = function chưa Closed phase cuối (khớp drill scope=remaining).
             "remaining": remaining,
             "remaining_mh": round(remaining_mh, 1),
         }
