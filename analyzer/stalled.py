@@ -15,13 +15,73 @@ Rule nghiệp vụ:
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
+from typing import Any, Optional
 
 from parser.excel_parser import FunctionRow, PhaseData
-from analyzer.overdue import is_done_status
+from analyzer.overdue import is_done_status, is_phase_overdue
 
 # Phase sau chưa bắt đầu — khớp logic stalled hiện tại.
 _NOT_STARTED = (None, "Open")
+
+
+def phase_stuck_info(
+    row: FunctionRow,
+    phase_name: str,
+    phase_order: list[str],
+    today: date,
+) -> Optional[dict[str, Any]]:
+    """
+    BA/UX #8 — function «stuck» ở 1 phase khi chưa Closed và
+    (overdue ở phase đó HOẶC stalled từ phase trước sang phase này).
+
+    Returns None nếu không stuck; else dict:
+      overdue, stalled, predecessor_phase, predecessor_pd, phase_pd
+    """
+    pd = row.phases.get(phase_name, PhaseData())
+    st = (pd.status or "").strip()
+    if st == "Closed":
+        return None
+
+    overdue = is_phase_overdue(
+        pd, today, row=row, phase_name=phase_name, phase_order=phase_order,
+    )
+    stalled = False
+    pred_name: Optional[str] = None
+    pred_pd: Optional[PhaseData] = None
+    try:
+        pi = phase_order.index(phase_name)
+    except ValueError:
+        pi = -1
+    if pi > 0:
+        pred_name = phase_order[pi - 1]
+        pred_pd = row.phases.get(pred_name)
+        stalled = is_stalled_transition(pred_pd, pd, today)
+
+    if not overdue and not stalled:
+        return None
+    return {
+        "overdue": overdue,
+        "stalled": stalled,
+        "predecessor_phase": pred_name,
+        "predecessor_pd": pred_pd,
+        "phase_pd": pd,
+    }
+
+
+def prev_phases_all_closed(row: FunctionRow, phase_names: list[str], curr_idx: int) -> bool:
+    """
+    True nếu tất cả phase TRƯỚC curr_idx đã Closed (hoặc Cancelled).
+
+    Dùng để đảm bảo không flag stalled ở giữa luồng khi phase đầu chưa xong.
+    VD: Analysis In-progress → không xét stalled cho Dev→UAT, UAT→Golive.
+    """
+    for i in range(curr_idx):
+        name = phase_names[i]
+        pd = row.phases.get(name)
+        st = (pd.status or "").strip() if pd else ""
+        if st not in ("Closed", "Cancelled"):
+            return False
+    return True
 
 
 def is_fully_closed(row: FunctionRow, phase_names: list[str]) -> bool:
@@ -65,10 +125,9 @@ def is_stalled_transition(
     today: date,
 ) -> bool:
     """
-    Phase trước Closed, phase sau chưa bắt đầu, và End phase chờ đã quá hạn.
+    Phase trước Closed + phase sau chưa bắt đầu (None / Open) = đình trệ ngay.
+    Không yêu cầu End date trên phase chờ (nới rule).
     """
     curr_done = curr_pd is not None and (curr_pd.status or "").strip() == "Closed"
     next_not_started = (next_pd is None) or (next_pd.status in _NOT_STARTED)
-    if not (curr_done and next_not_started):
-        return False
-    return waiting_phase_deadline_passed(next_pd, today)
+    return curr_done and next_not_started

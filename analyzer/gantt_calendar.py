@@ -37,12 +37,14 @@ _TASK_TYPE_CATEGORY: dict[str, str] = {
     "Golive": "milestone",          # legacy alias
 }
 
-# Màu hex cho từng category (đồng bộ với FE `_GANTT_CAT_COLOR` + Excel).
+# Màu hex cho từng category (đồng bộ với FE `catColor()` — đọc trực tiếp từ
+# legend BE + Excel). Categorical order cố định (blue → orange → aqua → green),
+# tránh cặp tím/cam sát nhau khó phân biệt của bản cũ.
 CATEGORY_COLORS: dict[str, str] = {
-    "phase1":    "#3b82f6",  # blue-500
-    "phase2":    "#f59e0b",  # amber-500
-    "phase3":    "#a855f7",  # purple-500
-    "milestone": "#22c55e",  # green-500
+    "phase1":    "#2a78d6",  # blue   — Phân tích / Tài liệu
+    "phase2":    "#eb6834",  # orange — Lập trình / Kiểm thử / Cấu hình UAT
+    "phase3":    "#1baf7a",  # aqua   — UAT
+    "milestone": "#008300",  # green  — Golive / Milestone
     "summary":   "#1f2937",  # gray-800 (dark)
     "idle":      "#94a3b8",  # slate-400 (chưa bắt đầu / không có phase)
 }
@@ -466,6 +468,8 @@ def _build_phase_segments(
         if cat == "summary":
             cat = "phase1"
         pct = round(closed / touched * 100) if touched > 0 else 0
+        # Overdue segment: end < today và chưa Closed hết
+        seg_overdue = bool(seg_end < today and pct < 100)
         segments.append({
             "phase": ph,
             "category": cat,
@@ -476,7 +480,15 @@ def _build_phase_segments(
             "pct": pct,
             "closed": closed,
             "touched": touched,
+            "overdue": seg_overdue,
+            # Milestone diamond = tip End của phase
+            "milestone": True,
+            # FS dependency: phase trước trong all_phases (FE vẽ line)
+            "fs_predecessor": None,
         })
+        # Gắn FS predecessor sau khi append (phase trước có segment)
+        if len(segments) >= 2:
+            segments[-1]["fs_predecessor"] = segments[-2]["phase"]
         for i in range(col_s, col_e + 1):
             cell_categories[i] = cat
 

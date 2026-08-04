@@ -146,6 +146,8 @@ def test_attach_baseline_to_forecast_row(tmp_path):
     assert layer["summary"]["compared"] >= 1
     uat = layer["milestones"]["uat"]
     assert uat["baseline_month"] == "2026-08"
+    assert uat["baseline_span_start"] == "2026-07"
+    assert uat["baseline_span_end"] == "2026-08"
     assert uat["sv_days"] is not None
     assert uat["sv_days"] > 0
 

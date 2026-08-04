@@ -281,11 +281,16 @@ def attach_baseline_to_forecast_row(
             "baseline_date": base.get("date"),
             "baseline_month": base.get("month"),
             "baseline_source": base.get("source"),
+            # Span ghost bar trên Forecast Gantt (min Start → max End baseline)
+            "baseline_span_start": base.get("span_start"),
+            "baseline_span_end": base.get("span_end"),
+            "baseline_span_start_date": base.get("span_start_date"),
+            "baseline_span_end_date": base.get("span_end_date"),
             "sv_days": sv_days,
             "late": sv_days is not None and sv_days > 0,
             "early": sv_days is not None and sv_days < 0,
         }
-        # Đảm bảo tháng baseline nằm trong ruler (caller merge all_months)
+        # Đảm bảo tháng/span baseline nằm trong ruler (caller merge all_months)
         if base.get("month"):
             layer[mid]["_month_for_ruler"] = base["month"]
 
@@ -304,7 +309,13 @@ def attach_baseline_to_forecast_row(
 def baseline_months_from_layer(layer: dict[str, Any]) -> list[str]:
     months: list[str] = []
     for info in (layer.get("milestones") or {}).values():
-        mk = info.get("baseline_month") or info.get("_month_for_ruler")
-        if mk:
-            months.append(mk)
+        for key in (
+            "baseline_month",
+            "baseline_span_start",
+            "baseline_span_end",
+            "_month_for_ruler",
+        ):
+            mk = info.get(key)
+            if mk:
+                months.append(mk)
     return months

@@ -6,12 +6,16 @@ import json
 from parser.excel_parser import FunctionRow, ParsedData, PhaseData, PhaseGroup
 from analyzer.estimate_ratio import (
     DEFAULT_PARAMS,
+    SIZE_PRESETS,
+    apply_size_preset,
     compute_estimate_ratio,
     estimate_function_md,
     load_estimation_params,
     map_phase_bucket,
     normalize_params,
+    resolve_contract_md,
     save_estimation_params,
+    scale_seeds_to_contract,
     _compile_keywords,
 )
 
@@ -220,3 +224,99 @@ def test_sovi_style_row_smoke():
     assert abs(est["buckets_md"]["des"] - 0.0625) < 1e-9
     assert abs(est["buckets_md"]["test"] - 0.15) < 1e-9
     assert abs(est["buckets_md"]["doc"] - 0.075) < 1e-9
+
+
+def test_size_presets_medium_lower_than_legacy():
+    """Quy mô TB: seed Dev < 2.0 (legacy); Nhỏ thấp hơn nữa."""
+    assert SIZE_PRESETS["medium"]["seed_defaults"]["dev_md"] < 2.0
+    assert SIZE_PRESETS["small"]["default_mh"] == 2.0
+    assert SIZE_PRESETS["medium"]["default_mh"] == 4.0
+    p = apply_size_preset(normalize_params({}), "small")
+    assert p["seed_defaults"]["ba_md"] == 0.25
+    assert p["seed_defaults"]["dev_md"] == 0.75
+    assert p["default_mh"] == 2.0
+
+
+def test_scale_seeds_to_contract_helper():
+    params = normalize_params({
+        "seed_defaults": {"ba_md": 1.0, "dev_md": 4.0},
+        "lookup": [{"complexity": "High", "fit_gap": "GAP", "ba_md": 2.0, "dev_md": 8.0}],
+    })
+    scaled, factor = scale_seeds_to_contract(params, estimated_total_md=1000.0, contract_md=500.0)
+    assert abs(factor - 0.5) < 1e-9
+    assert abs(scaled["seed_defaults"]["ba_md"] - 0.5) < 1e-9
+    assert abs(scaled["seed_defaults"]["dev_md"] - 2.0) < 1e-9
+    assert abs(scaled["lookup"][0]["dev_md"] - 4.0) < 1e-9
+
+
+def test_compute_scale_to_contract_idempotent():
+    """contract_md scale tổng = hợp đồng; tính lại với cùng seed+contract không đổi."""
+    rows = [
+        _row("C1", {
+            "Analysis": PhaseData(status="Open"),
+            "Dev": PhaseData(status="Open"),
+        }),
+        _row("C2", {
+            "Analysis": PhaseData(status="Open"),
+            "Dev": PhaseData(status="Open"),
+        }, row_num=3),
+    ]
+    data = _data(rows, ["Analysis", "Dev"])
+    base_params = normalize_params({
+        "seed_defaults": {"ba_md": 0.5, "dev_md": 2.0},
+        "ratios": {
+            "des_of_ba": 0,
+            "test_of_dev": 0,
+            "doc_of_dev": 0,
+            "config_of_dev": 0,
+            "migration_of_dev": 0,
+        },
+        "overhead": {
+            "include_uat": False,
+            "include_golive": False,
+            "include_pm": False,
+            "include_warranty": False,
+            "include_pentest": False,
+        },
+    })
+    before = compute_estimate_ratio(data, base_params)
+    pre = before["totals"]["md"]
+    assert pre > 0
+    # Hợp đồng nhỏ hơn estimate → scale seed xuống
+    contract = round(pre * 0.5, 4)
+    p2 = normalize_params({**base_params, "contract_md": contract})
+    r1 = compute_estimate_ratio(data, p2)
+    r2 = compute_estimate_ratio(data, p2)
+    assert abs(r1["totals"]["md"] - contract) < 0.05
+    assert abs(r2["totals"]["md"] - r1["totals"]["md"]) < 1e-6
+    assert r1["calibration"]["matched"] is True
+    assert abs(r1["calibration"]["seed_factor"] - 0.5) < 1e-6
+    assert r1["calibration"]["suggested_seed_defaults"]["dev_md"] < 2.0
+    # Seeds trên form params không bị mutate (idempotent)
+    assert abs(r1["params"]["seed_defaults"]["dev_md"] - 2.0) < 1e-9
+    assert resolve_contract_md({"contract_mm": 2, "md_per_mm": 22}) == 44.0
+
+
+def test_seed_reference_warning_over_50():
+    rows = [
+        _row(f"D{i}", {
+            "Analysis": PhaseData(status="Open"),
+            "Dev": PhaseData(status="Open"),
+        }, row_num=i + 2)
+        for i in range(3)
+    ]
+    data = _data(rows, ["Analysis", "Dev"])
+    params = normalize_params({
+        "overhead": {
+            "include_uat": False,
+            "include_golive": False,
+            "include_pm": False,
+            "include_warranty": False,
+            "include_pentest": False,
+        },
+        "ratios": {"config_of_dev": 0, "migration_of_dev": 0},
+    })
+    result = compute_estimate_ratio(data, params)
+    assert result["totals"]["pct_default_seed"] == 100.0
+    assert result["totals"]["seed_reference_only"] is True
+    assert any("Kết quả tham khảo" in w for w in result["warnings"])

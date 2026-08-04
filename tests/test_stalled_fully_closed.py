@@ -8,6 +8,7 @@ from analyzer.stalled import (
     is_fully_closed,
     is_stalled_transition,
     waiting_phase_deadline_passed,
+    prev_phases_all_closed,
 )
 from parser.excel_parser import FunctionRow, PhaseData, PhaseGroup, ParsedData
 
@@ -47,6 +48,38 @@ def _parsed(rows: list[FunctionRow]) -> ParsedData:
         all_phases=list(PHASES),
         all_modules=["HR"],
     )
+
+
+def test_prev_phases_all_closed():
+    """prev_phases_all_closed: chỉ True khi mọi phase trước curr_idx đều Closed."""
+    row_ok = _row("P1", {"Analysis": "Closed", "Dev": "Closed", "Golive": "Open"})
+    row_nok = _row("P2", {"Analysis": "In-progress", "Dev": "Open", "Golive": None})
+    assert prev_phases_all_closed(row_ok, PHASES, 0) is True   # không có phase trước
+    assert prev_phases_all_closed(row_ok, PHASES, 1) is True   # Analysis Closed
+    assert prev_phases_all_closed(row_ok, PHASES, 2) is True   # Analysis+Dev Closed
+    assert prev_phases_all_closed(row_nok, PHASES, 0) is True  # không có phase trước
+    assert prev_phases_all_closed(row_nok, PHASES, 1) is False # Analysis In-progress
+    assert prev_phases_all_closed(row_nok, PHASES, 2) is False # Analysis In-progress
+
+
+def test_analysis_not_closed_no_stalled_downstream():
+    """Nếu Analysis chưa Closed → không flag stalled cho Dev→Golive."""
+    data = _parsed([
+        _row("INPROG", {"Analysis": "In-progress", "Dev": "Open", "Golive": None}),
+    ])
+    st = DashboardEngine(today=TODAY)._stalled_tasks(data)
+    assert st["items"] == []
+
+
+def test_analysis_closed_dev_closed_golive_stalled():
+    """Analysis+Dev Closed, Golive Open → stalled tại Dev→Golive."""
+    data = _parsed([
+        _row("STUCK2", {"Analysis": "Closed", "Dev": "Closed", "Golive": "Open"}),
+    ])
+    st = DashboardEngine(today=TODAY)._stalled_tasks(data)
+    assert len(st["items"]) == 1
+    assert st["items"][0]["completed_phase"] == "Dev"
+    assert st["items"][0]["waiting_phase"] == "Golive"
 
 
 def test_is_fully_closed_all_closed():
@@ -104,35 +137,38 @@ def test_analysis_closed_dev_past_end_stalled():
 
 
 def test_dev_future_deadline_not_stalled():
-    """Analysis Closed, Dev chưa start/PIC nhưng Dev End chưa tới → không stalled."""
+    """Rule mới: Analysis Closed + Dev Open = stalled ngay, dù Dev End chưa tới."""
     data = _parsed([
         _row("FUTURE", {"Analysis": "Closed", "Dev": "Open", "Golive": None}, end_dev=FUTURE_END),
     ])
     st = DashboardEngine(today=TODAY)._stalled_tasks(data)
-    assert st["items"] == []
-    assert st["transitions"] == []
+    assert len(st["items"]) == 1
+    assert st["items"][0]["ma_cn"] == "FUTURE"
 
 
-def test_dev_no_end_not_stalled():
-    """Không có End trên phase chờ → không stalled (kể cả pred Closed)."""
+def test_dev_no_end_now_stalled():
+    """Rule mới: pred Closed + next chưa start = đình trệ ngay (không cần End)."""
     data = _parsed([
         _row("NOEND", {"Analysis": "Closed", "Dev": "Open", "Golive": None}),
     ])
     st = DashboardEngine(today=TODAY)._stalled_tasks(data)
-    assert st["items"] == []
-    assert st["transitions"] == []
+    assert len(st["items"]) == 1
+    assert st["items"][0]["ma_cn"] == "NOEND"
+    # wait_days tính từ Analysis.end_date (curr_pd Closed) tới today
+    assert st["items"][0]["wait_days"] >= 0
 
 
-def test_dev_end_equals_today_not_stalled():
-    """End == today → chưa quá hạn (cùng overdue: end < today)."""
+def test_dev_end_equals_today_stalled():
+    """Rule mới: pred Closed + next Open = đình trệ dù End == today."""
     data = _parsed([
         _row("TODAY", {"Analysis": "Closed", "Dev": "Open", "Golive": None}, end_dev=TODAY),
     ])
     st = DashboardEngine(today=TODAY)._stalled_tasks(data)
-    assert st["items"] == []
+    assert len(st["items"]) == 1
 
 
 def test_drill_down_respects_fully_closed_and_deadline():
+    """Rule mới: DONE excluded (fully closed); WAIT và FUTURE đều stalled."""
     data = _parsed([
         _row("DONE", {"Analysis": "Closed", "Dev": "Closed", "Golive": "Closed"}),
         _row("WAIT", {"Analysis": "Closed", "Dev": "Open", "Golive": None}, end_dev=PAST_END),
@@ -142,34 +178,40 @@ def test_drill_down_respects_fully_closed_and_deadline():
     codes = {i["ma_cn"] for i in items}
     assert "DONE" not in codes
     assert "WAIT" in codes
-    assert "FUTURE" not in codes
+    assert "FUTURE" in codes  # Rule mới: không cần End đã quá để stalled
 
 
 def test_risk_scorer_stalled_only_when_deadline_passed():
+    """Rule mới: Analysis Closed + Dev Open = stalled trong mọi trường hợp."""
     done = _row("DONE", {"Analysis": "Closed", "Dev": "Open", "Golive": "Closed"}, end_dev=PAST_END)
     stuck = _row("WAIT", {"Analysis": "Closed", "Dev": "Open", "Golive": None}, end_dev=PAST_END)
     future = _row("FUTURE", {"Analysis": "Closed", "Dev": "Open", "Golive": None}, end_dev=FUTURE_END)
     r_done = compute_risk_score(done, TODAY, PHASES)
     r_stuck = compute_risk_score(stuck, TODAY, PHASES)
     r_future = compute_risk_score(future, TODAY, PHASES)
+    # DONE: Golive Closed → fully closed tại vị trí Dev→Golive nhưng Dev Open;
+    # thực tế is_fully_closed() check phase cuối (Golive) — nếu Closed → excluded
     assert "Bị đình trệ" not in r_done["factors"]
     assert "Bị đình trệ" in r_stuck["factors"]
-    assert "Bị đình trệ" not in r_future["factors"]
+    # FUTURE: Analysis Closed + Dev Open → stalled ngay dù end_dev chưa tới
+    assert "Bị đình trệ" in r_future["factors"]
 
 
 def test_is_stalled_transition_helpers():
+    """Rule mới: pred Closed + next chưa start = True (bất kể End)."""
     closed = PhaseData(status="Closed")
     open_past = PhaseData(status="Open", end_date=PAST_END)
     open_future = PhaseData(status="Open", end_date=FUTURE_END)
     open_no_end = PhaseData(status="Open")
 
     assert is_stalled_transition(closed, open_past, TODAY)
-    assert not is_stalled_transition(closed, open_future, TODAY)
-    assert not is_stalled_transition(closed, open_no_end, TODAY)
-    assert not is_stalled_transition(closed, None, TODAY)
+    assert is_stalled_transition(closed, open_future, TODAY)   # Rule mới: True
+    assert is_stalled_transition(closed, open_no_end, TODAY)   # Rule mới: True
+    assert is_stalled_transition(closed, None, TODAY)           # Rule mới: True (next phase thiếu)
     assert not is_stalled_transition(closed, PhaseData(status="Closed", end_date=PAST_END), TODAY)
     assert not is_stalled_transition(PhaseData(status="Open"), open_past, TODAY)
 
+    # waiting_phase_deadline_passed vẫn hoạt động đúng (dùng nơi khác)
     assert waiting_phase_deadline_passed(open_past, TODAY)
     assert not waiting_phase_deadline_passed(open_future, TODAY)
     assert not waiting_phase_deadline_passed(None, TODAY)

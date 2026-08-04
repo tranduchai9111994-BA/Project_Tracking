@@ -61,15 +61,44 @@ BUCKET_LABELS_VI = {
     "other": "Khác (FL)",
 }
 
-# Defaults gợi ý PMO (ThamSo-style) — user chỉnh được; không gắn nhãn “SOVI locked”
+# Preset quy mô dự án HRIS (nhỏ / trung bình / lớn) — seed + MH mặc định Forecast
+SIZE_PRESETS: dict[str, dict[str, Any]] = {
+    "small": {
+        "id": "small",
+        "label": "Nhỏ",
+        "hint": "Config đơn giản · ~1–2 người triển khai",
+        "seed_defaults": {"ba_md": 0.25, "dev_md": 0.75},
+        "default_mh": 2.0,
+    },
+    "medium": {
+        "id": "medium",
+        "label": "Trung bình",
+        "hint": "HRIS nhỏ–vừa · ~2–3 người · ~300–400 CN",
+        "seed_defaults": {"ba_md": 0.35, "dev_md": 1.25},
+        "default_mh": 4.0,
+    },
+    "large": {
+        "id": "large",
+        "label": "Lớn",
+        "hint": "GAP / custom nhiều · MH cao hơn",
+        "seed_defaults": {"ba_md": 0.5, "dev_md": 2.0},
+        "default_mh": 8.0,
+    },
+}
+
+# Defaults gợi ý PMO — căn «trung bình» HRIS (không khóa SOVI). Dev 2.0 MD/function quá cao cho config đơn giản.
 DEFAULT_PARAMS: dict[str, Any] = {
     "version": 1,
     "label": "Ước lượng theo hệ số (mặc định PMO — chỉnh được)",
+    "project_size": "medium",
     "mh_per_day": 8.0,
     "md_per_mm": 22.0,
+    # Tổng effort hợp đồng (MD hoặc MM) — scale seed để khớp (calibrate)
+    "contract_md": None,
+    "contract_mm": None,
     "seed_defaults": {
-        "ba_md": 0.5,
-        "dev_md": 2.0,
+        "ba_md": 0.35,
+        "dev_md": 1.25,
     },
     "ratios": {
         "des_of_ba": 0.25,
@@ -130,15 +159,105 @@ def _as_float(v: Any, fallback: float) -> float:
         return float(fallback)
 
 
+def apply_size_preset(
+    params: dict[str, Any],
+    size: str,
+    *,
+    overwrite_seeds: bool = True,
+) -> dict[str, Any]:
+    """Áp preset quy mô vào params (seed_defaults + project_size)."""
+    out = copy.deepcopy(params)
+    key = (size or "").strip().lower()
+    if key not in SIZE_PRESETS:
+        key = "medium"
+    preset = SIZE_PRESETS[key]
+    out["project_size"] = key
+    if overwrite_seeds:
+        out.setdefault("seed_defaults", {})
+        out["seed_defaults"]["ba_md"] = float(preset["seed_defaults"]["ba_md"])
+        out["seed_defaults"]["dev_md"] = float(preset["seed_defaults"]["dev_md"])
+    out["default_mh"] = float(preset["default_mh"])
+    return out
+
+
+def resolve_contract_md(params: dict[str, Any]) -> Optional[float]:
+    """Đọc tổng effort hợp đồng (MD). Ưu tiên contract_md; else contract_mm × md_per_mm."""
+    md_per_mm = max(_as_float(params.get("md_per_mm"), 22.0), 0.1)
+    raw_md = params.get("contract_md")
+    if raw_md is not None and str(raw_md).strip() != "":
+        v = _as_float(raw_md, 0.0)
+        return v if v > 0 else None
+    raw_mm = params.get("contract_mm")
+    if raw_mm is not None and str(raw_mm).strip() != "":
+        v = _as_float(raw_mm, 0.0)
+        return (v * md_per_mm) if v > 0 else None
+    return None
+
+
+def scale_seeds_to_contract(
+    params: dict[str, Any],
+    estimated_total_md: float,
+    contract_md: float,
+) -> tuple[dict[str, Any], float]:
+    """
+    Scale seed_defaults + lookup theo factor = contract / estimate.
+
+    Returns (params_đã_scale, factor). Không đụng ratios / overhead flags.
+    """
+    out = copy.deepcopy(params)
+    if estimated_total_md <= 0 or contract_md <= 0:
+        return out, 1.0
+    factor = float(contract_md) / float(estimated_total_md)
+    sd = out.setdefault("seed_defaults", {})
+    sd["ba_md"] = max(_as_float(sd.get("ba_md"), 0.0) * factor, 0.0)
+    sd["dev_md"] = max(_as_float(sd.get("dev_md"), 0.0) * factor, 0.0)
+    lookup = out.get("lookup") or []
+    if isinstance(lookup, list):
+        for item in lookup:
+            if not isinstance(item, dict):
+                continue
+            item["ba_md"] = max(_as_float(item.get("ba_md"), 0.0) * factor, 0.0)
+            item["dev_md"] = max(_as_float(item.get("dev_md"), 0.0) * factor, 0.0)
+    out["contract_md"] = float(contract_md)
+    out["_calibration_factor"] = factor
+    return out, factor
+
+
 def normalize_params(raw: Optional[dict[str, Any]]) -> dict[str, Any]:
     """Merge user payload với DEFAULT_PARAMS + ép kiểu số an toàn."""
-    merged = _deep_merge(DEFAULT_PARAMS, raw if isinstance(raw, dict) else {})
+    # Tách project_size: nếu user gửi size mà chưa gửi seed → áp preset
+    raw_in = raw if isinstance(raw, dict) else {}
+    size_key = str(raw_in.get("project_size") or "").strip().lower()
+    apply_preset = size_key in SIZE_PRESETS and (
+        "seed_defaults" not in raw_in
+        or raw_in.get("_apply_size_preset")
+    )
+
+    merged = _deep_merge(DEFAULT_PARAMS, raw_in)
+    if apply_preset:
+        merged = apply_size_preset(merged, size_key, overwrite_seeds=True)
+    elif size_key in SIZE_PRESETS:
+        merged["project_size"] = size_key
+    else:
+        ps = str(merged.get("project_size") or "medium").strip().lower()
+        merged["project_size"] = ps if ps in SIZE_PRESETS else "medium"
+
     merged["mh_per_day"] = max(_as_float(merged.get("mh_per_day"), 8.0), 0.1)
     merged["md_per_mm"] = max(_as_float(merged.get("md_per_mm"), 22.0), 0.1)
 
+    # Contract — giữ None nếu trống
+    for ck in ("contract_md", "contract_mm"):
+        v = merged.get(ck)
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            merged[ck] = None
+        else:
+            fv = _as_float(v, 0.0)
+            merged[ck] = fv if fv > 0 else None
+
     sd = merged.setdefault("seed_defaults", {})
-    sd["ba_md"] = max(_as_float(sd.get("ba_md"), 0.5), 0.0)
-    sd["dev_md"] = max(_as_float(sd.get("dev_md"), 2.0), 0.0)
+    med = SIZE_PRESETS["medium"]["seed_defaults"]
+    sd["ba_md"] = max(_as_float(sd.get("ba_md"), med["ba_md"]), 0.0)
+    sd["dev_md"] = max(_as_float(sd.get("dev_md"), med["dev_md"]), 0.0)
 
     ratios = merged.setdefault("ratios", {})
     for key, fb in DEFAULT_PARAMS["ratios"].items():
@@ -157,6 +276,10 @@ def normalize_params(raw: Optional[dict[str, Any]]) -> dict[str, Any]:
     ):
         oh[key] = bool(oh.get(key, DEFAULT_PARAMS["overhead"][key]))
     oh["pentest_md"] = max(_as_float(oh.get("pentest_md"), 22.0), 0.0)
+
+    # default_mh gợi ý cho Forecast (không dùng trong tính ratio)
+    preset_mh = SIZE_PRESETS.get(merged["project_size"], SIZE_PRESETS["medium"])["default_mh"]
+    merged["default_mh"] = max(_as_float(merged.get("default_mh"), preset_mh), 0.1)
 
     lookup = merged.get("lookup") or []
     if not isinstance(lookup, list):
@@ -500,21 +623,11 @@ def estimate_function_md(
     }
 
 
-def compute_estimate_ratio(
+def _compute_estimate_ratio_core(
     data: ParsedData,
-    params: Optional[dict[str, Any]] = None,
+    params: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Tính ước lượng theo hệ số cho toàn bộ ParsedData.
-
-    Returns JSON-serializable dict: params, phase_mapping, by_phase (MM/MH/MD),
-    totals, detail (per function), warnings, forecast_feed (MH theo task_type gợi ý).
-    """
-    params = normalize_params(params)
-    # drop internals if present
-    params = {k: v for k, v in params.items() if not k.startswith("_")}
-    params = normalize_params(params)
-
+    """Core tính toán (không calibrate contract) — dùng nội bộ."""
     compiled = _compile_keywords(params["phase_keywords"])
     phase_buckets: dict[str, str] = {}
     phase_mapping: list[dict[str, str]] = []
@@ -563,13 +676,10 @@ def compute_estimate_ratio(
     if pentest_md > 0:
         sum_buckets["pentest"] = pentest_md
 
-    # Build+pentest dùng cho warranty (A trong mẫu ThamSo)
     build_plus_pentest = build_md + pentest_md
     if oh.get("include_warranty") and build_plus_pentest > 0:
         sum_buckets["warranty"] = build_plus_pentest * float(ratios["warranty_of_build"])
 
-    # Subtotal trước PM = build + uat + golive + pentest (+ warranty? SOVI: PM trên A+B trước warranty)
-    # Theo Summary SOVI: PM = 5% × (A + B) với B gồm UAT+Golive; warranty riêng sau.
     subtotal_for_pm = (
         build_md
         + sum_buckets.get("uat", 0.0)
@@ -601,10 +711,9 @@ def compute_estimate_ratio(
             "is_overhead": bucket in ("uat", "golive", "pm", "warranty", "pentest"),
         })
 
-    # Gợi ý feed Forecast: MH theo task_type tiếng Việt gần với forecast_manpower
     _bucket_to_task_type = {
         "ba": "Phân tích",
-        "des": "Phân tích",  # DES thường gộp triển khai; giữ riêng label bucket
+        "des": "Phân tích",
         "dev": "Lập trình",
         "test": "Kiểm thử",
         "config": "Cấu hình UAT",
@@ -618,7 +727,6 @@ def compute_estimate_ratio(
         if bucket in ("pm", "warranty", "pentest", "other"):
             continue
         if bucket == "des":
-            # DES không có task_type riêng trên FL — feed riêng key "Thiết kế"
             forecast_feed["Thiết kế"] += _md_to_mh(md, mh_per_day)
             continue
         tt = _bucket_to_task_type.get(bucket)
@@ -626,11 +734,142 @@ def compute_estimate_ratio(
             forecast_feed[tt] += _md_to_mh(md, mh_per_day)
 
     pct_default = round(100.0 * n_default / n_funcs, 1) if n_funcs else 0.0
+
+    return {
+        "phase_buckets": phase_buckets,
+        "phase_mapping": phase_mapping,
+        "details": details,
+        "sum_buckets": dict(sum_buckets),
+        "n_default": n_default,
+        "n_funcs": n_funcs,
+        "build_md": build_md,
+        "total_md": total_md,
+        "total_mh": total_mh,
+        "total_mm": total_mm,
+        "by_phase": by_phase,
+        "forecast_feed": dict(forecast_feed),
+        "pct_default": pct_default,
+        "mh_per_day": mh_per_day,
+        "md_per_mm": md_per_mm,
+    }
+
+
+def compute_estimate_ratio(
+    data: ParsedData,
+    params: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    Tính ước lượng theo hệ số cho toàn bộ ParsedData.
+
+    Returns JSON-serializable dict: params, phase_mapping, by_phase (MM/MH/MD),
+    totals, detail (per function), warnings, forecast_feed (MH theo task_type gợi ý).
+
+    Nếu ``contract_md`` / ``contract_mm`` > 0: scale seed (+ lookup) rồi tính lại
+    để tổng gần khớp hợp đồng (calibrate).
+    """
+    params = normalize_params(params)
+    params = {k: v for k, v in params.items() if not k.startswith("_")}
+    params = normalize_params(params)
+
+    contract_md = resolve_contract_md(params)
+    calibration: Optional[dict[str, Any]] = None
+
+    # Tính với seed hiện tại (idempotent khi kèm contract)
+    core = _compute_estimate_ratio_core(data, params)
+    pre_contract_md = float(core["total_md"])
+
+    if contract_md and pre_contract_md > 0:
+        factor = float(contract_md) / pre_contract_md
+        suggested_params, _ = scale_seeds_to_contract(params, pre_contract_md, contract_md)
+        # Scale toàn bộ output để tổng = hợp đồng (ổn định khi tính lại)
+        for k in list(core["sum_buckets"].keys()):
+            core["sum_buckets"][k] *= factor
+        core["build_md"] *= factor
+        core["total_md"] = sum(core["sum_buckets"].values())
+        core["total_mh"] = _md_to_mh(core["total_md"], core["mh_per_day"])
+        core["total_mm"] = _md_to_mm(core["total_md"], core["md_per_mm"])
+        core["by_phase"] = []
+        for bucket in BUCKET_ORDER:
+            md = float(core["sum_buckets"].get(bucket, 0.0))
+            if md <= 0 and bucket == "other":
+                continue
+            if md <= 0 and bucket not in core["sum_buckets"]:
+                continue
+            core["by_phase"].append({
+                "bucket": bucket,
+                "label": BUCKET_LABELS_VI.get(bucket, bucket),
+                "md": round(md, 4),
+                "mh": round(_md_to_mh(md, core["mh_per_day"]), 2),
+                "mm": round(_md_to_mm(md, core["md_per_mm"]), 4),
+                "is_overhead": bucket in ("uat", "golive", "pm", "warranty", "pentest"),
+            })
+        feed2: dict[str, float] = defaultdict(float)
+        _b2tt = {
+            "ba": "Phân tích", "des": "Thiết kế", "dev": "Lập trình",
+            "test": "Kiểm thử", "config": "Cấu hình UAT", "doc": "Tài liệu",
+            "uat": "UAT", "golive": "Cấu hình Golive", "migration": "Kiểm thử",
+        }
+        for bucket, md in core["sum_buckets"].items():
+            if bucket in ("pm", "warranty", "pentest", "other"):
+                continue
+            tt = _b2tt.get(bucket)
+            if tt:
+                feed2[tt] += _md_to_mh(md, core["mh_per_day"])
+        core["forecast_feed"] = dict(feed2)
+        for d in core["details"]:
+            d["buckets_md"] = {
+                k: round(v * factor, 4)
+                for k, v in (d.get("buckets_md") or {}).items()
+            }
+            d["build_md"] = round(float(d.get("build_md") or 0) * factor, 4)
+
+        sd_sug = suggested_params.get("seed_defaults") or {}
+        calibration = {
+            "contract_md": round(contract_md, 4),
+            "pre_md": round(pre_contract_md, 4),
+            "seed_factor": round(factor, 6),
+            "global_factor": round(factor, 6),
+            "post_md": round(float(core["total_md"]), 4),
+            "matched": True,
+            "suggested_seed_defaults": {
+                "ba_md": round(float(sd_sug.get("ba_md") or 0), 6),
+                "dev_md": round(float(sd_sug.get("dev_md") or 0), 6),
+            },
+        }
+
+    phase_buckets = core["phase_buckets"]
+    n_default = core["n_default"]
+    n_funcs = core["n_funcs"]
+    pct_default = core["pct_default"]
+    mh_per_day = core["mh_per_day"]
+    md_per_mm = core["md_per_mm"]
+    build_md = core["build_md"]
+    total_md = core["total_md"]
+    total_mh = core["total_mh"]
+    total_mm = core["total_mm"]
+
+    seed_ref_only = pct_default > 50.0
     warnings: list[str] = []
-    if n_default:
+    if seed_ref_only:
+        warnings.append(
+            f"Kết quả tham khảo — {pct_default}% function chưa có estimate thật "
+            f"({n_default}/{n_funcs} dùng seed mặc định)."
+        )
+    elif n_default:
         warnings.append(
             f"{n_default}/{n_funcs} function ({pct_default}%) dùng seed BA/Dev mặc định "
             f"(không có Estimate MH phase BA/Dev và không khớp lookup)."
+        )
+    if calibration and calibration.get("seed_factor") and calibration["seed_factor"] != 1.0:
+        warnings.append(
+            f"Đã calibrate theo hợp đồng {calibration['contract_md']:g} MD "
+            f"(hệ số seed ×{calibration['seed_factor']:g}"
+            + (
+                f", scale output ×{calibration['global_factor']:g}"
+                if calibration.get("global_factor", 1.0) != 1.0
+                else ""
+            )
+            + ")."
         )
     if not any(pb == "ba" for pb in phase_buckets.values()):
         warnings.append(
@@ -641,33 +880,54 @@ def compute_estimate_ratio(
             "Không map được phase nào → Dev. Kiểm tra tên phase hoặc phase_keywords trong params."
         )
 
+    size_info = SIZE_PRESETS.get(
+        str(params.get("project_size") or "medium"), SIZE_PRESETS["medium"]
+    )
     hints = [
         "Ước lượng theo hệ số — không ghi đè Estimate MH trên Function List.",
         "Không thay Forecast Manpower; có thể sao chép MH gợi ý để đối chiếu / nhập tay.",
+        f"Quy mô: {size_info['label']} — {size_info['hint']}.",
         f"1 MD = {mh_per_day:g} MH · 1 MM = {md_per_mm:g} MD "
         f"(khác MM=160 MH của Forecast Manpower nếu md_per_mm≠20).",
+        "Nhập tổng MD/MM hợp đồng để scale seed khớp effort ký kết.",
         "Defaults là gợi ý PMO (chỉnh trong estimation_params.json) — không khóa số liệu dự án mẫu.",
     ]
+
+    # Strip internals trước khi trả
+    params_out = {k: v for k, v in params.items() if not k.startswith("_")}
 
     return {
         "basis": "ratio",
         "basis_label": "Ước lượng theo hệ số",
-        "params": params,
-        "phase_mapping": phase_mapping,
-        "by_phase": by_phase,
+        "params": params_out,
+        "size_presets": {
+            k: {
+                "id": v["id"],
+                "label": v["label"],
+                "hint": v["hint"],
+                "seed_defaults": v["seed_defaults"],
+                "default_mh": v["default_mh"],
+            }
+            for k, v in SIZE_PRESETS.items()
+        },
+        "phase_mapping": core["phase_mapping"],
+        "by_phase": core["by_phase"],
         "totals": {
             "functions": n_funcs,
             "functions_default_seed": n_default,
             "pct_default_seed": pct_default,
+            "seed_reference_only": seed_ref_only,
             "build_md": round(build_md, 4),
             "md": round(total_md, 4),
             "mh": round(total_mh, 2),
             "mm": round(total_mm, 4),
             "mh_per_day": mh_per_day,
             "md_per_mm": md_per_mm,
+            "contract_md": round(contract_md, 4) if contract_md else None,
         },
-        "detail": details,
-        "forecast_feed": {k: round(v, 2) for k, v in sorted(forecast_feed.items())},
+        "calibration": calibration,
+        "detail": core["details"],
+        "forecast_feed": {k: round(v, 2) for k, v in sorted(core["forecast_feed"].items())},
         "warnings": warnings,
         "hints": hints,
     }

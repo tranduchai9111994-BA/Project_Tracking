@@ -170,6 +170,18 @@ def test_no_columns_empty_no_fake_defects(tmp_path):
     assert result["summary"]["reopen_rate_pct"] is None
     assert result["summary"]["tagged_uat_issue"] == 0
     assert any("Không có cột" in m for m in result["messages"])
+    # Proxy từ phase UAT — không invent defect
+    proxy = result.get("uat_phase_proxy") or {}
+    assert proxy.get("available") is True
+    assert proxy.get("phase") == "UAT"
+    assert proxy.get("closed_count") == 1
+    assert proxy.get("open_count") == 1
+    assert proxy.get("pct_uat_closed") == 50.0
+    assert "không phải defect" in (proxy.get("label") or "").lower()
+    mod = {m["module"]: m for m in result["modules"]}["M"]
+    assert mod["uat_closed"] == 1
+    assert mod["uat_open"] == 1
+    assert mod["pct_uat_closed"] == 50.0
 
 
 def test_tag_fallback_qualitative_only(tmp_path):

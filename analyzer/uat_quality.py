@@ -173,9 +173,20 @@ def compute_uat_quality(
         "cycle_n": 0,
         "multi_cycle": 0,
         "tagged_uat_issue": 0,
+        # Proxy phase UAT (khi thiếu cột defect)
+        "uat_closed": 0,
+        "uat_in_progress": 0,
+        "uat_open": 0,
+        "uat_other": 0,
+        "uat_blank": 0,
     })
 
     per_function: list[dict[str, Any]] = []
+    proxy_status_counts: dict[str, int] = defaultdict(int)
+    proxy_in_progress = 0
+    proxy_open = 0
+    proxy_other = 0
+    proxy_blank = 0
 
     for row in data.rows:
         total_fns += 1
@@ -233,6 +244,25 @@ def compute_uat_quality(
         closedish = uat_st in ("Closed", "Resolved")
         if closedish:
             uat_closedish += 1
+
+        # Proxy metrics từ status phase UAT (không phải defect)
+        if uat_phase:
+            st_key = uat_st if uat_st else "(trống)"
+            proxy_status_counts[st_key] += 1
+            if not uat_st:
+                proxy_blank += 1
+                acc["uat_blank"] += 1
+            elif closedish:
+                acc["uat_closed"] += 1
+            elif uat_st in ("In-progress", "Assigned"):
+                proxy_in_progress += 1
+                acc["uat_in_progress"] += 1
+            elif uat_st in ("Open", "Pending"):
+                proxy_open += 1
+                acc["uat_open"] += 1
+            else:
+                proxy_other += 1
+                acc["uat_other"] += 1
 
         in_reopen_denom = False
         if reopen_header:
@@ -296,9 +326,11 @@ def compute_uat_quality(
             round(int(a["fns_with_reopen"]) / denom * 100, 1) if denom > 0 else None
         )
         cn = int(a["cycle_n"])
+        mod_total = int(a["total"])
+        mod_closed = int(a["uat_closed"])
         modules.append({
             "module": mod,
-            "total": int(a["total"]),
+            "total": mod_total,
             "defects": int(a["defects"]),
             "feedback": int(a["feedback"]),
             "reopens": int(a["reopens"]),
@@ -308,11 +340,20 @@ def compute_uat_quality(
             "avg_uat_cycles": round(a["cycle_sum"] / cn, 2) if cn > 0 else None,
             "multi_cycle": int(a["multi_cycle"]),
             "tagged_uat_issue": int(a["tagged_uat_issue"]),
+            "uat_closed": mod_closed,
+            "uat_in_progress": int(a["uat_in_progress"]),
+            "uat_open": int(a["uat_open"]),
+            "uat_other": int(a["uat_other"]),
+            "uat_blank": int(a["uat_blank"]),
+            "pct_uat_closed": (
+                round(100.0 * mod_closed / mod_total, 1) if mod_total else None
+            ),
         })
     modules.sort(
         key=lambda m: (
             -(m["defects"] + m["feedback"]),
             -(m["reopen_rate_pct"] or 0),
+            -(m.get("pct_uat_closed") or 0),
             m["module"],
         )
     )
@@ -342,25 +383,53 @@ def compute_uat_quality(
             )
     else:
         messages.append(
-            "Không có cột Defect/Bug/Feedback/Reopen/UAT cycle trên Excel. "
-            "Không bịa số lỗi — metrics đếm = trống."
+            "Không có cột Defect / Feedback / Reopen / UAT cycle trên Function List. "
+            "Dashboard không bịa số lỗi — các KPI defect bên trên để trống có chủ đích."
         )
         messages.append(
-            "Gợi ý: thêm cột «Số lỗi» / «Reopen» / «Số vòng UAT» trên Function List, "
-            f"hoặc gắn tag «{UAT_ISSUE_TAG}» / ghi chú function để theo dõi qualitative."
+            "Cách bổ sung trên Excel (header row 1, không phải cột phase «UAT - Status»): "
+            "«Số lỗi» / «Defect» / «Bug», «Feedback» / «Phản hồi», "
+            "«Reopen» / «Số lần reopen», «Số vòng UAT» / «UAT cycle». "
+            f"Hoặc gắn tag «{UAT_ISSUE_TAG}» trên function để theo dõi qualitative."
         )
+        if uat_phase:
+            messages.append(
+                f"Đang hiển thị proxy tiến độ từ phase «{uat_phase}» "
+                "(Closed / In-progress / Open) — không phải số defect."
+            )
         if tagged_uat_issue:
             messages.append(
                 f"{tagged_uat_issue} function đang gắn tag «{UAT_ISSUE_TAG}» "
                 "(chỉ đếm tag — không suy ra số defect)."
             )
 
-    if uat_phase:
+    if uat_phase and has_columns:
         messages.append(f"Phase UAT dùng cho reopen rate: «{uat_phase}».")
-    elif reopen_header:
+    elif reopen_header and not uat_phase:
         messages.append(
             "Không tìm thấy phase UAT — reopen rate chỉ dựa function có reopen_count > 0."
         )
+
+    pct_uat_closed = (
+        round(100.0 * uat_closedish / total_fns, 1) if (uat_phase and total_fns) else None
+    )
+    uat_phase_proxy: Optional[dict[str, Any]] = None
+    if uat_phase:
+        uat_phase_proxy = {
+            "available": True,
+            "phase": uat_phase,
+            "label": "Proxy từ phase UAT (không phải defect)",
+            "total_functions": total_fns,
+            "closed_count": uat_closedish,
+            "in_progress_count": proxy_in_progress,
+            "open_count": proxy_open,
+            "other_count": proxy_other,
+            "blank_count": proxy_blank,
+            "pct_uat_closed": pct_uat_closed,
+            "status_counts": dict(sorted(
+                proxy_status_counts.items(), key=lambda kv: (-kv[1], kv[0])
+            )),
+        }
 
     if reopen_rate is not None and reopen_rate >= 20:
         messages.append(
@@ -434,11 +503,13 @@ def compute_uat_quality(
             0 if not detail_limit or detail_limit <= 0
             else max(0, len(per_function) - detail_limit)
         ),
+        "uat_phase_proxy": uat_phase_proxy,
         "messages": messages,
         "assumptions": [
             "Ô trống / «-» / N/A không đếm là 0 trong avg (loại khỏi mẫu).",
             "Reopen rate chỉ tính khi có cột Reopen.",
             "Phase UAT: ưu tiên tên khớp UAT (không Config UAT nếu đã có UAT riêng).",
             f"Tag «{UAT_ISSUE_TAG}» chỉ là tín hiệu qualitative — không tạo defect giả.",
+            "Proxy phase UAT = đếm Status phase UAT trên FL; không thay thế số defect.",
         ],
     }

@@ -61,6 +61,7 @@ def collect_issue_hits(
     unassigned_list: Optional[list[dict]] = None,
     stalled_list: Optional[list[dict]] = None,
     anomaly_issues: Optional[list[dict]] = None,
+    fid_issues: Optional[list[dict]] = None,
 ) -> dict[str, dict[str, Any]]:
     """
     Union theo ma_cn.
@@ -150,6 +151,21 @@ def collect_issue_hits(
             h["notes"].append(f"{label} · {ph}")
         else:
             h["notes"].append(str(label))
+
+    for it in fid_issues or []:
+        ma = it.get("ma_cn") or ""
+        h = _ensure(ma)
+        if not h:
+            continue
+        issue_type = it.get("issue_type") or "fid"
+        h["kinds"].add(issue_type)
+        # Đánh dấu cần tô vàng cột FID (dùng key đặc biệt yellow_fid)
+        h.setdefault("yellow_fid", True)
+        fid_val = it.get("fid") or ""
+        if issue_type == "missing_fid":
+            h["notes"].append(f"Thiếu FID — {it.get('dev_phase', '')}")
+        else:
+            h["notes"].append(f"Trùng FID '{fid_val}' — {it.get('detail', '')}")
 
     return hits
 
@@ -465,6 +481,12 @@ def export_fl_reimport(
 
         yellow_pic = hit.get("yellow_pic") or set()
         yellow_status = hit.get("yellow_status") or set()
+        yellow_fid = hit.get("yellow_fid", False)
+
+        # Xác định header nào là cột FID (để tô vàng khi missing/duplicate)
+        _fid_headers = {h for h in headers if any(
+            kw in h.lower() for kw in ("fid", "function id", "function_id")
+        ) and " - " not in h}
 
         for col, h in enumerate(headers, 1):
             val = values.get(h, "")
@@ -480,7 +502,10 @@ def export_fl_reimport(
 
             info = col_map.get(h)
             fill = None
-            if info:
+            # Tô vàng cột FID khi function có FID issue
+            if yellow_fid and h in _fid_headers:
+                fill = YELLOW_FILL
+            elif info:
                 ph = info["phase"]
                 kind = info["kind"]
                 if kind == "start" and ph in date_fills:

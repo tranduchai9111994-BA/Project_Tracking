@@ -26,8 +26,15 @@ class DashboardEngine:
         self.today = today or date.today()
         self.long_duration_threshold = long_duration_threshold
 
-    def compute_all(self, data: ParsedData) -> dict[str, Any]:
-        """Entry point: tính tất cả metrics."""
+    def compute_all(
+        self,
+        data: ParsedData,
+        prev_summary: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Entry point: tính tất cả metrics.
+
+        prev_summary: summary snapshot trước (optional) → gắn `summary.deltas`.
+        """
         # Import cục bộ để tránh circular
         from analyzer.risk_scorer import compute_pmo_risk
 
@@ -38,10 +45,12 @@ class DashboardEngine:
             long_duration_threshold=self.long_duration_threshold,
         )
         risk_scores = pmo["risk_scores"]
+        summary = self._summary(data, risk_scores)
+        summary["deltas"] = self.compute_summary_deltas(summary, prev_summary)
 
         return {
             "structure": self._structure_info(data),
-            "summary": self._summary(data, risk_scores),
+            "summary": summary,
             "module_overview": self._module_overview(data),
             "phase_status_matrix": self._phase_status_matrix(data),
             "progress_by_task_type": self._progress_by_task_type(data),
@@ -203,9 +212,27 @@ class DashboardEngine:
             high_risk_count = sum(1 for r in risk_scores if r["risk_score"] >= 50)
 
         # ==== Missing deadline: WIP (active status) thiếu End — dedupe function ====
-        from analyzer.data_quality import count_missing_deadlines, count_anomalies
+        from analyzer.data_quality import (
+            count_missing_deadlines, count_anomalies, compute_data_quality,
+        )
         missing_deadline_count, missing_deadline_records = count_missing_deadlines(data)
         anomaly_count, anomaly_records = count_anomalies(data)
+
+        # DQ High only (secondary card) — total issues đưa vào tooltip/subtitle
+        dq_high_count = 0
+        dq_total_count = 0
+        dq_affected_rows = 0
+        try:
+            dq = compute_data_quality(data, today=self.today)
+            dq_summary = dq.get("summary") or {}
+            sev = dq_summary.get("by_severity") or {}
+            dq_high_count = int(sev.get("high") or 0)
+            dq_total_count = int(dq_summary.get("total_issues") or 0)
+            # Số FUNCTION có ≥1 issue (không phải số issue) — dùng để tính % lỗi
+            # đúng nghĩa (1 function có thể có nhiều issue → total_issues > total_functions).
+            dq_affected_rows = int(dq_summary.get("affected_rows") or 0)
+        except Exception:
+            pass
 
         return {
             "total_functions": total,
@@ -216,6 +243,7 @@ class DashboardEngine:
             "last_phase_name": last_phase or "",
             "progress_formula": "weighted_all",           # để FE biết cách hiển thị/giải thích
             "modules_count": len(data.all_modules),
+            "processes_count": len(getattr(data, "all_processes", []) or []),
             "phases_count": len(data.all_phases),
             "unassigned_count": unassigned_functions,    # đổi ngữ nghĩa: giờ là số function unique
             "unassigned_records": unassigned_records,    # phase-level
@@ -224,7 +252,72 @@ class DashboardEngine:
             "missing_deadline_records": missing_deadline_records,
             "anomaly_count": anomaly_count,
             "anomaly_records": anomaly_records,
+            "dq_high_count": dq_high_count,
+            "dq_total_count": dq_total_count,
+            "dq_affected_rows": dq_affected_rows,
+            "deltas": {},
         }
+
+    @staticmethod
+    def compute_summary_deltas(
+        summary: dict[str, Any],
+        prev_summary: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Delta vs snapshot trước. Key → {delta, prev, curr}. Hide FE khi delta=0."""
+        if not prev_summary:
+            return {}
+        keys = (
+            ("total_functions", "total_functions"),
+            ("overall_progress_pct", "overall_progress_pct"),
+            ("total_overdue", "total_overdue"),
+            ("unassigned_count", "unassigned_count"),
+            ("high_risk_count", "high_risk_count"),
+            ("missing_deadline_count", "missing_deadline_count"),
+            ("dq_high_count", "dq_high_count"),
+            ("modules_count", "modules_count"),
+        )
+        # Alias từ snapshot_index
+        aliases = {
+            "overall_progress_pct": ("overall_pct", "overall_progress_pct"),
+            "total_overdue": ("overdue_count", "total_overdue"),
+        }
+        out: dict[str, Any] = {}
+        for sk, _ in keys:
+            curr = summary.get(sk)
+            prev = prev_summary.get(sk)
+            if prev is None and sk in aliases:
+                for alt in aliases[sk]:
+                    if alt in prev_summary:
+                        prev = prev_summary.get(alt)
+                        break
+            if curr is None or prev is None:
+                continue
+            try:
+                c = float(curr)
+                p = float(prev)
+            except (TypeError, ValueError):
+                continue
+            delta = c - p
+            out[sk] = {
+                "delta": round(delta, 2) if abs(delta - round(delta)) > 1e-9 else int(round(delta)),
+                "prev": prev,
+                "curr": curr,
+            }
+        return out
+
+    @staticmethod
+    def attach_summary_deltas(
+        metrics: dict[str, Any],
+        prev_summary: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Gắn deltas vào metrics['summary'] (không phá shape cũ)."""
+        if not isinstance(metrics, dict):
+            return metrics
+        summary = metrics.get("summary")
+        if not isinstance(summary, dict):
+            return metrics
+        summary["deltas"] = DashboardEngine.compute_summary_deltas(summary, prev_summary)
+        return metrics
 
     # ------------------------------------------------------------------
     # Module overview (Bảng A)
@@ -256,12 +349,21 @@ class DashboardEngine:
         # default: module
         result = []
         module_rows = self._group_by_module(data)
+        stalled_by_module = self._stalled_counts_by_module(data)
         for idx, module in enumerate(data.all_modules, 1):
             rows = module_rows.get(module, [])
             result.append(self._one_overview_entry(
                 data, rows, idx=idx, label=module, module=module,
+                stalled_count=stalled_by_module.get(module, 0),
             ))
         return result
+
+    def _stalled_counts_by_module(self, data: ParsedData) -> dict[str, int]:
+        """Số function stalled per module — dùng cho module_risk_level (A2)."""
+        counts: dict[str, int] = defaultdict(int)
+        for item in self._stalled_tasks(data)["items"]:
+            counts[item["module"]] += 1
+        return counts
 
     def _overview_by_process(self, data: ParsedData) -> list[dict]:
         """1 row / (module, quy_trinh) — sort theo module_order rồi process."""
@@ -288,7 +390,7 @@ class DashboardEngine:
 
     def _one_overview_entry(
         self, data: ParsedData, rows, *, idx: int, label: str,
-        module: str, process: str = "",
+        module: str, process: str = "", stalled_count: int = 0,
     ) -> dict:
         """Đóng gói 1 entry overview theo weighted_all formula."""
         total = len(rows)
@@ -337,6 +439,14 @@ class DashboardEngine:
             )
             if open_phases > 0:
                 remaining_mh += est_f * (open_phases / len(data.all_phases))
+        overdue_pct = round(overdue_count / total * 100, 2) if total else 0
+        # A2 — risk_level per module: overdue/stalled cao → risk; progress thấp → warning.
+        if overdue_pct > 20 or stalled_count > 0:
+            risk_level = "risk"
+        elif overdue_pct > 10 or progress_pct < 50:
+            risk_level = "warning"
+        else:
+            risk_level = "safe"
         return {
             "stt": idx,
             "module": module,
@@ -347,6 +457,9 @@ class DashboardEngine:
             "progress_pct": progress_pct,
             "active_phase": active_phase,
             "overdue_count": overdue_count,
+            "overdue_pct": overdue_pct,
+            "stalled_count": stalled_count,
+            "risk_level": risk_level,
             "remaining": remaining,
             "remaining_mh": round(remaining_mh, 1),
         }
@@ -403,54 +516,84 @@ class DashboardEngine:
             for phase_name in data.all_phases:
                 status_counts = Counter()
                 total_with_status = 0
+                overdue_cell = 0
+                not_started_late = 0
                 for r in rows:
                     pd = r.phases.get(phase_name, PhaseData())
                     if pd.status:
                         status_counts[pd.status] += 1
                         total_with_status += 1
+                    if is_phase_overdue(
+                        pd, self.today, row=r, phase_name=phase_name,
+                        phase_order=data.all_phases,
+                    ):
+                        overdue_cell += 1
+                    if (
+                        (pd.status or "") in ("", "Open")
+                        and pd.start_date and pd.start_date < self.today
+                    ):
+                        not_started_late += 1
 
                 closed = status_counts.get("Closed", 0)
                 # weighted_all: denominator = total_rows (phase blank vẫn là mẫu số
                 # → tránh 100% giả khi chỉ 1 phase đã fill).
                 pct_closed = round(closed / total_rows * 100, 1) if total_rows > 0 else 0
+                overdue_pct_cell = round(overdue_cell / total_rows * 100, 1) if total_rows > 0 else 0
+                not_started_pct_cell = round(not_started_late / total_rows * 100, 1) if total_rows > 0 else 0
+                # A3 — highlight khâu rủi ro: nhiều trễ hạn > risk; nhiều chưa
+                # bắt đầu mà đã qua Start date > warning.
+                if overdue_pct_cell > 30:
+                    cell_risk_class = "risk"
+                elif not_started_pct_cell > 50:
+                    cell_risk_class = "warning"
+                else:
+                    cell_risk_class = "safe"
 
                 matrix[label][phase_name] = {
                     "total": total_rows,
                     "total_with_status": total_with_status,
                     "pct_closed": pct_closed,
+                    "overdue_pct": overdue_pct_cell,
+                    "not_started_pct": not_started_pct_cell,
+                    "cell_risk_class": cell_risk_class,
                     **{s: status_counts.get(s, 0) for s in all_statuses_ordered},
                 }
 
         # Bottleneck row: per phase, số row-label "stuck"
         # (= có ≥1 function chưa Closed ở phase đó VÀ (overdue HOẶC stalled sang phase này))
-        from analyzer.stalled import is_stalled_transition
+        from analyzer.stalled import phase_stuck_info
 
         phases = list(data.all_phases)
         bottleneck: dict[str, int] = {ph: 0 for ph in phases}
         for label in row_labels:
             rows = by_proc.get(label, [])
-            for pi, phase_name in enumerate(phases):
-                stuck = False
-                for r in rows:
-                    pd = r.phases.get(phase_name, PhaseData())
-                    st = (pd.status or "").strip()
-                    if st == "Closed":
-                        continue
-                    # Overdue ở phase này
-                    if is_phase_overdue(
-                        pd, self.today, row=r, phase_name=phase_name, phase_order=phases,
-                    ):
-                        stuck = True
-                        break
-                    # Stalled: phase trước Closed, phase này chưa start, End pred quá hạn
-                    if pi > 0:
-                        pred = phases[pi - 1]
-                        pred_pd = r.phases.get(pred)
-                        if is_stalled_transition(pred_pd, pd, self.today):
-                            stuck = True
-                            break
+            for phase_name in phases:
+                stuck = any(
+                    phase_stuck_info(r, phase_name, phases, self.today) is not None
+                    for r in rows
+                )
                 if stuck:
                     bottleneck[phase_name] += 1
+
+        # A3 — hàng tổng theo phase (% cell risk) + cột tổng theo module (health chung).
+        phase_risk_summary: dict[str, dict] = {}
+        for ph in phases:
+            n = len(row_labels) or 1
+            risk_cells = sum(1 for lbl in row_labels if matrix[lbl][ph]["cell_risk_class"] == "risk")
+            risk_pct = round(risk_cells / n * 100, 1)
+            phase_risk_summary[ph] = {
+                "risk_pct": risk_pct,
+                "badge": "risk" if risk_pct > 30 else ("warning" if risk_pct > 10 else "safe"),
+            }
+
+        module_risk_summary: dict[str, dict] = {}
+        for lbl in row_labels:
+            risk_cells = sum(1 for ph in phases if matrix[lbl][ph]["cell_risk_class"] == "risk")
+            warn_cells = sum(1 for ph in phases if matrix[lbl][ph]["cell_risk_class"] == "warning")
+            badge = "risk" if risk_cells > 0 else ("warning" if warn_cells > 0 else "safe")
+            module_risk_summary[lbl] = {
+                "risk_cells": risk_cells, "warning_cells": warn_cells, "badge": badge,
+            }
 
         return {
             "phases": phases,
@@ -463,6 +606,8 @@ class DashboardEngine:
             "statuses": all_statuses_ordered,
             "data": matrix,
             "bottleneck": bottleneck,
+            "phase_risk_summary": phase_risk_summary,
+            "module_risk_summary": module_risk_summary,
         }
 
     # ------------------------------------------------------------------
@@ -904,7 +1049,7 @@ class DashboardEngine:
         phase Closed/Cancelled). Kèm funnel Closed/phase + transition heatmap.
         """
         from analyzer.gantt_calendar import _is_outlier_date
-        from analyzer.stalled import is_fully_closed, is_stalled_transition
+        from analyzer.stalled import is_fully_closed, is_stalled_transition, prev_phases_all_closed
 
         items = []
         phase_names = [pg.name for pg in data.phase_groups]
@@ -924,6 +1069,11 @@ class DashboardEngine:
             if is_fully_closed(r, phase_names):
                 continue
             for i in range(len(phase_names) - 1):
+                # Chỉ xét cặp (curr→next) khi mọi phase trước curr đã Closed.
+                # Nếu phase đầu (VD Analysis) chưa Closed → bỏ qua mọi cặp tiếp.
+                if not prev_phases_all_closed(r, phase_names, i):
+                    continue
+
                 curr = phase_names[i]
                 nxt = phase_names[i + 1]
                 curr_pd = r.phases.get(curr)

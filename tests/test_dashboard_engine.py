@@ -65,6 +65,28 @@ def test_summary_missing_deadline_keys(metrics):
     assert metrics["summary"]["missing_deadline_records"] >= metrics["summary"]["missing_deadline_count"]
 
 
+def test_summary_deltas_and_dq_high(metrics):
+    """summary.deltas + dq_high_count luôn có (API additive)."""
+    s = metrics["summary"]
+    assert "deltas" in s
+    assert isinstance(s["deltas"], dict)
+    assert "dq_high_count" in s
+    assert "dq_total_count" in s
+    assert "processes_count" in s
+    # Với prev_summary giả → delta khác 0
+    prev = {
+        "total_functions": (s.get("total_functions") or 0) + 2,
+        "total_overdue": 0,
+        "overall_progress_pct": 0,
+        "unassigned_count": 0,
+        "high_risk_count": 0,
+    }
+    from analyzer.dashboard_engine import DashboardEngine
+    d = DashboardEngine.compute_summary_deltas(s, prev)
+    assert "total_functions" in d
+    assert d["total_functions"]["delta"] == (s["total_functions"] - prev["total_functions"])
+
+
 def test_module_overview_progress_calculation(metrics):
     """
     TMS module có 2 function × 3 phase (Analysis/Dev/UAT) = 6 records.

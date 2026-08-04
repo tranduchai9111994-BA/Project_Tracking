@@ -47,11 +47,22 @@ def test_invalid_status():
 def test_end_before_start():
     r = _mk_row(phases={"Dev": PhaseData(
         start_date=date(2026, 5, 10), end_date=date(2026, 5, 1),
-        status="Closed", pics=["A"],
+        status="In-progress", pics=["A"],
     )})
     out = compute_data_quality(_mk_data([r]))
     codes = [i["code"] for i in out["issues"]]
     assert "end_before_start" in codes
+
+
+def test_end_before_start_skipped_when_closed():
+    """Phase đã Closed/Cancelled — không ép sửa Start/End nữa."""
+    r = _mk_row(phases={"Dev": PhaseData(
+        start_date=date(2026, 5, 10), end_date=date(2026, 5, 1),
+        status="Closed", pics=["A"],
+    )})
+    out = compute_data_quality(_mk_data([r]))
+    codes = [i["code"] for i in out["issues"]]
+    assert "end_before_start" not in codes
 
 
 def test_closed_no_end():

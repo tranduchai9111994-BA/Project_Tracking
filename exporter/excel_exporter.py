@@ -922,6 +922,10 @@ def export_drill_down(
         if not ly_do and (it.get("is_overdue") or (it.get("days_overdue") or 0) > 0):
             ly_do = reason_overdue(it)
         elif not ly_do and (
+            it.get("completed_phase") or it.get("waiting_phase")
+        ):
+            ly_do = reason_stalled(it)
+        elif not ly_do and (
             it.get("predecessor_phase")
             or it.get("start_gate")
             or it.get("is_first_phase") is True

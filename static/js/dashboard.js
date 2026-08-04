@@ -346,6 +346,7 @@ function setUploadZoneCollapsed(collapsed, opts) {
     if (!zone) return;
 
     zone.classList.toggle("upload-zone-collapsed", !!collapsed);
+    zone.classList.toggle("upload-zone--compact", !!collapsed);
     if (compact) {
         compact.classList.toggle("hidden", !collapsed);
         // CSS dùng display:flex khi collapsed; đảm bảo không bị Tailwind hidden
@@ -2105,6 +2106,7 @@ function renderDashboard() {
         _loadModuleGroupBy();
         _fetchModuleOverview();
     });
+    _safe("chartValueMode", _loadChartValueMode);
     _safe("taskType", () => { _loadTaskTypeGroupBy(); renderTaskTypeChart(); });
     _safe("phaseMatrix", renderPhaseMatrix);
     _safe("phaseStacked", renderPhaseStackedChart);
@@ -2147,6 +2149,695 @@ function renderDashboard() {
 
     // Populate PIC dropdown (export by pic)
     _safe("picExport", populatePicExportSelect);
+
+    // A7: Smart Suggest — gợi ý dashboard nên bật cho giai đoạn hiện tại
+    _safe("smartSuggest", loadSmartSuggestions);
+
+    // B3: Quản lý đầu việc BA
+    _safe("baTasks", loadBaTasks);
+}
+
+// ========================================================================
+// A7 — SMART SUGGEST: gợi ý dashboard nên bật cho giai đoạn hiện tại
+// ========================================================================
+const _PHASE_LABEL = { early: "Phân tích", mid: "Phát triển", late: "UAT/Golive" };
+
+async function loadSmartSuggestions() {
+    if (!currentProjectSlug) return;
+    const sec = document.getElementById("section-smart-suggest");
+    if (!sec) return;
+    try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(currentProjectSlug)}/smart-suggestions`);
+        if (!r.ok) return;
+        const data = await r.json();
+        renderSmartSuggestions(data);
+    } catch (err) {
+        console.error("[smartSuggest]", err);
+    }
+}
+window.loadSmartSuggestions = loadSmartSuggestions;
+
+function renderSmartSuggestions(data) {
+    const sec = document.getElementById("section-smart-suggest");
+    const introEl = document.getElementById("smartSuggestIntro");
+    const listEl = document.getElementById("smartSuggestList");
+    if (!sec || !listEl) return;
+    const suggestions = data?.suggestions || [];
+    if (!suggestions.length) {
+        sec.classList.remove("hidden");
+        if (introEl) introEl.textContent = "";
+        listEl.innerHTML = `<div class="suggest-card suggest-card--medium">
+            🎉 Không có gợi ý thêm — đã bật đủ dashboard cho giai đoạn này.
+        </div>`;
+        return;
+    }
+    sec.classList.remove("hidden");
+    const phaseLabel = _PHASE_LABEL[data.project_phase] || "hiện tại";
+    if (introEl) {
+        introEl.textContent =
+            `Dự án đang ở giai đoạn ${phaseLabel} (${data.progress_pct}%) — các dashboard sau có thể hữu ích:`;
+    }
+    listEl.innerHTML = suggestions.map((s, i) => {
+        const cls = s.priority === "high" ? "suggest-card--high" : "suggest-card--medium";
+        const prioLabel = s.priority === "high" ? "Khuyến nghị" : "Gợi ý";
+        return `<div class="suggest-card ${cls}">
+            <div class="suggest-header">
+                <span class="suggest-title">📊 ${escapeHtml(s.title)}</span>
+                <span class="suggest-priority">${prioLabel}</span>
+            </div>
+            <p class="suggest-reason">${escapeHtml(s.reason)}</p>
+            <button type="button" class="suggest-btn" data-suggest-idx="${i}"
+                    onclick="_smartSuggestOpen(this, '${escapeAttr(s.section_id)}')">Xem dashboard này</button>
+        </div>`;
+    }).join("");
+}
+
+window._smartSuggestOpen = function (btn, sectionId) {
+    if (typeof scrollToSection === "function") scrollToSection(sectionId);
+    if (btn) {
+        btn.textContent = "✓ Đã mở";
+        btn.disabled = true;
+    }
+};
+
+// ========================================================================
+// GÓI B3 — QUẢN LÝ ĐẦU VIỆC BA (section-ba-tasks)
+// ========================================================================
+const _baState = {
+    tasks: [], stats: null, activeTab: "all", importTmpId: null, importMapping: null,
+    exportWeekAnchor: null, exportWeekIso: null,
+};
+const _baChartState = { statusMode: "chart", weekMode: "bar", debtMode: "chart" };
+
+const BA_TYPE_LABEL = {
+    task: "Đầu việc", meeting: "Cuộc họp", deliverable: "Sản phẩm", customer_debt: "Nợ KH",
+};
+const BA_STATUS_LABEL = {
+    open: "Open", in_progress: "In progress", done: "Done", blocked: "Blocked", cancelled: "Cancelled",
+};
+const BA_ALERT_LABEL = { overdue: "🔴 Trễ hạn", upcoming: "🟠 Sắp tới hạn", blocked: "⛔ Blocked" };
+
+// B5 — Tuần selector cho xuất Excel tuần.
+function _baUpdateWeekLabel() {
+    if (!_baState.exportWeekAnchor) _baState.exportWeekAnchor = new Date();
+    const anchor = _baState.exportWeekAnchor;
+    const dayNr = (anchor.getDay() + 6) % 7;
+    const monday = new Date(anchor); monday.setDate(anchor.getDate() - dayNr);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const weekIso = _isoWeekKey(anchor);
+    const wnum = weekIso.split("-W")[1];
+    const fmt = (d) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const label = document.getElementById("baWeekLabel");
+    if (label) label.textContent = `Tuần ${wnum} (${fmt(monday)} – ${fmt(sunday)}/${sunday.getFullYear()})`;
+    _baState.exportWeekIso = weekIso;
+}
+window.baWeekPrev = function () {
+    _baState.exportWeekAnchor.setDate(_baState.exportWeekAnchor.getDate() - 7);
+    _baUpdateWeekLabel();
+};
+window.baWeekNext = function () {
+    _baState.exportWeekAnchor.setDate(_baState.exportWeekAnchor.getDate() + 7);
+    _baUpdateWeekLabel();
+};
+window.baWeekReset = function () {
+    _baState.exportWeekAnchor = new Date();
+    _baUpdateWeekLabel();
+};
+
+async function loadBaTasks() {
+    if (!currentProjectSlug) return;
+    if (!_baState.exportWeekAnchor) _baUpdateWeekLabel();
+    try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks`);
+        if (!r.ok) return;
+        const data = await r.json();
+        _baState.tasks = data.tasks || [];
+        _updateBaTabBadges();
+        renderBaTaskTable();
+        loadBaTaskStats();
+    } catch (err) {
+        console.error("[baTasks]", err);
+    }
+}
+window.loadBaTasks = loadBaTasks;
+
+async function loadBaTaskStats() {
+    if (!currentProjectSlug) return;
+    try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks/stats`);
+        if (!r.ok) return;
+        _baState.stats = await r.json();
+        renderBaTaskCharts();
+    } catch (err) {
+        console.error("[baTaskStats]", err);
+    }
+}
+window.loadBaTaskStats = loadBaTaskStats;
+
+function _isoWeekKey(d) {
+    const target = new Date(d.valueOf());
+    const dayNr = (d.getDay() + 6) % 7;
+    target.setDate(target.getDate() - dayNr + 3);
+    const firstThursday = new Date(target.getFullYear(), 0, 4);
+    const diff = (target - firstThursday) / 86400000;
+    const week = 1 + Math.round(diff / 7);
+    return `${target.getFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+/** 4 tuần gần nhất (kể cả tuần này) + tuần tới — theo roadmap B4. */
+function _baWeekWindow() {
+    const out = [];
+    const today = new Date();
+    for (let i = -3; i <= 1; i++) {
+        const d = new Date(today);
+        d.setDate(d.getDate() + i * 7);
+        out.push(_isoWeekKey(d));
+    }
+    return out;
+}
+
+const BA_CHART_STATUS_COLOR = { open: "#3b82f6", in_progress: "#f59e0b", done: "#16a34a", blocked: "#94a3b8", cancelled: "#ef4444" };
+
+function renderBaTaskCharts() {
+    const wrap = document.getElementById("baTaskChartsWrap");
+    if (!wrap) return;
+    if (_baState.activeTab !== "all" || !_baState.stats) {
+        wrap.innerHTML = "";
+        return;
+    }
+    const toggleBtn = (key, labelA, labelB) =>
+        `<button type="button" class="text-[10px] border rounded px-1.5 py-0.5 hover:bg-gray-50" onclick="_baToggleChartMode('${key}','${labelA.mode}','${labelB.mode}')">${_baChartState[key] === labelA.mode ? labelB.icon : labelA.icon}</button>`;
+    wrap.innerHTML = `
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div class="border rounded-lg p-2">
+                <div class="flex items-center justify-between mb-1">
+                    <span class="text-xs font-semibold text-gray-600">Theo trạng thái</span>
+                    ${toggleBtn("statusMode", { mode: "chart", icon: "🔢 Số" }, { mode: "list", icon: "📊 Chart" })}
+                </div>
+                <div id="baStatusPanel"></div>
+            </div>
+            <div class="border rounded-lg p-2">
+                <div class="flex items-center justify-between mb-1">
+                    <span class="text-xs font-semibold text-gray-600">Theo tuần</span>
+                    ${toggleBtn("weekMode", { mode: "bar", icon: "📈 Line" }, { mode: "line", icon: "📊 Bar" })}
+                </div>
+                <div id="baWeekPanel"></div>
+            </div>
+            <div class="border rounded-lg p-2">
+                <div class="flex items-center justify-between mb-1">
+                    <span class="text-xs font-semibold text-gray-600">Nợ KH chờ lâu nhất</span>
+                    ${toggleBtn("debtMode", { mode: "chart", icon: "🔢 Số" }, { mode: "list", icon: "📊 Chart" })}
+                </div>
+                <div id="baDebtPanel"></div>
+            </div>
+            <div class="border rounded-lg p-2">
+                <span class="text-xs font-semibold text-gray-600">Sản phẩm bàn giao</span>
+                <div id="baDeliverablePanel" class="mt-1"></div>
+            </div>
+        </div>`;
+    _renderBaStatusPanel();
+    _renderBaWeekPanel();
+    _renderBaDebtPanel();
+    _renderBaDeliverablePanel();
+}
+window.renderBaTaskCharts = renderBaTaskCharts;
+
+window._baToggleChartMode = function (key, modeA, modeB) {
+    _baChartState[key] = _baChartState[key] === modeA ? modeB : modeA;
+    renderBaTaskCharts();
+};
+
+function _renderBaStatusPanel() {
+    const panel = document.getElementById("baStatusPanel");
+    if (!panel) return;
+    const byStatus = _baState.stats.by_status || {};
+    const labels = Object.keys(byStatus).filter((k) => byStatus[k] > 0);
+    if (!labels.length) {
+        panel.innerHTML = `<p class="text-xs text-gray-400 text-center py-6">Không có dữ liệu</p>`;
+        return;
+    }
+    if (_baChartState.statusMode === "list") {
+        panel.innerHTML = `<ul class="text-xs space-y-1">${labels.map((k) =>
+            `<li class="flex justify-between"><span>${BA_STATUS_LABEL[k] || k}</span><b>${byStatus[k]}</b></li>`
+        ).join("")}</ul>`;
+        return;
+    }
+    panel.innerHTML = `<div class="chart-box h-56"><canvas id="chartBaStatus"></canvas></div>`;
+    const ctx = getCanvas("chartBaStatus");
+    if (!ctx) return;
+    createChart(ctx, "doughnut", {
+        labels: labels.map((k) => BA_STATUS_LABEL[k] || k),
+        datasets: [{
+            data: labels.map((k) => byStatus[k]),
+            backgroundColor: labels.map((k) => BA_CHART_STATUS_COLOR[k] || "#94a3b8"),
+            borderColor: "#fff",
+            borderWidth: 2,
+        }],
+    }, { cutout: "60%" });
+}
+
+function _renderBaWeekPanel() {
+    const panel = document.getElementById("baWeekPanel");
+    if (!panel) return;
+    const weeks = _baWeekWindow();
+    const byWeek = _baState.stats.by_week || {};
+    panel.innerHTML = `<div class="chart-box h-56"><canvas id="chartBaWeek"></canvas></div>`;
+    const ctx = getCanvas("chartBaWeek");
+    if (!ctx) return;
+    createChart(ctx, _baChartState.weekMode, {
+        labels: weeks.map((w) => w.replace(/^\d+-/, "")),
+        datasets: [{
+            label: "Đầu việc",
+            data: weeks.map((w) => byWeek[w] || 0),
+            backgroundColor: "#3b82f6",
+            borderColor: "#3b82f6",
+            fill: _baChartState.weekMode === "line",
+            tension: 0.3,
+        }],
+    }, { scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } });
+}
+
+function _renderBaDebtPanel() {
+    const panel = document.getElementById("baDebtPanel");
+    if (!panel) return;
+    const debts = (_baState.stats.debts_by_wait || []).slice(0, 8);
+    if (!debts.length) {
+        panel.innerHTML = `<p class="text-xs text-gray-400 text-center py-6">Không có nợ KH đang chờ</p>`;
+        return;
+    }
+    if (_baChartState.debtMode === "list") {
+        panel.innerHTML = `<ul class="text-xs space-y-1">${debts.map((d) =>
+            `<li class="flex justify-between gap-2"><span class="truncate">${escapeHtml(d.title || "")}</span><b class="${d.wait_days > 7 ? "text-red-600" : ""}">${d.wait_days}d</b></li>`
+        ).join("")}</ul>`;
+        return;
+    }
+    panel.innerHTML = `<div class="chart-box h-56"><canvas id="chartBaDebt"></canvas></div>`;
+    const ctx = getCanvas("chartBaDebt");
+    if (!ctx) return;
+    createChart(ctx, "bar", {
+        labels: debts.map((d) => (d.title && d.title.length > 18 ? d.title.slice(0, 18) + "…" : (d.title || ""))),
+        datasets: [{
+            label: "Số ngày chờ",
+            data: debts.map((d) => d.wait_days),
+            backgroundColor: debts.map((d) => (d.wait_days > 7 ? "#ef4444" : "#f59e0b")),
+        }],
+    }, { indexAxis: "y", scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } });
+}
+
+function _renderBaDeliverablePanel() {
+    const panel = document.getElementById("baDeliverablePanel");
+    if (!panel) return;
+    const items = (_baState.stats.deliverables || []).slice(0, 8);
+    if (!items.length) {
+        panel.innerHTML = `<p class="text-xs text-gray-400 text-center py-6">Chưa có sản phẩm bàn giao</p>`;
+        return;
+    }
+    const todayIso = new Date().toISOString().slice(0, 10);
+    panel.innerHTML = `<ul class="text-xs space-y-1 max-h-[180px] overflow-y-auto">${items.map((it) => {
+        const cls = it.status === "done" ? "border-green-500"
+            : (it.target_date && it.target_date < todayIso ? "border-red-500" : "border-amber-400");
+        return `<li class="border-l-4 ${cls} pl-2 flex justify-between gap-2">
+            <span class="truncate">${escapeHtml(it.title || "")}</span>
+            <span class="text-gray-500 shrink-0">${it.target_date || "—"}</span>
+        </li>`;
+    }).join("")}</ul>`;
+}
+
+function _updateBaTabBadges() {
+    const counts = { all: _baState.tasks.length, task: 0, meeting: 0, deliverable: 0, customer_debt: 0 };
+    _baState.tasks.forEach((t) => { if (counts[t.type] != null) counts[t.type] += 1; });
+    Object.keys(counts).forEach((k) => {
+        const el = document.getElementById(`baTabBadge-${k}`);
+        if (el) el.textContent = counts[k];
+    });
+}
+
+window.setBaTaskTab = function (tab) {
+    _baState.activeTab = tab;
+    document.querySelectorAll('#section-ba-tasks [data-batab]').forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.batab === tab);
+    });
+    if (pageState.baTasks) pageState.baTasks.page = 1;
+    renderBaTaskTable();
+    renderBaTaskCharts();
+};
+
+function _baFilteredTasks() {
+    let rows = _baState.tasks;
+    if (_baState.activeTab !== "all") rows = rows.filter((t) => t.type === _baState.activeTab);
+    const status = document.getElementById("baFilterStatus")?.value;
+    const alert = document.getElementById("baFilterAlert")?.value;
+    const assignee = (document.getElementById("baFilterAssignee")?.value || "").trim().toLowerCase();
+    const module = (document.getElementById("baFilterModule")?.value || "").trim().toLowerCase();
+    if (status) rows = rows.filter((t) => t.status === status);
+    if (alert) rows = rows.filter((t) => t.alert_level === alert);
+    if (assignee) rows = rows.filter((t) => (t.assignee || "").toLowerCase().includes(assignee));
+    if (module) rows = rows.filter((t) => (t.module || "").toLowerCase().includes(module));
+    return rows;
+}
+
+function _baRowClass(t) {
+    if (t.status === "done" || t.status === "cancelled") return "ba-task-row--done";
+    if (t.alert_level === "overdue") return "ba-task-row--overdue";
+    if (t.alert_level === "upcoming") return "ba-task-row--upcoming";
+    if (t.alert_level === "blocked") return "ba-task-row--blocked";
+    return "";
+}
+
+function renderBaTaskTable() {
+    const thead = document.getElementById("baTaskTableHead");
+    const tbody = document.getElementById("baTaskTableBody");
+    if (!thead || !tbody) return;
+    thead.innerHTML = `<tr class="bg-blue-800 text-white text-xs">
+        <th class="px-2 py-2 text-left">#</th>
+        <th class="px-2 py-2 text-left">Tiêu đề</th>
+        <th class="px-2 py-2 text-center">Loại</th>
+        <th class="px-2 py-2 text-center">Module</th>
+        <th class="px-2 py-2 text-center">Trạng thái</th>
+        <th class="px-2 py-2 text-center">Ưu tiên</th>
+        <th class="px-2 py-2 text-center">PIC</th>
+        <th class="px-2 py-2 text-center">Hạn</th>
+        <th class="px-2 py-2 text-center">Cảnh báo</th>
+        <th class="px-2 py-2 text-center no-print">⋯</th>
+    </tr>`;
+
+    const all = _baFilteredTasks();
+    const st = pageState.baTasks || (pageState.baTasks = { page: 1, size: PAGE_DEFAULT_SIZE });
+    const showAll = !st.size || st.size <= 0;
+    const size = showAll ? all.length : st.size;
+    const start = showAll ? 0 : (st.page - 1) * size;
+    const rows = showAll ? all : all.slice(start, start + size);
+
+    if (!all.length) {
+        tbody.innerHTML = `<tr><td colspan="10" class="px-4 py-6 text-center text-gray-500">Không có đầu việc nào khớp bộ lọc</td></tr>`;
+    } else {
+        tbody.innerHTML = rows.map((t) => `
+            <tr class="border-b hover:bg-blue-50 ${_baRowClass(t)}">
+                <td class="px-2 py-2 text-center">${escapeHtml(t.id.slice(-6))}</td>
+                <td class="px-2 py-2 font-medium text-gray-800 cursor-pointer" onclick="openBaTaskModal('edit','${escapeAttr(t.id)}')">${escapeHtml(t.title)}</td>
+                <td class="px-2 py-2 text-center text-xs">${BA_TYPE_LABEL[t.type] || t.type}</td>
+                <td class="px-2 py-2 text-center text-xs">${escapeHtml(t.module || "—")}</td>
+                <td class="px-2 py-2 text-center">
+                    <select class="text-xs border rounded px-1 py-0.5" onchange="quickUpdateBaTaskStatus('${escapeAttr(t.id)}', this.value)">
+                        ${Object.entries(BA_STATUS_LABEL).map(([k, label]) =>
+                            `<option value="${k}" ${t.status === k ? "selected" : ""}>${label}</option>`).join("")}
+                    </select>
+                </td>
+                <td class="px-2 py-2 text-center text-xs">${t.priority || ""}</td>
+                <td class="px-2 py-2 text-center text-xs">${escapeHtml(t.assignee || "—")}</td>
+                <td class="px-2 py-2 text-center text-xs">${t.due_date || "—"}</td>
+                <td class="px-2 py-2 text-center text-xs">${BA_ALERT_LABEL[t.alert_level] || ""}</td>
+                <td class="px-2 py-2 text-center no-print">
+                    <button type="button" title="Sửa" onclick="openBaTaskModal('edit','${escapeAttr(t.id)}')" class="text-blue-600 hover:underline text-xs">✎</button>
+                    <button type="button" title="Xoá" onclick="deleteBaTask('${escapeAttr(t.id)}')" class="text-red-600 hover:underline text-xs ml-1">🗑</button>
+                </td>
+            </tr>`).join("");
+    }
+    renderPager("baTaskPagerWrap", "baTasks", all.length, () => renderBaTaskTable());
+}
+window.renderBaTaskTable = renderBaTaskTable;
+
+async function quickUpdateBaTaskStatus(taskId, status) {
+    try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks/${encodeURIComponent(taskId)}`, {
+            method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || "Lỗi cập nhật");
+        await loadBaTasks();
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
+}
+window.quickUpdateBaTaskStatus = quickUpdateBaTaskStatus;
+
+async function deleteBaTask(taskId) {
+    if (!confirm("Xoá đầu việc này? Không thể hoàn tác.")) return;
+    try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+        if (!r.ok) throw new Error((await r.json()).error || "Lỗi xoá");
+        await loadBaTasks();
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
+}
+window.deleteBaTask = deleteBaTask;
+
+// ---- Modal tạo/sửa ----
+
+function _baSubFieldsFor(type) {
+    document.getElementById("baSubMeeting")?.classList.toggle("hidden", type !== "meeting");
+    document.getElementById("baSubDeliverable")?.classList.toggle("hidden", type !== "deliverable");
+    document.getElementById("baSubDebt")?.classList.toggle("hidden", type !== "customer_debt");
+}
+window.onBaFormTypeChange = function () {
+    _baSubFieldsFor(document.getElementById("baFormType")?.value || "task");
+};
+
+window.openBaTaskModal = function (mode, taskId) {
+    const modal = document.getElementById("baTaskModal");
+    if (!modal) return;
+    const task = mode === "edit" ? _baState.tasks.find((t) => t.id === taskId) : null;
+    document.getElementById("baTaskModalTitle").textContent = mode === "edit" ? "✎ Sửa đầu việc" : "+ Thêm đầu việc";
+    document.getElementById("baFormId").value = task?.id || "";
+    document.getElementById("baFormTitle").value = task?.title || "";
+    document.getElementById("baFormType").value = task?.type || "task";
+    document.getElementById("baFormModule").value = task?.module || "";
+    document.getElementById("baFormStatus").value = task?.status || "open";
+    document.getElementById("baFormPriority").value = task?.priority || "medium";
+    document.getElementById("baFormAssignee").value = task?.assignee || "";
+    document.getElementById("baFormDueDate").value = task?.due_date || "";
+    document.getElementById("baFormTags").value = (task?.tags || []).join(", ");
+    document.getElementById("baFormLinkedFunctions").value = (task?.linked_functions || []).join(", ");
+    document.getElementById("baFormNotes").value = task?.notes || "";
+
+    const mi = task?.meeting_info || {};
+    document.getElementById("baMeetDate").value = mi.meeting_date || "";
+    document.getElementById("baMeetTime").value = mi.time || "";
+    document.getElementById("baMeetLocation").value = mi.location || "";
+    document.getElementById("baMeetAttendees").value = (mi.attendees || []).join(", ");
+    document.getElementById("baMeetAgenda").value = mi.agenda || "";
+    document.getElementById("baMeetMom").value = mi.mom_notes || "";
+
+    const di = task?.deliverable_info || {};
+    document.getElementById("baDlvName").value = di.deliverable_name || "";
+    document.getElementById("baDlvFormat").value = di.format || "";
+    document.getElementById("baDlvReviewer").value = di.reviewer || "";
+    document.getElementById("baDlvSubmitted").value = di.submitted_date || "";
+    document.getElementById("baDlvApproved").value = di.approved_date || "";
+
+    const debt = task?.debt_info || {};
+    document.getElementById("baDebtDesc").value = debt.description || "";
+    document.getElementById("baDebtRequested").value = debt.requested_date || "";
+    document.getElementById("baDebtResponsible").value = debt.responsible_party || "";
+    document.getElementById("baDebtFollowCount").value = debt.follow_up_count || 0;
+    document.getElementById("baDebtLastFollow").value = debt.last_follow_up || "";
+
+    _baSubFieldsFor(task?.type || "task");
+    document.getElementById("baFormDeleteBtn").classList.toggle("hidden", mode !== "edit");
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+};
+
+window.closeBaTaskModal = function () {
+    const modal = document.getElementById("baTaskModal");
+    modal?.classList.add("hidden");
+    modal?.classList.remove("flex");
+};
+
+function _splitCsv(value) {
+    return (value || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+window.saveBaTaskFromModal = async function () {
+    const title = document.getElementById("baFormTitle").value.trim();
+    if (!title) { showToast("Thiếu tiêu đề", "red"); return; }
+    const type = document.getElementById("baFormType").value;
+    const payload = {
+        title,
+        type,
+        module: document.getElementById("baFormModule").value.trim(),
+        status: document.getElementById("baFormStatus").value,
+        priority: document.getElementById("baFormPriority").value,
+        assignee: document.getElementById("baFormAssignee").value.trim(),
+        due_date: document.getElementById("baFormDueDate").value || null,
+        tags: _splitCsv(document.getElementById("baFormTags").value),
+        linked_functions: _splitCsv(document.getElementById("baFormLinkedFunctions").value),
+        notes: document.getElementById("baFormNotes").value.trim(),
+    };
+    if (type === "meeting") {
+        payload.meeting_info = {
+            meeting_date: document.getElementById("baMeetDate").value || null,
+            time: document.getElementById("baMeetTime").value || "",
+            location: document.getElementById("baMeetLocation").value.trim(),
+            attendees: _splitCsv(document.getElementById("baMeetAttendees").value),
+            agenda: document.getElementById("baMeetAgenda").value.trim(),
+            mom_notes: document.getElementById("baMeetMom").value.trim(),
+        };
+    } else if (type === "deliverable") {
+        payload.deliverable_info = {
+            deliverable_name: document.getElementById("baDlvName").value.trim(),
+            format: document.getElementById("baDlvFormat").value.trim(),
+            target_date: payload.due_date,
+            submitted_date: document.getElementById("baDlvSubmitted").value || null,
+            approved_date: document.getElementById("baDlvApproved").value || null,
+            reviewer: document.getElementById("baDlvReviewer").value.trim(),
+        };
+    } else if (type === "customer_debt") {
+        payload.debt_info = {
+            description: document.getElementById("baDebtDesc").value.trim() || title,
+            requested_date: document.getElementById("baDebtRequested").value || null,
+            responsible_party: document.getElementById("baDebtResponsible").value.trim(),
+            follow_up_count: Number(document.getElementById("baDebtFollowCount").value || 0),
+            last_follow_up: document.getElementById("baDebtLastFollow").value || null,
+        };
+    }
+
+    const taskId = document.getElementById("baFormId").value;
+    const url = `/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks${taskId ? "/" + encodeURIComponent(taskId) : ""}`;
+    try {
+        const r = await fetch(url, {
+            method: taskId ? "PUT" : "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || "Lỗi lưu");
+        closeBaTaskModal();
+        await loadBaTasks();
+        showToast("Đã lưu đầu việc", "green");
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
+};
+
+window.deleteBaTaskFromModal = async function () {
+    const taskId = document.getElementById("baFormId").value;
+    if (!taskId) return;
+    closeBaTaskModal();
+    await deleteBaTask(taskId);
+};
+
+// ---- Import Excel ----
+
+window.openBaImportModal = function () {
+    _baState.importTmpId = null;
+    _baState.importMapping = null;
+    document.getElementById("baImportFileInput").value = "";
+    document.getElementById("baImportStep1").classList.remove("hidden");
+    document.getElementById("baImportStep2").classList.add("hidden");
+    const modal = document.getElementById("baImportModal");
+    modal?.classList.remove("hidden");
+    modal?.classList.add("flex");
+};
+
+window.closeBaImportModal = function () {
+    const modal = document.getElementById("baImportModal");
+    modal?.classList.add("hidden");
+    modal?.classList.remove("flex");
+};
+
+window.uploadBaImportPreview = async function () {
+    const fileInput = document.getElementById("baImportFileInput");
+    const file = fileInput?.files?.[0];
+    if (!file) { showToast("Chưa chọn file", "red"); return; }
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks/import/preview`, {
+            method: "POST", body: formData,
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || "Lỗi đọc file");
+        _baState.importTmpId = data.tmp_id;
+        _baState.importMapping = data.suggested_mapping || {};
+        _renderBaImportPreview(data);
+        document.getElementById("baImportStep1").classList.add("hidden");
+        document.getElementById("baImportStep2").classList.remove("hidden");
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
+};
+
+function _renderBaImportPreview(data) {
+    const mapWrap = document.getElementById("baImportMappingWrap");
+    const fieldLabel = {
+        title: "Tiêu đề *", module: "Module", assignee: "Người phụ trách",
+        due_date: "Hạn", type: "Loại", notes: "Ghi chú",
+    };
+    mapWrap.innerHTML = (data.import_fields || []).map((field) => {
+        const opts = data.headers.map((h) =>
+            `<option value="${escapeAttr(h)}" ${_baState.importMapping[field] === h ? "selected" : ""}>${escapeHtml(h)}</option>`
+        ).join("");
+        return `<label class="text-xs">${fieldLabel[field] || field}
+            <select class="border rounded px-2 py-1 w-full" onchange="_baState.importMapping['${field}']=this.value">
+                <option value="">— Bỏ qua —</option>${opts}
+            </select>
+        </label>`;
+    }).join("");
+
+    const table = document.getElementById("baImportPreviewTable");
+    table.innerHTML = `<thead><tr class="bg-gray-100">${data.headers.map((h) => `<th class="px-2 py-1 border">${escapeHtml(h)}</th>`).join("")}</tr></thead>
+        <tbody>${(data.preview_rows || []).map((row) =>
+            `<tr>${data.headers.map((_, i) => `<td class="px-2 py-1 border">${escapeHtml(row[i] ?? "")}</td>`).join("")}</tr>`
+        ).join("")}</tbody>`;
+    document.getElementById("baImportRowCount").textContent = `(xem ${data.preview_rows?.length || 0} dòng đầu)`;
+}
+
+window.confirmBaImport = async function () {
+    if (!_baState.importTmpId) return;
+    try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks/import`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tmp_id: _baState.importTmpId, mapping: _baState.importMapping }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || "Lỗi import");
+        closeBaImportModal();
+        await loadBaTasks();
+        showToast(`Đã import ${data.imported} đầu việc`, "green");
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
+};
+
+// ---- Export ----
+
+window.exportBaTasksAll = function () {
+    downloadFile(`/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks/export`, "BA_Tasks.xlsx");
+};
+window.exportBaTasksWeekly = function () {
+    const week = _baState.exportWeekIso || "";
+    const qs = week ? `?week=${encodeURIComponent(week)}` : "";
+    downloadFile(`/api/projects/${encodeURIComponent(currentProjectSlug)}/ba-tasks/export-weekly${qs}`, `BA_Tasks_Weekly_${week}.xlsx`);
+};
+
+
+/** Delta chip trên primary summary cards — ẩn khi 0 / không có snapshot trước. */
+function _renderSummaryDeltas(deltas) {
+    const map = [
+        { key: "total_functions", el: "cardTotalDelta", invert: false },
+        { key: "overall_progress_pct", el: "cardProgressDelta", invert: false }, // up = good
+        { key: "total_overdue", el: "cardOverdueDelta", invert: true },          // down = good
+        { key: "unassigned_count", el: "cardUnassignedDelta", invert: true },
+        { key: "high_risk_count", el: "cardHighRiskDelta", invert: true },
+    ];
+    map.forEach(({ key, el, invert }) => {
+        const node = document.getElementById(el);
+        if (!node) return;
+        const d = deltas && deltas[key];
+        if (!d || d.delta === 0 || d.delta == null) {
+            node.textContent = "";
+            node.classList.add("hidden");
+            return;
+        }
+        const n = Number(d.delta);
+        const sign = n > 0 ? "+" : "";
+        const good = invert ? n < 0 : n > 0;
+        const bad = invert ? n > 0 : n < 0;
+        node.textContent = `${sign}${n}${key === "overall_progress_pct" ? "pp" : ""}`;
+        node.classList.remove("hidden", "good", "bad", "neutral");
+        node.classList.add(good ? "good" : bad ? "bad" : "neutral");
+    });
 }
 
 // ========================================================================
@@ -2192,16 +2883,7 @@ function renderSummaryCards() {
     }
     document.getElementById("cardHighRisk").textContent = s.high_risk_count || 0;
     document.getElementById("cardModules").textContent = s.modules_count;
-    const anEl = document.getElementById("cardAnomaly");
-    if (anEl) anEl.textContent = s.anomaly_count || 0;
-    const anRec = document.getElementById("cardAnomalyRecords");
-    if (anRec) {
-        if (s.anomaly_records && s.anomaly_records !== s.anomaly_count) {
-            anRec.textContent = ` (${s.anomaly_records} issue)`;
-        } else {
-            anRec.textContent = "";
-        }
-    }
+    // DQ High / anomaly secondary — set below with zero-state
 
     // Wave 1 - Task 5: sub-info dòng 2 cho các card
     const pct = (n) => (total > 0 ? Math.round((n / total) * 100) : 0);
@@ -2220,30 +2902,47 @@ function renderSummaryCards() {
     $sub("cardModulesSub", (metricsData.structure?.all_processes || []).length
         ? `${(metricsData.structure.all_processes || []).length} quy trình`
         : "");
-    $sub("cardAnomalySub", total
-        ? `${pct(s.anomaly_count || 0)}% tổng · overlap / estimate…`
-        : "click → Data Quality");
+    // Secondary: DQ High (không dùng total anomalies / total DQ)
+    const dqHigh = Number(s.dq_high_count != null ? s.dq_high_count : s.anomaly_count) || 0;
+    const dqTotal = Number(s.dq_total_count) || 0;
+    const anEl = document.getElementById("cardAnomaly");
+    if (anEl) anEl.textContent = dqHigh;
+    $sub("cardAnomalySub", dqTotal
+        ? `High · tổng ${dqTotal} issue (tooltip)`
+        : "chỉ severity High");
+    const anRec = document.getElementById("cardAnomalyRecords");
+    if (anRec) anRec.textContent = "";
+
+    // Zero-state secondary
+    const mdCount = Number(s.missing_deadline_count) || 0;
+    const mdWrap = document.getElementById("cardMissingDeadlineWrap");
+    const mdZero = document.getElementById("cardMissingDeadlineZero");
+    if (mdWrap && mdZero) {
+        mdWrap.classList.toggle("hidden", mdCount === 0);
+        mdZero.classList.toggle("hidden", mdCount !== 0);
+    }
+    const dqWrap = document.getElementById("cardDqHighWrap");
+    const dqZero = document.getElementById("cardDqHighZero");
+    if (dqWrap && dqZero) {
+        dqWrap.classList.toggle("hidden", dqHigh === 0);
+        dqZero.classList.toggle("hidden", dqHigh !== 0);
+    }
+
+    // Modules + processes
+    const procN = s.processes_count != null
+        ? s.processes_count
+        : (metricsData.structure?.all_processes || []).length;
+    $sub("cardModulesSub", `${procN} quy trình`);
+
+    // Deltas trên primary cards (chip góc phải — CSS absolute)
+    try { _renderSummaryDeltas(s.deltas || {}); } catch (e) {}
 
     // BA/UX #3 — Trends từ snapshot history
     try { if (typeof renderSummaryTrends === "function") renderSummaryTrends(); } catch (e) {}
+    try { if (typeof updateSidebarIssueBadges === "function") updateSidebarIssueBadges(); } catch (e) {}
 
-    // Wire click drill-down cho Unassigned / High-risk cards
-    const uaEl = document.getElementById("cardUnassigned")?.closest("div[onclick]");
-    const hrEl = document.getElementById("cardHighRisk")?.closest("div[onclick]");
-    if (uaEl && !uaEl.dataset.drillWired) {
-        uaEl.dataset.drillWired = "1";
-        uaEl.addEventListener("click", (ev) => {
-            ev.preventDefault();
-            openDrillDown("unassigned", {});
-        });
-    }
-    if (hrEl && !hrEl.dataset.drillWired) {
-        hrEl.dataset.drillWired = "1";
-        hrEl.addEventListener("click", (ev) => {
-            ev.preventDefault();
-            openDrillDown("risk", { level: "high" });
-        });
-    }
+    // Highlight card theo issue-focus (nếu đang bật)
+    try { if (typeof _applyIssueFocusSummaryHighlight === "function") _applyIssueFocusSummaryHighlight(); } catch (e) {}
 }
 
 /** Card «Chưa cập nhật deadline» → Data Quality filter missing_deadline. */
@@ -2290,6 +2989,58 @@ window.openAnomalyDrill = async function () {
     }
 };
 
+/** Tab Risk → Bất thường: render tóm tắt anomaly + bảng rút gọn. */
+window.loadAnomalySection = async function () {
+    const sumEl = document.getElementById("anomalyQuickSummary");
+    const tblEl = document.getElementById("anomalyQuickTable");
+    if (!sumEl || !tblEl) return;
+    try {
+        if (typeof loadDataQuality === "function") await loadDataQuality();
+        const s = (_dqState && _dqState.summary) || {};
+        const n = Number(s.anomaly_records) || 0;
+        const by = s.by_code || {};
+        const top = Object.entries(by)
+            .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+            .slice(0, 8);
+        sumEl.innerHTML = n
+            ? `<span class="font-semibold text-fuchsia-700 dark:text-fuchsia-300">${n}</span> bản ghi anomaly`
+              + (top.length ? ` · top codes: ${top.map(([c, v]) => `${c}(${v})`).join(", ")}` : "")
+            : `<span class="text-green-700 dark:text-green-300 font-semibold">✓ Không có anomaly</span>`;
+        const items = ((_dqState && _dqState.issues) || [])
+            .filter((r) => {
+                const codes = s.anomaly_codes || [];
+                if (codes.length) return codes.includes(r.code);
+                // fallback: severity high / flag anomaly
+                return (r.severity || "").toLowerCase() === "high"
+                    || r.is_anomaly || r.anomaly;
+            })
+            .slice(0, 40);
+        if (!items.length) {
+            tblEl.innerHTML = `<div class="text-slate-400 py-4">Không có dòng để hiển thị. Bấm «Mở trong Data Quality» để xem đầy đủ.</div>`;
+            return;
+        }
+        tblEl.innerHTML = `<table class="min-w-full border-collapse">
+            <thead><tr class="bg-slate-100 dark:bg-slate-700 text-left">
+                <th class="px-2 py-1 border">Code</th>
+                <th class="px-2 py-1 border">Mã CN</th>
+                <th class="px-2 py-1 border">Module</th>
+                <th class="px-2 py-1 border">Severity</th>
+                <th class="px-2 py-1 border">Chi tiết</th>
+            </tr></thead>
+            <tbody>${items.map((r) => `<tr>
+                <td class="px-2 py-1 border font-mono">${escapeHtml(r.code || "")}</td>
+                <td class="px-2 py-1 border">${escapeHtml(r.func_code || r.code_cn || "")}</td>
+                <td class="px-2 py-1 border">${escapeHtml(r.module || "")}</td>
+                <td class="px-2 py-1 border">${escapeHtml(r.severity || "")}</td>
+                <td class="px-2 py-1 border">${escapeHtml(r.message || r.detail || "")}</td>
+            </tr>`).join("")}</tbody></table>`;
+    } catch (err) {
+        console.warn("[loadAnomalySection]", err);
+        sumEl.textContent = "Không tải được anomaly — thử mở Data Quality.";
+        tblEl.innerHTML = "";
+    }
+};
+
 // ========================================================================
 // 2. MODULE TABLE
 // ========================================================================
@@ -2298,6 +3049,45 @@ window.openAnomalyDrill = async function () {
 let _moduleGroupBy = "module";   // "module" | "process" | "both"
 const _MO_EXPANDED = new Set();  // module names đang expand khi group_by=both
 let _taskTypeGroupBy = "module"; // "module" | "process" cho chart task-type
+
+// Chế độ hiển thị giá trị chart: số lượng (SL) | phần trăm (%) — global, persist localStorage.
+// Áp cho stacked bar / doughnut phân bố status·priority·complexity·FIT/GAP·effort.
+// Drill-down vẫn dùng label/filter tuyệt đối (không phụ thuộc số trên trục).
+let _chartValueMode = "count"; // "count" | "pct"
+const CHART_VM_KEY = "ihrp_chart_value_mode";
+let _fitgapDashData = null; // cache để re-render khi đổi %/SL
+
+function _loadChartValueMode() {
+    try { _chartValueMode = localStorage.getItem(CHART_VM_KEY) === "pct" ? "pct" : "count"; }
+    catch (e) { _chartValueMode = "count"; }
+    _syncChartValueModeBtns();
+}
+function _syncChartValueModeBtns() {
+    document.querySelectorAll(".chart-vm-btn").forEach(btn => {
+        const active = btn.dataset.vm === _chartValueMode;
+        btn.classList.toggle("bg-blue-600", active);
+        btn.classList.toggle("text-white", active);
+        btn.classList.toggle("hover:bg-blue-50", !active);
+    });
+}
+window.setChartValueMode = function (mode) {
+    _chartValueMode = mode === "pct" ? "pct" : "count";
+    try { localStorage.setItem(CHART_VM_KEY, _chartValueMode); } catch (e) { /* ignore */ }
+    _syncChartValueModeBtns();
+    _rerenderChartValueMode();
+};
+function _rerenderChartValueMode() {
+    if (!metricsData) return;
+    try { renderPhaseStackedChart(); } catch (e) { console.error(e); }
+    try { renderPICChart(); } catch (e) { console.error(e); }
+    try { renderPriorityChart(); } catch (e) { console.error(e); }
+    try { renderComplexityChart(); } catch (e) { console.error(e); }
+    try { renderFitGapChart(); } catch (e) { console.error(e); }
+    try { renderEffortSection(); } catch (e) { console.error(e); }
+    if (_fitgapDashData) {
+        try { renderFitgapSection(_fitgapDashData); } catch (e) { console.error(e); }
+    }
+}
 
 function _ttKey() { return `taskTypeGroupBy:${currentProjectSlug || "default"}`; }
 function _loadTaskTypeGroupBy() {
@@ -2364,6 +3154,33 @@ async function _fetchModuleOverview() {
     }
 }
 
+let _moduleSortByRisk = false;
+const _MODULE_RISK_ORDER = { risk: 0, warning: 1, safe: 2 };
+
+window.toggleModuleRiskSort = function () {
+    _moduleSortByRisk = !_moduleSortByRisk;
+    const icon = document.getElementById("moduleRiskSortIcon");
+    if (icon) icon.textContent = _moduleSortByRisk ? "▲" : "⇅";
+    if (_moduleGroupBy === "module") renderModuleTable();
+    else _fetchModuleOverview();
+};
+
+function _riskBadgeHtml(level) {
+    const map = {
+        risk: { cls: "risk-badge--risk", label: "🔴 Rủi ro" },
+        warning: { cls: "risk-badge--warning", label: "🟡 Cần theo dõi" },
+        safe: { cls: "risk-badge--safe", label: "🟢 An toàn" },
+    };
+    const m = map[level] || map.safe;
+    return `<span class="risk-badge ${m.cls}">${m.label}</span>`;
+}
+
+function _sortRowsByRisk(rows) {
+    if (!_moduleSortByRisk) return rows;
+    return [...rows].sort((a, b) =>
+        (_MODULE_RISK_ORDER[a.risk_level] ?? 3) - (_MODULE_RISK_ORDER[b.risk_level] ?? 3));
+}
+
 function _mgProgressColor(pct) {
     // Task 19: dùng Palette.progressColor (semantic tiered đỏ/vàng/xanh).
     // Fallback logic cũ nếu Palette chưa load.
@@ -2407,6 +3224,7 @@ function _mgRowHtml(r, opts = {}) {
         </td>
         <td class="px-2 py-2 text-center text-xs">${escapeHtml(r.active_phase || "")}</td>
         <td class="px-2 py-2 text-center ${r.overdue_count > 0 ? 'text-red-600 font-bold' : ''}">${r.overdue_count}</td>
+        <td class="px-2 py-2 text-center">${_riskBadgeHtml(r.risk_level)}</td>
         <td class="px-2 py-2 text-center"><span class="${remCls}">${rem}</span>${remMh}</td>
     </tr>`;
 }
@@ -2414,6 +3232,7 @@ function _mgRowHtml(r, opts = {}) {
 function _renderModuleTableCustom(rows, mode) {
     const tbody = document.getElementById("moduleTable");
     if (!tbody) return;
+    rows = _sortRowsByRisk(rows);
     if (mode === "process") {
         // 1 hàng / (module, process) — nhưng col Module đang hiện label từ meta.
         // Trong table header col 2 là "Module" — để tránh mất context, hiển thị
@@ -2470,7 +3289,7 @@ window._moduleRowClickGeneric = function (el) {
 
 function renderModuleTable() {
     const tbody = document.getElementById("moduleTable");
-    const rows = metricsData.module_overview;
+    const rows = _sortRowsByRisk(metricsData.module_overview);
     tbody.innerHTML = rows.map(r => {
         const color = _mgProgressColor(r.progress_pct);
         const rem = r.remaining != null ? r.remaining : "—";
@@ -2499,6 +3318,7 @@ function renderModuleTable() {
             </td>
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(r.active_phase)}</td>
             <td class="px-2 py-2 text-center ${r.overdue_count > 0 ? 'text-red-600 font-bold' : ''}">${r.overdue_count}</td>
+            <td class="px-2 py-2 text-center">${_riskBadgeHtml(r.risk_level)}</td>
             <td class="px-2 py-2 text-center"><span class="${remCls}">${rem}</span>${remMh}</td>
         </tr>`;
     }).join("");
@@ -2682,10 +3502,14 @@ function _renderPhaseMatrixFrom(m) {
     const rowHeader = gb === "process" ? "Quy trình" : "Module";
     const bottleneck = m.bottleneck || {};
 
+    const moduleRiskSummary = m.module_risk_summary || {};
+    const phaseRiskSummary = m.phase_risk_summary || {};
+
     const thead = document.getElementById("matrixHead");
     thead.innerHTML = `<tr class="bg-gray-800 text-white text-xs">
         <th class="px-2 py-2 text-left">${rowHeader}</th>
         ${phases.map(p => `<th class="px-2 py-2 text-center">${escapeHtml(p)}</th>`).join("")}
+        <th class="px-2 py-2 text-center" title="Sức khoẻ tổng thể qua các khâu">Đánh giá</th>
     </tr>`;
 
     const tbody = document.getElementById("matrixBody");
@@ -2704,6 +3528,15 @@ function _renderPhaseMatrixFrom(m) {
                      : pct >= 50 ? "#eab308"
                      : pct >= 20 ? "#f97316" : "#ef4444";
             const textColor = (pct >= 80 && total > 0) || total === 0 ? "white" : "#1e293b";
+            // A3 — highlight khâu rủi ro: đỏ nhạt khi nhiều trễ hạn, cam nhạt khi
+            // nhiều chưa bắt đầu mà đã qua Start date.
+            const riskClass = cell.cell_risk_class === "risk" ? "matrix-cell--risk"
+                             : cell.cell_risk_class === "warning" ? "matrix-cell--warning" : "";
+            const riskTip = cell.cell_risk_class === "risk"
+                ? ` · ⚠️ ${cell.overdue_pct}% trễ hạn`
+                : cell.cell_risk_class === "warning"
+                ? ` · ⚠️ ${cell.not_started_pct}% chưa bắt đầu (quá Start date)`
+                : "";
             const tooltip = total > 0
                 ? `${label} × ${ph} · ${closed}/${total} Closed (${pct}%) · In-prog: ${inprog} · Assign: ${assigned} · Open: ${open}`
                 : "Không có dữ liệu";
@@ -2713,32 +3546,57 @@ function _renderPhaseMatrixFrom(m) {
             const clickAttr = total > 0
                 ? `data-key="${escapeAttr(label)}" data-ph="${escapeAttr(ph)}" data-gb="${gb}" data-dq="${dqN}" onclick="_matrixCellClick(this)" style="cursor:pointer"`
                 : "";
-            return `<td class="px-1 py-1 text-center ${dqCls}" ${clickAttr} title="${escapeAttr(tooltip + dqTip)}">
+            return `<td class="px-1 py-1 text-center ${dqCls} ${riskClass}" ${clickAttr} title="${escapeAttr(tooltip + dqTip + riskTip)}">
                 <div class="heatmap-cell rounded px-2 py-2 text-xs font-semibold"
                      style="background:${bg};color:${total === 0 ? '#9ca3af' : textColor}">
                     ${total > 0 ? pct + "%" : "-"}
                     ${dqN > 0 ? `<div class="text-[9px] opacity-90">DQ ${dqN}</div>` : ""}
-                    <div class="heatmap-tooltip">${escapeHtml(tooltip)}${dqTip}${total > 0 ? "<br>💡 Click để xem chi tiết" : ""}</div>
+                    <div class="heatmap-tooltip">${escapeHtml(tooltip)}${dqTip}${escapeHtml(riskTip)}${total > 0 ? "<br>💡 Click để xem chi tiết" : ""}</div>
                 </div>
             </td>`;
         }).join("");
-        return `<tr class="border-b"><td class="px-2 py-2 font-semibold text-sm" title="${escapeAttr(label)}">${escapeHtml(label)}</td>${cells}</tr>`;
+        const rowRisk = moduleRiskSummary[label] || { badge: "safe", risk_cells: 0, warning_cells: 0 };
+        const rowRiskCell = `<td class="px-1 py-1 text-center">${_riskBadgeHtml(rowRisk.badge)}</td>`;
+        return `<tr class="border-b"><td class="px-2 py-2 font-semibold text-sm" title="${escapeAttr(label)}">${escapeHtml(label)}</td>${cells}${rowRiskCell}</tr>`;
     }).join("");
 
-    // BA/UX #8 — Bottleneck footer row
+    // BA/UX #8 — Bottleneck footer row (click ô > 0 → drill function stuck + lý do)
     const tfoot = document.getElementById("matrixFoot");
     if (tfoot) {
+        const _tBn = (typeof I18n !== "undefined" && I18n.t)
+            ? I18n.t.bind(I18n)
+            : (k) => ({
+                "matrix.bottleneck": "Bottleneck (stuck)",
+                "matrix.bottleneck_tip": "Module/QT còn phase ≠ Closed và (overdue hoặc đình trệ)",
+            }[k] || k);
+        const bnLabel = _tBn("matrix.bottleneck");
+        const bnTip = _tBn("matrix.bottleneck_tip");
         const hasBn = phases.some(ph => (bottleneck[ph] || 0) > 0);
+        // A3 — hàng tổng % risk theo phase (bottom summary row)
+        const riskRow = `<tr class="bg-red-50 border-t text-xs font-semibold">
+            <td class="px-2 py-2 text-red-900" title="% khâu (module/QT) đang ở mức Rủi ro cho phase này">% Rủi ro</td>
+            ${phases.map(ph => {
+                const s = phaseRiskSummary[ph] || { risk_pct: 0, badge: "safe" };
+                return `<td class="px-1 py-2 text-center">${_riskBadgeHtml(s.badge)}<div class="text-[10px] text-gray-500 mt-0.5">${s.risk_pct}%</div></td>`;
+            }).join("")}
+            <td class="px-1 py-2 text-center text-gray-400">—</td>
+        </tr>`;
         if (hasBn || Object.keys(bottleneck).length) {
-            tfoot.innerHTML = `<tr class="bg-amber-50 border-t-2 border-amber-300 text-xs font-semibold">
-                <td class="px-2 py-2 text-amber-900" title="Module/QT còn phase ≠ Closed và (overdue hoặc stalled)">Bottleneck (stuck)</td>
+            tfoot.innerHTML = riskRow + `<tr class="bg-amber-50 border-t-2 border-amber-300 text-xs font-semibold">
+                <td class="px-2 py-2 text-amber-900" title="${escapeAttr(bnTip)}">${escapeHtml(bnLabel)}</td>
                 ${phases.map(ph => {
                     const n = bottleneck[ph] || 0;
-                    return `<td class="px-1 py-2 text-center ${n > 0 ? 'text-red-700' : 'text-gray-400'}">${n}</td>`;
+                    if (n > 0) {
+                        return `<td class="px-1 py-2 text-center text-red-700 cursor-pointer hover:bg-amber-100 underline decoration-dotted"
+                            data-ph="${escapeAttr(ph)}" onclick="_matrixBottleneckClick(this)"
+                            title="${escapeAttr(bnTip + " · Click xem function + lý do")}">${n}</td>`;
+                    }
+                    return `<td class="px-1 py-2 text-center text-gray-400">0</td>`;
                 }).join("")}
+                <td class="px-1 py-2 text-center text-gray-400">—</td>
             </tr>`;
         } else {
-            tfoot.innerHTML = "";
+            tfoot.innerHTML = riskRow;
         }
     }
 
@@ -2751,12 +3609,13 @@ function _renderPhaseMatrixFrom(m) {
 function renderPhaseStackedChart() {
     const d = metricsData.phase_progress_stacked;
     const ctx = getCanvas("chartPhaseStacked");
+    if (!d || !ctx || !d.statuses || !d.phases) return;
     // Bug 6 fix: override global Chart.defaults.datasets.bar.borderRadius=4.
     // Trong stacked bar, borderRadius trên MỌI segment làm segment nhỏ bị "nuốt"
     // → user chỉ thấy segment lớn nhất (Closed) sau khi filter, các status khác
     // (Assigned, In-progress...) bị mất tích dù data đúng.
     // Đặt borderRadius=0 và borderSkipped=false để mọi segment đều render đủ.
-    const datasets = d.statuses.map(status => ({
+    const datasets = _applyStackValueMode(d.statuses.map(status => ({
         label: status,
         data: d.phases.map(ph => d.data[ph]?.[status] || 0),
         backgroundColor: STATUS_COLORS[status] || "#94a3b8",
@@ -2764,7 +3623,8 @@ function renderPhaseStackedChart() {
         borderRadius: 0,
         borderSkipped: false,
         stack: "phase_status",  // explicit stack group cho tường minh
-    }));
+    })));
+    const pctScale = _valueModePctScaleOpts("x");
 
     createChart(ctx, "bar", { labels: d.phases, datasets }, {
         plugins: {
@@ -2774,12 +3634,7 @@ function renderPhaseStackedChart() {
             },
             tooltip: {
                 callbacks: {
-                    label: (c) => {
-                        const total = (c.chart.data.datasets || [])
-                            .reduce((s, ds) => s + (Number(ds.data[c.dataIndex]) || 0), 0);
-                        const pct = total ? Math.round((c.parsed.y / total) * 100) : 0;
-                        return `${c.dataset.label}: ${c.parsed.y}  (${pct}% của phase)`;
-                    },
+                    label: (c) => _tooltipStackLabel(c, "của phase"),
                     footer: () => "💡 Click để xem chi tiết",
                 },
             },
@@ -2801,7 +3656,10 @@ function renderPhaseStackedChart() {
                 },
                 grid: { display: false },
             },
-            y: { stacked: true, beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.15)" } },
+            y: Object.assign(
+                { stacked: true, beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.15)" } },
+                pctScale.y || {}
+            ),
         },
         onHover: CLICKABLE_CHART_OPTS.onHover,
         onClick: _chartClickHandler("phase_stacked", (el, chart) => {
@@ -2899,12 +3757,14 @@ function renderPICChart() {
         "Assigned": "Assigned",
         "Overdue": "overdue",
     };
-    const picDatasets = [
+    const picDatasets = _applyStackValueMode([
         { label: "Closed", data: workingPics.map(p => p.closed), backgroundColor: "#22c55e" },
         { label: "In-progress", data: workingPics.map(p => p.in_progress), backgroundColor: "#3b82f6" },
         { label: "Assigned", data: workingPics.map(p => p.assigned), backgroundColor: "#f59e0b" },
         { label: "Overdue", data: workingPics.map(p => p.overdue), backgroundColor: "#ef4444" },
-    ];
+    ]);
+    const picPctScale = _valueModePctScaleOpts("y");
+    const picIsPct = (_chartValueMode || "count") === "pct";
     createChart(ctx, "bar", {
         labels: workingPics.map(p => p.pic),
         datasets: picDatasets,
@@ -2919,13 +3779,20 @@ function renderPICChart() {
                         const base = items[0]?.label || "";
                         return selectedPhase ? `${base} · Phase: ${selectedPhase}` : base;
                     },
+                    label: (c) => _tooltipStackLabel(c, "của PIC"),
                     footer: () => "💡 Click để xem chi tiết",
                 },
             },
-            datalabels: _labelsForBarTotal(picDatasets.length - 1),
+            // % mode: label từng segment; SL mode: Σ total ở cuối bar
+            datalabels: picIsPct
+                ? _labelsForStackedBar(5)
+                : _labelsForBarTotal(picDatasets.length - 1),
         },
         scales: {
-            x: { stacked: true, beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.15)" } },
+            x: Object.assign(
+                { stacked: true, beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.15)" } },
+                picPctScale.x || {}
+            ),
             y: { stacked: true, ticks: { font: { size: 10 } }, grid: { display: false } },
         },
         onHover: CLICKABLE_CHART_OPTS.onHover,
@@ -2983,6 +3850,9 @@ function renderPriorityChart() {
                 callbacks: {
                     label: (c) => {
                         const pct = total ? ((c.parsed / total) * 100).toFixed(1) : 0;
+                        if ((_chartValueMode || "count") === "pct") {
+                            return `${c.label}: ${pct}%  (${c.parsed} function)`;
+                        }
                         return `${c.label}: ${c.parsed} function (${pct}%)`;
                     },
                     footer: () => "💡 Click để xem chi tiết",
@@ -3039,6 +3909,9 @@ function renderComplexityChart() {
                 callbacks: {
                     label: (c) => {
                         const pct = total ? ((c.parsed / total) * 100).toFixed(1) : 0;
+                        if ((_chartValueMode || "count") === "pct") {
+                            return `${c.label}: ${pct}%  (${c.parsed} function)`;
+                        }
                         return `${c.label}: ${c.parsed} function (${pct}%)`;
                     },
                     footer: () => "💡 Click để xem chi tiết",
@@ -3095,20 +3968,29 @@ function renderFitGapChart() {
         if (s === "gap") return window.Palette?.STATUS?.Overdue || "#dc2626";
         return CHART_PALETTE[types.indexOf(t) % CHART_PALETTE.length];
     };
-    const datasets = types.map(t => ({
+    const datasets = _applyStackValueMode(types.map(t => ({
         label: t,
         data: modules.map(m => d[m][t] || 0),
         backgroundColor: fgColor(t),
-    }));
+    })));
+    const fgPctScale = _valueModePctScaleOpts("x");
     createChart(ctx, "bar", { labels: modules, datasets }, {
         plugins: {
             legend: { position: "top" },
-            tooltip: { callbacks: { footer: () => "💡 Click để xem chi tiết" } },
+            tooltip: {
+                callbacks: {
+                    label: (c) => _tooltipStackLabel(c, "của module"),
+                    footer: () => "💡 Click để xem chi tiết",
+                },
+            },
             datalabels: _labelsForStackedBar(6),
         },
         scales: {
             x: { stacked: true, grid: { display: false } },
-            y: { stacked: true, beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.15)" } },
+            y: Object.assign(
+                { stacked: true, beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.15)" } },
+                fgPctScale.y || {}
+            ),
         },
         onHover: CLICKABLE_CHART_OPTS.onHover,
         onClick: _chartClickHandler("fit_gap", (el, chart) => {
@@ -3342,6 +4224,12 @@ function renderRlogWeekly() {
     const helpEl = document.getElementById("rlogDefinitionHelp");
     if (helpEl) helpEl.textContent = rw.definition || "";
 
+    // Ẩn cột RlogID khi file không có cột Rlog nào (tránh cột luôn "—")
+    const showRlogCol = !!(rw.rlog_column_detected || rw.rlog_scope === "with_rlog_id");
+    sec.querySelectorAll('th[data-col="rlog"]').forEach(th => {
+        th.style.display = showRlogCol ? "" : "none";
+    });
+
     const scopeEl = document.getElementById("rlogWeekScope");
     if (scopeEl) {
         const scopeLbl = rw.rlog_scope === "with_rlog_id"
@@ -3362,30 +4250,32 @@ function renderRlogWeekly() {
     const codedBody = document.getElementById("rlogCodedBody");
     if (codedBody) {
         const items = coded.items || [];
+        const codedColCount = showRlogCol ? 5 : 4;
         codedBody.innerHTML = items.length
             ? items.map(it => `<tr class="border-b hover:bg-emerald-50/50">
                 <td class="px-2 py-1.5 font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}${_rlogIssueBadges(it)}</td>
-                <td class="px-2 py-1.5">${escapeHtml(it.rlog_id || "—")}</td>
+                ${showRlogCol ? `<td class="px-2 py-1.5">${escapeHtml(it.rlog_id || "—")}</td>` : ""}
                 <td class="px-2 py-1.5">${escapeHtml(it.module || "")}</td>
                 <td class="px-2 py-1.5">${escapeHtml((it.pic || []).join(", "))}</td>
                 <td class="px-2 py-1.5 whitespace-nowrap">${_rlogFmtDate(it.closed_date || it.end_date)}</td>
             </tr>`).join("")
-            : `<tr><td colspan="5" class="px-2 py-3 text-center text-gray-400">Không có Rlog coded trong tuần này</td></tr>`;
+            : `<tr><td colspan="${codedColCount}" class="px-2 py-3 text-center text-gray-400">Không có Rlog coded trong tuần này</td></tr>`;
     }
 
     const planBody = document.getElementById("rlogPlanBody");
     if (planBody) {
         const items = plan.items || [];
+        const planColCount = showRlogCol ? 6 : 5;
         planBody.innerHTML = items.length
             ? items.map(it => `<tr class="border-b hover:bg-sky-50/50">
                 <td class="px-2 py-1.5 font-mono" title="${escapeHtml(it.ten_cn || "")}">${escapeHtml(it.ma_cn || "")}${_rlogIssueBadges(it)}</td>
-                <td class="px-2 py-1.5">${escapeHtml(it.rlog_id || "—")}</td>
+                ${showRlogCol ? `<td class="px-2 py-1.5">${escapeHtml(it.rlog_id || "—")}</td>` : ""}
                 <td class="px-2 py-1.5">${escapeHtml(it.module || "")}</td>
                 <td class="px-2 py-1.5">${escapeHtml((it.pic || []).join(", "))}</td>
                 <td class="px-2 py-1.5 whitespace-nowrap">${_rlogFmtDate(it.end_date)}</td>
                 <td class="px-2 py-1.5">${escapeHtml(it.status || "—")}</td>
             </tr>`).join("")
-            : `<tr><td colspan="6" class="px-2 py-3 text-center text-gray-400">Không có Rlog kế hoạch tuần tới</td></tr>`;
+            : `<tr><td colspan="${planColCount}" class="px-2 py-3 text-center text-gray-400">Không có Rlog kế hoạch tuần tới</td></tr>`;
     }
     try { applyColumnVisibility("rlogCoded"); } catch (e) {}
     try { applyColumnVisibility("rlogPlan"); } catch (e) {}
@@ -3432,6 +4322,14 @@ function renderRlogWeekly() {
 // ========================================================================
 // 1 nút header duy nhất → xuất Cover + 7 loại vấn đề với global filter apply.
 async function exportAllIssues() {
+    // Khi đang focus 1 nhóm vấn đề → xuất scoped nhóm đó thay vì workbook full
+    if (typeof getIssueFocus === "function" && typeof exportActiveIssueFocus === "function") {
+        const focus = getIssueFocus();
+        if (focus && focus !== "__all__") {
+            await exportActiveIssueFocus();
+            return;
+        }
+    }
     if (!currentProjectSlug) {
         showToast("⚠️ Chưa chọn project");
         return;
@@ -3511,6 +4409,51 @@ window.exportWeeklyMom = exportWeeklyMom;
 let _pmPlanPreview = null;   // {tmp_id, filename, proposed_mapping, role_labels, roles}
 let _pmWeeklyPreview = null;
 let _pmData = null;
+
+const _PM_ZOOM_KEY = "pmDimension:zoomScale";
+const _PM_ZOOM_MIN = 0.7;
+const _PM_ZOOM_MAX = 1.6;
+const _PM_ZOOM_STEP = 0.1;
+
+function _pmLoadZoomScale() {
+    try {
+        const v = parseFloat(localStorage.getItem(_PM_ZOOM_KEY));
+        if (Number.isFinite(v) && v >= _PM_ZOOM_MIN && v <= _PM_ZOOM_MAX) return v;
+    } catch (_) { /* ignore */ }
+    return 1;
+}
+
+let _pmZoomScale = _pmLoadZoomScale();
+
+function _applyPmZoom() {
+    const el = document.getElementById("pmZoomBody");
+    if (el) {
+        // CSS zoom trên section body (Chromium/Edge) — persist localStorage
+        el.style.zoom = String(_pmZoomScale);
+    }
+    const label = document.getElementById("pmZoomLabel");
+    if (label) label.textContent = Math.round(_pmZoomScale * 100) + "%";
+}
+
+function setPmZoomScale(scale) {
+    const stepped = Math.round(scale / _PM_ZOOM_STEP) * _PM_ZOOM_STEP;
+    _pmZoomScale = Math.min(_PM_ZOOM_MAX, Math.max(_PM_ZOOM_MIN, Number(stepped.toFixed(2))));
+    try { localStorage.setItem(_PM_ZOOM_KEY, String(_pmZoomScale)); } catch (_) { /* ignore */ }
+    _applyPmZoom();
+}
+function pmZoomIn() { setPmZoomScale(_pmZoomScale + _PM_ZOOM_STEP); }
+function pmZoomOut() { setPmZoomScale(_pmZoomScale - _PM_ZOOM_STEP); }
+function pmZoomReset() { setPmZoomScale(1); }
+window.pmZoomIn = pmZoomIn;
+window.pmZoomOut = pmZoomOut;
+window.pmZoomReset = pmZoomReset;
+window.setPmZoomScale = setPmZoomScale;
+// Áp dụng zoom đã lưu khi DOM sẵn sàng
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => { try { _applyPmZoom(); } catch (_) {} });
+} else {
+    try { _applyPmZoom(); } catch (_) {}
+}
 
 async function loadPmDimension() {
     if (!currentProjectSlug) return;
@@ -3650,6 +4593,7 @@ function renderPmDimension(data) {
               </tr>`).join("")
             : `<tr><td colspan="3" class="px-2 py-3 text-gray-400 text-center">Chưa có link (cần FL + PM trùng module/PIC)</td></tr>`;
     }
+    _applyPmZoom();
 }
 
 async function pmImportPlan(input) {
@@ -4403,15 +5347,20 @@ function renderPmoRiskDimensions(pmo) {
     set("riskDimResource", res.risk_level || "—");
     const resEl = document.getElementById("riskDimResource");
     if (resEl) resEl.className = "text-xl font-bold " + _riskLevelClass(res.risk_level);
+    const _rt = (k, fb) => (typeof I18n !== "undefined" && I18n.t) ? I18n.t(k) : fb;
+    const isEn = typeof I18n !== "undefined" && I18n.getLang && I18n.getLang() === "en";
+    const crossTag = pmo.overload_source === "cross_project"
+        ? (isEn ? " · cross-project" : " · đa dự án")
+        : "";
     set("riskDimResourceSub",
-        `${res.overload_pic_count || 0} PIC · ${res.functions_touched || 0} CN`
-        + (pmo.overload_source === "cross_project" ? " · đa dự án" : ""));
+        `${res.overload_pic_count || 0} PIC · ${res.functions_touched || 0} CN${crossTag}`);
 
     set("riskDimDep", dep.risk_level || "—");
     const depEl = document.getElementById("riskDimDep");
     if (depEl) depEl.className = "text-xl font-bold " + _riskLevelClass(dep.risk_level);
+    const modWord = _rt("th.module", "Phân hệ").toLowerCase();
     set("riskDimDepSub",
-        `${(dep.modules_blocked || []).length} module`
+        `${(dep.modules_blocked || []).length} ${modWord}`
         + (dep.gate_phase ? ` · gate «${dep.gate_phase}»` : ""));
     set("riskDimLq", dep.function_lq_blocker_count != null ? dep.function_lq_blocker_count : "—");
 
@@ -4423,12 +5372,21 @@ function renderPmoRiskDimensions(pmo) {
             cw.innerHTML = "";
         } else {
             cw.classList.remove("hidden");
+            const title = _rt("risk.cascade_title", `⚠ Cascade delay (${warns.length})`)
+                .replace("{n}", String(warns.length));
+            // t() already formats {n}; fallback above may still have literal
+            const titleResolved = (typeof I18n !== "undefined" && I18n.t)
+                ? I18n.t("risk.cascade_title", { n: warns.length })
+                : `⚠ Cascade delay (${warns.length})`;
+            const moreResolved = (typeof I18n !== "undefined" && I18n.t)
+                ? I18n.t("risk.cascade_more", { n: warns.length - 8 })
+                : `… và ${warns.length - 8} cảnh báo khác`;
             cw.innerHTML = `<div class="bg-amber-50 border border-amber-200 rounded p-2 space-y-1">
-                <div class="font-semibold text-amber-900">⚠ Cascade delay (${warns.length})</div>
+                <div class="font-semibold text-amber-900">${escapeHtml(titleResolved)}</div>
                 ${warns.slice(0, 8).map(w =>
                     `<div class="text-amber-800">${escapeHtml(w.message || "")}</div>`
                 ).join("")}
-                ${warns.length > 8 ? `<div class="text-amber-700 italic">… và ${warns.length - 8} cảnh báo khác</div>` : ""}
+                ${warns.length > 8 ? `<div class="text-amber-700 italic">${escapeHtml(moreResolved)}</div>` : ""}
             </div>`;
         }
     }
@@ -4446,18 +5404,18 @@ function renderPmoRiskDimensions(pmo) {
     if (modWrap) {
         const mods = pmo.modules || [];
         if (!mods.length) {
-            modWrap.innerHTML = `<p class="text-gray-400 italic">Không có module.</p>`;
+            modWrap.innerHTML = `<p class="text-gray-400 italic">${escapeHtml(_rt("risk.no_module", "Không có phân hệ."))}</p>`;
         } else {
             modWrap.innerHTML = `
                 <table class="w-full text-xs">
                     <thead class="bg-rose-50 text-rose-900">
                         <tr>
-                            <th class="px-2 py-1 text-left">Module</th>
-                            <th class="px-2 py-1 text-right">TB risk</th>
-                            <th class="px-2 py-1 text-right">Max</th>
-                            <th class="px-2 py-1 text-right">High≥50</th>
-                            <th class="px-2 py-1 text-center">Resource</th>
-                            <th class="px-2 py-1 text-center">Dependency</th>
+                            <th class="px-2 py-1 text-left">${escapeHtml(_rt("th.module", "Phân hệ"))}</th>
+                            <th class="px-2 py-1 text-right">${escapeHtml(_rt("risk.mod_avg", "TB rủi ro"))}</th>
+                            <th class="px-2 py-1 text-right">${escapeHtml(_rt("risk.mod_max", "Max"))}</th>
+                            <th class="px-2 py-1 text-right">${escapeHtml(_rt("risk.mod_high", "Cao≥50"))}</th>
+                            <th class="px-2 py-1 text-center">${escapeHtml(_rt("risk.mod_resource", "Nguồn lực"))}</th>
+                            <th class="px-2 py-1 text-center">${escapeHtml(_rt("risk.mod_dep", "Phụ thuộc"))}</th>
                         </tr>
                     </thead>
                     <tbody>${mods.slice(0, 40).map(m => `
@@ -4475,12 +5433,22 @@ function renderPmoRiskDimensions(pmo) {
     }
 }
 
+function _riskFactorLabel(raw) {
+    if (typeof I18n !== "undefined" && typeof I18n.riskFactor === "function") {
+        return I18n.riskFactor(raw);
+    }
+    return String(raw || "");
+}
+
 function renderRiskSection() {
     const all = metricsData.risk_scores || [];
     const total = metricsData.risk_scores_total || all.length;
     const tbody = document.getElementById("riskTable");
     if (!tbody) return;
     const { start, end, pageItems } = _pageSlice("risk", all);
+    const ownerPh = (typeof I18n !== "undefined" && I18n.t) ? I18n.t("risk.owner") : "Người phụ trách";
+    const notePh = (typeof I18n !== "undefined" && I18n.t) ? I18n.t("risk.note") : "Ghi chú giảm thiểu";
+    const dateLang = (typeof I18n !== "undefined" && I18n.getLang) ? I18n.getLang() : "vi";
     tbody.innerHTML = pageItems.map((r, idx) => {
         const color = r.risk_score >= 80 ? "#ef4444"
                     : r.risk_score >= 50 ? "#f97316"
@@ -4489,13 +5457,13 @@ function renderRiskSection() {
         const mitHtml = `
             <div class="text-[10px] space-y-0.5 max-w-[180px]">
                 <input type="text" class="border rounded px-1 py-0.5 w-full text-[10px]"
-                       placeholder="Owner" value="${escapeAttr(mit.owner || "")}"
+                       placeholder="${escapeAttr(ownerPh)}" value="${escapeAttr(mit.owner || "")}"
                        onchange="saveRiskMitigation('${escapeAttr(r.ma_cn)}', {owner: this.value})" />
-                <input type="date" class="border rounded px-1 py-0.5 w-full text-[10px]"
+                <input type="date" class="border rounded px-1 py-0.5 w-full text-[10px]" lang="${escapeAttr(dateLang)}"
                        value="${escapeAttr((mit.target_date || "").slice(0, 10))}"
                        onchange="saveRiskMitigation('${escapeAttr(r.ma_cn)}', {target_date: this.value})" />
                 <input type="text" class="border rounded px-1 py-0.5 w-full text-[10px]"
-                       placeholder="Ghi chú mitigation" value="${escapeAttr(mit.note || "")}"
+                       placeholder="${escapeAttr(notePh)}" value="${escapeAttr(mit.note || "")}"
                        onchange="saveRiskMitigation('${escapeAttr(r.ma_cn)}', {note: this.value})" />
             </div>`;
         return `<tr class="border-b">
@@ -4511,7 +5479,7 @@ function renderRiskSection() {
                 </div>
             </td>
             <td class="px-2 py-2 text-xs">
-                ${(r.risk_factors || []).map(f => `<span class="inline-block bg-red-100 text-red-700 rounded px-1.5 py-0.5 mr-1 mb-0.5">${escapeHtml(f)}</span>`).join("")}
+                ${(r.risk_factors || []).map(f => `<span class="inline-block bg-red-100 text-red-700 rounded px-1.5 py-0.5 mr-1 mb-0.5">${escapeHtml(_riskFactorLabel(f))}</span>`).join("")}
             </td>
             <td class="px-2 py-2">${mitHtml}</td>
             ${_viewIconCell(r.ma_cn, {title: "Xem chi tiết function rủi ro"})}
@@ -4520,9 +5488,14 @@ function renderRiskSection() {
     renderPager("riskShowMoreWrap", "risk", all.length, () => renderRiskSection());
     const cnt = document.getElementById("riskCount");
     if (cnt) {
-        cnt.textContent = all.length === 0
-            ? "Không có function rủi ro"
-            : `Đang xem ${start + 1}–${end}/${total} function rủi ro`;
+        if (all.length === 0) {
+            cnt.textContent = (typeof I18n !== "undefined" && I18n.t)
+                ? I18n.t("risk.empty") : "Không có chức năng rủi ro";
+        } else {
+            cnt.textContent = (typeof I18n !== "undefined" && I18n.t)
+                ? I18n.t("risk.viewing", { start: start + 1, end, total })
+                : `Đang xem ${start + 1}–${end}/${total} chức năng rủi ro`;
+        }
     }
     // Dimensions từ metrics payload (upload) nếu chưa load API riêng
     if (metricsData.pmo_risk && !_lastPmoRisk) {
@@ -4552,14 +5525,25 @@ async function saveRiskMitigation(maCn, patch) {
         (metricsData.risk_scores || []).forEach(row => {
             if (row.ma_cn === maCn) row.mitigation = (data.items || {})[maCn] || null;
         });
-        if (typeof showToast === "function") showToast("Đã lưu mitigation", "green");
+        if (typeof showToast === "function") {
+            showToast(
+                (typeof I18n !== "undefined" && I18n.t) ? I18n.t("risk.toast_saved") : "Đã lưu biện pháp giảm thiểu",
+                "green"
+            );
+        }
     } catch (err) {
-        if (typeof showToast === "function") showToast("Lỗi mitigation: " + err.message, "red");
+        if (typeof showToast === "function") {
+            const msg = (typeof I18n !== "undefined" && I18n.t)
+                ? I18n.t("risk.toast_err", { msg: err.message })
+                : ("Lỗi giảm thiểu: " + err.message);
+            showToast(msg, "red");
+        }
     }
 }
 window.saveRiskMitigation = saveRiskMitigation;
 
 function renderRiskTrend(trend) {
+    if (trend) window._lastRiskTrend = trend;
     const msg = document.getElementById("riskTrendMsg");
     const pts = (trend && trend.points) || [];
     if (msg) msg.textContent = (trend && trend.message) || "";
@@ -4580,7 +5564,7 @@ function renderRiskTrend(trend) {
         labels: pts.map(p => (p.date || "").slice(5)),
         datasets: [
             {
-                label: "Avg score",
+                label: (typeof I18n !== "undefined" && I18n.t) ? I18n.t("risk.chart_avg") : "Điểm TB",
                 data: pts.map(p => p.avg_score),
                 borderColor: "#e11d48",
                 backgroundColor: "rgba(225, 29, 72, 0.1)",
@@ -4590,7 +5574,7 @@ function renderRiskTrend(trend) {
                 yAxisID: "y",
             },
             {
-                label: "High-risk count",
+                label: (typeof I18n !== "undefined" && I18n.t) ? I18n.t("risk.chart_high") : "Số rủi ro cao",
                 data: pts.map(p => p.high_risk_count),
                 borderColor: "#f59e0b",
                 borderWidth: 2,
@@ -4791,23 +5775,27 @@ function renderEffortSection() {
     if (!ctx) return;
     const closedData = picList.map(p => _toEffortUnit(p.closed_mh));
     const remainData = picList.map(p => _toEffortUnit(p.remaining_mh));
-    const datasets = _effortPicFilter === "closed"
+    const effortIsPct = (_chartValueMode || "count") === "pct";
+    const datasetsRaw = _effortPicFilter === "closed"
         ? [{ label: `Đã Closed ${unit}`, data: closedData, backgroundColor: "#22c55e" }]
         : [
             { label: `Đã Closed ${unit}`, data: closedData, backgroundColor: "#22c55e" },
             { label: `Còn lại ${unit}`, data: remainData, backgroundColor: "#f97316" },
         ];
+    // % mode chỉ meaningful khi có ≥2 segment (Closed + Còn lại)
+    const datasets = _applyStackValueMode(datasetsRaw.map(ds => ({
+        ...ds,
+        // Bug 6-pattern: bỏ borderRadius (default global = 4) để segment
+        // nhỏ (VD PIC có ít MH closed) không bị "nuốt" mất trên horizontal
+        // stacked bar.
+        borderRadius: 0,
+        borderSkipped: false,
+        stack: "effort_pic",
+    })));
+    const effortPctScale = _valueModePctScaleOpts("y");
     createChart(ctx, "bar", {
         labels: picList.map(p => p.pic),
-        datasets: datasets.map(ds => ({
-            ...ds,
-            // Bug 6-pattern: bỏ borderRadius (default global = 4) để segment
-            // nhỏ (VD PIC có ít MH closed) không bị "nuốt" mất trên horizontal
-            // stacked bar.
-            borderRadius: 0,
-            borderSkipped: false,
-            stack: "effort_pic",
-        })),
+        datasets,
     }, {
         indexAxis: "y",
         responsive: true,
@@ -4816,26 +5804,55 @@ function renderEffortSection() {
                 position: "top",
                 labels: { usePointStyle: true, boxWidth: 10, padding: 12 },
             },
-            tooltip: { callbacks: { footer: () => "💡 Click để xem chi tiết" } },
-            // Bug 11: Hiện số MM (hoặc MD) trực tiếp trên từng segment,
-            // user không cần hover mới thấy. Bỏ qua segment có value < 0.1
-            // để tránh overlap khi PIC có phần rất nhỏ.
+            tooltip: {
+                callbacks: {
+                    label: (c) => {
+                        if (effortIsPct && datasets.length > 1) {
+                            return _tooltipStackLabel(c, `của PIC`);
+                        }
+                        const raw = c.dataset._rawData
+                            ? Number(c.dataset._rawData[c.dataIndex]) || 0
+                            : Number(c.parsed?.x) || 0;
+                        return `${c.dataset.label}: ${raw}`;
+                    },
+                    footer: () => "💡 Click để xem chi tiết",
+                },
+            },
+            // Bug 11: Hiện số MM (hoặc MD) / % trực tiếp trên từng segment.
             datalabels: {
                 display: (ctx) => {
-                    const val = Number(ctx.dataset.data[ctx.dataIndex]) || 0;
-                    return val >= 0.1;
+                    const idx = ctx.dataIndex;
+                    const raw = ctx.dataset._rawData
+                        ? Number(ctx.dataset._rawData[idx]) || 0
+                        : Number(ctx.dataset.data[idx]) || 0;
+                    return raw >= 0.1;
                 },
                 color: "#fff",
                 font: { size: 10, weight: "bold" },
                 textStrokeColor: "rgba(0,0,0,0.55)",
                 textStrokeWidth: 2,
-                formatter: (val) => (val >= 0.1 ? `${Math.round(val * 10) / 10}` : ""),
+                formatter: (val, ctx) => {
+                    if (effortIsPct && datasets.length > 1) {
+                        return Number(val) >= 0.1 ? `${Math.round(Number(val))}%` : "";
+                    }
+                    const raw = ctx.dataset._rawData
+                        ? Number(ctx.dataset._rawData[ctx.dataIndex]) || 0
+                        : Number(val) || 0;
+                    return raw >= 0.1 ? `${Math.round(raw * 10) / 10}` : "";
+                },
                 anchor: "center",
                 align: "center",
             },
         },
         scales: {
-            x: { stacked: true, beginAtZero: true, title: { display: true, text: unit } },
+            x: Object.assign(
+                {
+                    stacked: true,
+                    beginAtZero: true,
+                    title: { display: true, text: effortIsPct && datasets.length > 1 ? "%" : unit },
+                },
+                (effortIsPct && datasets.length > 1) ? (effortPctScale.x || {}) : {}
+            ),
             y: { stacked: true, ticks: { font: { size: 10 } } },
         },
         onHover: CLICKABLE_CHART_OPTS.onHover,
@@ -6883,25 +7900,92 @@ function _labelsForVerticalBar(unit = "", minValue = 0) {
  * Config cho stacked bar (vertical hoặc horizontal): hiện value giữa mỗi segment
  * nhưng chỉ khi segment ≥ minPct % của total (tránh chữ tràn qua segment nhỏ).
  */
-function _labelsForStackedBar(minPct = 5) {
+function _labelsForStackedBar(minPct = 5, mode) {
+    const vm = mode || _chartValueMode || "count";
     return {
         display: (ctx) => {
-            const val = Number(ctx.dataset.data[ctx.dataIndex]) || 0;
-            if (val <= 0) return false;
-            // Tính tổng của stack tại vị trí đó (cùng label, khác dataset)
-            const chart = ctx.chart;
             const idx = ctx.dataIndex;
+            const raw = ctx.dataset._rawData
+                ? Number(ctx.dataset._rawData[idx]) || 0
+                : Number(ctx.dataset.data[idx]) || 0;
+            if (raw <= 0) return false;
+            const chart = ctx.chart;
             let total = 0;
             (chart.data.datasets || []).forEach(ds => {
-                total += Number(ds.data[idx]) || 0;
+                total += ds._rawData
+                    ? Number(ds._rawData[idx]) || 0
+                    : Number(ds.data[idx]) || 0;
             });
-            return total > 0 && (val / total) * 100 >= minPct;
+            return total > 0 && (raw / total) * 100 >= minPct;
         },
         color: "#fff",
         font: { size: 10, weight: "bold" },
         textStrokeColor: "rgba(0,0,0,0.5)",
         textStrokeWidth: 2,
-        formatter: (val) => (val > 0 ? val : ""),
+        formatter: (val, ctx) => {
+            if (!(Number(val) > 0)) return "";
+            if (vm === "pct") return `${Math.round(Number(val))}%`;
+            const idx = ctx.dataIndex;
+            const raw = ctx.dataset._rawData
+                ? Number(ctx.dataset._rawData[idx]) || 0
+                : Number(val) || 0;
+            return raw > 0 ? raw : "";
+        },
+    };
+}
+
+/**
+ * Gắn _rawData + (nếu mode=pct) chuẩn hóa mỗi cột stack về 100%.
+ * Drill-down không dùng số trên trục — chỉ label/status.
+ */
+function _applyStackValueMode(datasets) {
+    const out = (datasets || []).map(ds => {
+        const raw = (ds.data || []).map(v => Number(v) || 0);
+        return Object.assign({}, ds, { data: raw.slice(), _rawData: raw });
+    });
+    if ((_chartValueMode || "count") !== "pct" || !out.length) return out;
+    const len = out[0].data.length;
+    for (let i = 0; i < len; i++) {
+        let total = 0;
+        for (const ds of out) total += ds._rawData[i];
+        for (const ds of out) {
+            ds.data[i] = total > 0 ? Math.round((ds._rawData[i] / total) * 100) : 0;
+        }
+    }
+    return out;
+}
+
+/** Tooltip stacked: luôn nêu count tuyệt đối + % trong nhóm. */
+function _tooltipStackLabel(c, ofWhat) {
+    const idx = c.dataIndex;
+    const raw = c.dataset._rawData
+        ? Number(c.dataset._rawData[idx]) || 0
+        : Number(c.parsed?.y ?? c.parsed?.x ?? c.parsed) || 0;
+    let total = 0;
+    (c.chart.data.datasets || []).forEach(ds => {
+        total += ds._rawData
+            ? Number(ds._rawData[idx]) || 0
+            : Number(ds.data[idx]) || 0;
+    });
+    const pct = total ? Math.round((raw / total) * 100) : 0;
+    const suffix = ofWhat ? ` ${ofWhat}` : "";
+    if ((_chartValueMode || "count") === "pct") {
+        return `${c.dataset.label}: ${pct}%  (${raw})`;
+    }
+    return `${c.dataset.label}: ${raw}  (${pct}%${suffix})`;
+}
+
+/** Scale value-axis 0–100% khi mode=pct (vertical → y, horizontal → x). */
+function _valueModePctScaleOpts(indexAxis) {
+    if ((_chartValueMode || "count") !== "pct") return {};
+    const key = indexAxis === "y" ? "x" : "y";
+    return {
+        [key]: {
+            stacked: true,
+            beginAtZero: true,
+            max: 100,
+            ticks: { callback: (v) => v + "%" },
+        },
     };
 }
 
@@ -7157,6 +8241,7 @@ const DRILL_COLUMNS = [
     { key: "rlog_id",      label: "Rlog ID",     width: "w-24" },
     { key: "ten_cn",       label: "Tên chức năng", width: "" },
     { key: "module",       label: "Module",      width: "w-16" },
+    { key: "quy_trinh",    label: "Quy trình",   width: "w-28" },
     { key: "phase",        label: "Phase",       width: "w-24" },
     { key: "status",       label: "Status",      width: "w-24", render: v => statusBadge(v) },
     { key: "pics",         label: "PIC",         width: "w-32", render: v => Array.isArray(v) ? v.join(", ") : (v || "") },
@@ -7166,7 +8251,18 @@ const DRILL_COLUMNS = [
     { key: "priority",     label: "Priority",    width: "w-20" },
     { key: "complexity",   label: "Complexity",  width: "w-20" },
     { key: "fit_gap",      label: "FIT/GAP",     width: "w-16" },
+    { key: "ly_do",        label: "Lý do",       width: "min-w-[14rem] max-w-xs",
+      render: v => v
+        ? `<span class="text-amber-900 dark:text-amber-200 whitespace-normal leading-snug" title="${escapeAttr(String(v))}">${escapeHtml(String(v))}</span>`
+        : "<span class=\"text-gray-400\">—</span>" },
 ];
+
+/** Cột drill — ẩn Lý do khi không item nào có ly_do (giữ bảng gọn cho chart thường). */
+function _drillColumnsForItems(items) {
+    const hasLyDo = (items || []).some(it => it && (it.ly_do || it.reason));
+    if (hasLyDo) return DRILL_COLUMNS;
+    return DRILL_COLUMNS.filter(c => c.key !== "ly_do");
+}
 
 async function openDrillDown(chart, filters, titleOverride) {
     if (!metricsData) {
@@ -7421,6 +8517,8 @@ function renderDrillTable() {
         return;
     }
 
+    const cols = _drillColumnsForItems(items);
+
     // Status thô có thể là chuỗi ghép sau dedupe ("In-progress, Open") → hiểu
     // là "có chứa" thay vì bằng chính xác, để summary bar bên footer vẫn có nghĩa.
     const overdue = items.filter(i => i.is_overdue).length;
@@ -7443,7 +8541,7 @@ function renderDrillTable() {
                 <input type="checkbox" id="drillSelectAll" onchange="toggleDrillSelectAll(this.checked)" title="Chọn tất cả trang này" />
             </th>
             <th class="px-2 py-2 text-center w-10">#</th>
-            ${DRILL_COLUMNS.map(c => `
+            ${cols.map(c => `
                 <th class="px-2 py-2 text-left cursor-pointer hover:bg-gray-200 dark:hover:bg-slate-600 ${c.width}"
                     onclick="sortDrillTable('${c.key}')">
                     ${escapeHtml(c.label)}${drillState.sortKey === c.key ? (drillState.sortDir === "asc" ? " ▲" : " ▼") : ""}
@@ -7464,8 +8562,8 @@ function renderDrillTable() {
                        ${checked} onchange="toggleDrillSelect('${escapeAttr(ma)}', this.checked)" />
             </td>
             <td class="px-2 py-1 text-center text-gray-500">${start + idx + 1}</td>
-            ${DRILL_COLUMNS.map(c => {
-                const v = it[c.key];
+            ${cols.map(c => {
+                const v = c.key === "ly_do" ? (it.ly_do || it.reason || "") : it[c.key];
                 const display = c.render ? c.render(v) : escapeHtml(v === null || v === undefined ? "" : String(v));
                 return `<td class="px-2 py-1 align-top">${display}</td>`;
             }).join("")}
@@ -7576,29 +8674,33 @@ function _chartClickHandler(chart, buildFilterFn) {
 
 // Click handler cho ô Phase Matrix (HTML table)
 function _matrixCellClick(el) {
-    // BA/UX #4: cell có DQ → drill vào Data Quality; không thì phase_matrix drill.
     const dqN = parseInt(el.dataset.dq || "0", 10) || 0;
     const gb = el.dataset.gb || "module";
     const key = el.dataset.key ?? el.dataset.mod;
     const ph = el.dataset.ph;
-    if (dqN > 0 && gb === "module" && typeof openDqForModulePhase === "function") {
-        openDqForModulePhase(key, ph);
-        return;
-    }
-    // b9: hỗ trợ cả mode module + process (drill 'phase_matrix' chỉ nhận
-    // module + phase; với mode process, chuyển key sang param 'process' để
-    // FE openDrillDown thêm filter tương ứng qua drill-adapter).
+
+    // Luôn mở drill-down modal để xem chi tiết function.
+    // Nếu có DQ issue thêm subtitle thông báo (không redirect sang DQ section nữa).
+    const titleSuffix = dqN > 0 ? ` · ⚠️ DQ: ${dqN} issue` : "";
+    const titleOverride = (gb === "process")
+        ? `${key} × ${ph}${titleSuffix}`
+        : `${key} × ${ph}${titleSuffix}`;
+
     if (gb === "process") {
-        openDrillDown("phase_matrix", {
-            process: key,
-            phase: ph,
-        });
+        openDrillDown("phase_matrix", { process: key, phase: ph }, titleOverride);
         return;
     }
-    openDrillDown("phase_matrix", {
-        module: key,
-        phase: ph,
-    });
+    openDrillDown("phase_matrix", { module: key, phase: ph }, titleOverride);
+}
+
+/** Click ô Bottleneck (stuck) theo phase → list function + lý do. */
+function _matrixBottleneckClick(el) {
+    const ph = el && el.dataset ? el.dataset.ph : "";
+    if (!ph) return;
+    const _t = (typeof I18n !== "undefined" && I18n.t)
+        ? I18n.t.bind(I18n)
+        : (k, vars) => (vars && vars.phase ? `Bottleneck (stuck) — Phase ${vars.phase}` : k);
+    openDrillDown("bottleneck", { phase: ph }, _t("matrix.bottleneck_title", { phase: ph }));
 }
 
 /**
@@ -8424,8 +9526,11 @@ function showSidebarChrome() {
     if (nav) nav.classList.remove("hidden");
     if (btn) btn.classList.remove("hidden");
     applySidebarCollapsed(isSidebarCollapsed());
+    try { if (typeof initSidebarHubsUX === "function") initSidebarHubsUX(); } catch (e) { console.error(e); }
+    try { if (typeof updateSidebarIssueBadges === "function") updateSidebarIssueBadges(); } catch (e) {}
     attachSectionHelp();
     if (typeof applySidebarGroupFilter === "function") applySidebarGroupFilter();
+    try { if (typeof initIssueFocus === "function") initIssueFocus(); } catch (e) { console.error(e); }
 }
 
 /** Click nút toggle → đảo trạng thái + persist. */
@@ -8459,67 +9564,40 @@ const _SIDEBAR_GROUP_ALWAYS_VISIBLE = new Set([
  */
 const DEFAULT_SIDEBAR_GROUP_DEFS = [
     {
-        id: "tracking",
-        name_vi: "Tracking",
-        name_en: "Tracking",
-        sections: [
-            "section-summary",
-            "section-module", "section-tasktype", "section-matrix",
-            "section-phase", "section-giaidoan",
-            "section-rlog",
-            "section-overdue", "section-unassigned", "section-stalled",
-            "section-aging-wip", "section-sla",
-            "section-pic-upcoming",
-        ],
+        id: "overview",
+        name_vi: "Tổng quan",
+        name_en: "Overview",
+        sections: ["section-summary", "section-module-progress"],
+    },
+    {
+        id: "issues",
+        name_vi: "Vấn đề",
+        name_en: "Issues",
+        sections: ["section-issues", "section-risk-hub"],
+    },
+    {
+        id: "progress",
+        name_vi: "Tiến độ",
+        name_en: "Progress",
+        sections: ["section-timeline", "section-weekly"],
     },
     {
         id: "forecast",
-        name_vi: "Forecast",
-        name_en: "Forecast",
-        sections: [
-            "section-gantt", "section-forecast-gantt", "section-forecast-manpower",
-            "section-estimate-ratio",
-            "section-gantt-calendar", "section-burndown",
-            "section-capacity", "section-pic-overload", "section-baseline",
-            "section-evm", "section-exec-dashboard", "section-scope-creep",
-            "section-duration",
-        ],
-    },
-    {
-        id: "quality",
-        name_vi: "Chất lượng",
-        name_en: "Quality",
-        sections: [
-            "section-dataquality", "section-anomaly", "section-risk",
-            "section-uat-quality",
-        ],
+        name_vi: "Dự báo & kế hoạch",
+        name_en: "Forecast & plan",
+        sections: ["section-plan", "section-manpower"],
     },
     {
         id: "analysis",
         name_vi: "Phân tích",
         name_en: "Analysis",
-        sections: [
-            "section-process", "section-pic", "section-priority",
-            "section-fitgap-dashboard", "section-effort", "section-slow",
-            "section-deps", "section-function-diff", "section-kanban",
-            "section-my-bookmarks",
-        ],
-    },
-    {
-        id: "pm",
-        name_vi: "Chiều PM",
-        name_en: "PM dimension",
-        sections: [
-            "section-pm", "section-digest", "section-my-digests",
-        ],
+        sections: ["section-analysis"],
     },
     {
         id: "admin",
         name_vi: "Quản trị",
         name_en: "Administration",
-        sections: [
-            "section-compare", "section-custom-dashboards", "section-history",
-        ],
+        sections: ["section-admin"],
     },
 ];
 
@@ -8527,55 +9605,20 @@ const DEFAULT_SIDEBAR_GROUP_DEFS = [
  * Thứ tự DOM mặc định khi chưa có section_order.json (và khi ↺ Mặc định).
  * Progress charts trước → timeline/forecast → issues → phân tích → PM/admin.
  */
-const DEFAULT_SECTION_DOM_ORDER = [
+const DEFAULT_SECTION_DOM_ORDER = (typeof DEFAULT_HUB_DOM_ORDER !== "undefined" && DEFAULT_HUB_DOM_ORDER)
+    ? DEFAULT_HUB_DOM_ORDER.slice()
+    : [
     "section-summary",
     "section-globalfilter",
-    // Tiến độ tổng thể
-    "grid:section-module+section-tasktype",
-    "section-matrix",
-    "grid:section-phase",
-    "section-giaidoan",
-    "section-gantt",
-    "section-forecast-gantt",
-    "section-forecast-manpower",
-    "section-estimate-ratio",
-    "section-gantt-calendar",
-    "section-burndown",
-    "section-rlog",
-    // Vấn đề / cảnh báo
-    "section-overdue",
-    "section-unassigned",
-    "section-stalled",
-    "section-risk",
-    "section-aging-wip",
-    "section-sla",
-    "section-dataquality",
-    "section-uat-quality",
-    // Phân tích sâu
-    "section-process",
-    "section-capacity",
-    "section-pic-overload",
-    "section-baseline",
-    "section-evm",
-    "section-exec-dashboard",
-    "section-scope-creep",
-    "section-effort",
-    "section-duration",
-    "section-slow",
-    "section-deps",
-    "section-kanban",
-    "section-pic",
-    "section-priority",
-    "section-fitgap-dashboard",
-    "section-function-diff",
-    "section-my-bookmarks",
-    // PM + quản trị
-    "section-pm",
-    "section-digest",
-    "section-my-digests",
-    "section-compare",
-    "section-custom-dashboards",
-    "section-history",
+    "section-module-progress",
+    "section-issues",
+    "section-risk-hub",
+    "section-timeline",
+    "section-weekly",
+    "section-plan",
+    "section-manpower",
+    "section-analysis",
+    "section-admin",
 ];
 
 let _sidebarGroupsState = null;       // { groups: [...] }
@@ -8714,6 +9757,53 @@ function refreshSidebarGroupSelect() {
     sel.value = cur;
 }
 
+// ========================================================================
+// A1 — Nhóm ẩn mặc định (CORE hiện trước, EXTENDED ẩn tới khi user bật).
+// Độc lập với active-group filter (single-select) ở trên: đây là 1 tập
+// nhóm bị ẩn khi đang ở "Tất cả", không ảnh hưởng khi lọc theo 1 nhóm cụ thể.
+// ========================================================================
+const SIDEBAR_HIDDEN_GROUPS_KEY = "ihrp_sidebar_hidden_groups_v1";
+// Mặc định ẩn "Phân tích" + "Quản trị" — 2 nhóm gom phần lớn section EXTENDED
+// (process/effort/duration/scope-creep/pm/compare/kanban/bookmarks/digest/...).
+const DEFAULT_HIDDEN_SIDEBAR_GROUPS = ["analysis", "admin"];
+
+let _sidebarHiddenGroups = null;
+
+function _loadHiddenSidebarGroups() {
+    try {
+        const raw = localStorage.getItem(SIDEBAR_HIDDEN_GROUPS_KEY);
+        if (raw === null) return new Set(DEFAULT_HIDDEN_SIDEBAR_GROUPS);
+        const arr = JSON.parse(raw);
+        return new Set(Array.isArray(arr) ? arr.map(String) : []);
+    } catch (e) {
+        return new Set(DEFAULT_HIDDEN_SIDEBAR_GROUPS);
+    }
+}
+
+function _saveHiddenSidebarGroups(set) {
+    try {
+        localStorage.setItem(SIDEBAR_HIDDEN_GROUPS_KEY, JSON.stringify(Array.from(set)));
+    } catch (e) { /* localStorage disabled */ }
+}
+
+function _ensureHiddenSidebarGroups() {
+    if (!_sidebarHiddenGroups) _sidebarHiddenGroups = _loadHiddenSidebarGroups();
+    return _sidebarHiddenGroups;
+}
+
+function isSidebarGroupHidden(groupId) {
+    return _ensureHiddenSidebarGroups().has(groupId);
+}
+
+function setSidebarGroupHidden(groupId, hidden) {
+    const set = _ensureHiddenSidebarGroups();
+    if (hidden) set.add(groupId); else set.delete(groupId);
+    _saveHiddenSidebarGroups(set);
+    applySidebarGroupFilter();
+}
+window.isSidebarGroupHidden = isSidebarGroupHidden;
+window.setSidebarGroupHidden = setSidebarGroupHidden;
+
 /**
  * Áp filter nhóm lên sidebar links + main sections.
  * Không đụng .hidden / data-user-hidden — chỉ toggle .group-filtered-out.
@@ -8723,11 +9813,16 @@ function applySidebarGroupFilter() {
     const active = _sidebarActiveGroup;
     const membership = buildSidebarSectionMembership(st);
     const isAll = active === SIDEBAR_GROUP_ALL;
+    const hiddenGroups = _ensureHiddenSidebarGroups();
+    // A1 — khi ở "Tất cả", nhóm bị ẩn mặc định (analysis/admin) vẫn ẩn cho tới
+    // khi user bật lại qua "Thêm dashboard". Section không có membership (vd
+    // section-ba-tasks) luôn hiện.
+    const groupVisible = (gid) => !gid || !hiddenGroups.has(gid);
 
     // Sidebar links
     document.querySelectorAll('#sidebarNav a[href^="#section-"]').forEach(a => {
         const sid = (a.getAttribute("href") || "").slice(1);
-        const show = isAll || membership[sid] === active;
+        const show = isAll ? groupVisible(membership[sid]) : membership[sid] === active;
         a.classList.toggle("group-filtered-out", !show);
     });
 
@@ -8739,12 +9834,12 @@ function applySidebarGroupFilter() {
             return;
         }
         if (sid === "section-summary-header") {
-            const show = isAll || membership["section-summary"] === active;
+            const show = isAll ? groupVisible(membership["section-summary"]) : membership["section-summary"] === active;
             el.classList.toggle("group-filtered-out", !show);
             return;
         }
         if (isAll) {
-            el.classList.remove("group-filtered-out");
+            el.classList.toggle("group-filtered-out", !groupVisible(membership[sid]));
             return;
         }
         // Chỉ hiện nếu membership khớp nhóm đang chọn
@@ -8762,6 +9857,8 @@ function applySidebarGroupFilter() {
     });
 
     refreshSidebarGroupSelect();
+    // Compose với issue-focus (nếu đã init)
+    try { if (typeof applyIssueFocusFilter === "function") applyIssueFocusFilter(); } catch (_) { /* ignore */ }
 }
 window.applySidebarGroupFilter = applySidebarGroupFilter;
 
@@ -8830,6 +9927,8 @@ function _renderSidebarGroupsEditor() {
                         data-section-id="${escapeAttr(sid)}" title="${escapeAttr(moveLabel)}">${opts}</select>
             </li>`;
         }).join("");
+        const visLabel = _sgT("sg.visible_on_dashboard", "Hiện trên dashboard");
+        const isHidden = isSidebarGroupHidden(g.id);
         return `<div class="sg-group-block border rounded-lg p-2 dark:border-slate-600 bg-white/80 dark:bg-slate-900/40" data-group-id="${escapeAttr(g.id)}">
             <div class="flex flex-wrap items-end gap-2 mb-2">
                 <label class="flex flex-col gap-0.5 flex-1 min-w-[120px]">
@@ -8841,6 +9940,10 @@ function _renderSidebarGroupsEditor() {
                     <span class="text-[10px] text-slate-500">${escapeHtml(nameEn)}</span>
                     <input type="text" class="sg-name-en border rounded px-1.5 py-1 text-xs dark:bg-slate-800 dark:border-slate-600"
                            value="${escapeAttr(g.name_en)}" data-group-id="${escapeAttr(g.id)}">
+                </label>
+                <label class="sg-visible-toggle flex items-center gap-1 text-[10px] text-slate-500 whitespace-nowrap pb-1.5" title="${escapeAttr(visLabel)}">
+                    <input type="checkbox" class="sg-visible" data-group-id="${escapeAttr(g.id)}" ${isHidden ? "" : "checked"}>
+                    ${escapeHtml(visLabel)}
                 </label>
                 <button type="button" class="sg-del text-[10px] px-2 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50"
                         data-group-id="${escapeAttr(g.id)}" ${draft.groups.length <= 1 ? "disabled" : ""}>${escapeHtml(delLabel)}</button>
@@ -8863,6 +9966,12 @@ function _renderSidebarGroupsEditor() {
         inp.addEventListener("input", () => {
             const g = draft.groups.find(x => x.id === inp.dataset.groupId);
             if (g) g.name_en = inp.value;
+        });
+    });
+    // A6 — toggle hiện/ẩn nhóm trên dashboard chính (áp dụng ngay, không cần Lưu)
+    wrap.querySelectorAll(".sg-visible").forEach(chk => {
+        chk.addEventListener("change", () => {
+            setSidebarGroupHidden(chk.dataset.groupId, !chk.checked);
         });
     });
     // Delete group
@@ -9077,6 +10186,305 @@ function initSidebarGroups() {
     applySidebarGroupFilter();
 }
 window.initSidebarGroups = initSidebarGroups;
+
+// ========================================================================
+// ISSUE FOCUS MODE — «Nhóm vấn đề»: chỉ hiện section liên quan + export scoped
+// Persist: localStorage ihrp_issue_focus_v1. Compose với .group-filtered-out
+// qua class riêng `.issue-focus-out`.
+// ========================================================================
+const ISSUE_FOCUS_ALL = "__all__";
+const ISSUE_FOCUS_KEY = "ihrp_issue_focus_v1";
+
+/** @type {Record<string, {
+ *   label_vi: string, label_en: string,
+ *   keepHubs: string[], hubId: string, tabSection: string,
+ *   summaryCards: string[], exportKey: string
+ * }>} */
+const ISSUE_FOCUS_DEFS = {
+    overdue: {
+        label_vi: "Trễ hạn", label_en: "Overdue",
+        keepHubs: ["section-issues"],
+        hubId: "section-issues",
+        tabSection: "section-overdue",
+        summaryCards: ["summary-card--overdue"],
+        exportKey: "overdue",
+    },
+    unassigned: {
+        label_vi: "Chưa PIC", label_en: "Unassigned",
+        keepHubs: ["section-issues"],
+        hubId: "section-issues",
+        tabSection: "section-unassigned",
+        summaryCards: ["summary-card--unassigned"],
+        exportKey: "unassigned",
+    },
+    stalled: {
+        label_vi: "Đình trệ", label_en: "Stalled",
+        keepHubs: ["section-issues"],
+        hubId: "section-issues",
+        tabSection: "section-stalled",
+        summaryCards: [],
+        exportKey: "stalled",
+    },
+    aging: {
+        label_vi: "WIP / Aging", label_en: "Aging WIP",
+        keepHubs: ["section-issues"],
+        hubId: "section-issues",
+        tabSection: "section-aging-wip",
+        summaryCards: [],
+        exportKey: "aging",
+    },
+    dq: {
+        label_vi: "Data Quality", label_en: "Data Quality",
+        keepHubs: ["section-issues"],
+        hubId: "section-issues",
+        tabSection: "section-dataquality",
+        summaryCards: ["summary-card--deadline", "summary-card--dq"],
+        exportKey: "dq",
+    },
+    risk: {
+        label_vi: "Risk", label_en: "Risk",
+        keepHubs: ["section-risk-hub"],
+        hubId: "section-risk-hub",
+        tabSection: "section-risk",
+        summaryCards: ["summary-card--risk"],
+        exportKey: "risk",
+    },
+    uat: {
+        label_vi: "UAT Quality", label_en: "UAT Quality",
+        keepHubs: ["section-risk-hub"],
+        hubId: "section-risk-hub",
+        tabSection: "section-uat-quality",
+        summaryCards: [],
+        exportKey: "uat",
+    },
+};
+
+const _ISSUE_FOCUS_ALWAYS = new Set([
+    "section-summary",
+    "section-summary-header",
+    "section-globalfilter",
+]);
+
+let _issueFocus = ISSUE_FOCUS_ALL;
+
+function getIssueFocus() {
+    return _issueFocus || ISSUE_FOCUS_ALL;
+}
+window.getIssueFocus = getIssueFocus;
+window.ISSUE_FOCUS_DEFS = ISSUE_FOCUS_DEFS;
+window.ISSUE_FOCUS_ALL = ISSUE_FOCUS_ALL;
+
+function _loadIssueFocus() {
+    try {
+        const v = localStorage.getItem(ISSUE_FOCUS_KEY);
+        if (v && (v === ISSUE_FOCUS_ALL || ISSUE_FOCUS_DEFS[v])) return v;
+    } catch (_) { /* ignore */ }
+    return ISSUE_FOCUS_ALL;
+}
+
+function _saveIssueFocus(id) {
+    try { localStorage.setItem(ISSUE_FOCUS_KEY, id); } catch (_) { /* ignore */ }
+}
+
+function _applyIssueFocusSummaryHighlight() {
+    const focus = getIssueFocus();
+    const def = ISSUE_FOCUS_DEFS[focus];
+    const want = new Set((def && def.summaryCards) || []);
+    document.querySelectorAll("#section-summary .summary-card").forEach((card) => {
+        const hit = [...want].some((cls) => card.classList.contains(cls));
+        card.classList.toggle("is-issue-focus", focus !== ISSUE_FOCUS_ALL && hit);
+    });
+}
+window._applyIssueFocusSummaryHighlight = _applyIssueFocusSummaryHighlight;
+
+function _refreshIssueFocusChips() {
+    const cur = getIssueFocus();
+    document.querySelectorAll("#issueFocusBar .issue-focus-chip[data-issue]").forEach((btn) => {
+        btn.classList.toggle("is-active", btn.getAttribute("data-issue") === cur);
+    });
+    const exp = document.getElementById("btnIssueFocusExport");
+    if (exp) {
+        const def = ISSUE_FOCUS_DEFS[cur];
+        const lang = (typeof I18n !== "undefined" && I18n.getLang) ? I18n.getLang() : "vi";
+        if (cur === ISSUE_FOCUS_ALL) {
+            exp.textContent = lang === "en" ? "📥 Export all issues" : "📥 Xuất tất cả vấn đề";
+        } else {
+            const name = lang === "en" ? (def.label_en || def.label_vi) : def.label_vi;
+            exp.textContent = lang === "en" ? `📥 Export ${name}` : `📥 Xuất ${name}`;
+        }
+    }
+}
+
+/**
+ * Ẩn hub/section không thuộc nhóm vấn đề đang focus.
+ * Summary + global filter luôn giữ. Sidebar nav item cũng filter.
+ */
+function applyIssueFocusFilter() {
+    const focus = getIssueFocus();
+    const isAll = focus === ISSUE_FOCUS_ALL;
+    const def = ISSUE_FOCUS_DEFS[focus];
+    const keep = new Set(_ISSUE_FOCUS_ALWAYS);
+    if (def) (def.keepHubs || []).forEach((h) => keep.add(h));
+
+    // Hub sections + top-level sections
+    document.querySelectorAll("#dashboard > [id^='section-'], #dashboard .section-hub").forEach((el) => {
+        if (!el.id) return;
+        if (_ISSUE_FOCUS_ALWAYS.has(el.id)) {
+            el.classList.remove("issue-focus-out");
+            return;
+        }
+        // Nested tab-pane sections: không ẩn riêng — hub quản lý
+        if (el.closest(".section-hub") && !el.classList.contains("section-hub")) return;
+        if (isAll) {
+            el.classList.remove("issue-focus-out");
+            return;
+        }
+        el.classList.toggle("issue-focus-out", !keep.has(el.id));
+    });
+
+    // Module-progress / timeline / … hubs outside keep
+    document.querySelectorAll("#dashboard .section-hub").forEach((hub) => {
+        if (isAll) {
+            hub.classList.remove("issue-focus-out");
+            return;
+        }
+        hub.classList.toggle("issue-focus-out", !keep.has(hub.id));
+    });
+
+    // Sidebar links: chỉ hiện Issues/Risk hub liên quan (+ Summary)
+    document.querySelectorAll("#sidebarNavLinks .sidebar-nav-item").forEach((a) => {
+        const sid = a.dataset.navId || "";
+        if (isAll) {
+            a.classList.remove("issue-focus-out");
+            return;
+        }
+        const show = sid === "section-summary" || keep.has(sid);
+        a.classList.toggle("issue-focus-out", !show);
+    });
+    // Collapse empty groups in sidebar
+    document.querySelectorAll("#sidebarNavLinks .sidebar-nav-group").forEach((g) => {
+        if (isAll) {
+            g.classList.remove("issue-focus-out");
+            return;
+        }
+        const any = g.querySelectorAll(".sidebar-nav-item:not(.issue-focus-out):not(.sidebar-search-hide)").length > 0;
+        g.classList.toggle("issue-focus-out", !any);
+    });
+
+    _refreshIssueFocusChips();
+    _applyIssueFocusSummaryHighlight();
+}
+window.applyIssueFocusFilter = applyIssueFocusFilter;
+
+function setIssueFocus(issueId, opts) {
+    opts = opts || {};
+    const id = (issueId && (issueId === ISSUE_FOCUS_ALL || ISSUE_FOCUS_DEFS[issueId]))
+        ? issueId
+        : ISSUE_FOCUS_ALL;
+    _issueFocus = id;
+    _saveIssueFocus(id);
+    applyIssueFocusFilter();
+
+    const def = ISSUE_FOCUS_DEFS[id];
+    if (def && !opts.skipNav) {
+        // Mở hub + tab tương ứng
+        try {
+            if (typeof activateHubTab === "function") {
+                activateHubTab(def.hubId, def.tabSection);
+            }
+            if (typeof scrollToSection === "function") {
+                scrollToSection(def.hubId);
+            } else {
+                const el = document.getElementById(def.hubId) || document.getElementById(def.tabSection);
+                if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+        } catch (e) {
+            console.warn("[setIssueFocus]", e);
+        }
+    }
+}
+window.setIssueFocus = setIssueFocus;
+
+async function exportActiveIssueFocus() {
+    const focus = getIssueFocus();
+    if (focus === ISSUE_FOCUS_ALL) {
+        // Full workbook — gọi path gốc (tránh đệ quy qua exportAllIssues focus branch)
+        if (!currentProjectSlug) {
+            showToast("⚠️ Chưa chọn project");
+            return;
+        }
+        const params = new URLSearchParams();
+        if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+        if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+        if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+        if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
+        const thr = document.getElementById("agingWipThreshold")?.value;
+        if (thr) params.set("threshold", thr);
+        showToast("📊 Đang tạo file Excel tổng hợp vấn đề…");
+        try {
+            await downloadFile(
+                `/api/projects/${currentProjectSlug}/export-all-issues?` + params.toString(),
+                `iHRP_Van_De_Tong_Hop_${currentProjectSlug}.xlsx`
+            );
+        } catch (err) {
+            console.error("[exportActiveIssueFocus]", err);
+            showToast("❌ Lỗi khi xuất báo cáo tổng hợp");
+        }
+        return;
+    }
+    const def = ISSUE_FOCUS_DEFS[focus];
+    if (!def) return;
+    try {
+        switch (def.exportKey) {
+            case "overdue":
+                if (typeof exportOverdue === "function") await exportOverdue("both");
+                else await exportChartData("overdue", "both");
+                break;
+            case "unassigned":
+                await exportChartData("unassigned", "both");
+                break;
+            case "stalled":
+                if (typeof exportStalled === "function") await exportStalled("both");
+                else await exportChartData("stalled", "both");
+                break;
+            case "aging":
+                if (typeof exportAgingWip === "function") exportAgingWip();
+                else showToast("⚠️ Chưa có export Aging WIP", "orange");
+                break;
+            case "dq":
+                if (typeof exportDataQuality === "function") exportDataQuality();
+                else showToast("⚠️ Chưa có export Data Quality", "orange");
+                break;
+            case "risk":
+                await exportChartData("risk", "both");
+                break;
+            case "uat":
+                if (typeof _exportPmoAnalytics === "function") {
+                    _exportPmoAnalytics(null, "export-uat-quality", "UAT_Quality.xlsx");
+                } else {
+                    showToast("⚠️ Chưa có export UAT Quality", "orange");
+                }
+                break;
+            default:
+                showToast("⚠️ Nhóm chưa có export riêng", "orange");
+        }
+    } catch (err) {
+        console.error("[exportActiveIssueFocus]", err);
+        showToast("❌ Lỗi xuất nhóm vấn đề", "red");
+    }
+}
+window.exportActiveIssueFocus = exportActiveIssueFocus;
+
+function initIssueFocus() {
+    _issueFocus = _loadIssueFocus();
+    applyIssueFocusFilter();
+    // Nếu đang focus → mở đúng tab (không scroll giật lúc init)
+    const def = ISSUE_FOCUS_DEFS[_issueFocus];
+    if (def && typeof activateHubTab === "function") {
+        try { activateHubTab(def.hubId, def.tabSection, { skipStore: false, skipScroll: true }); } catch (_) { /* ignore */ }
+    }
+}
+window.initIssueFocus = initIssueFocus;
 
 // ========================================================================
 // CHART HELP (Task 2) — nút "?" mỗi section + popover giải thích
@@ -9589,6 +10997,7 @@ async function loadFitgapDashboard() {
 function renderFitgapSection(data) {
     const section = document.getElementById("section-fitgap-dashboard");
     if (!section || !data) return;
+    _fitgapDashData = data;
     const s = data.summary || {};
 
     // Ẩn section nếu không có function nào (parser chưa detect được cột FIT/GAP,
@@ -9639,26 +11048,28 @@ function _fitgapRenderStackedBar(canvasId, rows, keyField) {
     const labels = items.map(r => (r[keyField] || "—").length > 22
         ? r[keyField].slice(0, 20) + "…"
         : (r[keyField] || "—"));
+    const datasets = _applyStackValueMode([
+        {
+            label: "FIT",
+            data: items.map(r => r.fit || 0),
+            backgroundColor: "rgba(34, 197, 94, 0.75)",
+            borderRadius: 0,
+            borderSkipped: false,
+            stack: "fg",
+        },
+        {
+            label: "GAP",
+            data: items.map(r => r.gap || 0),
+            backgroundColor: "rgba(249, 115, 22, 0.85)",
+            borderRadius: 0,
+            borderSkipped: false,
+            stack: "fg",
+        },
+    ]);
+    const fgPctScale = _valueModePctScaleOpts("y");
     createChart(ctx, "bar", {
         labels,
-        datasets: [
-            {
-                label: "FIT",
-                data: items.map(r => r.fit || 0),
-                backgroundColor: "rgba(34, 197, 94, 0.75)",
-                borderRadius: 0,
-                borderSkipped: false,
-                stack: "fg",
-            },
-            {
-                label: "GAP",
-                data: items.map(r => r.gap || 0),
-                backgroundColor: "rgba(249, 115, 22, 0.85)",
-                borderRadius: 0,
-                borderSkipped: false,
-                stack: "fg",
-            },
-        ],
+        datasets,
     }, {
         indexAxis: "y",
         plugins: {
@@ -9666,6 +11077,7 @@ function _fitgapRenderStackedBar(canvasId, rows, keyField) {
             tooltip: {
                 mode: "index", intersect: false,
                 callbacks: {
+                    label: (c) => _tooltipStackLabel(c),
                     afterLabel: (ctx) => {
                         const r = items[ctx.dataIndex];
                         return `Tổng: ${r.total} · %GAP: ${r.pct_gap}%`;
@@ -9676,7 +11088,10 @@ function _fitgapRenderStackedBar(canvasId, rows, keyField) {
             datalabels: _labelsForStackedBar(6),
         },
         scales: {
-            x: { beginAtZero: true, stacked: true, ticks: { font: { size: 10 } } },
+            x: Object.assign(
+                { beginAtZero: true, stacked: true, ticks: { font: { size: 10 } } },
+                fgPctScale.x || {}
+            ),
             y: { stacked: true, ticks: { font: { size: 10 } } },
         },
     });
@@ -10604,12 +12019,16 @@ function renderSlowHeatmapSection(slow) {
         const v = slow.heatmap[p][ph] || 0;
         if (v > max) max = v;
     }));
-    const cell = (v) => {
+    const cell = (pic, ph, v) => {
         if (v === 0) return `<td class="px-2 py-1 text-center text-gray-300">·</td>`;
         const ratio = max > 0 ? v / max : 0;
         const bg = `rgba(239, 68, 68, ${0.15 + ratio * 0.75})`;
         const txt = ratio > 0.5 ? "text-white" : "text-red-900";
-        return `<td class="px-2 py-1 text-center font-bold ${txt}" style="background:${bg}">${v}</td>`;
+        const title = `${pic} × ${ph}: ${v} function trễ — click xem danh sách + lý do`;
+        return `<td class="px-2 py-1 text-center font-bold ${txt} cursor-pointer hover:ring-2 hover:ring-red-400 hover:ring-inset"
+                    style="background:${bg}"
+                    title="${escapeAttr(title)}"
+                    onclick="openSlowHeatmapDrill('${escapeAttr(pic)}','${escapeAttr(ph)}')">${v}</td>`;
     };
     const wrap = document.getElementById("slowHeatmapWrap");
     if (!wrap) return;
@@ -10627,8 +12046,10 @@ function renderSlowHeatmapSection(slow) {
                 return `
                 <tr class="border-b">
                     <td class="px-2 py-1 font-medium sticky left-0 bg-white">${escapeHtml(p)}</td>
-                    ${phases.map(ph => cell(slow.heatmap[p][ph] || 0)).join("")}
-                    <td class="px-2 py-1 text-center font-bold text-gray-700">${total}</td>
+                    ${phases.map(ph => cell(p, ph, slow.heatmap[p][ph] || 0)).join("")}
+                    <td class="px-2 py-1 text-center font-bold text-gray-700 cursor-pointer hover:bg-red-50"
+                        title="${escapeAttr(p)}: ${total} trễ — click xem tất cả phase"
+                        onclick="openSlowHeatmapDrill('${escapeAttr(p)}','')">${total}</td>
                 </tr>`;
             }).join("")}
             </tbody>
@@ -10636,6 +12057,17 @@ function renderSlowHeatmapSection(slow) {
     renderPager("slowPagerWrap", "slow", picsSorted.length,
         () => renderSlowHeatmapSection(_lastSlowData));
 }
+
+/** Drill overdue theo PIC × Phase (heatmap «Ai đang chậm») — có cột Lý do. */
+window.openSlowHeatmapDrill = function (pic, phase) {
+    const filters = {};
+    if (pic) filters.pic = pic;
+    if (phase) filters.phase = phase;
+    const title = phase
+        ? `🐌 Trễ — ${pic} × ${phase}`
+        : `🐌 Trễ — PIC ${pic}`;
+    openDrillDown("overdue", filters, title);
+};
 
 // ------------------------------------------------------------------
 // P5 — Dependency + Baseline
@@ -11404,6 +12836,50 @@ function _execFmtDate(iso) {
     } catch (e) { return iso; }
 }
 
+/** Scroll tới section (hiện nếu đang ẩn). */
+function _execGoSection(sectionId) {
+    const el = document.getElementById(sectionId);
+    if (!el) return;
+    el.classList.remove("hidden");
+    if (typeof scrollToSection === "function") {
+        try { scrollToSection(sectionId); return; } catch (_) { /* fall through */ }
+    }
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+window._execGoSection = _execGoSection;
+
+window.execDrillAction = function (action) {
+    switch (action) {
+        case "pct_done":
+            _execGoSection("section-module");
+            break;
+        case "spi":
+        case "cpi":
+            _execGoSection("section-evm");
+            break;
+        case "forecast":
+            _execGoSection("section-forecast-gantt");
+            break;
+        case "scope_creep":
+            _execGoSection("section-scope-creep");
+            if (typeof loadScopeCreep === "function") {
+                try { loadScopeCreep(); } catch (_) {}
+            }
+            break;
+        case "high_risk":
+            openDrillDown("risk", { level: "high" }, "🔴 High risk — danh sách rủi ro");
+            break;
+        case "overdue":
+            openDrillDown("overdue", {}, "⚠️ Function trễ deadline");
+            break;
+        case "milestone":
+            _execGoSection("section-pm");
+            break;
+        default:
+            break;
+    }
+};
+
 function renderExecutiveDashboard(payload) {
     const section = document.getElementById("section-exec-dashboard");
     if (!section) return;
@@ -11414,29 +12890,47 @@ function renderExecutiveDashboard(payload) {
         const spiCls = _evmIndexClass(sm.spi);
         const cpiCls = _evmIndexClass(sm.cpi);
         const band = sm.forecast_band || {};
+        const clk = "cursor-pointer hover:ring-2 hover:ring-indigo-300 transition-shadow";
         cards.innerHTML = `
-            <div class="delta-card delta-positive"><div class="text-xs text-gray-500">% xong</div>
+            <div class="delta-card delta-positive ${clk}" onclick="execDrillAction('pct_done')"
+                 title="Xem tiến độ theo Module">
+                <div class="text-xs text-gray-500">% xong</div>
                 <div class="text-xl font-bold text-emerald-700">${sm.pct_done != null ? sm.pct_done + "%" : "—"}</div></div>
-            <div class="delta-card ${_evmCardTone(sm.spi)}"><div class="text-xs text-gray-500">SPI</div>
+            <div class="delta-card ${_evmCardTone(sm.spi)} ${clk}" onclick="execDrillAction('spi')"
+                 title="Xem Earned Value (SPI)">
+                <div class="text-xs text-gray-500">SPI</div>
                 <div class="text-xl font-bold ${spiCls}">${_evmFmtIndex(sm.spi)}</div></div>
-            <div class="delta-card ${_evmCardTone(sm.cpi)}"><div class="text-xs text-gray-500">CPI</div>
+            <div class="delta-card ${_evmCardTone(sm.cpi)} ${clk}" onclick="execDrillAction('cpi')"
+                 title="Xem Earned Value (CPI)">
+                <div class="text-xs text-gray-500">CPI</div>
                 <div class="text-xl font-bold ${cpiCls}">${_evmFmtIndex(sm.cpi)}</div></div>
-            <div class="delta-card delta-neutral"><div class="text-xs text-gray-500">Forecast</div>
+            <div class="delta-card delta-neutral ${clk}" onclick="execDrillAction('forecast')"
+                 title="Xem Forecast UAT/Golive">
+                <div class="text-xs text-gray-500">Forecast</div>
                 <div class="text-sm font-bold text-violet-800">${_execFmtDate(sm.forecast_date)}</div>
                 <div class="text-[10px] text-gray-500">Opt ${_execFmtDate(band.optimistic)} · Pes ${_execFmtDate(band.pessimistic)}</div></div>
-            <div class="delta-card delta-warning"><div class="text-xs text-gray-500">Scope creep</div>
+            <div class="delta-card delta-warning ${clk}" onclick="execDrillAction('scope_creep')"
+                 title="Xem Scope Creep / danh sách CR">
+                <div class="text-xs text-gray-500">Scope creep</div>
                 <div class="text-xl font-bold text-amber-700">${sm.scope_creep_pct != null ? sm.scope_creep_pct + "%" : "—"}</div>
                 <div class="text-[10px] text-gray-400">${sm.cr_count || 0} CR</div></div>
-            <div class="delta-card delta-negative"><div class="text-xs text-gray-500">High risk</div>
+            <div class="delta-card delta-negative ${clk}" onclick="execDrillAction('high_risk')"
+                 title="Xem danh sách High risk (drill-down)">
+                <div class="text-xs text-gray-500">High risk</div>
                 <div class="text-xl font-bold text-rose-700">${sm.high_risk_count != null ? sm.high_risk_count : "—"}</div>
-                <div class="text-[10px] text-gray-400">OD ${sm.total_overdue || 0}</div></div>`;
+                <div class="text-[10px] text-gray-400 underline decoration-dotted"
+                     onclick="event.stopPropagation();execDrillAction('overdue')"
+                     title="Xem function trễ deadline">OD ${sm.total_overdue || 0}</div></div>`;
     }
     const msWrap = document.getElementById("execMilestoneWrap");
     if (msWrap) {
         const ms = payload.milestones || [];
         msWrap.innerHTML = ms.length ? `<table class="fc-table text-xs w-full"><thead><tr>
             <th>Milestone</th><th>Tháng</th><th>Status</th><th>Ghi chú</th></tr></thead><tbody>
-            ${ms.map(m => `<tr><td>${escapeHtml(m.label || m.id || "")}</td>
+            ${ms.map(m => `<tr class="cursor-pointer hover:bg-indigo-50"
+                onclick="execDrillAction('milestone')"
+                title="Xem Chiều PM — milestone / lịch trình">
+                <td>${escapeHtml(m.label || m.id || "")}</td>
                 <td>${escapeHtml(m.month || m.date || "—")}</td>
                 <td>${escapeHtml(m.status || "—")}</td>
                 <td class="text-gray-500">${escapeHtml(m.text || "")}</td></tr>`).join("")}
@@ -11450,7 +12944,13 @@ function renderExecutiveDashboard(payload) {
             ${risks.map(r => {
                 const mit = r.mitigation || {};
                 const mitTxt = [mit.owner, mit.target_date, mit.note].filter(Boolean).join(" · ") || "—";
-                return `<tr><td class="font-mono">${escapeHtml(r.ma_cn || "")}</td>
+                const ma = r.ma_cn || "";
+                const rowClick = ma
+                    ? `onclick="openFunctionDetailByMaCn('${escapeAttr(ma)}')"`
+                    : `onclick="execDrillAction('high_risk')"`;
+                return `<tr class="cursor-pointer hover:bg-rose-50" ${rowClick}
+                    title="${escapeAttr(ma ? `Xem chi tiết ${ma}` : "Xem danh sách High risk")}">
+                    <td class="font-mono">${escapeHtml(ma)}</td>
                     <td>${escapeHtml(r.module || "")}</td>
                     <td class="text-right font-bold">${r.risk_score || 0}</td>
                     <td class="text-gray-600">${escapeHtml(mitTxt)}</td></tr>`;
@@ -11667,6 +13167,8 @@ function renderUatQualitySection(uq) {
         if (el) el.textContent = text;
     };
 
+    const proxyPanel = document.getElementById("uqProxyPanel");
+
     if (!uq || !uq.summary) {
         set("uqDefects", "—");
         set("uqFeedback", "—");
@@ -11684,6 +13186,7 @@ function renderUatQualitySection(uq) {
         }
         const msg = document.getElementById("uqMessages");
         if (msg) msg.innerHTML = `<p class="italic text-gray-400">Chưa có dữ liệu UAT Quality.</p>`;
+        if (proxyPanel) { proxyPanel.classList.add("hidden"); proxyPanel.innerHTML = ""; }
         const mod = document.getElementById("uqModuleWrap");
         if (mod) mod.innerHTML = "";
         const list = document.getElementById("uqListWrap");
@@ -11693,11 +13196,14 @@ function renderUatQualitySection(uq) {
 
     const sm = uq.summary;
     const det = uq.detection || {};
+    const hasCols = !!det.has_quality_columns;
+    const proxy = uq.uat_phase_proxy || null;
+    const showProxy = !hasCols && proxy && proxy.available;
 
     set("uqDefects", sm.total_defects != null ? sm.total_defects : "—");
     set("uqDefectsSub", sm.fns_with_defects != null
         ? `${sm.fns_with_defects} fn có lỗi` + (sm.avg_defects_per_fn != null ? ` · TB ${sm.avg_defects_per_fn}` : "")
-        : (det.has_quality_columns ? "—" : "Chưa có cột"));
+        : (hasCols ? "—" : "Chưa có cột Defect"));
     set("uqFeedback", sm.total_feedback != null ? sm.total_feedback : "—");
     const rate = sm.reopen_rate_pct;
     set("uqReopenRate", rate != null ? `${rate}%` : "—");
@@ -11729,6 +13235,9 @@ function renderUatQualitySection(uq) {
         } else if (det.mode === "tag") {
             badge.textContent = "Nguồn: tag UAT issue";
             badge.className = "bg-amber-50 text-amber-800 px-2 py-1 rounded border border-amber-200";
+        } else if (showProxy) {
+            badge.textContent = `Proxy: phase «${proxy.phase}»`;
+            badge.className = "bg-teal-50 text-teal-800 px-2 py-1 rounded border border-teal-200";
         } else {
             badge.textContent = "Nguồn: chưa có cột chất lượng";
             badge.className = "bg-gray-50 text-gray-600 px-2 py-1 rounded border";
@@ -11738,9 +13247,69 @@ function renderUatQualitySection(uq) {
     const msgWrap = document.getElementById("uqMessages");
     if (msgWrap) {
         const msgs = uq.messages || [];
-        msgWrap.innerHTML = msgs.length
-            ? msgs.map(m => `<p>⚠ ${escapeHtml(m)}</p>`).join("")
-            : "";
+        if (!hasCols) {
+            msgWrap.innerHTML = `
+                <div class="rounded border border-amber-200 bg-amber-50 px-3 py-2 space-y-1 text-amber-900">
+                    <p class="font-semibold text-sm">⚠ Chưa có số Defect / Feedback / Reopen — không bịa số</p>
+                    <p>Thêm cột trên Function List (header row 1):
+                        <b>«Số lỗi»</b> / Defect / Bug,
+                        <b>«Feedback»</b> / Phản hồi,
+                        <b>«Reopen»</b>,
+                        <b>«Số vòng UAT»</b> / UAT cycle
+                        — <i>không</i> dùng cột phase dạng «UAT - Status».</p>
+                    <p>Hoặc gắn tag <b>«UAT issue»</b> trên function để theo dõi qualitative.</p>
+                    ${msgs.filter(m => !/^Không có cột/i.test(m) && !/^Cách bổ sung/i.test(m))
+                        .map(m => `<p>⚠ ${escapeHtml(m)}</p>`).join("")}
+                </div>`;
+        } else {
+            msgWrap.innerHTML = msgs.length
+                ? msgs.map(m => `<p>⚠ ${escapeHtml(m)}</p>`).join("")
+                : "";
+        }
+    }
+
+    // Panel proxy tiến độ phase UAT (khi thiếu cột defect)
+    if (proxyPanel) {
+        if (showProxy) {
+            const sc = proxy.status_counts || {};
+            const statusBits = Object.entries(sc).slice(0, 8)
+                .map(([st, n]) => `<span class="inline-flex items-center gap-1 bg-white border rounded px-2 py-0.5">
+                    <b>${escapeHtml(st)}</b> ${n}</span>`).join(" ");
+            proxyPanel.classList.remove("hidden");
+            proxyPanel.innerHTML = `
+                <div class="flex flex-wrap items-start justify-between gap-2 mb-2">
+                    <div>
+                        <div class="text-sm font-semibold text-teal-900">${escapeHtml(proxy.label || "Proxy từ phase UAT (không phải defect)")}</div>
+                        <p class="text-[11px] text-teal-800 mt-0.5">Đếm Status phase «${escapeHtml(proxy.phase || "UAT")}» trên FL — chỉ tham khảo tiến độ UAT, không phải số lỗi.</p>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-2xl font-bold text-teal-800">${proxy.pct_uat_closed != null ? proxy.pct_uat_closed + "%" : "—"}</div>
+                        <div class="text-[10px] text-teal-700">% UAT Closed/Resolved</div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
+                    <div class="bg-white rounded border px-2 py-1.5 text-center">
+                        <div class="text-lg font-bold text-emerald-700">${proxy.closed_count ?? 0}</div>
+                        <div class="text-[10px] text-gray-500">Closed / Resolved</div>
+                    </div>
+                    <div class="bg-white rounded border px-2 py-1.5 text-center">
+                        <div class="text-lg font-bold text-blue-700">${proxy.in_progress_count ?? 0}</div>
+                        <div class="text-[10px] text-gray-500">In-progress / Assigned</div>
+                    </div>
+                    <div class="bg-white rounded border px-2 py-1.5 text-center">
+                        <div class="text-lg font-bold text-amber-700">${proxy.open_count ?? 0}</div>
+                        <div class="text-[10px] text-gray-500">Open / Pending</div>
+                    </div>
+                    <div class="bg-white rounded border px-2 py-1.5 text-center">
+                        <div class="text-lg font-bold text-gray-600">${proxy.blank_count ?? 0}</div>
+                        <div class="text-[10px] text-gray-500">Chưa có status</div>
+                    </div>
+                </div>
+                <div class="flex flex-wrap gap-1.5 text-[11px] text-teal-900">${statusBits}</div>`;
+        } else {
+            proxyPanel.classList.add("hidden");
+            proxyPanel.innerHTML = "";
+        }
     }
 
     const assum = document.getElementById("uqAssumptions");
@@ -11754,6 +13323,31 @@ function renderUatQualitySection(uq) {
         const mods = uq.modules || [];
         if (!mods.length) {
             modWrap.innerHTML = `<p class="text-gray-400 italic">Không có module.</p>`;
+        } else if (showProxy) {
+            modWrap.innerHTML = `
+                <p class="text-[10px] text-teal-800 mb-1 font-medium">Proxy tiến độ phase UAT theo module (không phải defect)</p>
+                <table class="fc-table text-xs">
+                    <thead>
+                        <tr>
+                            <th>Module</th>
+                            <th class="fc-th-right">Tổng</th>
+                            <th class="fc-th-right">Closed</th>
+                            <th class="fc-th-right">In-prog</th>
+                            <th class="fc-th-right">Open</th>
+                            <th class="fc-th-right">% UAT</th>
+                        </tr>
+                    </thead>
+                    <tbody>${mods.slice(0, 40).map(m => `
+                        <tr>
+                            <td>${escapeHtml(m.module)}</td>
+                            <td class="text-right"><span class="fc-num fc-num-hc">${m.total}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-good">${m.uat_closed ?? 0}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-neutral">${m.uat_in_progress ?? 0}</span></td>
+                            <td class="text-right"><span class="fc-num fc-num-warn">${m.uat_open ?? 0}</span></td>
+                            <td class="text-right"><span class="fc-num ${(m.pct_uat_closed || 0) >= 80 ? "fc-num-good" : "fc-num-neutral"}">${m.pct_uat_closed != null ? m.pct_uat_closed + "%" : "—"}</span></td>
+                        </tr>`).join("")}
+                    </tbody>
+                </table>`;
         } else {
             modWrap.innerHTML = `
                 <table class="fc-table text-xs">
@@ -11785,9 +13379,13 @@ function renderUatQualitySection(uq) {
     if (listWrap) {
         const items = uq.functions || [];
         if (!items.length) {
-            listWrap.innerHTML = det.has_quality_columns
+            listWrap.innerHTML = hasCols
                 ? `<p class="text-gray-400 italic px-1">Không có function có dữ liệu chất lượng.</p>`
-                : `<p class="text-gray-400 italic px-1">Thêm cột Defect/Reopen/UAT cycle hoặc gắn tag «UAT issue».</p>`;
+                : `<div class="text-xs text-gray-600 space-y-1 px-1">
+                    <p class="font-medium text-amber-800">Chưa có danh sách defect — FL thiếu cột chất lượng.</p>
+                    <p>Thêm cột <b>Số lỗi / Reopen / Số vòng UAT</b> rồi upload lại, hoặc gắn tag «UAT issue».</p>
+                    ${showProxy ? `<p class="text-teal-800">Tạm dùng proxy % Closed phase «${escapeHtml(proxy.phase)}» ở bảng module bên trái.</p>` : ""}
+                   </div>`;
         } else {
             const trunc = uq.functions_truncated || 0;
             listWrap.innerHTML = `
@@ -13741,26 +15339,63 @@ function _renderHiddenSectionPills() {
 }
 
 function _sectionShortLabel(sid) {
-    const map = {
-        "section-module": "Module", "section-tasktype": "Task type",
-        "section-matrix": "Matrix", "section-phase": "Phase",
-        "section-rlog": "Rlog tuần",
-        "section-pm": "Chiều PM",
-        "section-pic": "PIC", "section-effort": "Effort",
-        "section-priority": "Priority/Complexity/GAP",
-        "section-fitgap-dashboard": "FIT/GAP",
-        "section-function-diff": "Diff",
-        "section-giaidoan": "Giai đoạn", "section-process": "Quy trình",
-        "section-gantt": "Gantt", "section-duration": "Duration",
-        "section-burndown": "Burndown", "section-slow": "Slow",
-        "section-sla": "SLA", "section-capacity": "Capacity",
-        "section-pic-overload": "PIC Overload",
-        "section-deps": "Deps", "section-baseline": "Baseline",
-        "section-history": "History", "section-overdue": "Overdue",
-        "section-unassigned": "Unassigned", "section-risk": "Risk",
-        "section-stalled": "Đình trệ",
+    // Ưu tiên nhãn sidebar đã i18n
+    const a = document.querySelector(`#sidebarNav a[href="#${sid}"]`);
+    if (a && a.textContent.trim()) return a.textContent.trim();
+    const navKey = {
+        "section-summary": "nav.summary",
+        "section-module": "nav.module",
+        "section-tasktype": "nav.tasktype",
+        "section-matrix": "nav.matrix",
+        "section-phase": "nav.phase",
+        "section-giaidoan": "nav.giaidoan",
+        "section-gantt": "nav.gantt",
+        "section-forecast-gantt": "nav.forecast_gantt",
+        "section-forecast-manpower": "nav.forecast_manpower",
+        "section-estimate-ratio": "nav.estimate_ratio",
+        "section-gantt-calendar": "nav.gantt_calendar",
+        "section-burndown": "nav.burndown",
+        "section-rlog": "nav.rlog",
+        "section-overdue": "nav.overdue",
+        "section-unassigned": "nav.unassigned",
+        "section-stalled": "nav.stalled",
+        "section-risk": "nav.risk",
+        "section-aging-wip": "nav.aging",
+        "section-sla": "nav.sla",
+        "section-dataquality": "nav.dq",
+        "section-anomaly": "nav.anomaly",
+        "section-process": "nav.process",
+        "section-capacity": "nav.capacity",
+        "section-pic-overload": "nav.pic_overload",
+        "section-pic-upcoming": "nav.pic_upcoming",
+        "section-baseline": "nav.baseline",
+        "section-evm": "nav.evm",
+        "section-exec-dashboard": "nav.exec",
+        "section-scope-creep": "nav.scope_creep",
+        "section-uat-quality": "nav.uat_quality",
+        "section-effort": "nav.effort",
+        "section-duration": "nav.duration",
+        "section-slow": "nav.slow",
+        "section-deps": "nav.deps",
+        "section-kanban": "nav.kanban",
+        "section-pic": "nav.pic",
+        "section-priority": "nav.priority",
+        "section-fitgap-dashboard": "nav.fitgap",
+        "section-function-diff": "nav.diff",
+        "section-my-bookmarks": "nav.bookmarks",
+        "section-pm": "nav.pm",
+        "section-compare": "nav.compare",
+        "section-digest": "nav.digest",
+        "section-my-digests": "nav.my_digests",
+        "section-custom-dashboards": "nav.custom_dash",
+        "section-history": "nav.history",
     };
-    return map[sid] || sid.replace("section-", "");
+    const key = navKey[sid];
+    if (key && typeof I18n !== "undefined" && I18n.t) {
+        const v = I18n.t(key);
+        if (v && v !== key) return v;
+    }
+    return sid.replace(/^section-/, "");
 }
 
 window._unhideSection = async function (sid) {
@@ -14407,6 +16042,18 @@ window.onLangChanged = function (_lang) {
         && typeof _renderSidebarGroupsEditor === "function") {
         _renderSidebarGroupsEditor();
     }
+    // Risk table / factors / mitigation placeholders (JS-rendered)
+    try {
+        if (typeof renderRiskSection === "function" && metricsData && metricsData.risk_scores) {
+            renderRiskSection();
+        }
+        if (typeof renderPmoRiskDimensions === "function" && typeof _lastPmoRisk !== "undefined" && _lastPmoRisk) {
+            renderPmoRiskDimensions(_lastPmoRisk);
+        }
+        if (typeof renderRiskTrend === "function" && window._lastRiskTrend) {
+            renderRiskTrend(window._lastRiskTrend);
+        }
+    } catch (_) { /* ignore */ }
 };
 
 
@@ -14487,7 +16134,9 @@ async function loadSectionOrder() {
         }
         const data = await r.json();
         if (Array.isArray(data.order) && data.order.length) {
-            applySectionOrderToDom(data.order);
+            const migrated = (typeof migrateSectionOrder === "function")
+                ? migrateSectionOrder(data.order) : data.order;
+            applySectionOrderToDom(migrated);
             const btnReset = document.getElementById("btnLayoutReset");
             if (btnReset) btnReset.classList.remove("hidden");
         } else {
@@ -14660,6 +16309,9 @@ function _presentHideExtraneousOverlays() {
 const _PRESENT_LAZY_LOADERS = {
     "section-gantt-calendar": "loadGanttCalendar",
     "section-dataquality":    "loadDataQuality",
+    "section-fid-check":      "loadFidCheck",
+    "section-duration-flag":  "loadDurationFlag",
+    "section-weekly-gap":     "loadWeeklyGap",
     "section-aging-wip":      "loadAgingWip",
     "section-my-bookmarks":   "loadBookmarks",
     "section-my-digests":     "loadDigests",
@@ -14891,6 +16543,17 @@ function _presentExit() {
 // ========================================================================
 // T21 — DATA QUALITY PANEL
 // ========================================================================
+const _DQ_PAGE_KEY = "dq:pageSize";
+const _DQ_PAGE_SIZES = [5, 10, 20];
+
+function _dqLoadPageSize() {
+    try {
+        const v = parseInt(localStorage.getItem(_DQ_PAGE_KEY) || "", 10);
+        if (_DQ_PAGE_SIZES.includes(v)) return v;
+    } catch (_) { /* ignore */ }
+    return 10;
+}
+
 let _dqState = {
     issues: [],
     summary: null,
@@ -14898,7 +16561,8 @@ let _dqState = {
     filterCode: "all",
     filterModules: [],   // T35 Task 3 — local Module filter (client-side)
     page: 1,
-    pageSize: 30,
+    pageSize: _dqLoadPageSize(),
+    expandedRows: new Set(),  // thu gọn Chi tiết / Gợi ý mặc định
 };
 let _dqModuleMs = null;  // createMultiSelect instance
 
@@ -14913,7 +16577,9 @@ async function loadDataQuality() {
         _dqState.issues = d.issues || [];
         _dqState.summary = d.summary || null;
         _dqState.ownershipStats = d.ownership_stats || null;
+        _dqState.pageSize = _dqLoadPageSize();
         _dqState.page = 1;
+        _dqState.expandedRows = new Set();
 
         // Populate code + module filters
         _dqPopulateCodeFilter();
@@ -14935,6 +16601,167 @@ async function loadDataQuality() {
         section.classList.add("hidden");
     }
 }
+
+// ==========================================================================
+// FID CHECK — Dev Closed thiếu / trùng FID
+// ==========================================================================
+
+const _fidState = {
+    issues: [],
+    filtered: [],
+    page: 1,
+    pageSize: 50,
+};
+
+async function loadFidCheck() {
+    const section = document.getElementById("section-fid-check");
+    if (!section || !currentProjectSlug) return;
+    try {
+        const qs = _buildFilterQuery();
+        const url = `/api/projects/${currentProjectSlug}/fid-check${qs ? "?" + qs : ""}`;
+        const d = await apiJson(url);
+        _fidState.issues = d.issues || [];
+        _fidState.page = 1;
+
+        // Cảnh báo không có cột FID
+        const warn = document.getElementById("fidNoColumnWarn");
+        if (warn) warn.classList.toggle("hidden", d.fid_column_present !== false);
+
+        // Populate module filter
+        _fidPopulateModuleFilter();
+
+        section.classList.remove("hidden");
+        _fidRenderSummaryCards(d.summary || {});
+        _fidApplyFiltersAndRender();
+
+        // Cập nhật badge
+        _updateFidBadge(d.summary?.total_issues || 0);
+    } catch (err) {
+        console.error("[loadFidCheck]", err);
+        section.classList.add("hidden");
+    }
+}
+window.loadFidCheck = loadFidCheck;
+
+function _updateFidBadge(count) {
+    // Badge trên sidebar tab
+    document.querySelectorAll('[data-badge="fid_issues"]').forEach(el => {
+        el.textContent = count > 0 ? String(count) : "";
+        el.style.display = count > 0 ? "" : "none";
+    });
+}
+
+function _fidPopulateModuleFilter() {
+    const sel = document.getElementById("fidModuleFilter");
+    if (!sel) return;
+    const mods = [...new Set((_fidState.issues || []).map(it => it.module).filter(Boolean))].sort();
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Tất cả module</option>' +
+        mods.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join("");
+    if (mods.includes(cur)) sel.value = cur;
+    sel.onchange = () => { _fidState.page = 1; _fidApplyFiltersAndRender(); };
+}
+
+function _fidApplyFiltersAndRender() {
+    const mod = (document.getElementById("fidModuleFilter")?.value || "").trim();
+    const typ = (document.getElementById("fidTypeFilter")?.value || "").trim();
+    _fidState.filtered = (_fidState.issues || []).filter(it => {
+        if (mod && it.module !== mod) return false;
+        if (typ && it.issue_type !== typ) return false;
+        return true;
+    });
+    document.getElementById("fidTypeFilter").onchange = () => { _fidState.page = 1; _fidApplyFiltersAndRender(); };
+    _fidRenderTable();
+}
+
+function _fidRenderSummaryCards(summary) {
+    const el = document.getElementById("fidSummaryCards");
+    if (!el) return;
+    const total = summary.total_issues || 0;
+    const missing = summary.missing || 0;
+    const dup = summary.duplicate || 0;
+    const devClosed = summary.total_dev_closed_rows || 0;
+    el.innerHTML = `
+        <div class="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-red-700">${total}</div>
+            <div class="text-xs text-red-600 mt-1">Tổng issues</div>
+        </div>
+        <div class="bg-orange-50 border border-orange-200 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-orange-700">${missing}</div>
+            <div class="text-xs text-orange-600 mt-1">Thiếu FID</div>
+        </div>
+        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-yellow-700">${dup}</div>
+            <div class="text-xs text-yellow-600 mt-1">Trùng FID</div>
+        </div>
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-blue-700">${devClosed}</div>
+            <div class="text-xs text-blue-600 mt-1">Dev đã Closed</div>
+        </div>`;
+}
+
+function _fidRenderTable() {
+    const tbody = document.getElementById("fidCheckTable");
+    if (!tbody) return;
+    const items = _fidState.filtered || [];
+    const ps = _fidState.pageSize;
+    const page = _fidState.page;
+    const total = items.length;
+    const start = (page - 1) * ps;
+    const slice = items.slice(start, start + ps);
+
+    if (!slice.length) {
+        tbody.innerHTML = `<tr><td colspan="8" class="px-3 py-6 text-center text-gray-400">${
+            total === 0 ? "✅ Không có issue FID nào" : "Không có kết quả phù hợp"
+        }</td></tr>`;
+        document.getElementById("fidPagerWrap").innerHTML = "";
+        return;
+    }
+
+    const typeBadge = (t) => t === "missing_fid"
+        ? `<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">Thiếu FID</span>`
+        : `<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">Trùng FID</span>`;
+
+    tbody.innerHTML = slice.map((it, idx) => `
+        <tr class="border-t hover:bg-gray-50 text-sm">
+            <td class="px-2 py-2 text-gray-400">${start + idx + 1}</td>
+            <td class="px-2 py-2 font-mono text-xs">${escapeHtml(it.ma_cn || "")}</td>
+            <td class="px-2 py-2">${escapeHtml(it.ten_cn || "")}</td>
+            <td class="px-2 py-2">${escapeHtml(it.module || "")}</td>
+            <td class="px-2 py-2 font-mono text-xs ${it.fid ? "" : "text-gray-400 italic"}">${escapeHtml(it.fid || "—")}</td>
+            <td class="px-2 py-2">${typeBadge(it.issue_type)}</td>
+            <td class="px-2 py-2 text-xs text-gray-600">${escapeHtml(it.dev_phase || "")}</td>
+            <td class="px-2 py-2 text-xs text-gray-600">${escapeHtml(it.detail || "")}</td>
+        </tr>`).join("");
+
+    // Pager — dùng renderPager giống các section khác
+    if (!pageState.fid) pageState.fid = { page: 1, size: _fidState.pageSize };
+    pageState.fid.page = _fidState.page;
+    renderPager("fidPagerWrap", "fid", total, () => {
+        _fidState.page = pageState.fid?.page || 1;
+        _fidRenderTable();
+    });
+}
+
+async function exportFidIssuesFL() {
+    if (!currentProjectSlug) { showToast("Chưa chọn project", "red"); return; }
+    const params = new URLSearchParams();
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+    params.set("fid_issues", "1");
+    showToast("📥 Đang tạo FL update FID…");
+    try {
+        const url = `/api/projects/${currentProjectSlug}/export-fl-reimport?` + params.toString();
+        await downloadFile(url, `FL_FID_${currentProjectSlug}.xlsx`);
+    } catch (err) {
+        console.error("[exportFidIssuesFL]", err);
+        showToast("❌ Lỗi khi xuất FL FID", "red");
+    }
+}
+window.exportFidIssuesFL = exportFidIssuesFL;
+
+// ==========================================================================
 
 function _dqPopulateCodeFilter() {
     const sel = document.getElementById("dqCodeFilter");
@@ -15078,6 +16905,51 @@ function _dqFilteredIssues() {
     });
 }
 
+function _dqRowKey(it) {
+    return String(it.ownership_key || `${it.row_num}|${it.code}|${it.ma_cn}|${it.phase || ""}`);
+}
+
+function _dqPreviewText(text, maxLen) {
+    const s = String(text || "").trim();
+    if (!s) return "—";
+    if (s.length <= maxLen) return escapeHtml(s);
+    return escapeHtml(s.slice(0, maxLen)) + "…";
+}
+
+function _dqCollapsibleCell(text, expanded, rowKey, maxLen) {
+    const full = String(text || "").trim();
+    const needs = full.length > maxLen;
+    const body = expanded || !needs ? escapeHtml(full || "—") : _dqPreviewText(full, maxLen);
+    const tip = needs
+        ? (expanded ? "Thu gọn" : "Xem đầy đủ Chi tiết / Gợi ý")
+        : "";
+    const chevron = needs
+        ? `<span class="text-slate-400 ml-0.5">${expanded ? "▾" : "▸"}</span>`
+        : "";
+    return `<td class="px-2 py-1.5 text-xs text-gray-600 max-w-[14rem] ${needs ? "cursor-pointer hover:bg-slate-100" : ""}"
+                title="${escapeAttr(tip || full)}"
+                onclick="event.stopPropagation();_dqToggleExpand('${escapeAttr(rowKey)}')">
+        <span class="whitespace-pre-wrap break-words">${body}</span>${chevron}
+    </td>`;
+}
+
+window._dqToggleExpand = function (key) {
+    if (!key) return;
+    if (!_dqState.expandedRows) _dqState.expandedRows = new Set();
+    if (_dqState.expandedRows.has(key)) _dqState.expandedRows.delete(key);
+    else _dqState.expandedRows.add(key);
+    _dqRenderTable();
+};
+
+window._dqSetPageSize = function (sizeVal) {
+    const n = parseInt(sizeVal, 10);
+    if (!_DQ_PAGE_SIZES.includes(n)) return;
+    _dqState.pageSize = n;
+    _dqState.page = 1;
+    try { localStorage.setItem(_DQ_PAGE_KEY, String(n)); } catch (_) { /* ignore */ }
+    _dqRenderTable();
+};
+
 function _dqRenderTable() {
     const tbody = document.getElementById("dqTable");
     if (!tbody) return;
@@ -15087,7 +16959,7 @@ function _dqRenderTable() {
             ✅ Không có issue nào phù hợp filter. Dữ liệu clean!
         </td></tr>`;
         const pager = document.getElementById("dqPagerWrap");
-    try { applyColumnVisibility("dq"); } catch (e) {}
+        try { applyColumnVisibility("dq"); } catch (e) {}
         if (pager) pager.innerHTML = "";
         return;
     }
@@ -15113,17 +16985,21 @@ function _dqRenderTable() {
         };
         return `<span class="text-[10px] px-1.5 py-0.5 rounded ${map[st] || "bg-gray-100"}">${escapeHtml(st || "—")}</span>`;
     };
+    const expandedSet = _dqState.expandedRows || new Set();
     tbody.innerHTML = pageItems.map(it => {
         const key = escapeAttr(it.ownership_key || "");
+        const rowKey = _dqRowKey(it);
+        const expanded = expandedSet.has(rowKey);
         return `
-        <tr class="border-b hover:bg-slate-50">
+        <tr class="border-b hover:bg-slate-50 ${expanded ? "bg-slate-50/80" : ""}"
+            title="Click Chi tiết / Gợi ý để ${expanded ? "thu gọn" : "mở rộng"}">
             <td class="px-2 py-1.5 text-gray-500">${it.row_num}</td>
             <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.ma_cn || "—")}</td>
             <td class="px-2 py-1.5">${escapeHtml(it.ten_cn || "")}</td>
             <td class="px-2 py-1.5 text-blue-700">${escapeHtml(it.module || "")}</td>
             <td class="px-2 py-1.5 text-xs">${escapeHtml(it.phase || "")}</td>
             <td class="px-2 py-1.5">${sevBadge(it.severity)} ${escapeHtml(it.label)}</td>
-            <td class="px-2 py-1.5 text-xs text-gray-600">${escapeHtml(it.detail)}</td>
+            ${_dqCollapsibleCell(it.detail, expanded, rowKey, 48)}
             <td class="px-2 py-1.5">
                 <input type="text" class="border rounded px-1 py-0.5 text-[10px] w-24"
                        value="${escapeAttr(it.owner_pic || "")}" placeholder="PIC"
@@ -15138,17 +17014,26 @@ function _dqRenderTable() {
                 <label class="ml-1 text-[10px]"><input type="checkbox" ${it.resolved ? "checked" : ""}
                     onchange="saveDqOwnership('${key}', {resolved: this.checked})" /> xong</label>
             </td>
-            <td class="px-2 py-1.5 text-xs text-gray-700">${escapeHtml(it.suggestion)}</td>
+            ${_dqCollapsibleCell(it.suggestion, expanded, rowKey, 40)}
         </tr>`;
     }).join("");
-    // Pager đơn giản
+    try { applyColumnVisibility("dq"); } catch (e) {}
+    // Pager: 5 / 10 / 20 + prev/next
     const totalPages = Math.max(1, Math.ceil(items.length / _dqState.pageSize));
     const pager = document.getElementById("dqPagerWrap");
     if (pager) {
+        const sizeOpts = _DQ_PAGE_SIZES.map(n =>
+            `<option value="${n}" ${_dqState.pageSize === n ? "selected" : ""}>${n}</option>`
+        ).join("");
         pager.innerHTML = `
-            <div class="flex items-center justify-between text-xs text-gray-600">
+            <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-600">
                 <div>Hiển thị ${start + 1}–${Math.min(start + pageItems.length, items.length)} / ${items.length} issue</div>
-                <div class="flex items-center gap-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <label class="inline-flex items-center gap-1">Số dòng/trang
+                        <select onchange="_dqSetPageSize(this.value)" class="border rounded px-1.5 py-0.5">
+                            ${sizeOpts}
+                        </select>
+                    </label>
                     <button onclick="_dqGoPage(${_dqState.page - 1})" class="px-2 py-0.5 border rounded ${_dqState.page <= 1 ? "opacity-40 cursor-not-allowed" : "hover:bg-slate-100"}" ${_dqState.page <= 1 ? "disabled" : ""}>◀</button>
                     <span>Trang ${_dqState.page}/${totalPages}</span>
                     <button onclick="_dqGoPage(${_dqState.page + 1})" class="px-2 py-0.5 border rounded ${_dqState.page >= totalPages ? "opacity-40 cursor-not-allowed" : "hover:bg-slate-100"}" ${_dqState.page >= totalPages ? "disabled" : ""}>▶</button>
@@ -18482,32 +20367,36 @@ window._syncPickConfirm = _syncPickConfirm;
 function toggleSyncQuickMenu(event) {
     event?.stopPropagation();
     const menu = document.getElementById("syncQuickMenu");
+    const btn = document.getElementById("btnSyncQuick");
     if (!menu) return;
-    const hidden = menu.classList.contains("hidden");
+    const willOpen = menu.classList.contains("hidden");
     // Đóng menu header khác trước khi mở sync
     closeHdrMenus({ except: "syncQuickMenu" });
-    if (hidden) {
+    if (willOpen) {
         _integRefreshSyncQuickMenu();
         menu.classList.remove("hidden");
-        // Click ngoài → đóng
+        if (btn) btn.setAttribute("aria-expanded", "true");
         setTimeout(() => {
             document.addEventListener("click", _integCloseSyncMenuOnce, { once: true });
         }, 0);
     } else {
         menu.classList.add("hidden");
+        if (btn) btn.setAttribute("aria-expanded", "false");
     }
 }
+window.toggleSyncQuickMenu = toggleSyncQuickMenu;
 
 /** Đóng mọi dropdown header (Xuất / Thêm / Sync) trừ menu được chỉ định. */
 function closeHdrMenus(opts) {
     const except = opts && opts.except;
-    const ids = ["exportMenu", "moreMenu", "syncQuickMenu"];
+    const ids = ["importMenu", "exportMenu", "viewMenu", "moreMenu", "syncQuickMenu"];
     for (const id of ids) {
         if (except && id === except) continue;
         const el = document.getElementById(id);
         if (el) el.classList.add("hidden");
     }
-    for (const btnId of ["btnExportMenu", "btnMoreMenu"]) {
+    for (const btnId of ["btnImportMenu", "btnExportMenu", "btnViewMenu", "btnMoreMenu", "btnSyncQuick"]) {
+        if (except === "syncQuickMenu" && btnId === "btnSyncQuick") continue;
         const btn = document.getElementById(btnId);
         if (btn) btn.setAttribute("aria-expanded", "false");
     }
@@ -18533,8 +20422,10 @@ function toggleHdrMenu(menuId, btnId, event) {
 window.toggleHdrMenu = toggleHdrMenu;
 
 function _closeHdrMenusOnce(e) {
-    const menus = ["exportMenu", "moreMenu"].map((id) => document.getElementById(id));
-    const btns = ["btnExportMenu", "btnMoreMenu"].map((id) => document.getElementById(id));
+    const menus = ["importMenu", "exportMenu", "viewMenu", "moreMenu", "syncQuickMenu"]
+        .map((id) => document.getElementById(id));
+    const btns = ["btnImportMenu", "btnExportMenu", "btnViewMenu", "btnMoreMenu", "btnSyncQuick"]
+        .map((id) => document.getElementById(id));
     const inside = menus.some((m) => m && m.contains(e.target))
         || btns.some((b) => b && b.contains(e.target));
     if (inside) {
@@ -18553,6 +20444,7 @@ function _integCloseSyncMenuOnce(e) {
         return;
     }
     menu.classList.add("hidden");
+    if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
 async function _integRefreshSyncQuickMenu() {
@@ -18756,6 +20648,10 @@ async function loadGanttCalendar() {
 }
 
 function _renderGanttCalendar(data) {
+    return _renderGanttCalendarEnhanced(data);
+}
+
+function _renderGanttCalendarLegacy(data) {
     const container = document.getElementById("ganttCalendarContainer");
     const legend = document.getElementById("ganttCalendarLegend");
     const info = document.getElementById("ganttCalendarInfo");
@@ -18902,6 +20798,362 @@ function _renderGanttCalendar(data) {
  * T35 Task 2 — Render banner cảnh báo outlier + lưu state cho modal chi tiết.
  * Ẩn banner nếu không có outlier.
  */
+
+
+/** Gantt Calendar PM backlog #1–#8 (FE layer trên payload hiện có). */
+const _gcUiState = {
+    folded: {},          // group key → collapsed
+    simOffsets: {},      // rowKey → day offset (what-if)
+    showDeps: true,
+    showBaseline: true,
+    lastData: null,
+};
+
+function _gcRowKey(row) {
+    return `${row.module || ""}||${row.process || ""}||${row.name || ""}||${row.ma_cn || ""}`;
+}
+
+function _gcToggleFold(key) {
+    _gcUiState.folded[key] = !_gcUiState.folded[key];
+    if (_gcUiState.lastData) _renderGanttCalendarEnhanced(_gcUiState.lastData);
+}
+window._gcToggleFold = _gcToggleFold;
+
+function _gcResetSim() {
+    _gcUiState.simOffsets = {};
+    if (_gcUiState.lastData) _renderGanttCalendarEnhanced(_gcUiState.lastData);
+    if (typeof showToast === "function") showToast("Đã reset what-if Gantt (simulation)", "green");
+}
+window._gcResetSim = _gcResetSim;
+
+function _renderGanttCalendarEnhanced(data) {
+    _gcUiState.lastData = data;
+    const container = document.getElementById("ganttCalendarContainer");
+    const legend = document.getElementById("ganttCalendarLegend");
+    const info = document.getElementById("ganttCalendarInfo");
+    if (!container) return;
+
+    _renderGanttCalOutlierBanner(data.skipped_dates || [], data.skipped_count || 0);
+    _applyGanttCalZoomVars(container);
+
+    if (data.empty || !(data.rows || []).length || !(data.columns || []).length) {
+        container.innerHTML = `<div class="text-gray-400 text-center py-10 text-sm">
+            Không có dữ liệu để vẽ Gantt Calendar.<br>
+            <span class="text-xs">Function cần có Start/End date ở ít nhất 1 phase.</span>
+        </div>`;
+        if (legend) legend.innerHTML = "";
+        if (info) info.textContent = "";
+        return;
+    }
+
+    const simCount = Object.keys(_gcUiState.simOffsets).filter(k => _gcUiState.simOffsets[k]).length;
+    if (info) {
+        info.innerHTML =
+            `Range: ${data.min_date} → ${data.max_date} · ${data.columns.length} cột (${data.granularity})`
+            + ` · ${data.rows.length} row (${data.group_by})`
+            + (data.today_col !== null ? ` · Today #${data.today_col + 1}` : "")
+            + (simCount ? ` · <b class="text-orange-700">What-if: ${simCount} row</b> <button type="button" class="underline text-orange-700" onclick="_gcResetSim()">Reset</button>` : "");
+    }
+
+    const cats = data.legend || {};
+    const catColor = (k) => (cats[k] && cats[k].color) || "#94a3b8";
+    const gr = data.granularity;
+    const monthSpans = data.month_spans || [];
+    const weekSpans = data.week_spans || [];
+    const cellW = _gcCellW();
+    const todayCol = data.today_col;
+
+    let theadHtml = "";
+    theadHtml += `<tr><th class="gantt-cal-label-th" rowspan="${gr === "day" ? 3 : gr === "week" ? 2 : 1}">Module / QT / Function / Phase</th>`;
+    monthSpans.forEach(sp => { theadHtml += `<th colspan="${sp.colspan}">${escapeHtml(sp.label)}</th>`; });
+    theadHtml += `</tr>`;
+    if (gr === "day") {
+        theadHtml += `<tr>`;
+        weekSpans.forEach(sp => { theadHtml += `<th colspan="${sp.colspan}">${escapeHtml(sp.label)}</th>`; });
+        theadHtml += `</tr><tr>`;
+        data.columns.forEach(c => { theadHtml += `<th>${escapeHtml(c.label)}</th>`; });
+        theadHtml += `</tr>`;
+    } else if (gr === "week") {
+        theadHtml += `<tr>`;
+        data.columns.forEach(c => {
+            const extra = c.week_date_label ? `<br><span class="text-[9px] text-gray-500">${escapeHtml(c.week_date_label)}</span>` : "";
+            theadHtml += `<th>${escapeHtml(c.label)}${extra}</th>`;
+        });
+        theadHtml += `</tr>`;
+    }
+
+    // Hierarchical fold keys
+    const foldParent = (row) => {
+        if (data.group_by === "function") return `mod:${row.module || ""}`;
+        return `grp:${row.name || ""}`;
+    };
+
+    let tbodyHtml = "";
+    const rowMeta = []; // for dep lines
+    data.rows.forEach((row, rIdx) => {
+        const rk = _gcRowKey(row);
+        const parentKey = foldParent(row);
+        const folded = !!_gcUiState.folded[parentKey];
+        // For function view: show module header collapse
+        const isAgg = row.is_aggregate === true || (data.group_by !== "function");
+        const isCrit = !!row.on_critical_path;
+        const sim = Number(_gcUiState.simOffsets[rk] || 0);
+        const rowCls = [
+            isAgg ? "summary-row" : "",
+            isCrit ? "gantt-cal-critical" : "",
+            folded && !isAgg ? "gantt-cal-row-hidden" : "",
+        ].filter(Boolean).join(" ");
+
+        const foldBtn = isAgg
+            ? `<button type="button" class="gantt-cal-fold-btn" onclick="_gcToggleFold('${escapeAttr(parentKey)}')">${_gcUiState.folded[parentKey] ? "▶" : "▼"}</button>`
+            : "";
+
+        const labelExtras = [];
+        if (row.func_count) labelExtras.push(`${row.func_count} func`);
+        if (row.overdue_count) labelExtras.push(`<span class="text-red-600">⚠ ${row.overdue_count}</span>`);
+        if (sim) labelExtras.push(`<span class="text-orange-600">Δ${sim > 0 ? "+" : ""}${sim}d</span>`);
+        const labelSuffix = labelExtras.length ? `<span class="text-[10px] text-gray-500 ml-1">(${labelExtras.join(" · ")})</span>` : "";
+        const critBadge = isCrit ? `<span class="gantt-cal-crit-badge">CRITICAL</span>` : "";
+
+        tbodyHtml += `<tr class="${rowCls}" data-gc-row="${escapeAttr(rk)}" data-gc-idx="${rIdx}">
+            <td class="gantt-cal-label">${foldBtn}${escapeHtml(row.name)}${critBadge}${labelSuffix}</td>`;
+
+        const cells = row.cells || [];
+        const cellCats = row.cell_categories || [];
+        const segs = row.segments || [];
+        const midIdx = (row.span_start_col !== null && row.span_end_col !== null)
+            ? Math.floor((row.span_start_col + row.span_end_col) / 2) : null;
+
+        // Shift cells for simulation (day offset ≈ column shift for day gran; week/month approx)
+        const shift = sim ? Math.round(sim / (gr === "day" ? 1 : gr === "week" ? 7 : 30)) : 0;
+
+        cells.forEach((active, i) => {
+            const src = i - shift;
+            const srcActive = src >= 0 && src < cells.length ? cells[src] : false;
+            const isToday = (todayCol !== null && i === todayCol);
+            const pastToday = todayCol !== null && i < todayCol;
+            const classes = ["gantt-cal-cell"];
+            if (srcActive) classes.push("active");
+            if (isToday) classes.push("today-col");
+            // #6 overdue shading: active cell past today with incomplete pct
+            const incomplete = (row.pct || 0) < 100;
+            if (pastToday && incomplete && (srcActive || (row.overdue_count > 0 && i <= (row.span_end_col || -1)))) {
+                classes.push("overdue-shade");
+            }
+            let style = "position:relative;";
+            let inner = "";
+            if (srcActive) {
+                const catKey = (src >= 0 ? cellCats[src] : null) || row.category || "phase1";
+                const catHex = catColor(catKey);
+                const barLight = _hexLighten(catHex, 0.45);
+                // #7 % fill
+                const fillPct = Math.max(0, Math.min(100, Number(row.pct) || 0));
+                inner = `<div class="gantt-cal-bar-wrap" style="background:${barLight}" data-gc-drag="${escapeAttr(rk)}">`
+                    + `<div class="gantt-cal-bar-fill" style="width:${fillPct}%;background:${catHex}"></div></div>`;
+                if (midIdx === i || (shift && midIdx != null && midIdx + shift === i)) {
+                    inner += `<span class="gantt-cal-pct" style="color:${catHex};position:relative;z-index:2">${row.pct}%</span>`;
+                }
+            }
+            // #5 baseline ghost (nếu segment có baseline cols)
+            if (_gcUiState.showBaseline && segs.length) {
+                for (const sg of segs) {
+                    const bs = sg.baseline_span_start_col ?? sg.baseline_start_col;
+                    const be = sg.baseline_span_end_col ?? sg.baseline_end_col;
+                    if (bs == null || be == null) continue;
+                    if (i >= bs && i <= be) {
+                        inner += `<div class="gantt-cal-ghost" style="background:${catColor(sg.category || "phase1")}"></div>`;
+                        break;
+                    }
+                }
+            }
+            // #3 milestone diamond at segment end
+            for (const sg of segs) {
+                let endCol = sg.span_end_col;
+                if (endCol == null) continue;
+                endCol = endCol + shift;
+                if (endCol === i) {
+                    inner += `<div class="gantt-cal-diamond" style="left:50%;margin-left:-4px;background:${catColor(sg.category)}" title="Milestone: ${escapeAttr(sg.phase || "")}"></div>`;
+                }
+            }
+            tbodyHtml += `<td class="${classes.join(" ")}" style="${style}" data-col="${i}">${inner}</td>`;
+        });
+        tbodyHtml += `</tr>`;
+
+        rowMeta.push({ rk, rIdx, segs, shift, row });
+    });
+
+    const simBanner = simCount
+        ? `<div class="gantt-cal-sim-banner no-print">🧪 What-if (simulation only) — kéo bar để dịch ngày. Không ghi Function List.
+            <button type="button" class="underline ml-2" onclick="_gcResetSim()">Reset</button></div>`
+        : `<div class="gantt-cal-sim-banner no-print text-slate-600 bg-slate-50 border-slate-200">💡 Kéo thanh Gantt để mô phỏng lịch (what-if). Export PDF/PNG: nút bên dưới.</div>`;
+
+    container.innerHTML = simBanner + `<div class="gantt-cal-scroll relative" style="overflow:auto;position:relative">
+        <table class="gantt-cal-table" id="ganttCalTable">
+            <thead>${theadHtml}</thead>
+            <tbody>${tbodyHtml}</tbody>
+        </table>
+        <svg class="gantt-cal-dep-svg" id="ganttCalDepSvg"></svg>
+    </div>`;
+
+    // #6 Today dashed overlay
+    if (todayCol !== null && todayCol !== undefined) {
+        setTimeout(() => {
+            const scroll = container.querySelector(".gantt-cal-scroll");
+            const cell = container.querySelector("td.today-col");
+            if (!scroll || !cell) return;
+            let line = scroll.querySelector(".gantt-cal-today-line");
+            if (!line) {
+                line = document.createElement("div");
+                line.className = "gantt-cal-today-line";
+                scroll.appendChild(line);
+            }
+            const sRect = scroll.getBoundingClientRect();
+            const cRect = cell.getBoundingClientRect();
+            line.style.left = (cRect.left - sRect.left + scroll.scrollLeft + cRect.width / 2) + "px";
+            line.style.height = scroll.scrollHeight + "px";
+        }, 80);
+    }
+
+    // #1 Dependency FS lines (phase order same function)
+    if (_gcUiState.showDeps && data.group_by === "function") {
+        setTimeout(() => _gcDrawDepLines(container, rowMeta, data), 120);
+    }
+
+    // #2 Drag-to-reschedule what-if
+    _gcBindDragSim(container);
+
+    if (legend) {
+        const items = Object.entries(cats).map(([k, m]) => `
+            <span class="gantt-cal-legend-chip">
+                <span class="swatch" style="background:${m.color}"></span>
+                <span>${escapeHtml(m.label)}</span>
+            </span>`).join("");
+        legend.innerHTML = items
+            + `<span class="gantt-cal-legend-chip"><span class="swatch" style="background:#ec4899"></span><span>Today</span></span>`
+            + `<span class="gantt-cal-legend-chip"><span class="swatch" style="background:repeating-linear-gradient(45deg,#fecaca 0 3px,#fff 3px 6px)"></span><span>Overdue</span></span>`
+            + `<button type="button" class="text-xs underline ml-2" onclick="exportGanttCalendarImage('png')">🖼 PNG</button>`
+            + `<button type="button" class="text-xs underline ml-1" onclick="exportGanttCalendarImage('pdf')">📄 PDF</button>`;
+    }
+
+    if (todayCol !== null && todayCol !== undefined) {
+        setTimeout(() => _scrollGanttCalToTodayCol(todayCol), 100);
+    }
+}
+
+function _gcDrawDepLines(container, rowMeta, data) {
+    const svg = container.querySelector("#ganttCalDepSvg");
+    const table = container.querySelector("#ganttCalTable");
+    const scroll = container.querySelector(".gantt-cal-scroll");
+    if (!svg || !table || !scroll) return;
+    svg.setAttribute("width", String(scroll.scrollWidth));
+    svg.setAttribute("height", String(scroll.scrollHeight));
+    svg.innerHTML = "";
+    const sRect = scroll.getBoundingClientRect();
+
+    rowMeta.forEach((meta) => {
+        const segs = (meta.segs || []).slice().sort((a, b) => (a.span_start_col || 0) - (b.span_start_col || 0));
+        if (segs.length < 2) return;
+        const tr = container.querySelector(`tr[data-gc-row="${CSS.escape(meta.rk)}"]`);
+        if (!tr) return;
+        for (let i = 0; i < segs.length - 1; i++) {
+            const a = segs[i];
+            const b = segs[i + 1];
+            const aEnd = (a.span_end_col || 0) + (meta.shift || 0);
+            const bStart = (b.span_start_col || 0) + (meta.shift || 0);
+            const tdA = tr.querySelector(`td[data-col="${aEnd}"]`);
+            const tdB = tr.querySelector(`td[data-col="${bStart}"]`);
+            if (!tdA || !tdB) continue;
+            const rA = tdA.getBoundingClientRect();
+            const rB = tdB.getBoundingClientRect();
+            const x1 = rA.right - sRect.left + scroll.scrollLeft;
+            const y1 = rA.top + rA.height / 2 - sRect.top + scroll.scrollTop;
+            const x2 = rB.left - sRect.left + scroll.scrollLeft;
+            const y2 = rB.top + rB.height / 2 - sRect.top + scroll.scrollTop;
+            const mid = (x1 + x2) / 2;
+            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            path.setAttribute("d", `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`);
+            path.setAttribute("stroke", "#64748b");
+            path.setAttribute("stroke-width", "1.25");
+            path.setAttribute("fill", "none");
+            path.setAttribute("marker-end", "url(#gcArrow)");
+            svg.appendChild(path);
+        }
+    });
+    // arrowhead
+    if (!svg.querySelector("defs")) {
+        const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        defs.innerHTML = `<marker id="gcArrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#64748b"/></marker>`;
+        svg.insertBefore(defs, svg.firstChild);
+    }
+}
+
+function _gcBindDragSim(container) {
+    let drag = null;
+    container.querySelectorAll("[data-gc-drag]").forEach((el) => {
+        el.style.cursor = "grab";
+        el.addEventListener("pointerdown", (ev) => {
+            ev.preventDefault();
+            const rk = el.getAttribute("data-gc-drag");
+            drag = { rk, x0: ev.clientX, base: Number(_gcUiState.simOffsets[rk] || 0) };
+            el.setPointerCapture(ev.pointerId);
+        });
+        el.addEventListener("pointerup", (ev) => {
+            if (!drag) return;
+            const dx = ev.clientX - drag.x0;
+            const days = Math.round(dx / Math.max(8, _gcCellW()));
+            if (days) {
+                _gcUiState.simOffsets[drag.rk] = drag.base + days;
+                _renderGanttCalendarEnhanced(_gcUiState.lastData);
+            }
+            drag = null;
+        });
+    });
+}
+
+/** #8 Export Gantt fit-to-page PNG/PDF */
+async function exportGanttCalendarImage(mode) {
+    const el = document.getElementById("ganttCalendarContainer");
+    if (!el) return;
+    if (typeof html2canvas !== "function") {
+        if (typeof showToast === "function") showToast("html2canvas chưa sẵn sàng", "red");
+        return;
+    }
+    try {
+        if (typeof showToast === "function") showToast("Đang xuất Gantt…");
+        const canvas = await html2canvas(el, { backgroundColor: "#ffffff", scale: 2, useCORS: true });
+        if (mode === "png") {
+            const a = document.createElement("a");
+            a.href = canvas.toDataURL("image/png");
+            a.download = `Gantt_Calendar_${currentProjectSlug || "project"}.png`;
+            a.click();
+            return;
+        }
+        // PDF fit-to-page
+        const { jsPDF } = window.jspdf || {};
+        if (!jsPDF) {
+            showToast("jsPDF chưa sẵn sàng", "red");
+            return;
+        }
+        const pdf = new jsPDF({ orientation: canvas.width > canvas.height ? "l" : "p", unit: "pt", format: "a4" });
+        const pageW = pdf.internal.pageSize.getWidth();
+        const pageH = pdf.internal.pageSize.getHeight();
+        const margin = 24;
+        const maxW = pageW - margin * 2;
+        const maxH = pageH - margin * 2;
+        const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+        const w = canvas.width * scale;
+        const h = canvas.height * scale;
+        const x = (pageW - w) / 2;
+        const y = (pageH - h) / 2;
+        pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", x, y, w, h);
+        pdf.save(`Gantt_Calendar_${currentProjectSlug || "project"}.pdf`);
+    } catch (err) {
+        console.error(err);
+        if (typeof showToast === "function") showToast("Xuất Gantt thất bại: " + err.message, "red");
+    }
+}
+window.exportGanttCalendarImage = exportGanttCalendarImage;
+
 function _renderGanttCalOutlierBanner(skippedDates, count) {
     const banner = document.getElementById("ganttCalOutlierBanner");
     const msg = document.getElementById("ganttCalOutlierMsg");
@@ -19233,15 +21485,16 @@ function _helpGlobalOpenTopic(key) {
 }
 window._helpGlobalOpenTopic = _helpGlobalOpenTopic;
 
-// Phím tắt Ctrl+/ mở global help + Esc đóng
+// Phím tắt Ctrl+/ → sidebar search; Ctrl+Shift+/ → global help; Esc đóng
 document.addEventListener("keydown", (e) => {
-    // Ctrl+/ (hoặc Cmd+/) mở global help
     if ((e.ctrlKey || e.metaKey) && e.key === "/") {
         e.preventDefault();
-        // Toggle nếu đang mở
-        const modal = document.getElementById("globalHelpModal");
-        if (modal && !modal.classList.contains("hidden")) {
-            closeGlobalHelpModal();
+        if (e.shiftKey) {
+            const modal = document.getElementById("globalHelpModal");
+            if (modal && !modal.classList.contains("hidden")) closeGlobalHelpModal();
+            else openGlobalHelpModal();
+        } else if (typeof focusSidebarSearch === "function") {
+            focusSidebarSearch();
         } else {
             openGlobalHelpModal();
         }
@@ -20011,12 +22264,14 @@ window.fgZoomIn = fgZoomIn;
 window.fgZoomOut = fgZoomOut;
 window.fgZoomReset = fgZoomReset;
 
+// Categorical order cố định (blue → orange → aqua → yellow → green) — tránh
+// cặp tím/tím (analysis/uat) sát nhau khó phân biệt của bản cũ.
 const _FG_MS_COLORS = {
-    analysis: "#8b5cf6",
-    dev: "#3b82f6",
-    config: "#14b8a6",
-    uat: "#7c3aed",
-    golive: "#059669",
+    analysis: "#2a78d6",
+    dev: "#eb6834",
+    config: "#1baf7a",
+    uat: "#eda100",
+    golive: "#008300",
 };
 
 function _fgT(key, fallback) {
@@ -20215,50 +22470,188 @@ function _fgAssessmentHtml(assess) {
     return `<span class="fg-assess ${cls}" title="${escapeHtml(text)}">${escapeHtml(text)}</span>`;
 }
 
-function _fgBarHtml(m, info, months, cellW, tipExtra, baselineInfo) {
-    const span = _fgSpanIndices(months, info);
-    if (!span) return "";
-    const color = _FG_MS_COLORS[m.id] || "#64748b";
-    const left = span.i0 * cellW + 3;
-    const width = Math.max(cellW - 6, (span.i1 - span.i0 + 1) * cellW - 6);
-    const letter = m.id === "uat" ? "U" : m.id === "golive" ? "G" : m.id.charAt(0).toUpperCase();
-    const mi = _fgMonthIndex(months, info.month);
-    let svTip = "";
-    if (baselineInfo && baselineInfo.sv_days != null) {
+function _fgMsLetter(m) {
+    if (!m) return "?";
+    if (m.id === "analysis") return "A";
+    if (m.id === "dev") return "D";
+    if (m.id === "config") return "C";
+    if (m.id === "uat") return "U";
+    if (m.id === "golive") return "G";
+    return String(m.id || "?").charAt(0).toUpperCase();
+}
+
+function _fgPctClosed(info) {
+    if (!info) return 0;
+    if (info.pct_closed != null && info.pct_closed !== "") {
+        const p = Number(info.pct_closed);
+        return Number.isFinite(p) ? Math.max(0, Math.min(100, p)) : 0;
+    }
+    const total = Number(info.total) || 0;
+    const closed = Number(info.closed) || 0;
+    return total > 0 ? Math.round((1000 * closed) / total) / 10 : 0;
+}
+
+function _fgRemainCount(info) {
+    if (!info) return 0;
+    if (info.open != null && info.open !== "") return Math.max(0, Number(info.open) || 0);
+    const total = Number(info.total) || 0;
+    const closed = Number(info.closed) || 0;
+    return Math.max(0, total - closed);
+}
+
+function _fgHasAnyBaseline(data) {
+    return (data?.projects || []).some(p => {
+        const ms = (p.baseline_sv || {}).milestones || {};
+        return Object.values(ms).some(b => b && (b.baseline_month || b.baseline_span_start));
+    });
+}
+
+/** Tooltip giàu thông tin cho thanh / diamond forecast. */
+function _fgRichTip(m, info, baselineInfo, tipExtra) {
+    const pct = _fgPctClosed(info);
+    const remain = _fgRemainCount(info);
+    const closed = info?.closed ?? 0;
+    const total = info?.total ?? 0;
+    const parts = [
+        m.label || "",
+        `${_fgT("fg.tip_start", "Start")}: ${_fgFmtMonth(info?.span_start) || "—"}`,
+        `${_fgT("fg.tip_forecast", "Forecast end")}: ${_fgFmtMonth(info?.month) || "—"}`
+            + (info?.date ? ` (${info.date})` : ""),
+        `${_fgT("fg.tip_closed", "Closed")}: ${closed}/${total} (${pct}%)`,
+        `${_fgT("fg.tip_remain", "Còn lại")}: ${remain}`,
+    ];
+    if (baselineInfo && (baselineInfo.baseline_month || baselineInfo.sv_days != null)) {
         const s = baselineInfo.sv_days;
-        svTip = ` · SV ${s > 0 ? "+" : ""}${s}d vs baseline ${baselineInfo.baseline_month || ""}`;
+        const svTxt = s == null ? "—" : `${s > 0 ? "+" : ""}${s}d`;
+        parts.push(
+            `${_fgT("fg.tip_baseline", "Baseline")}: ${_fgFmtMonth(baselineInfo.baseline_month) || "—"}`
+            + ` · SV ${svTxt}`
+        );
     }
-    const title = `${m.label}: ${_fgFmtMonth(info.span_start) || "?"}→${_fgFmtMonth(info.span_end) || "?"} · `
-        + `tháng ${_fgFmtMonth(info.month)} (${info.source || ""}) · Closed ${info.closed ?? 0}/${info.total ?? 0}`
-        + svTip
-        + (tipExtra ? ` · ${tipExtra}` : "");
-    let html = `<div class="fg-bar${m.highlight ? " fg-bar-hi" : ""}" `
-        + `style="left:${left}px;width:${width}px;background:${color}" `
-        + `title="${escapeHtml(title)}"></div>`;
-    if (mi >= 0) {
-        const mLeft = mi * cellW + cellW / 2 - 7;
-        html += `<div class="fg-marker${m.highlight ? " fg-marker-hi" : ""}" `
-            + `style="left:${mLeft}px;background:${color}" title="${escapeHtml(title)}">`
-            + `${escapeHtml(letter)}</div>`;
+    if (info?.assessment?.text) parts.push(info.assessment.text);
+    if (tipExtra) parts.push(tipExtra);
+    return parts.filter(Boolean).join(" · ");
+}
+
+function _fgMetaHtml(info, baselineInfo, isEmpty) {
+    if (isEmpty) {
+        return `<div class="fg-gantt-meta fg-gantt-meta-empty" aria-hidden="true"></div>`;
     }
-    // Phase A — baseline diamond marker + SV chip
-    if (baselineInfo && baselineInfo.baseline_month) {
+    const pct = _fgPctClosed(info);
+    const remain = _fgRemainCount(info);
+    const sv = baselineInfo ? baselineInfo.sv_days : null;
+    const svTxt = sv == null ? "—" : `${sv > 0 ? "+" : ""}${sv}d`;
+    const svCls = sv == null ? "fg-meta-sv muted"
+        : baselineInfo.late ? "fg-meta-sv late"
+        : baselineInfo.early ? "fg-meta-sv early"
+        : "fg-meta-sv ok";
+    return `<div class="fg-gantt-meta" title="${escapeHtml(_fgRichTip({ label: "" }, info, baselineInfo))}">`
+        + `<span class="fg-meta-pct">${pct}%</span>`
+        + `<span class="${svCls}">${escapeHtml(svTxt)}</span>`
+        + `<span class="fg-meta-remain">${remain}</span>`
+        + `</div>`;
+}
+
+function _fgMetaHeadHtml() {
+    return `<div class="fg-gantt-meta fg-gantt-meta-head" title="${escapeHtml(
+        _fgT("fg.meta_head_tip", "% hoàn thành · SV (ngày) · Số còn lại")
+    )}">`
+        + `<span>${_fgT("fg.meta_pct", "%")}</span>`
+        + `<span>${_fgT("fg.meta_sv", "SV")}</span>`
+        + `<span>${_fgT("fg.meta_remain", "Còn")}</span>`
+        + `</div>`;
+}
+
+function _fgLegendBaselineHtml(data) {
+    if (_fgHasAnyBaseline(data)) {
+        return `<span class="ml-2"><i class="fg-legend-bl"></i>${_fgT("fg.legend_baseline", "Baseline (ghost)")}</span>`
+            + `<span class="ml-2"><i class="fg-legend-forecast"></i>${_fgT("fg.legend_forecast", "Tháng forecast ◆")}</span>`
+            + `<span class="ml-2"><i class="fg-legend-overdue"></i>${_fgT("fg.legend_overdue", "Quá hạn (chưa Closed)")}</span>`;
+    }
+    return `<span class="ml-2 text-slate-400 italic">${_fgT("fg.legend_no_baseline", "Baseline: chưa gắn snapshot")}</span>`
+        + `<span class="ml-2"><i class="fg-legend-forecast"></i>${_fgT("fg.legend_forecast", "Tháng forecast ◆")}</span>`
+        + `<span class="ml-2"><i class="fg-legend-overdue"></i>${_fgT("fg.legend_overdue", "Quá hạn (chưa Closed)")}</span>`;
+}
+
+/**
+ * Thanh Gantt = span duration; diamond ◆ = tháng forecast (tách khỏi tip bar).
+ * Ghost bar = baseline span; fill đậm = % Closed; sọc đỏ = phần quá Today khi còn mở.
+ */
+function _fgBarHtml(m, info, months, cellW, tipExtra, baselineInfo, todayIdx) {
+    const span = _fgSpanIndices(months, info || {});
+    const hasBl = !!(baselineInfo && (baselineInfo.baseline_month
+        || baselineInfo.baseline_span_start || baselineInfo.baseline_span_end));
+    if (!span && !hasBl) return "";
+
+    const color = _FG_MS_COLORS[m.id] || "#64748b";
+    const letter = _fgMsLetter(m);
+    const pct = _fgPctClosed(info);
+    const remain = _fgRemainCount(info);
+    const mi = _fgMonthIndex(months, info?.month);
+    const title = _fgRichTip(m, info || {}, baselineInfo, tipExtra);
+    let html = "";
+
+    // Ghost bar baseline (không bịa nếu không có snapshot)
+    if (hasBl) {
+        const blSpan = _fgSpanIndices(months, {
+            span_start: baselineInfo.baseline_span_start || baselineInfo.baseline_month,
+            span_end: baselineInfo.baseline_span_end || baselineInfo.baseline_month,
+            month: baselineInfo.baseline_month,
+        });
+        if (blSpan) {
+            const bLeft = blSpan.i0 * cellW + 3;
+            const bWidth = Math.max(cellW - 6, (blSpan.i1 - blSpan.i0 + 1) * cellW - 6);
+            const blTip = `${_fgT("fg.tip_baseline", "Baseline")}: `
+                + `${_fgFmtMonth(baselineInfo.baseline_span_start || baselineInfo.baseline_month)}→`
+                + `${_fgFmtMonth(baselineInfo.baseline_span_end || baselineInfo.baseline_month)}`
+                + (baselineInfo.sv_days != null
+                    ? ` · SV ${baselineInfo.sv_days > 0 ? "+" : ""}${baselineInfo.sv_days}d`
+                    : "");
+            html += `<div class="fg-bar-ghost" style="left:${bLeft}px;width:${bWidth}px" `
+                + `title="${escapeHtml(blTip)}"></div>`;
+        }
+        // Mốc tháng baseline nhỏ (phân biệt diamond forecast)
         const bi = _fgMonthIndex(months, baselineInfo.baseline_month);
         if (bi >= 0) {
-            const bLeft = bi * cellW + cellW / 2 - 5;
-            const late = baselineInfo.late;
-            const early = baselineInfo.early;
-            const bCls = late ? "fg-bl-late" : early ? "fg-bl-early" : "fg-bl-ok";
+            const bLeft = bi * cellW + cellW / 2 - 4;
+            const bCls = baselineInfo.late ? "fg-bl-late"
+                : baselineInfo.early ? "fg-bl-early" : "fg-bl-ok";
             html += `<div class="fg-baseline-mark ${bCls}" style="left:${bLeft}px" `
-                + `title="Baseline ${escapeHtml(baselineInfo.baseline_month)}`
-                + `${baselineInfo.sv_days != null ? " · SV " + (baselineInfo.sv_days > 0 ? "+" : "") + baselineInfo.sv_days + "d" : ""}"></div>`;
+                + `title="${escapeHtml(_fgT("fg.tip_baseline", "Baseline") + " "
+                    + _fgFmtMonth(baselineInfo.baseline_month))}"></div>`;
         }
-        if (baselineInfo.sv_days != null && mi >= 0) {
-            const s = baselineInfo.sv_days;
-            const chipCls = baselineInfo.late ? "fg-sv-late" : baselineInfo.early ? "fg-sv-early" : "fg-sv-ok";
-            const chipLeft = mi * cellW + cellW - 2;
-            html += `<span class="fg-sv-chip ${chipCls}" style="left:${chipLeft}px">`
-                + `${s > 0 ? "+" : ""}${s}d</span>`;
+    }
+
+    if (span) {
+        const left = span.i0 * cellW + 3;
+        const width = Math.max(cellW - 6, (span.i1 - span.i0 + 1) * cellW - 6);
+        const fillPct = Math.max(0, Math.min(100, pct));
+        html += `<div class="fg-bar${m.highlight ? " fg-bar-hi" : ""}" `
+            + `style="left:${left}px;width:${width}px;--fg-c:${color}" `
+            + `title="${escapeHtml(title)}">`
+            + `<div class="fg-bar-fill" style="width:${fillPct}%"></div>`
+            + `<span class="fg-bar-pct">${fillPct % 1 ? fillPct.toFixed(1) : fillPct}%</span>`
+            + `</div>`;
+
+        // Phần bar sau Today khi milestone chưa Closed hết → sọc đỏ
+        const stillOpen = remain > 0 || (info && info.source === "open_max");
+        if (stillOpen && todayIdx != null && todayIdx >= 0 && span.i1 >= todayIdx) {
+            const bleedStart = Math.max(span.i0, todayIdx);
+            const bleedLeft = bleedStart * cellW + (bleedStart === span.i0 ? 3 : 0);
+            const barRight = left + width;
+            const bleedW = Math.max(0, barRight - bleedLeft);
+            if (bleedW > 2) {
+                html += `<div class="fg-bar-overdue" style="left:${bleedLeft}px;width:${bleedW}px" `
+                    + `title="${escapeHtml(_fgT("fg.tip_overdue", "Quá hạn — còn việc chưa Closed"))}"></div>`;
+            }
+        }
+
+        // Diamond forecast ◆ — tháng dự báo, không gắn tip bar
+        if (mi >= 0) {
+            const mLeft = mi * cellW + cellW / 2 - 9;
+            html += `<div class="fg-forecast-diamond${m.highlight ? " fg-forecast-diamond-hi" : ""}" `
+                + `style="left:${mLeft}px;--fg-c:${color}" title="${escapeHtml(title)}">`
+                + `<span>${escapeHtml(letter)}</span></div>`;
         }
     }
     return html;
@@ -20306,6 +22699,7 @@ function _renderFgGanttByProject(data) {
     }
     // Label rộng hơn để indent milestone con
     const labelW = 200;
+    const metaW = 118;
     const cellW = _fgCellW();
     const today = new Date();
     const todayMk = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
@@ -20315,15 +22709,15 @@ function _renderFgGanttByProject(data) {
         if (dir > 0) fgZoomIn(); else fgZoomOut();
     });
 
-    let html = `<div class="fg-gantt" style="--fg-label-w:${labelW}px;--fg-cell-w:${cellW}px">`;
-    html += `<div class="fg-gantt-ruler"><div class="fg-gantt-label">Dự án</div>`
-         + `<div class="fg-gantt-track">`;
+    let html = `<div class="fg-gantt" style="--fg-label-w:${labelW}px;--fg-cell-w:${cellW}px;--fg-meta-w:${metaW}px">`;
+    html += `<div class="fg-gantt-ruler"><div class="fg-gantt-label">${_fgT("fg.col_project", "Dự án")}</div>`
+         + `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
     months.forEach((mk, i) => {
         const isToday = i === todayIdx;
         html += `<div class="fg-gantt-tick${isToday ? " fg-today" : ""}" title="${mk}">`
              + `${_fgFmtMonth(mk)}</div>`;
     });
-    html += `</div></div>`;
+    html += `</div>${_fgMetaHeadHtml()}</div>`;
 
     for (const proj of projects) {
         const slug = proj.slug || proj.name || "";
@@ -20340,18 +22734,28 @@ function _renderFgGanttByProject(data) {
              + `<span class="fg-proj-name">${escapeHtml(proj.name || slug)}</span></div>`;
         html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
         html += _fgSummaryBarHtml(union, months, cellW, sumTitle);
-        html += `</div></div>`;
+        if (todayIdx >= 0) {
+            html += `<div class="fg-today-line" style="left:${todayIdx * cellW + cellW / 2}px" title="Today"></div>`;
+        }
+        html += `</div>${_fgMetaHtml(null, null, true)}</div>`;
 
         if (!folded) {
             for (const m of milestones) {
                 const info = (proj.milestones || {})[m.id] || {};
+                const color = _FG_MS_COLORS[m.id] || "#64748b";
+                const letter = _fgMsLetter(m);
                 html += `<div class="fg-gantt-row fg-gantt-row-child">`
                      + `<div class="fg-gantt-label fg-gantt-label-child" title="${escapeHtml(m.label)}">`
-                     + `<span class="fg-tree-prefix">└</span> ${escapeHtml(m.label)}</div>`;
+                     + `<span class="fg-tree-prefix">└</span>`
+                     + `<span class="fg-ms-badge" style="background:${color}">${escapeHtml(letter)}</span>`
+                     + ` ${escapeHtml(m.label)}</div>`;
                 html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
                 const blInfo = ((proj.baseline_sv || {}).milestones || {})[m.id];
-                html += _fgBarHtml(m, info, months, cellW, null, blInfo);
-                html += `</div></div>`;
+                html += _fgBarHtml(m, info, months, cellW, null, blInfo, todayIdx);
+                if (todayIdx >= 0) {
+                    html += `<div class="fg-today-line" style="left:${todayIdx * cellW + cellW / 2}px" title="Today"></div>`;
+                }
+                html += `</div>${_fgMetaHtml(info, blInfo, false)}</div>`;
             }
         }
         html += `</div>`;
@@ -20360,7 +22764,7 @@ function _renderFgGanttByProject(data) {
     html += `<div class="fg-legend mt-2">` + milestones.map(m =>
         `<span><i style="background:${_FG_MS_COLORS[m.id] || "#64748b"}"></i>${escapeHtml(m.label)}</span>`
     ).join("")
-        + `<span class="ml-2"><i class="fg-legend-bl"></i>Baseline</span>`
+        + _fgLegendBaselineHtml(data)
         + `</div>`;
     wrap.innerHTML = html;
 }
@@ -20372,6 +22776,7 @@ function _renderFgGanttByMilestone(data) {
     const milestones = data.milestones || [];
     const projects = data.projects || [];
     const labelW = 160;
+    const metaW = 118;
     const cellW = _fgCellW();
     const today = new Date();
     const todayMk = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
@@ -20381,20 +22786,24 @@ function _renderFgGanttByMilestone(data) {
         if (dir > 0) fgZoomIn(); else fgZoomOut();
     });
 
-    let html = `<div class="fg-gantt" style="--fg-label-w:${labelW}px;--fg-cell-w:${cellW}px">`;
-    html += `<div class="fg-gantt-ruler"><div class="fg-gantt-label">Milestone</div>`
-         + `<div class="fg-gantt-track">`;
+    let html = `<div class="fg-gantt" style="--fg-label-w:${labelW}px;--fg-cell-w:${cellW}px;--fg-meta-w:${metaW}px">`;
+    html += `<div class="fg-gantt-ruler"><div class="fg-gantt-label">${_fgT("fg.col_milestone", "Milestone")}</div>`
+         + `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
     months.forEach((mk, i) => {
         html += `<div class="fg-gantt-tick${i === todayIdx ? " fg-today" : ""}">`
              + `${_fgFmtMonth(mk)}</div>`;
     });
-    html += `</div></div>`;
+    html += `</div>${_fgMetaHeadHtml()}</div>`;
 
     for (const m of milestones) {
         const agg = (data.milestone_aggregate || {})[m.id] || {};
         const tipParts = [];
+        let closed = 0, open = 0, total = 0;
         for (const proj of projects) {
             const info = (proj.milestones || {})[m.id] || {};
+            closed += Number(info.closed) || 0;
+            open += Number(info.open) || 0;
+            total += Number(info.total) || 0;
             if (info.month || info.span_start) {
                 tipParts.push(
                     `${proj.name}: ${_fgFmtMonth(info.span_start) || "?"}→`
@@ -20403,7 +22812,7 @@ function _renderFgGanttByMilestone(data) {
             }
         }
         // Ưu tiên aggregate span; fallback union từng project
-        let spanInfo = agg;
+        let spanInfo = Object.assign({}, agg);
         if (!agg.span_start && !agg.span_end && !agg.month) {
             let lo = null, hi = null, month = null;
             for (const proj of projects) {
@@ -20414,17 +22823,31 @@ function _renderFgGanttByMilestone(data) {
                 if (e && (hi == null || e > hi)) hi = e;
                 if (info.month && (month == null || info.month > month)) month = info.month;
             }
-            spanInfo = { span_start: lo, span_end: hi, month, closed: "", total: "" };
+            spanInfo.span_start = lo;
+            spanInfo.span_end = hi;
+            spanInfo.month = month;
         }
-        html += `<div class="fg-gantt-row"><div class="fg-gantt-label">${escapeHtml(m.label)}</div>`;
+        spanInfo.closed = closed;
+        spanInfo.open = open;
+        spanInfo.total = total;
+        spanInfo.pct_closed = total > 0 ? Math.round((1000 * closed) / total) / 10 : 0;
+
+        const color = _FG_MS_COLORS[m.id] || "#64748b";
+        const letter = _fgMsLetter(m);
+        html += `<div class="fg-gantt-row">`
+             + `<div class="fg-gantt-label">`
+             + `<span class="fg-ms-badge" style="background:${color}">${escapeHtml(letter)}</span>`
+             + ` ${escapeHtml(m.label)}</div>`;
         html += `<div class="fg-gantt-track" style="width:${months.length * cellW}px">`;
-        html += _fgBarHtml(m, spanInfo, months, cellW, tipParts.join(" · "));
-        html += `</div></div>`;
+        html += _fgBarHtml(m, spanInfo, months, cellW, tipParts.join(" · "), null, todayIdx);
+        html += `</div>${_fgMetaHtml(spanInfo, null, false)}</div>`;
     }
     html += `</div>`;
     html += `<div class="fg-legend mt-2">` + milestones.map(m =>
         `<span><i style="background:${_FG_MS_COLORS[m.id] || "#64748b"}"></i>${escapeHtml(m.label)}</span>`
-    ).join("") + `</div>`;
+    ).join("")
+        + _fgLegendBaselineHtml(data)
+        + `</div>`;
     wrap.innerHTML = html;
 }
 
@@ -20522,7 +22945,92 @@ window.exportForecastGantt = exportForecastGantt;
 // FORECAST MANPOWER — MH / MD / MM + nhu cầu tuyển
 // Section: #section-forecast-manpower
 // ========================================================================
-const _fmState = { basis: "unit", data: null };
+const _FM_SIZE_MH = { small: 2, medium: 4, large: 8 };
+const _fmState = {
+    basis: "unit",
+    data: null,
+    targetOverride: false,
+    prefsLoadedFor: null,
+};
+
+function _fmStorageKey(kind) {
+    return `fm_${kind}_${currentProjectSlug || "default"}`;
+}
+
+function _fmLoadPrefs() {
+    try {
+        const ov = localStorage.getItem(_fmStorageKey("target_override"));
+        _fmState.targetOverride = ov === "1";
+        if (_fmState.targetOverride) {
+            const tm = localStorage.getItem(_fmStorageKey("target_months"));
+            const el = document.getElementById("fmTargetMonths");
+            if (el && tm != null && tm !== "") el.value = tm;
+        }
+        const size = localStorage.getItem(_fmStorageKey("size"));
+        const sizeEl = document.getElementById("fmProjectSize");
+        if (sizeEl && size && _FM_SIZE_MH[size] != null) sizeEl.value = size;
+        const mh = localStorage.getItem(_fmStorageKey("default_mh"));
+        const mhEl = document.getElementById("fmDefaultMh");
+        if (mhEl && mh != null && mh !== "") mhEl.value = mh;
+        else if (mhEl && sizeEl && _FM_SIZE_MH[sizeEl.value] != null) {
+            mhEl.value = String(_FM_SIZE_MH[sizeEl.value]);
+        }
+    } catch (_) { /* ignore */ }
+}
+
+function _fmSaveTargetPrefs() {
+    try {
+        localStorage.setItem(_fmStorageKey("target_override"), _fmState.targetOverride ? "1" : "0");
+        const el = document.getElementById("fmTargetMonths");
+        if (_fmState.targetOverride && el?.value) {
+            localStorage.setItem(_fmStorageKey("target_months"), el.value);
+        } else {
+            localStorage.removeItem(_fmStorageKey("target_months"));
+        }
+    } catch (_) { /* ignore */ }
+}
+
+function onFmTargetMonthsInput() {
+    // đánh dấu override khi user gõ — chưa fetch cho đến onchange
+    _fmState.targetOverride = true;
+}
+
+function onFmTargetMonthsChange() {
+    _fmState.targetOverride = true;
+    _fmSaveTargetPrefs();
+    loadForecastManpower();
+}
+
+function resetFmTargetAuto() {
+    _fmState.targetOverride = false;
+    const el = document.getElementById("fmTargetMonths");
+    if (el) el.value = "";
+    _fmSaveTargetPrefs();
+    loadForecastManpower();
+}
+
+function onFmProjectSizeChange() {
+    const size = document.getElementById("fmProjectSize")?.value || "medium";
+    const mh = _FM_SIZE_MH[size] != null ? _FM_SIZE_MH[size] : 4;
+    const mhEl = document.getElementById("fmDefaultMh");
+    if (mhEl) mhEl.value = String(mh);
+    try {
+        localStorage.setItem(_fmStorageKey("size"), size);
+        localStorage.setItem(_fmStorageKey("default_mh"), String(mh));
+    } catch (_) { /* ignore */ }
+    // Đồng bộ quy mô sang Estimate Ratio nếu có
+    const erSize = document.getElementById("erProjectSize");
+    if (erSize && erSize.value !== size) {
+        erSize.value = size;
+        if (typeof onErProjectSizeChange === "function") onErProjectSizeChange();
+    }
+    loadForecastManpower();
+}
+
+window.onFmTargetMonthsInput = onFmTargetMonthsInput;
+window.onFmTargetMonthsChange = onFmTargetMonthsChange;
+window.resetFmTargetAuto = resetFmTargetAuto;
+window.onFmProjectSizeChange = onFmProjectSizeChange;
 
 function setFmBasis(basis) {
     _fmState.basis = basis === "duration" ? "duration" : "unit";
@@ -20572,8 +23080,21 @@ function _fmCollectParams() {
     const params = new URLSearchParams();
     params.set("basis", _fmState.basis || "unit");
     params.set("unit", document.getElementById("fmUnit")?.value || "manmonth");
-    params.set("default_mh", document.getElementById("fmDefaultMh")?.value || "8");
-    params.set("target_months", document.getElementById("fmTargetMonths")?.value || "1");
+    const size = document.getElementById("fmProjectSize")?.value || "medium";
+    const defMh = document.getElementById("fmDefaultMh")?.value
+        || String(_FM_SIZE_MH[size] != null ? _FM_SIZE_MH[size] : 4);
+    params.set("default_mh", defMh);
+    if (_fmState.targetOverride) {
+        const tm = document.getElementById("fmTargetMonths")?.value;
+        if (tm != null && String(tm).trim() !== "") {
+            params.set("target_months", String(tm));
+            params.set("auto_target", "0");
+        } else {
+            params.set("auto_target", "1");
+        }
+    } else {
+        params.set("auto_target", "1");
+    }
     params.set("hc_dev", document.getElementById("fmHcDev")?.value || "0");
     params.set("hc_impl_shared", document.getElementById("fmHcImpl")?.value || "0");
     // Also send as headcount JSON for clarity
@@ -20609,6 +23130,10 @@ async function loadForecastManpower() {
     if (!currentProjectSlug) return;
     const section = document.getElementById("section-forecast-manpower");
     if (!section) return;
+    if (_fmState.prefsLoadedFor !== currentProjectSlug) {
+        _fmLoadPrefs();
+        _fmState.prefsLoadedFor = currentProjectSlug;
+    }
     _fmEnsureFilters();
     const params = _fmCollectParams();
     try {
@@ -20654,9 +23179,56 @@ function renderForecastManpower(data) {
         hi.textContent = String(hireImpl);
         hi.className = hireImpl > 0 ? "text-red-700" : "text-emerald-700";
     }
+
+    // A5 — cảnh báo khi nhiều MH đang dùng estimate mặc định (chưa nhập thực tế trên FL).
+    const seedPct = Number(tot.seed_pct ?? 0);
+    const seedBanner = document.getElementById("fmSeedBanner");
+    const resultWrap = document.getElementById("fmResultWrap");
+    if (seedPct > 50) {
+        if (seedBanner) {
+            seedBanner.textContent =
+                `⚠️ ${seedPct}% MH đang dùng estimate mặc định — kết quả mang tính THAM KHẢO. `
+                + `Nhập Estimate MH thực tế trên FL để tính chính xác hơn.`;
+            seedBanner.classList.remove("hidden");
+        }
+        resultWrap?.classList.add("seed-warning-active");
+    } else {
+        seedBanner?.classList.add("hidden");
+        resultWrap?.classList.remove("seed-warning-active");
+    }
+
+    // Target months: sync input + nguồn (Golive / max End)
+    const meta = data.target_months_meta || {};
+    const tmEl = document.getElementById("fmTargetMonths");
+    const srcEl = document.getElementById("fmTargetSource");
+    const usedTm = data.target_months != null ? data.target_months : meta.used;
+    if (tmEl && usedTm != null && (!_fmState.targetOverride || !tmEl.value)) {
+        tmEl.value = String(usedTm);
+    }
+    if (srcEl) {
+        const sug = data.suggested_target_months != null
+            ? data.suggested_target_months
+            : meta.months;
+        if (_fmState.targetOverride) {
+            srcEl.textContent = `Ghi đè · gợi ý ${sug != null ? sug : "—"}`
+                + (meta.source_label ? ` (${meta.source_label})` : "");
+            srcEl.className = "text-[10px] text-amber-700 max-w-[180px] leading-tight";
+        } else {
+            srcEl.textContent = meta.source_label || meta.display || "tự động";
+            srcEl.className = "text-[10px] text-teal-700 max-w-[180px] leading-tight";
+        }
+    }
+    try {
+        localStorage.setItem(
+            _fmStorageKey("default_mh"),
+            document.getElementById("fmDefaultMh")?.value || String(data.default_mh || 4)
+        );
+    } catch (_) { /* ignore */ }
+
     const hint = document.getElementById("fmBasisHint");
     if (hint) {
-        hint.textContent = (data.basis_label || "") + " · "
+        const tdisp = meta.display || (`Target ${usedTm != null ? usedTm : "—"} tháng`);
+        hint.textContent = (data.basis_label || "") + " · " + tdisp + " · "
             + (data.hints || []).join(" ");
     }
 
@@ -20787,7 +23359,12 @@ window.exportForecastManpower = exportForecastManpower;
 // ƯỚC LƯỢNG THEO HỆ SỐ — parametric BA/Dev + ratios
 // Section: #section-estimate-ratio
 // ========================================================================
-const _erState = { data: null, filling: false };
+const _ER_SIZE_SEEDS = {
+    small: { ba_md: 0.25, dev_md: 0.75 },
+    medium: { ba_md: 0.35, dev_md: 1.25 },
+    large: { ba_md: 0.5, dev_md: 2.0 },
+};
+const _erState = { data: null, filling: false, suggestedSeeds: null };
 
 function _erNum(id, fallback) {
     const el = document.getElementById(id);
@@ -20795,12 +23372,60 @@ function _erNum(id, fallback) {
     return Number.isFinite(v) ? v : fallback;
 }
 
+function _erOptNum(id) {
+    const el = document.getElementById(id);
+    if (!el || el.value == null || String(el.value).trim() === "") return null;
+    const v = Number(el.value);
+    return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function onErProjectSizeChange() {
+    const size = document.getElementById("erProjectSize")?.value || "medium";
+    const seeds = _ER_SIZE_SEEDS[size] || _ER_SIZE_SEEDS.medium;
+    const ba = document.getElementById("erSeedBa");
+    const dev = document.getElementById("erSeedDev");
+    if (ba) ba.value = String(seeds.ba_md);
+    if (dev) dev.value = String(seeds.dev_md);
+    // Đồng bộ MH mặc định Forecast
+    const fmSize = document.getElementById("fmProjectSize");
+    if (fmSize && fmSize.value !== size) {
+        fmSize.value = size;
+        if (typeof onFmProjectSizeChange === "function") {
+            // tránh vòng lặp: chỉ set MH + lưu, không gọi lại er
+            const mh = _FM_SIZE_MH?.[size] != null ? _FM_SIZE_MH[size] : 4;
+            const mhEl = document.getElementById("fmDefaultMh");
+            if (mhEl) mhEl.value = String(mh);
+            try {
+                localStorage.setItem(_fmStorageKey("size"), size);
+                localStorage.setItem(_fmStorageKey("default_mh"), String(mh));
+            } catch (_) { /* ignore */ }
+            if (typeof loadForecastManpower === "function") loadForecastManpower();
+        }
+    }
+    if (!_erState.filling) loadEstimateRatio();
+}
+window.onErProjectSizeChange = onErProjectSizeChange;
+
+function applyErSuggestedSeeds() {
+    const sug = _erState.suggestedSeeds;
+    if (!sug) return;
+    const ba = document.getElementById("erSeedBa");
+    const dev = document.getElementById("erSeedDev");
+    if (ba && sug.ba_md != null) ba.value = String(sug.ba_md);
+    if (dev && sug.dev_md != null) dev.value = String(sug.dev_md);
+    showToast("Đã áp seed calibrate — bấm Tính lại / Lưu params nếu cần", "green");
+    loadEstimateRatio();
+}
+window.applyErSuggestedSeeds = applyErSuggestedSeeds;
+
 function _erCollectParamsFromForm() {
     const incl = !!document.getElementById("erInclOverhead")?.checked;
-    return {
+    const size = document.getElementById("erProjectSize")?.value || "medium";
+    const out = {
+        project_size: size,
         seed_defaults: {
-            ba_md: _erNum("erSeedBa", 0.5),
-            dev_md: _erNum("erSeedDev", 2),
+            ba_md: _erNum("erSeedBa", 0.35),
+            dev_md: _erNum("erSeedDev", 1.25),
         },
         md_per_mm: _erNum("erMdPerMm", 22),
         mh_per_day: _erNum("erMhPerDay", 8),
@@ -20816,6 +23441,13 @@ function _erCollectParamsFromForm() {
             include_pm: incl,
         },
     };
+    const cMd = _erOptNum("erContractMd");
+    const cMm = _erOptNum("erContractMm");
+    if (cMd != null) out.contract_md = cMd;
+    else out.contract_md = null;
+    if (cMm != null) out.contract_mm = cMm;
+    else out.contract_mm = null;
+    return out;
 }
 
 function _erFillFormFromParams(params) {
@@ -20828,6 +23460,8 @@ function _erFillFormFromParams(params) {
         const el = document.getElementById(id);
         if (el && v != null && v !== "") el.value = v;
     };
+    const sizeEl = document.getElementById("erProjectSize");
+    if (sizeEl && params.project_size) sizeEl.value = params.project_size;
     set("erSeedBa", sd.ba_md);
     set("erSeedDev", sd.dev_md);
     set("erMdPerMm", params.md_per_mm);
@@ -20836,6 +23470,10 @@ function _erFillFormFromParams(params) {
     set("erTestOfDev", r.test_of_dev);
     set("erDocOfDev", r.doc_of_dev);
     set("erUatRatio", r.uat_of_total_incl_uat);
+    const cMd = document.getElementById("erContractMd");
+    const cMm = document.getElementById("erContractMm");
+    if (cMd) cMd.value = params.contract_md != null ? params.contract_md : "";
+    if (cMm) cMm.value = params.contract_mm != null ? params.contract_mm : "";
     const cb = document.getElementById("erInclOverhead");
     if (cb) {
         cb.checked = !!(oh.include_uat || oh.include_golive || oh.include_pm);
@@ -20908,10 +23546,49 @@ function renderEstimateRatio(data) {
     const warnBadge = document.getElementById("erDefaultWarn");
     const pctEl = document.getElementById("erDefaultPct");
     const pct = Number(tot.pct_default_seed || 0);
+    const seedRef = !!(tot.seed_reference_only || pct > 50);
     if (warnBadge && pctEl) {
         pctEl.textContent = String(pct);
         warnBadge.classList.toggle("hidden", !(pct > 0));
+        warnBadge.className = seedRef
+            ? "bg-red-100 text-red-900 px-3 py-1.5 rounded border border-red-400 text-xs font-semibold"
+            : "bg-amber-50 text-amber-900 px-3 py-1.5 rounded border border-amber-300 text-xs";
+        if (seedRef) warnBadge.classList.remove("hidden");
     }
+    const banner = document.getElementById("erSeedBanner");
+    if (banner) {
+        if (seedRef) {
+            banner.innerHTML = `⚠️ <b>${pct}%</b> function dùng estimate mặc định — kết quả mang tính <b>THAM KHẢO</b>. `
+                + `Nhập Estimate MH thực tế trên Function List để có số liệu chính xác.`;
+            banner.className = "mb-3 rounded-lg border-2 border-orange-400 bg-amber-50 px-3 py-2 text-sm text-amber-950 font-medium";
+            banner.classList.remove("hidden");
+        } else {
+            banner.textContent = "";
+            banner.classList.add("hidden");
+        }
+    }
+    section.classList.toggle("er-seed-ref", seedRef);
+
+    const calib = data.calibration;
+    _erState.suggestedSeeds = calib?.suggested_seed_defaults || null;
+    const calibBtn = document.getElementById("erApplyCalibBtn");
+    if (calibBtn) {
+        calibBtn.classList.toggle("hidden", !_erState.suggestedSeeds);
+    }
+    const calibHint = document.getElementById("erCalibHint");
+    if (calibHint) {
+        if (calib && calib.contract_md) {
+            calibHint.classList.remove("hidden");
+            calibHint.textContent = `Calibrate hợp đồng ${calib.contract_md} MD: trước ${_erFmt(calib.pre_md, 1)} MD → sau ${_erFmt(calib.post_md, 1)} MD (×${_erFmt(calib.seed_factor, 4)}).`
+                + (calib.suggested_seed_defaults
+                    ? ` Seed gợi ý BA=${_erFmt(calib.suggested_seed_defaults.ba_md, 4)} / Dev=${_erFmt(calib.suggested_seed_defaults.dev_md, 4)} MD.`
+                    : "");
+        } else {
+            calibHint.classList.add("hidden");
+            calibHint.textContent = "";
+        }
+    }
+
     const hint = document.getElementById("erHint");
     if (hint) {
         const src = data.params_meta?.source || data.params?._source || "builtin";
@@ -20924,32 +23601,36 @@ function renderEstimateRatio(data) {
     const warnWrap = document.getElementById("erWarnWrap");
     if (warnWrap) {
         const ws = data.warnings || [];
-        warnWrap.innerHTML = ws.map(w =>
-            `<div class="bg-amber-50 border border-amber-200 rounded px-2 py-1">⚠ ${escapeHtml(w)}</div>`
-        ).join("");
+        warnWrap.innerHTML = ws.map(w => {
+            const strong = seedRef && /tham khảo|chưa có estimate/i.test(w);
+            return `<div class="${strong
+                ? "bg-red-50 border border-red-300 text-red-900 font-medium"
+                : "bg-amber-50 border border-amber-200"} rounded px-2 py-1">⚠ ${escapeHtml(w)}</div>`;
+        }).join("");
     }
 
+    const tint = seedRef ? " er-table-seed-ref" : "";
     const phaseWrap = document.getElementById("erPhaseWrap");
     if (phaseWrap) {
         const rows = data.by_phase || [];
-        phaseWrap.innerHTML = `<table class="fc-table text-sm"><thead><tr>`
+        phaseWrap.innerHTML = `<div class="${tint.trim()}"><table class="fc-table text-sm${tint}"><thead><tr>`
             + ["Công đoạn", "MD", "MH", "MM", "Loại"].map((h, i) =>
                 `<th${i > 0 && i < 4 ? ' class="fc-th-right"' : ""}>${h}</th>`).join("")
             + `</tr></thead><tbody>`
-            + rows.map(r => `<tr${r.is_overhead ? ' class="bg-slate-50"' : ""}>`
+            + rows.map(r => `<tr class="${r.is_overhead ? "bg-slate-50" : ""}${seedRef ? " er-row-seed-ref" : ""}">`
                 + `<td class="font-medium">${escapeHtml(r.label || r.bucket)}</td>`
                 + `<td class="text-right"><span class="fc-num">${_erFmt(r.md, 3)}</span></td>`
                 + `<td class="text-right"><span class="fc-num fc-num-mh">${_erFmt(r.mh, 1)}</span></td>`
                 + `<td class="text-right"><span class="fc-num fc-num-remain">${_erFmt(r.mm, 3)}</span></td>`
                 + `<td class="text-[11px] text-slate-500">${r.is_overhead ? "Overhead" : "Bottom-up / ratio"}</td>`
                 + `</tr>`).join("")
-            + `<tr class="font-semibold border-t">`
+            + `<tr class="font-semibold border-t${seedRef ? " er-row-seed-ref" : ""}">`
             + `<td>TỔNG</td>`
             + `<td class="text-right">${_erFmt(tot.md, 3)}</td>`
             + `<td class="text-right">${_erFmt(tot.mh, 1)}</td>`
             + `<td class="text-right">${_erFmt(tot.mm, 3)}</td>`
             + `<td></td></tr>`
-            + `</tbody></table>`;
+            + `</tbody></table></div>`;
     }
 
     const mapWrap = document.getElementById("erMapWrap");
@@ -20982,14 +23663,17 @@ function renderEstimateRatio(data) {
     if (detailWrap) {
         const items = (data.detail || []).slice(0, 100);
         detailWrap.innerHTML = `<h4 class="text-xs font-semibold text-slate-700 mb-1">Chi tiết function</h4>`
-            + `<table class="fc-table text-xs"><thead><tr>`
+            + `<table class="fc-table text-xs${seedRef ? " er-table-seed-ref" : ""}"><thead><tr>`
             + ["Mã CN", "Module", "BA MD", "Dev MD", "Build MD", "Seed", "Nguồn BA/Dev"].map((h, i) =>
                 `<th${i >= 2 && i <= 4 ? ' class="fc-th-right"' : ""}>${h}</th>`).join("")
             + `</tr></thead><tbody>`
             + items.map(d => {
                 const b = d.buckets_md || {};
                 const def = d.used_default_seed;
-                return `<tr${def ? ' class="bg-amber-50/60"' : ""}>`
+                const rowCls = seedRef
+                    ? "er-row-seed-ref"
+                    : (def ? "bg-amber-50/60" : "");
+                return `<tr class="${rowCls}">`
                     + `<td>${escapeHtml(d.ma_cn || "")}</td>`
                     + `<td>${escapeHtml(d.module || "")}</td>`
                     + `<td class="text-right">${_erFmt(b.ba, 3)}</td>`
@@ -21820,3 +24504,335 @@ async function loadPicUpcoming() {
     }
 }
 window.loadPicUpcoming = loadPicUpcoming;
+
+// ─────────────────── DURATION FLAG ─────────────────────────────
+const _durState = { items: [], page: 1, pageSize: 20, phases: [] };
+
+async function loadDurationFlag() {
+    if (!currentProjectSlug) return;
+    const section = document.getElementById("section-duration-flag");
+    if (!section || section.classList.contains("hidden")) return;
+
+    const threshold = parseInt(document.getElementById("durThreshold")?.value || "60", 10);
+    const phaseF = document.getElementById("durPhaseFilter")?.value || "";
+    const params = new URLSearchParams();
+    params.set("threshold", threshold);
+    if (phaseF) params.set("phase", phaseF);
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+
+    try {
+        const data = await apiFetch(`/api/projects/${currentProjectSlug}/duration-flag?` + params);
+        _durState.items = data.items || [];
+        _durState.page = 1;
+        _durState.phases = data.phases_checked || [];
+
+        // Populate phase filter
+        _durPopulatePhaseFilter(data.phases_checked || []);
+        _durRenderSummaryCards(data.summary || {}, threshold);
+        _durRenderTable();
+    } catch (err) {
+        console.error("[loadDurationFlag]", err);
+    }
+}
+window.loadDurationFlag = loadDurationFlag;
+
+function _durPopulatePhaseFilter(phases) {
+    const sel = document.getElementById("durPhaseFilter");
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">Tất cả phase</option>` +
+        phases.map(p => `<option value="${escapeHtml(p)}"${p === cur ? " selected" : ""}>${escapeHtml(p)}</option>`).join("");
+}
+
+function _durRenderSummaryCards(summary, threshold) {
+    const wrap = document.getElementById("durSummaryCards");
+    if (!wrap) return;
+    const { total = 0, avg_days = 0, max_days = 0, by_phase = {} } = summary;
+    const topPhase = Object.entries(by_phase).sort((a, b) => b[1] - a[1])[0];
+    wrap.innerHTML = [
+        { label: "Tổng vi phạm", value: total, color: total > 0 ? "red" : "green" },
+        { label: `Trung bình (ngày)`, value: avg_days, color: "orange" },
+        { label: "Tối đa (ngày)", value: max_days, color: "red" },
+        { label: "Phase nhiều nhất", value: topPhase ? `${topPhase[0]} (${topPhase[1]})` : "—", color: "blue" },
+    ].map(c => `
+        <div class="rounded-lg border p-3 text-center">
+            <div class="text-${c.color}-600 text-xl font-bold">${escapeHtml(String(c.value))}</div>
+            <div class="text-xs text-gray-500 mt-0.5">${escapeHtml(c.label)}</div>
+        </div>`).join("");
+}
+
+function _durRenderTable() {
+    const tbody = document.getElementById("durTableBody");
+    if (!tbody) return;
+    const items = _durState.items;
+    const total = items.length;
+    if (!total) {
+        tbody.innerHTML = `<tr><td colspan="9" class="text-center text-gray-400 py-6">Không có phase nào vượt ngưỡng</td></tr>`;
+        document.getElementById("durPagerWrap").innerHTML = "";
+        return;
+    }
+    if (!pageState.dur) pageState.dur = { page: 1, size: _durState.pageSize };
+    pageState.dur.page = _durState.page;
+    const start = (_durState.page - 1) * _durState.pageSize;
+    const slice = items.slice(start, start + _durState.pageSize);
+
+    // Màu cảnh báo theo số ngày
+    function _durationBadge(days) {
+        const cls = days > 180 ? "bg-red-100 text-red-700"
+                   : days > 90  ? "bg-orange-100 text-orange-700"
+                                 : "bg-yellow-100 text-yellow-700";
+        return `<span class="px-1.5 py-0.5 rounded text-xs font-semibold ${cls}">${days} ngày</span>`;
+    }
+
+    tbody.innerHTML = slice.map(it => `
+        <tr class="border-b hover:bg-gray-50">
+            <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.ma_cn)}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.ten_cn)}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.module)}</td>
+            <td class="px-2 py-1.5"><span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 text-xs">${escapeHtml(it.phase)}</span></td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${escapeHtml(it.start)}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${escapeHtml(it.end)}</td>
+            <td class="px-2 py-1.5 text-right">${_durationBadge(it.duration_days)}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.status)}</td>
+            <td class="px-2 py-1.5 text-gray-600">${escapeHtml(it.pic)}</td>
+        </tr>`).join("");
+
+    renderPager("durPagerWrap", "dur", total, () => {
+        _durState.page = pageState.dur?.page || 1;
+        _durRenderTable();
+    });
+}
+
+// ─────────────────── WEEKLY GAP REPORT ─────────────────────────────────────
+const _weeklyGapState = { items: [], page: 1, pageSize: 25, weekOffset: 0 };
+
+async function loadWeeklyGap() {
+    if (!currentProjectSlug) return;
+    const section = document.getElementById("section-weekly-gap");
+    if (!section || section.classList.contains("hidden")) return;
+
+    const fitgap = document.getElementById("weeklyFitgapFilter")?.value || "";
+    const params = new URLSearchParams();
+    params.set("week_offset", _weeklyGapState.weekOffset);
+    if (fitgap) params.set("fitgap", fitgap);
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+
+    try {
+        const data = await apiFetch(`/api/projects/${currentProjectSlug}/weekly-gap-report?` + params);
+        _weeklyGapState.items = data.items || [];
+        _weeklyGapState.page = 1;
+
+        const labelEl = document.getElementById("weeklyGapLabel");
+        if (labelEl) labelEl.textContent = data.week_label || "—";
+
+        _weeklyGapRenderCards(data.summary || {}, data.week_label || "");
+        _weeklyGapRenderTable();
+    } catch (err) {
+        console.error("[loadWeeklyGap]", err);
+        showToast("Lỗi tải báo cáo tuần: " + (err.message || err), "red");
+    }
+}
+window.loadWeeklyGap = loadWeeklyGap;
+
+function shiftWeek(delta) {
+    _weeklyGapState.weekOffset += delta;
+    loadWeeklyGap();
+}
+window.shiftWeek = shiftWeek;
+
+async function exportWeeklyGap() {
+    if (!currentProjectSlug) return;
+    const fitgap = document.getElementById("weeklyFitgapFilter")?.value || "";
+    const params = new URLSearchParams();
+    params.set("week_offset", _weeklyGapState.weekOffset);
+    if (fitgap) params.set("fitgap", fitgap);
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+
+    const url = `/api/projects/${currentProjectSlug}/export-weekly-gap?` + params;
+    const labelEl = document.getElementById("weeklyGapLabel");
+    const label = (labelEl?.textContent || "weekly_gap").replace(/\s+/g, "_");
+    downloadFile(url, `${label}.xlsx`);
+}
+window.exportWeeklyGap = exportWeeklyGap;
+
+function _weeklyGapRenderCards(summary, weekLabel) {
+    const wrap = document.getElementById("weeklyGapCards");
+    if (!wrap) return;
+    const { total = 0, by_phase = {}, by_fitgap = {}, by_status = {} } = summary;
+
+    const topPhases = Object.entries(by_phase)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3);
+
+    const gapCount = by_fitgap["GAP"] || 0;
+    const fitCount = by_fitgap["FIT"] || 0;
+    const inprogCount = Object.entries(by_status)
+        .filter(([k]) => k.toLowerCase().includes("progress"))
+        .reduce((s, [, v]) => s + v, 0);
+
+    const cards = [
+        { label: "Tổng phase sẽ xong", value: total, color: total > 0 ? "blue" : "gray" },
+        { label: "GAP", value: gapCount, color: gapCount > 0 ? "red" : "gray" },
+        { label: "FIT", value: fitCount, color: fitCount > 0 ? "green" : "gray" },
+        { label: "Đang In-progress", value: inprogCount, color: inprogCount > 0 ? "yellow" : "gray" },
+    ];
+
+    const phaseSummary = topPhases.length
+        ? `<div class="text-[10px] text-gray-400 mt-1">${topPhases.map(([p, c]) => `${escapeHtml(p)}: ${c}`).join(" · ")}</div>`
+        : "";
+
+    wrap.innerHTML = cards.map((c, i) => `
+        <div class="rounded-lg border p-3 text-center">
+            <div class="text-${c.color}-600 text-xl font-bold">${escapeHtml(String(c.value))}</div>
+            <div class="text-xs text-gray-500 mt-0.5">${escapeHtml(c.label)}</div>
+            ${i === 0 ? phaseSummary : ""}
+        </div>`).join("");
+}
+
+function _weeklyGapRenderTable() {
+    const tbody = document.getElementById("weeklyGapTableBody");
+    if (!tbody) return;
+    const items = _weeklyGapState.items;
+    const total = items.length;
+
+    if (!total) {
+        tbody.innerHTML = `<tr><td colspan="10" class="text-center text-gray-400 py-6">Không có phase nào hoàn thành trong tuần này</td></tr>`;
+        const pw = document.getElementById("weeklyGapPagerWrap");
+        if (pw) pw.innerHTML = "";
+        return;
+    }
+
+    if (!pageState.weeklyGap) pageState.weeklyGap = { page: 1, size: _weeklyGapState.pageSize };
+    pageState.weeklyGap.page = _weeklyGapState.page;
+    const start = (_weeklyGapState.page - 1) * _weeklyGapState.pageSize;
+    const slice = items.slice(start, start + _weeklyGapState.pageSize);
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    tbody.innerHTML = slice.map((it, idx) => {
+        const stt = start + idx + 1;
+        const isInprogress = (it.status || "").toLowerCase().includes("progress");
+        const isOverdue = it.end && it.end < today;
+        const rowCls = isInprogress
+            ? "bg-yellow-50"
+            : isOverdue
+            ? "bg-orange-50"
+            : idx % 2 === 1 ? "bg-gray-50" : "";
+
+        const fitgapBadge = it.fitgap === "GAP"
+            ? `<span class="px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-xs font-semibold">GAP</span>`
+            : it.fitgap === "FIT"
+            ? `<span class="px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-xs font-semibold">FIT</span>`
+            : `<span class="text-gray-400">—</span>`;
+
+        const statusBadge = isInprogress
+            ? `<span class="px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800 text-xs">${escapeHtml(it.status)}</span>`
+            : `<span class="text-gray-600 text-xs">${escapeHtml(it.status)}</span>`;
+
+        return `<tr class="border-b hover:bg-blue-50 ${rowCls}">
+            <td class="px-2 py-1.5 text-center text-gray-400">${stt}</td>
+            <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.rlog_id || "—")}</td>
+            <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.ma_cn)}</td>
+            <td class="px-2 py-1.5">${escapeHtml(it.ten_cn)}</td>
+            <td class="px-2 py-1.5 text-gray-600">${escapeHtml(it.module)}</td>
+            <td class="px-2 py-1.5"><span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 text-xs">${escapeHtml(it.phase)}</span></td>
+            <td class="px-2 py-1.5 text-center">${fitgapBadge}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap ${isOverdue ? "text-red-600 font-semibold" : ""}">${escapeHtml(it.end)}</td>
+            <td class="px-2 py-1.5">${statusBadge}</td>
+            <td class="px-2 py-1.5 text-gray-600">${escapeHtml(it.pic)}</td>
+        </tr>`;
+    }).join("");
+
+    renderPager("weeklyGapPagerWrap", "weeklyGap", total, () => {
+        _weeklyGapState.page = pageState.weeklyGap?.page || 1;
+        _weeklyGapRenderTable();
+    });
+}
+
+/* ========================================================
+ * Modal phóng to — Hoạt động tuần (Rlog coded + Kế hoạch)
+ * ======================================================== */
+(function () {
+    let _escHandler = null;
+
+    function expandWeeklyActivity() {
+        const modal = document.getElementById("modalWeeklyActivity");
+        const modalContent = document.getElementById("modalWeeklyActivityContent");
+        if (!modal || !modalContent) return;
+
+        // Lấy container chứa 2 bảng (lg:col-span-2 bên phải)
+        const codedWrap = document.getElementById("rlogCodedBody")?.closest(".overflow-x-auto");
+        const planWrap  = document.getElementById("rlogPlanBody")?.closest(".overflow-x-auto");
+
+        // Build HTML cho từng bảng (clone + tăng max-height cho modal)
+        modalContent.innerHTML = "";
+
+        if (codedWrap) {
+            const section = document.createElement("div");
+            section.innerHTML = `
+                <h4 class="text-sm font-semibold text-emerald-800 mb-2 flex items-center gap-2">
+                    ✅ Rlog coded tuần này
+                    <span class="font-normal text-gray-500">${document.getElementById("rlogCodedLabel")?.textContent || ""}</span>
+                </h4>`;
+            const cloned = codedWrap.cloneNode(true);
+            cloned.style.maxHeight = "none";
+            cloned.classList.remove("max-h-72", "max-h-64", "max-h-48", "max-h-96");
+            section.appendChild(cloned);
+            modalContent.appendChild(section);
+        }
+
+        if (planWrap) {
+            const section = document.createElement("div");
+            section.innerHTML = `
+                <h4 class="text-sm font-semibold text-sky-800 mb-2 flex items-center gap-2">
+                    📅 Kế hoạch code tuần tới
+                    <span class="font-normal text-gray-500">${document.getElementById("rlogPlanLabel")?.textContent || ""}</span>
+                </h4>`;
+            const cloned = planWrap.cloneNode(true);
+            cloned.style.maxHeight = "none";
+            cloned.classList.remove("max-h-72", "max-h-64", "max-h-48", "max-h-96");
+            section.appendChild(cloned);
+            modalContent.appendChild(section);
+        }
+
+        // Hiện modal (dùng flex thay vì block để items-start/justify-center hoạt động)
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+        document.body.style.overflow = "hidden";
+
+        // Bind Escape
+        _escHandler = function (e) {
+            if (e.key === "Escape") closeWeeklyActivityModal();
+        };
+        document.addEventListener("keydown", _escHandler);
+    }
+
+    function closeWeeklyActivityModal() {
+        const modal = document.getElementById("modalWeeklyActivity");
+        if (!modal) return;
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+        document.body.style.overflow = "";
+        if (_escHandler) {
+            document.removeEventListener("keydown", _escHandler);
+            _escHandler = null;
+        }
+    }
+
+    function handleWeeklyActivityModalBgClick(e) {
+        // Đóng khi click vào backdrop (ngoài inner div)
+        if (e.target === document.getElementById("modalWeeklyActivity")) {
+            closeWeeklyActivityModal();
+        }
+    }
+
+    window.expandWeeklyActivity = expandWeeklyActivity;
+    window.closeWeeklyActivityModal = closeWeeklyActivityModal;
+    window.handleWeeklyActivityModalBgClick = handleWeeklyActivityModalBgClick;
+})();

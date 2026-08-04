@@ -143,11 +143,13 @@ def compute_risk_score(
         )
 
     # === Stalled (bỏ qua nếu đã Closed hết / phase cuối Closed) ===
-    from analyzer.stalled import is_fully_closed, is_stalled_transition
+    from analyzer.stalled import is_fully_closed, is_stalled_transition, prev_phases_all_closed
 
     stalled_from = stalled_to = ""
     if not is_fully_closed(row, phase_names):
         for i in range(len(phase_names) - 1):
+            if not prev_phases_all_closed(row, phase_names, i):
+                continue
             curr = row.phases.get(phase_names[i])
             nxt = row.phases.get(phase_names[i + 1])
             if is_stalled_transition(curr, nxt, today):

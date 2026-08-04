@@ -123,13 +123,13 @@ def test_lang_toggle_shows_current_lang(i18n_js: str, index_html: str):
 def test_card_anomaly_preserves_records_span(index_html: str):
     """data-i18n không được bọc cả span records (textContent sẽ xoá span)."""
     assert 'id="cardAnomalyRecords"' in index_html
-    # Label riêng, records span sibling
-    assert 'data-i18n="card.anomaly"' in index_html
-    anomaly_idx = index_html.find('data-i18n="card.anomaly"')
+    # Label riêng, records span sibling — key đổi từ card.anomaly → card.dq_high
+    assert 'data-i18n="card.dq_high"' in index_html
+    anomaly_idx = index_html.find('data-i18n="card.dq_high"')
     records_idx = index_html.find('id="cardAnomalyRecords"')
     assert anomaly_idx > 0 and records_idx > anomaly_idx
     # Không còn pattern cũ: data-i18n trên parent chứa span records
     assert not re.search(
-        r'data-i18n="card\.anomaly">[^<]*<span id="cardAnomalyRecords"',
+        r'data-i18n="card\.dq_high">[^<]*<span id="cardAnomalyRecords"',
         index_html,
     )

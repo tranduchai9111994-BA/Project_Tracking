@@ -313,6 +313,37 @@ PAYLOAD_LIMITS = {
 }
 
 
+def _prev_summary_from_snapshots(slug: str) -> dict | None:
+    """Lấy summary snapshot trước (index[1]) để tính summary.deltas."""
+    try:
+        snaps = _project_mgr.get_snapshot_manager(slug).list_snapshots()
+    except Exception:
+        return None
+    if not snaps or len(snaps) < 2:
+        return None
+    prev = snaps[1] or {}
+    return {
+        "total_functions": prev.get("total_functions"),
+        "overall_progress_pct": prev.get("overall_pct"),
+        "overall_pct": prev.get("overall_pct"),
+        "total_overdue": prev.get("overdue_count"),
+        "overdue_count": prev.get("overdue_count"),
+        "unassigned_count": prev.get("unassigned_count"),
+        "high_risk_count": prev.get("high_risk_count"),
+        "stalled_count": prev.get("stalled_count"),
+    }
+
+
+def _attach_summary_deltas(slug: str, metrics: dict) -> dict:
+    """Gắn summary.deltas từ snapshot trước — không đổi API shape khác."""
+    try:
+        return DashboardEngine.attach_summary_deltas(
+            metrics, _prev_summary_from_snapshots(slug),
+        )
+    except Exception:
+        return metrics
+
+
 def _trim_payload(metrics: dict) -> dict:
     """
     Trả về bản copy metrics đã trim để giảm bandwidth.
@@ -1474,6 +1505,8 @@ def dashboard_of_project(slug):
         metrics = st["metrics"]
         applied_filter = None
 
+    metrics = _attach_summary_deltas(slug, metrics)
+
     return jsonify({
         "success": True,
         "project": _project_to_dict(_project_mgr.get_project(slug)),
@@ -2511,11 +2544,20 @@ def project_export_fl_reimport(slug: str):
         if it.get("code") in reimport_codes
     ]
 
+    # FID issues nếu được yêu cầu (?fid_issues=1)
+    fid_issues_list: list = []
+    include_fid = request.args.get("fid_issues") or (body.get("fid_issues") if request.method == "POST" else None)
+    if include_fid:
+        from analyzer.fid_check import compute_fid_issues
+        fid_result = compute_fid_issues(filtered)
+        fid_issues_list = fid_result.get("issues") or []
+
     hits = collect_issue_hits(
         overdue_list=overdue_list,
         unassigned_list=unassigned_list,
         stalled_list=stalled_list,
         anomaly_issues=anomaly_issues,
+        fid_issues=fid_issues_list,
     )
     if not hits:
         return jsonify({"error": "Không có function nào dính issue để xuất."}), 400
@@ -3458,10 +3500,18 @@ def _forecast_manpower_params():
         default_mh = float(src.get("default_mh") or 8)
     except (TypeError, ValueError):
         default_mh = 8.0
-    try:
-        target_months = float(src.get("target_months") or 1)
-    except (TypeError, ValueError):
-        target_months = 1.0
+    auto_raw = src.get("auto_target")
+    auto_target = str(auto_raw).strip().lower() in ("1", "true", "yes", "on") if auto_raw is not None else False
+    raw_tm = src.get("target_months")
+    target_months = None
+    if not auto_target and raw_tm is not None and str(raw_tm).strip() != "":
+        try:
+            target_months = float(raw_tm)
+        except (TypeError, ValueError):
+            target_months = None
+            auto_target = True
+    else:
+        auto_target = True
     headcount = src.get("headcount") or {}
     if isinstance(headcount, str):
         import json as _json
@@ -3510,6 +3560,7 @@ def _forecast_manpower_params():
         "display_unit": display_unit,
         "default_mh": default_mh,
         "target_months": target_months,
+        "auto_target": auto_target,
         "headcount": hc_clean,
         "modules": modules or None,
         "processes": processes or None,
@@ -3524,8 +3575,8 @@ def forecast_manpower(slug: str):
     Ước lượng manhours / mandays / manmonths + nhu cầu tuyển theo công đoạn.
 
     Params: basis=unit|duration, unit=manhour|manday|manmonth,
-            default_mh=8, target_months=1, headcount={...} hoặc hc_dev / hc_impl,
-            module/process/pic filters.
+            default_mh=8, target_months (hoặc auto_target=1 → Golive/max End),
+            headcount={...} hoặc hc_dev / hc_impl, module/process/pic filters.
     """
     from analyzer.forecast_manpower import compute_forecast_manpower
 
@@ -3545,6 +3596,7 @@ def forecast_manpower(slug: str):
         display_unit=p["display_unit"],
         default_mh=p["default_mh"],
         target_months=p["target_months"],
+        auto_target=p["auto_target"],
         headcount=p["headcount"],
     )
     return jsonify({"success": True, **result})
@@ -3572,6 +3624,7 @@ def export_forecast_manpower_api(slug: str):
         display_unit=p["display_unit"],
         default_mh=p["default_mh"],
         target_months=p["target_months"],
+        auto_target=p["auto_target"],
         headcount=p["headcount"],
     )
     try:
@@ -4495,6 +4548,280 @@ def project_module_overview(slug: str):
     })
 
 
+@app.route("/api/projects/<slug>/smart-suggestions")
+def project_smart_suggestions(slug: str):
+    """A7/C1-C3 — Gợi ý dashboard nên bật thêm cho giai đoạn hiện tại của dự án."""
+    from analyzer.smart_suggest import compute_smart_suggestions
+    state, err = _require_state(slug)
+    if err:
+        return err
+
+    # C3 — overdue_history: tối đa 2 snapshot cũ hơn + hiện tại, sắp cũ → mới.
+    overdue_history: list[int] = []
+    try:
+        smgr = _project_mgr.get_snapshot_manager(slug)
+        snaps = smgr.list_snapshots() or []  # giảm dần theo ngày, snaps[0] = mới nhất
+        for entry in reversed(snaps[1:3]):
+            loaded = smgr.load_snapshot(entry["date"])
+            if loaded and loaded.get("parsed"):
+                m = DashboardEngine().compute_all(loaded["parsed"])
+                overdue_history.append(int((m.get("summary") or {}).get("total_overdue") or 0))
+        overdue_history.append(int((state.get("metrics") or {}).get("summary", {}).get("total_overdue") or 0))
+    except Exception:
+        overdue_history = []
+
+    return jsonify(compute_smart_suggestions(state, overdue_history=overdue_history))
+
+
+# ==========================================================================
+# Gói B — BA Task Management (quản lý đầu việc giai đoạn phân tích)
+# ==========================================================================
+
+def _ba_project_dir_or_404(slug: str):
+    if not _project_mgr.project_exists(slug):
+        return None, (jsonify({"error": "Project không tồn tại"}), 404)
+    return _project_dir_for(slug), None
+
+
+@app.route("/api/projects/<slug>/ba-tasks", methods=["GET"])
+def ba_tasks_list(slug: str):
+    from analyzer import ba_task_store as bts
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    rows = bts.list_tasks(pdir)
+    rows = bts.filter_and_sort(
+        rows,
+        type=request.args.get("type") or None,
+        status=request.args.get("status") or None,
+        assignee=request.args.get("assignee") or None,
+        module=request.args.get("module") or None,
+        week=request.args.get("week") or None,
+        priority=request.args.get("priority") or None,
+        alert=request.args.get("alert") or None,
+        tag=request.args.get("tag") or None,
+        sort=request.args.get("sort") or None,
+        order=request.args.get("order") or "asc",
+    )
+    return jsonify({"tasks": rows, "total": len(rows)})
+
+
+@app.route("/api/projects/<slug>/ba-tasks/stats", methods=["GET"])
+def ba_tasks_stats(slug: str):
+    """B4 — pre-computed data cho mini charts (status donut / theo tuần / nợ KH / deliverable)."""
+    from analyzer import ba_task_store as bts
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    rows = bts.list_tasks(pdir)
+
+    by_status: dict[str, int] = {}
+    by_week: dict[str, int] = {}
+    for t in rows:
+        by_status[t.get("status", "")] = by_status.get(t.get("status", ""), 0) + 1
+        wk = t.get("week_iso")
+        if wk:
+            by_week[wk] = by_week.get(wk, 0) + 1
+
+    debts = []
+    today = date.today()
+    for t in rows:
+        if t.get("type") != "customer_debt" or t.get("status") in ("done", "cancelled"):
+            continue
+        info = t.get("debt_info") or {}
+        req = info.get("requested_date")
+        wait_days = 0
+        if req:
+            try:
+                wait_days = (today - date.fromisoformat(str(req)[:10])).days
+            except ValueError:
+                wait_days = 0
+        debts.append({"title": t.get("title"), "wait_days": wait_days})
+    debts.sort(key=lambda d: d["wait_days"], reverse=True)
+
+    deliverables = [
+        {
+            "title": t.get("title"),
+            "target_date": (t.get("deliverable_info") or {}).get("target_date") or t.get("due_date"),
+            "status": t.get("status"),
+        }
+        for t in rows if t.get("type") == "deliverable"
+    ]
+
+    return jsonify({
+        "by_status": by_status,
+        "by_week": dict(sorted(by_week.items())),
+        "debts_by_wait": debts,
+        "deliverables": deliverables,
+    })
+
+
+@app.route("/api/projects/<slug>/ba-tasks/export", methods=["GET"])
+def ba_tasks_export(slug: str):
+    from analyzer import ba_task_store as bts
+    from exporter.ba_task_exporter import export_ba_tasks
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    proj = _project_mgr.get_project(slug)
+    rows = bts.list_tasks(pdir)
+    try:
+        filepath = export_ba_tasks(rows, _project_mgr.get_export_dir(slug), project_name=(proj.name if proj else slug))
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi xuất Excel: {e}"}), 500
+
+
+@app.route("/api/projects/<slug>/ba-tasks/export-weekly", methods=["GET"])
+def ba_tasks_export_weekly(slug: str):
+    from analyzer import ba_task_store as bts
+    from exporter.ba_task_exporter import export_ba_tasks_weekly
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    week = (request.args.get("week") or "").strip()
+    if not week:
+        y, w, _ = date.today().isocalendar()
+        week = f"{y:04d}-W{w:02d}"
+    proj = _project_mgr.get_project(slug)
+    rows = bts.list_tasks(pdir)
+    try:
+        filepath = export_ba_tasks_weekly(
+            rows, week, _project_mgr.get_export_dir(slug), project_name=(proj.name if proj else slug),
+        )
+        return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi xuất Excel tuần: {e}"}), 500
+
+
+@app.route("/api/projects/<slug>/ba-tasks/import/preview", methods=["POST"])
+def ba_tasks_import_preview(slug: str):
+    """Upload Excel → đề xuất mapping cột (title/module/assignee/due_date/type/notes)."""
+    from analyzer import ba_task_store as bts
+    from parser.column_mapping import read_headers_and_preview
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    if "file" not in request.files:
+        return jsonify({"error": "Không tìm thấy file"}), 400
+    tmp_id, fname, tmp_path = _pm_save_tmp(request.files["file"], (".xlsx", ".xls"))
+    if tmp_id is None:
+        return jsonify({"error": fname}), tmp_path  # fname=err, tmp_path=status
+    try:
+        headers, preview_rows, sheet_name = read_headers_and_preview(tmp_path, preview_rows_count=10)
+    except Exception as e:
+        return jsonify({"error": f"Không đọc được Excel: {e}"}), 400
+    if not headers:
+        return jsonify({"error": "File không có dữ liệu / không đọc được header"}), 400
+    return jsonify({
+        "tmp_id": tmp_id,
+        "filename": fname,
+        "sheet_name": sheet_name,
+        "headers": headers,
+        "preview_rows": preview_rows,
+        "suggested_mapping": bts.suggest_import_mapping(headers),
+        "import_fields": list(bts.IMPORT_FIELDS),
+    })
+
+
+@app.route("/api/projects/<slug>/ba-tasks/import", methods=["POST"])
+def ba_tasks_import_confirm(slug: str):
+    """Xác nhận mapping → parse toàn bộ + bulk create."""
+    from analyzer import ba_task_store as bts
+    from parser.column_mapping import read_headers_and_preview
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    tmp_id = (body.get("tmp_id") or "").strip()
+    tmp_path = _pm_tmp_path(tmp_id)
+    if not tmp_path:
+        return jsonify({"error": "tmp_id không hợp lệ hoặc file tạm đã hết hạn"}), 400
+    mapping = body.get("mapping") or {}
+    if not isinstance(mapping, dict):
+        mapping = {}
+    try:
+        headers, rows, _sheet = read_headers_and_preview(tmp_path, preview_rows_count=100000)
+        if not mapping:
+            mapping = bts.suggest_import_mapping(headers)
+        payloads = bts.build_import_payloads(headers, rows, mapping)
+        if not payloads:
+            return jsonify({"error": "Không tìm thấy dòng hợp lệ nào (thiếu cột title đã map)"}), 400
+        created = bts.bulk_create_tasks(pdir, payloads)
+        return jsonify({"ok": True, "imported": len(created), "tasks": created})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Lỗi import: {e}"}), 500
+
+
+@app.route("/api/projects/<slug>/ba-tasks/bulk", methods=["POST"])
+def ba_tasks_bulk_create(slug: str):
+    from analyzer import ba_task_store as bts
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    payloads = body.get("tasks")
+    if not isinstance(payloads, list) or not payloads:
+        return jsonify({"error": "Thiếu 'tasks' (list)"}), 400
+    created = bts.bulk_create_tasks(pdir, payloads)
+    return jsonify({"ok": True, "tasks": created}), 201
+
+
+@app.route("/api/projects/<slug>/ba-tasks/<task_id>", methods=["GET"])
+def ba_tasks_get_one(slug: str, task_id: str):
+    from analyzer import ba_task_store as bts
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    task = bts.get_task(pdir, task_id)
+    if not task:
+        return jsonify({"error": "Không tìm thấy task"}), 404
+    return jsonify({"task": task})
+
+
+@app.route("/api/projects/<slug>/ba-tasks", methods=["POST"])
+def ba_tasks_create(slug: str):
+    from analyzer import ba_task_store as bts
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    if not (body.get("title") or "").strip():
+        return jsonify({"error": "Thiếu 'title'"}), 400
+    task = bts.create_task(pdir, body)
+    return jsonify({"ok": True, "task": task}), 201
+
+
+@app.route("/api/projects/<slug>/ba-tasks/<task_id>", methods=["PUT"])
+def ba_tasks_update(slug: str, task_id: str):
+    from analyzer import ba_task_store as bts
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    task = bts.update_task(pdir, task_id, body)
+    if not task:
+        return jsonify({"error": "Không tìm thấy task"}), 404
+    return jsonify({"ok": True, "task": task})
+
+
+@app.route("/api/projects/<slug>/ba-tasks/<task_id>", methods=["DELETE"])
+def ba_tasks_delete(slug: str, task_id: str):
+    from analyzer import ba_task_store as bts
+    pdir, err = _ba_project_dir_or_404(slug)
+    if err:
+        return err
+    if not bts.delete_task(pdir, task_id):
+        return jsonify({"error": "Không tìm thấy task"}), 404
+    return jsonify({"ok": True})
+
+
 # ==========================================================================
 # T24 — Bookmarks + Notes
 # ==========================================================================
@@ -4821,6 +5148,93 @@ def project_data_quality(slug: str):
     )
     result["ownership"] = ownership
     return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/fid-check")
+def project_fid_check(slug: str):
+    """
+    Trả về danh sách function Dev đã Closed nhưng FID trống hoặc trùng.
+    Hỗ trợ global filter module/process/pic.
+    """
+    from analyzer.fid_check import compute_fid_issues
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    result = compute_fid_issues(data)
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/duration-flag")
+def project_duration_flag(slug: str):
+    """
+    Trả về danh sách phase có duration (Start→End) vượt ngưỡng.
+    Query params:
+      threshold  — số ngày ngưỡng (mặc định 60)
+      phase      — lọc theo tên phase
+      g_module, g_process, g_pic — global filters
+    """
+    from analyzer.duration_flag import compute_long_duration
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    threshold = int(request.args.get("threshold") or 60)
+    phase_f = request.args.get("phase") or ""
+    result = compute_long_duration(data, threshold_days=threshold, phase_filter=phase_f)
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/weekly-gap-report")
+def project_weekly_gap_report(slug: str):
+    """
+    Trả về danh sách function/phase sẽ hoàn thành trong tuần.
+    Query params:
+      week_offset  — 0=tuần này, -1=tuần trước, 1=tuần sau (default 0)
+      fitgap       — "gap" | "fit" | "" (default "")
+      g_module, g_process, g_pic — global filters
+    """
+    from analyzer.weekly_gap_report import compute_weekly_gap
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    week_offset = int(request.args.get("week_offset") or 0)
+    fitgap = str(request.args.get("fitgap") or "")
+    result = compute_weekly_gap(data, week_offset=week_offset, fitgap_filter=fitgap)
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/export-weekly-gap")
+def project_export_weekly_gap(slug: str):
+    """
+    Xuất Excel 2-sheet báo cáo tuần GAP hoàn thành.
+    Cùng params với weekly-gap-report.
+    """
+    from analyzer.weekly_gap_report import compute_weekly_gap
+    from exporter.weekly_gap_exporter import export_weekly_gap_excel
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    week_offset = int(request.args.get("week_offset") or 0)
+    fitgap = str(request.args.get("fitgap") or "")
+    result = compute_weekly_gap(data, week_offset=week_offset, fitgap_filter=fitgap)
+    xlsx_bytes = export_weekly_gap_excel(result)
+
+    week_label_safe = result["week_label"].replace(" ", "_").replace("/", "-")
+    filename = f"weekly_gap_{week_label_safe}.xlsx"
+
+    return send_file(
+        io.BytesIO(xlsx_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 @app.route("/api/projects/<slug>/dq-ownership", methods=["GET", "POST"])

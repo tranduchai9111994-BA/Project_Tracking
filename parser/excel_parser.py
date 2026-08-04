@@ -11,11 +11,76 @@ import openpyxl
 
 # === Trạng thái hợp lệ ===
 VALID_STATUSES = {"Open", "Assigned", "In-progress", "Resolved", "Closed", "Pending", "Cancelled"}
-# Alias phổ biến từ API/Excel → canonical VALID_STATUSES
+
+# "Not Started" / "Chưa bắt đầu" — KHÔNG alias tĩnh.
+# Map phụ thuộc PIC phase: không PIC → Open; có PIC → Assigned.
+_NOT_STARTED_TOKENS = {
+    "not started",
+    "not_started",
+    "notstarted",
+    "chưa bắt đầu",
+    "chua bat dau",
+}
+
+# Alias tĩnh phổ biến từ API/Excel → canonical VALID_STATUSES (key = lower-case).
 STATUS_ALIASES = {
+    # --- Open ---
+    "open": "Open",
+    "mới": "Open",
+    "moi": "Open",
+
+    # --- Assigned ---
+    "assign": "Assigned",
+    "assigned": "Assigned",
+    "đã giao": "Assigned",
+    "da giao": "Assigned",
+
+    # --- In-progress ---
     "in progress": "In-progress",
     "inprogress": "In-progress",
     "in_progress": "In-progress",
+    "in-progress": "In-progress",
+    "đang làm": "In-progress",
+    "dang lam": "In-progress",
+    "đang thực hiện": "In-progress",
+    "dang thuc hien": "In-progress",
+
+    # --- Resolved ---
+    "resolve": "Resolved",
+    "resolved": "Resolved",
+    "đã xử lý": "Resolved",
+    "da xu ly": "Resolved",
+
+    # --- Closed ---
+    "closed": "Closed",
+    "đóng": "Closed",
+    "dong": "Closed",
+    "finished": "Closed",
+    "done": "Closed",
+    "complete": "Closed",
+    "completed": "Closed",
+    "hoàn thành": "Closed",
+    "hoan thanh": "Closed",
+    "xong": "Closed",
+
+    # --- Pending ---
+    "pending": "Pending",
+    "waiting": "Pending",
+    "wait": "Pending",
+    "chờ": "Pending",
+    "cho": "Pending",
+    "on hold": "Pending",
+    "onhold": "Pending",
+    "on_hold": "Pending",
+
+    # --- Cancelled ---
+    "cancel": "Cancelled",
+    "canceled": "Cancelled",  # US spelling
+    "cancelled": "Cancelled",
+    "hủy": "Cancelled",
+    "huy": "Cancelled",
+    "đã hủy": "Cancelled",
+    "da huy": "Cancelled",
 }
 
 # Ngưỡng outlier Estimate MH (1 ô phase). > 500 thường là Excel date-serial
@@ -548,9 +613,8 @@ class FunctionListParser:
                     pd.start_date = self._normalize_date(_get(pc["start_idx"]))
                 if pc["end_idx"] is not None:
                     pd.end_date = self._normalize_date(_get(pc["end_idx"]))
-                if pc["status_idx"] is not None:
-                    pd.status = self._normalize_status(_get(pc["status_idx"]))
 
+                # PIC trước Status — "Not Started" map Open/Assigned phụ thuộc PIC
                 for pic_info in pc["pic_cols_info"]:
                     pv = _get(pic_info["idx"])
                     if pv:
@@ -569,6 +633,12 @@ class FunctionListParser:
                                 "ma_cn": meta.get("ma_cn") or "",
                                 "module": meta.get("module") or "",
                             })
+
+                if pc["status_idx"] is not None:
+                    pd.status = self._normalize_status(
+                        _get(pc["status_idx"]),
+                        has_pic=bool(pd.pics),
+                    )
 
                 if pc["estimate_idx"] is not None:
                     est = _get(pc["estimate_idx"])
@@ -681,8 +751,14 @@ class FunctionListParser:
             return None, f"outlier_gt_{int(ESTIMATE_MH_MAX)}"
         return mh, None
 
-    def _normalize_status(self, value) -> Optional[str]:
-        """Chuẩn hóa status, bỏ qua giá trị số (lỗi dữ liệu)."""
+    def _normalize_status(self, value, has_pic: bool = False) -> Optional[str]:
+        """Chuẩn hóa status về VALID_STATUSES.
+
+        - Số (int/float): bỏ qua → None (Estimate MH lệch cột).
+        - "Not Started" / "Chưa bắt đầu": không PIC → Open; có PIC → Assigned.
+        - Alias / match VALID_STATUSES: trả canonical.
+        - Status lạ / unknown → None (coi blank).
+        """
         if value is None:
             return None
         if isinstance(value, (int, float)):
@@ -690,15 +766,19 @@ class FunctionListParser:
         s = str(value).strip()
         if not s:
             return None
-        # Alias trước (VD "In Progress" → "In-progress")
-        alias = STATUS_ALIASES.get(s.lower())
+        low = s.lower()
+        # Not Started phụ thuộc PIC — không dùng STATUS_ALIASES tĩnh
+        if low in _NOT_STARTED_TOKENS:
+            return "Assigned" if has_pic else "Open"
+        # Alias tĩnh (VD "In Progress" → "In-progress", "Finished" → "Closed")
+        alias = STATUS_ALIASES.get(low)
         if alias:
             return alias
         # Match case-insensitive với VALID_STATUSES
         for valid in VALID_STATUSES:
-            if s.lower() == valid.lower():
+            if low == valid.lower():
                 return valid
-        return None  # Không nhận diện được → bỏ qua
+        return None  # Status lạ → blank
 
     def _parse_pics(self, value) -> list[str]:
         """

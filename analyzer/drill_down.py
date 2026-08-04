@@ -17,6 +17,7 @@ Mỗi chart type có logic filter khác nhau:
 - overdue:           mọi phase overdue
 - unassigned:        phase active chưa PIC
 - stalled:           task kẹt giữa 2 phase
+- bottleneck:        stuck (overdue|stalled) theo phase — footer Phase Matrix
 - risk:              theo score band
 - duration:          task duration bất thường
 - timeline:          function trong module (hoặc 1 mã CN)
@@ -140,14 +141,50 @@ def _row_to_dict(
 # Chart-specific filters
 # ==========================================================================
 
+def _attach_stuck_ly_do(
+    item: dict,
+    info: dict,
+    today: date,
+) -> dict:
+    """Gắn ly_do + meta stalled/overdue từ ``phase_stuck_info``."""
+    from exporter.reason_formatters import reason_overdue, reason_stalled
+
+    parts: list[str] = []
+    if info.get("overdue"):
+        parts.append(reason_overdue(item, today=today))
+    if info.get("stalled"):
+        pred = info.get("predecessor_phase") or ""
+        pred_pd = info.get("predecessor_pd")
+        item["completed_phase"] = pred
+        item["waiting_phase"] = item.get("phase") or ""
+        item["completed_date"] = (
+            pred_pd.end_date.isoformat() if pred_pd and pred_pd.end_date else ""
+        )
+        item["waiting_end_date"] = item.get("end_date") or ""
+        if pred_pd and pred_pd.end_date:
+            item["wait_days"] = (today - pred_pd.end_date).days
+        parts.append(reason_stalled(item))
+    item["stuck_kind"] = (
+        "both" if info.get("overdue") and info.get("stalled")
+        else ("overdue" if info.get("overdue") else "stalled")
+    )
+    item["ly_do"] = " · ".join(p for p in parts if p)
+    return item
+
+
 def _filter_phase_matrix(data: ParsedData, filters: dict, today: date) -> list[dict]:
     """Filter cho matrix Phase × (Module|Quy trình). Bắt buộc phase; module
     HOẶC process (b9: bổ sung process — matrix nhóm theo quy trình khi
     user toggle 'Nhóm theo Quy trình').
+
+    Enrich ``ly_do`` khi function stuck (overdue|stalled) ở phase đó.
     """
+    from analyzer.stalled import phase_stuck_info
+
     module = filters.get("module", "")
     process = filters.get("process", "")
     phase = filters.get("phase", "")
+    phases = list(data.all_phases)
     result = []
     for row in data.rows:
         if module and row.meta.get("module") != module:
@@ -157,7 +194,51 @@ def _filter_phase_matrix(data: ParsedData, filters: dict, today: date) -> list[d
         pd = row.phases.get(phase)
         if pd is None:
             continue
-        result.append(_row_to_dict(row, phase_name=phase, today=today))
+        item = _row_to_dict(
+            row, phase_name=phase, today=today, phase_order=phases,
+        )
+        info = phase_stuck_info(row, phase, phases, today) if phase else None
+        if info:
+            _attach_stuck_ly_do(item, info, today)
+        result.append(item)
+    return result
+
+
+def _filter_bottleneck(data: ParsedData, filters: dict, today: date) -> list[dict]:
+    """Function stuck ở phase (BA/UX #8) — dùng cho footer Bottleneck matrix.
+
+    Filter: phase (bắt buộc); optional module / process.
+    Mỗi item có ``ly_do`` (overdue và/hoặc stalled).
+    """
+    from analyzer.stalled import phase_stuck_info
+
+    phase = filters.get("phase", "")
+    module = filters.get("module", "")
+    process = filters.get("process", "")
+    if not phase:
+        return []
+    phases = list(data.all_phases)
+    result = []
+    for row in data.rows:
+        if module and row.meta.get("module") != module:
+            continue
+        if process and row.meta.get("quy_trinh") != process:
+            continue
+        info = phase_stuck_info(row, phase, phases, today)
+        if info is None:
+            continue
+        item = _row_to_dict(
+            row, phase_name=phase, today=today, phase_order=phases,
+        )
+        _attach_stuck_ly_do(item, info, today)
+        result.append(item)
+    result.sort(
+        key=lambda x: (
+            0 if x.get("stuck_kind") == "both" else (1 if x.get("is_overdue") else 2),
+            -(x.get("days_overdue") or 0),
+            -(x.get("wait_days") or 0),
+        ),
+    )
     return result
 
 
@@ -439,7 +520,12 @@ def _filter_overdue(data: ParsedData, filters: dict, today: date) -> list[dict]:
     hiện dạng "Analysis, UAT" — user vẫn thấy được danh sách phase trễ.
     Hỗ trợ filter module/phase/pic tùy chọn (chỉ hạn chế phase-records
     trước khi gom).
+
+    ``pic="(Unassigned)"`` khớp phase không có PIC (đồng bộ slow heatmap).
+    Mỗi item gắn ``ly_do`` qua ``reason_overdue``.
     """
+    from exporter.reason_formatters import reason_overdue
+
     module = filters.get("module", "")
     phase_f = filters.get("phase", "")
     pic = filters.get("pic", "")
@@ -450,20 +536,30 @@ def _filter_overdue(data: ParsedData, filters: dict, today: date) -> list[dict]:
         for phase_name, pd in row.phases.items():
             if phase_f and phase_name != phase_f:
                 continue
-            if pic and pic not in pd.pics:
-                continue
+            if pic:
+                pics = pd.pics or []
+                if pic == "(Unassigned)":
+                    if pics:
+                        continue
+                elif pic not in pics:
+                    continue
             if not _is_overdue(
                 pd, today,
                 row=row, phase_name=phase_name,
                 phase_order=data.all_phases,
             ):
                 continue
-            records.append(_row_to_dict(
+            item = _row_to_dict(
                 row, phase_name=phase_name, today=today,
                 phase_order=data.all_phases,
-            ))
+            )
+            item["ly_do"] = reason_overdue(item, today=today)
+            records.append(item)
     # Gom theo ma_cn (case-sensitive): 1 function trễ nhiều phase → 1 row.
     result = _dedupe_by_ma_cn(records)
+    # Sau dedupe: làm mới ly_do theo end/status đã gom (phase có thể join)
+    for item in result:
+        item["ly_do"] = reason_overdue(item, today=today)
     result.sort(key=lambda x: x["days_overdue"], reverse=True)
     return result
 
@@ -499,13 +595,13 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
 
 def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
     """
-    Function bị kẹt: phase trước Closed, phase sau None/Open, End phase chờ
-    đã quá (end < today). Không End → không stalled.
-    Bỏ qua function đã xong toàn trình (phase cuối Closed / all Closed|Cancelled).
-    Optional phase = completed_phase hoặc waiting_phase.
+    Function bị kẹt: phase trước Closed + phase sau None/Open = đình trệ.
+    Chỉ xét cặp (curr→next) khi mọi phase TRƯỚC curr đã Closed.
+    Bỏ qua function đã xong toàn trình.
+    Optional filter: phase = completed_phase hoặc waiting_phase.
     """
     from analyzer.gantt_calendar import _is_outlier_date
-    from analyzer.stalled import is_fully_closed, is_stalled_transition
+    from analyzer.stalled import is_fully_closed, is_stalled_transition, prev_phases_all_closed
 
     phase_f = filters.get("phase", "")
     module = filters.get("module", "")
@@ -517,6 +613,9 @@ def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
         if is_fully_closed(row, phase_names):
             continue
         for i in range(len(phase_names) - 1):
+            # Bỏ qua nếu phase trước index i chưa đóng hết
+            if not prev_phases_all_closed(row, phase_names, i):
+                continue
             curr = phase_names[i]
             nxt = phase_names[i + 1]
             if phase_f and phase_f not in (curr, nxt):
@@ -660,6 +759,7 @@ _FILTERS: dict[str, Callable[[ParsedData, dict, date], list[dict]]] = {
     "overdue":       _filter_overdue,
     "unassigned":    _filter_unassigned,
     "stalled":       _filter_stalled,
+    "bottleneck":    _filter_bottleneck,
     "risk":          _filter_risk,
     "duration":      _filter_duration,
     "timeline":      _filter_timeline,
@@ -743,6 +843,14 @@ def build_title(chart: str, filters: dict) -> str:
         return "Task bị Đình trệ" + (
             f" — Phase {filters['phase']}" if filters.get("phase") else ""
         )
+    if chart == "bottleneck":
+        ph = filters.get("phase", "")
+        parts = [f"Bottleneck (stuck) — Phase {ph}" if ph else "Bottleneck (stuck)"]
+        if filters.get("module"):
+            parts.append(f"Module {filters['module']}")
+        if filters.get("process"):
+            parts.append(f"Quy trình {filters['process']}")
+        return " · ".join(parts)
     if chart == "risk":
         level = filters.get("level", "high") or "high"
         labels = {

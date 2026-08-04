@@ -125,9 +125,9 @@ def test_app_vs_all_funnel_and_transitions(multi_metrics):
     trans_all = _derive_transitions(items)
     trans_app = _derive_transitions(items_app)
 
-    # 3 HR + 2 APP past End; 1 future APP bị loại
-    assert len(items) == 5
-    assert len(items_app) == 2
+    # 3 HR + 2 APP past End + 1 future APP (rule mới: không yêu cầu End đã quá)
+    assert len(items) == 6
+    assert len(items_app) == 3
     assert len(items_app) < len(items)
 
     all_analysis = next(f["closed"] for f in funnel_all if f["phase"] == "Analysis")
@@ -138,8 +138,8 @@ def test_app_vs_all_funnel_and_transitions(multi_metrics):
 
     assert sum(trans_all.values()) == len(items)
     assert sum(trans_app.values()) == len(items_app)
-    assert trans_all == {("Analysis", "Dev"): 5}
-    assert trans_app == {("Analysis", "Dev"): 2}
+    assert trans_all == {("Analysis", "Dev"): 6}
+    assert trans_app == {("Analysis", "Dev"): 3}
     assert {i["module"] for i in items_app} == {"APP"}
 
 

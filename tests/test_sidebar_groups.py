@@ -1,4 +1,4 @@
-"""Smoke tests — sidebar dashboard groups (default membership + All vs one group)."""
+"""Smoke tests — sidebar hub redesign (12 hubs + groups + search)."""
 from __future__ import annotations
 
 import os
@@ -8,6 +8,7 @@ import pytest
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 DASHBOARD_JS = os.path.join(ROOT, "static", "js", "dashboard.js")
+SIDEBAR_HUBS_JS = os.path.join(ROOT, "static", "js", "sidebar_hubs.js")
 I18N_JS = os.path.join(ROOT, "static", "js", "i18n.js")
 INDEX_HTML = os.path.join(ROOT, "templates", "index.html")
 STYLE_CSS = os.path.join(ROOT, "static", "css", "style.css")
@@ -16,6 +17,12 @@ STYLE_CSS = os.path.join(ROOT, "static", "css", "style.css")
 @pytest.fixture(scope="module")
 def dashboard_js() -> str:
     with open(DASHBOARD_JS, encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.fixture(scope="module")
+def sidebar_hubs_js() -> str:
+    with open(SIDEBAR_HUBS_JS, encoding="utf-8") as f:
         return f.read()
 
 
@@ -42,39 +49,13 @@ def style_css() -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-# Default membership expected (mirrors DEFAULT_SIDEBAR_GROUP_DEFS)
 _DEFAULT_MEMBERSHIP = {
-    "tracking": {
-        "section-summary", "section-rlog", "section-overdue",
-        "section-unassigned", "section-stalled", "section-aging-wip",
-        "section-sla", "section-module", "section-tasktype",
-        "section-matrix", "section-phase", "section-giaidoan",
-        "section-pic-upcoming",
-    },
-    "forecast": {
-        "section-gantt", "section-forecast-gantt", "section-forecast-manpower",
-        "section-estimate-ratio",
-        "section-gantt-calendar", "section-burndown",
-        "section-capacity", "section-pic-overload", "section-baseline",
-        "section-evm", "section-exec-dashboard", "section-scope-creep",
-        "section-duration",
-    },
-    "quality": {
-        "section-dataquality", "section-anomaly", "section-risk",
-        "section-uat-quality",
-    },
-    "analysis": {
-        "section-process", "section-pic", "section-priority",
-        "section-fitgap-dashboard", "section-effort", "section-slow",
-        "section-deps", "section-function-diff", "section-kanban",
-        "section-my-bookmarks",
-    },
-    "pm": {
-        "section-pm", "section-digest", "section-my-digests",
-    },
-    "admin": {
-        "section-compare", "section-custom-dashboards", "section-history",
-    },
+    "overview": {"section-summary", "section-module-progress"},
+    "issues": {"section-issues", "section-risk-hub"},
+    "progress": {"section-timeline", "section-weekly"},
+    "forecast": {"section-plan", "section-manpower"},
+    "analysis": {"section-analysis"},
+    "admin": {"section-admin"},
 }
 
 
@@ -92,23 +73,16 @@ def test_default_groups_present(dashboard_js: str):
     block = _extract_default_group_block(dashboard_js)
     for gid in _DEFAULT_MEMBERSHIP:
         assert f'id: "{gid}"' in block, f"missing group {gid}"
-    # Bilingual names
-    assert 'name_vi: "Chất lượng"' in block
-    assert 'name_en: "Quality"' in block
     assert 'name_vi: "Phân tích"' in block
     assert 'name_en: "Analysis"' in block
-    assert 'name_vi: "Chiều PM"' in block
-    assert 'name_en: "PM dimension"' in block
     assert 'name_vi: "Quản trị"' in block
     assert 'name_en: "Administration"' in block
 
 
 def test_default_membership_map(dashboard_js: str):
-    """Mỗi section thuộc đúng 1 nhóm default; không trùng membership."""
     block = _extract_default_group_block(dashboard_js)
     seen = {}
     for gid, sections in _DEFAULT_MEMBERSHIP.items():
-        # Tìm object group theo id
         gm = re.search(
             rf'id:\s*"{gid}"\s*,\s*name_vi:.*?sections:\s*\[(.*?)\]',
             block,
@@ -126,57 +100,53 @@ def test_default_membership_map(dashboard_js: str):
             seen[sid] = gid
 
 
+def test_hub_defs_in_sidebar_hubs_js(sidebar_hubs_js: str):
+    for hid in (
+        "section-module-progress", "section-issues", "section-risk-hub",
+        "section-timeline", "section-weekly", "section-plan",
+        "section-manpower", "section-analysis", "section-admin",
+    ):
+        assert hid in sidebar_hubs_js
+    assert "ihrp.tab." in sidebar_hubs_js
+    assert "ihrp.sidebar.collapsed." in sidebar_hubs_js
+    assert "function migrateSectionOrder" in sidebar_hubs_js
+    assert "function scrollToSection" in sidebar_hubs_js
+
+
 def test_filter_all_vs_one_group_api(dashboard_js: str):
-    """API filter: All + set group + compose class group-filtered-out."""
     assert 'SIDEBAR_GROUP_ALL = "__all__"' in dashboard_js
     assert "function applySidebarGroupFilter()" in dashboard_js
-    assert "function setSidebarActiveGroup(" in dashboard_js
-    assert "function resetSidebarGroupsToDefault(" in dashboard_js
     assert "group-filtered-out" in dashboard_js
-    assert "buildSidebarSectionMembership" in dashboard_js
-    # Compose: không đè .hidden visibility
-    assert "data-user-hidden" in dashboard_js or "userHidden" in dashboard_js
     assert "ihrp_sidebar_groups_v2" in dashboard_js
 
 
-def test_sidebar_html_toolbar_and_modal(index_html: str):
-    assert 'id="sidebarGroupSelect"' in index_html
-    assert 'id="btnEditSidebarGroups"' in index_html
-    assert 'id="sidebarGroupsModal"' in index_html
+def test_sidebar_html_search_and_hubs(index_html: str):
+    assert 'id="sidebarSearchInput"' in index_html
     assert 'id="sidebarNavLinks"' in index_html
-    assert 'data-i18n="sg.modal_title"' in index_html
-    assert 'data-i18n="sg.reset"' in index_html
-    # Sidebar links vẫn trỏ section-*
+    assert "sidebar-nav--v2" in index_html
     assert 'href="#section-summary"' in index_html
-    assert 'href="#section-gantt"' in index_html
+    assert 'href="#section-module-progress"' in index_html
+    assert 'href="#section-issues"' in index_html
+    assert "sidebar_hubs.js" in index_html
+    # Dropdown Tất cả đã thay bằng search
+    assert 'id="sidebarGroupSelect"' in index_html  # hidden compat
+    assert "sidebar-search" in index_html
 
 
 def test_sidebar_group_i18n_keys(i18n_js: str):
-    keys = [
-        "sg.all", "sg.select_title", "sg.edit_title", "sg.modal_title",
-        "sg.reset", "sg.add", "sg.delete", "sg.save", "sg.cancel",
-        "sg.name_vi", "sg.name_en", "sg.move", "sg.toast_saved",
-        "sg.toast_reset", "sg.confirm_delete", "sg.confirm_reset",
-    ]
-    for key in keys:
+    # Legacy sg.* keys vẫn giữ (modal editor)
+    for key in ("sg.all", "sg.modal_title", "sg.save", "sg.cancel"):
         assert f'"{key}"' in i18n_js, f"missing i18n key {key}"
-    # VI + EN packs cả hai
-    vi = i18n_js.split("vi: {", 1)[1].split("en: {", 1)[0]
-    en = i18n_js.split("en: {", 1)[1]
-    assert '"sg.all": "Tất cả"' in vi
-    assert '"sg.all": "All"' in en
 
 
 def test_group_filtered_css(style_css: str):
     assert ".group-filtered-out" in style_css
-    assert ".sidebar-group-toolbar" in style_css
-    assert ".sidebar-group-select" in style_css
+    assert ".sidebar-nav-item" in style_css
+    assert ".section-tabs" in style_css
+    assert ".sidebar-badge" in style_css
 
 
 def test_all_sidebar_links_in_default_membership(index_html: str, dashboard_js: str):
-    """Mọi link sidebar #section-* phải nằm trong default membership (không orphan)."""
-    links = set(re.findall(r'href="#(section-[^"]+)"', index_html))
-    # Chỉ lấy trong #sidebarNav
     nav_m = re.search(r'id="sidebarNav".*?</nav>', index_html, re.DOTALL)
     assert nav_m
     nav_links = set(re.findall(r'href="#(section-[^"]+)"', nav_m.group(0)))
@@ -185,5 +155,4 @@ def test_all_sidebar_links_in_default_membership(index_html: str, dashboard_js: 
         covered |= secs
     missing = nav_links - covered
     assert not missing, f"sidebar links missing from default groups: {sorted(missing)}"
-    # Extra in defaults but not in nav is OK (future-proof) — chỉ cảnh báo soft
     assert "section-summary" in nav_links

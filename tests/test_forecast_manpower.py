@@ -7,6 +7,8 @@ from parser.excel_parser import ParsedData, PhaseData, PhaseGroup, FunctionRow
 from analyzer.forecast_manpower import (
     DEFAULT_MH,
     compute_forecast_manpower,
+    months_until,
+    suggest_target_months,
     _phase_mh,
 )
 
@@ -96,3 +98,101 @@ def test_display_manday_manmonth():
     assert r["totals"]["display_remaining"] == 1.0
     r2 = compute_forecast_manpower(data, display_unit="manday")
     assert r2["totals"]["display_remaining"] == 20.0
+
+
+def test_months_until_golive_dec_2026():
+    """Aug 1 → Dec 1 2026 ≈ 4 tháng (không phải 1)."""
+    today = date(2026, 8, 1)
+    assert months_until(today, date(2026, 12, 1)) == 4.0
+    # Đã qua hạn → tối thiểu 0.25
+    assert months_until(today, date(2026, 7, 1)) == 0.25
+
+
+def test_suggest_target_months_from_golive():
+    """Phase tên map → Cấu hình Golive, End 12/2026 → ~4.5 tháng."""
+    today = date(2026, 8, 1)
+    # Tên phase khớp TASK_TYPE_RULES → "Cấu hình Golive"
+    rows = [
+        _row("G1", {
+            "Config Golive": PhaseData(
+                status="Open",
+                end_date=date(2026, 12, 15),
+                estimate_mh=8,
+            ),
+            "Dev": PhaseData(
+                status="Open",
+                end_date=date(2026, 9, 1),
+                estimate_mh=16,
+            ),
+        }),
+    ]
+    groups = [
+        PhaseGroup(name="Config Golive", attributes={}),
+        PhaseGroup(name="Dev", attributes={}),
+    ]
+    data = ParsedData(
+        headers={},
+        meta_columns={},
+        rows=rows,
+        phase_groups=groups,
+        all_phases=["Config Golive", "Dev"],
+        all_modules=["PR"],
+    )
+    assert groups[0].task_type == "Cấu hình Golive"
+    sug = suggest_target_months(data, today=today)
+    assert sug["source"] == "golive"
+    assert sug["months"] == 4.5  # 4 + (15-1)/30 → 4.47 → 4.5
+    assert "Golive" in sug["source_label"]
+
+    # auto_target: hire giảm mạnh vs target=1 (31 MM / 4 tháng ≈ 8)
+    rem_mh = 31 * 160
+    rows3 = [
+        _row("X1", {
+            "Config Golive": PhaseData(
+                status="Open", estimate_mh=8, end_date=date(2026, 12, 1)
+            ),
+            "Dev": PhaseData(status="Open", estimate_mh=rem_mh),
+        }),
+    ]
+    groups3 = [
+        PhaseGroup(name="Config Golive", attributes={}),
+        PhaseGroup(name="Dev", attributes={}),
+    ]
+    data3 = ParsedData(
+        headers={},
+        meta_columns={},
+        rows=rows3,
+        phase_groups=groups3,
+        all_phases=["Config Golive", "Dev"],
+        all_modules=["PR"],
+    )
+    auto = compute_forecast_manpower(
+        data3, target_months=None, auto_target=True, today=today, display_unit="manmonth"
+    )
+    forced1 = compute_forecast_manpower(
+        data3, target_months=1.0, today=today, display_unit="manmonth"
+    )
+    assert auto["target_months"] == 4.0
+    assert auto["target_months_meta"]["overridden"] is False
+    assert "Golive" in auto["target_months_meta"]["source_label"]
+    # Dev pool: 31 MM remaining → hire
+    pools_auto = {p["stage_id"]: p for p in auto["pools"]}
+    pools_1 = {p["stage_id"]: p for p in forced1["pools"]}
+    hire_auto = pools_auto["dev"]["hire_needed"]
+    hire_1 = pools_1["dev"]["hire_needed"]
+    assert hire_auto == 8
+    assert hire_1 == 31
+    assert hire_auto < hire_1
+
+
+def test_suggest_fallback_max_open_end():
+    today = date(2026, 8, 1)
+    rows = [
+        _row("A1", {
+            "Analysis": PhaseData(status="Open", end_date=date(2026, 11, 1), estimate_mh=8),
+        }),
+    ]
+    data = _data(rows, [("Analysis", "Phân tích")])
+    sug = suggest_target_months(data, today=today)
+    assert sug["source"] in ("max_open_end", "golive")
+    assert sug["months"] == 3.0

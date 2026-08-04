@@ -260,8 +260,11 @@ def compute_data_quality(
                     "suggestion": ISSUE_META["invalid_status"]["suggestion"],
                 })
 
-            # End < Start
-            if pd.start_date and pd.end_date and pd.end_date < pd.start_date:
+            # End < Start — bỏ qua nếu đã Closed/Cancelled (việc đã xong, ép sửa ngày không có giá trị)
+            if (
+                pd.start_date and pd.end_date and pd.end_date < pd.start_date
+                and not _is_closed_status(status)
+            ):
                 issues.append({
                     "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
                     "module": module, "quy_trinh": quy_trinh, "phase": phase_name,

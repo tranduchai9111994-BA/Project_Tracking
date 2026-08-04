@@ -317,6 +317,27 @@ def test_overdue_drill_count_matches_row_has_overdue(today):
     assert summary["total_overdue"] == len(drill_items)
 
 
+def test_overdue_drill_has_ly_do_and_pic_phase_filter(today):
+    """Heatmap PIC×Phase → drill overdue kèm ly_do; (Unassigned) khớp phase trống PIC."""
+    data = _make_multi_overdue_data(today)
+    items = drill_down(data, "overdue", {}, today)
+    assert items
+    assert all(it.get("ly_do") for it in items)
+    assert any("End" in (it.get("ly_do") or "") for it in items)
+
+    # F1.Dev PIC=B; F2.Dev PIC=B → filter Dev×B
+    by_pic = drill_down(data, "overdue", {"pic": "B", "phase": "Dev"}, today)
+    assert {i["ma_cn"] for i in by_pic} == {"F1", "F2"}
+    assert all("Dev" in (i.get("phase") or "") for i in by_pic)
+    assert all(i.get("ly_do") for i in by_pic)
+
+    unassigned = drill_down(
+        data, "overdue", {"pic": "(Unassigned)", "phase": "Dev"}, today
+    )
+    assert {i["ma_cn"] for i in unassigned} == {"F3"}
+    assert all(i.get("ly_do") for i in unassigned)
+
+
 def test_unassigned_drill_dedupes_by_function(today):
     """Same dedupe logic cho drill 'unassigned'."""
     data = _make_multi_overdue_data(today)
