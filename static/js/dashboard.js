@@ -153,8 +153,9 @@ window.apiJson = apiJson;
 // ========================================================================
 document.addEventListener("DOMContentLoaded", () => {
     // Session user label trên header (best-effort)
-    if (typeof _authRefreshHeader === "function") {
-        _authRefreshHeader().catch(() => {});
+    // Hook tuỳ chọn: tham chiếu qua window để rõ đây là hàm do script khác cấp.
+    if (typeof window._authRefreshHeader === "function") {
+        window._authRefreshHeader().catch(() => {});
     }
 
     const zone = document.getElementById("uploadZone");
@@ -239,6 +240,8 @@ document.addEventListener("DOMContentLoaded", () => {
     loadProjectList().then(() => {
         // Nếu project đang chọn đã có dữ liệu → tự load dashboard
         tryLoadDashboardForCurrent();
+        // Prefetch list Đồng bộ theo đúng slug (tránh race slug=default trước đây)
+        try { _integPrefetchAfterProjectReady(); } catch (_) {}
     });
 });
 
@@ -412,6 +415,11 @@ async function switchProject(slug) {
     currentProjectSlug = slug;
     localStorage.setItem("current_project", slug);
     updateUploadTargetLabel();
+    // Invalidate cache Đồng bộ — đừng hiện integration của project cũ
+    _integState.integrations = [];
+    _integState.capabilities = null;
+    _integState.loadedSlug = null;
+    try { _integPrefetchAfterProjectReady(); } catch (_) {}
     // Xóa dashboard cũ, reset state
     metricsData = null;
     snapshotsData = [];
@@ -2104,6 +2112,7 @@ function renderDashboard() {
     _safe("summary", renderSummaryCards);
     _safe("module", () => {
         _loadModuleGroupBy();
+        _loadMoCompare();
         _fetchModuleOverview();
     });
     _safe("chartValueMode", _loadChartValueMode);
@@ -3132,21 +3141,212 @@ window.setModuleGroupBy = async function (mode) {
     await _fetchModuleOverview();
 };
 
+// ---------------------------------------------------------------------
+// Nhóm cột tăng/giảm của bảng Tổng quan Module
+// ---------------------------------------------------------------------
+// base: mốc so sánh (baseline|week|previous|date|off) — xem analyzer/compare_base.py
+// snap: ngày snapshot khi base="date"
+// dim : chiều hiển thị (count = số lượng/điểm %, pct = % tương đối, both = cả 2)
+let _moCompare = { base: "baseline", snap: "", dim: "count" };
+let _moCompareMeta = null;   // compare_base từ API: {label, error, ...}
+let _moDeltaInfo = null;     // {removed[], summary}
+let _moHasDelta = false;
+let _moSnapshots = [];
+let _moBaselines = [];
+
+// 4 chỉ số có cột tăng/giảm. unit "pp" = điểm phần trăm (Tiến độ đã là %).
+const _MO_DELTA_METRICS = [
+    { key: "total",     label: "SL",       unit: "count", polarity: "neutral"   },
+    { key: "progress",  label: "Tiến độ",  unit: "pp",    polarity: "up_good"   },
+    { key: "overdue",   label: "Trễ",      unit: "count", polarity: "up_bad"    },
+    { key: "remaining", label: "Còn lại",  unit: "count", polarity: "down_good" },
+];
+
+function _moCmpKey() { return `moCompare:${currentProjectSlug || "default"}`; }
+
+function _loadMoCompare() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(_moCmpKey()) || "null");
+        if (raw && typeof raw === "object") {
+            _moCompare = {
+                base: raw.base || "baseline",
+                snap: raw.snap || "",
+                dim: raw.dim || "count",
+            };
+        }
+    } catch (e) { /* dùng default */ }
+    _syncMoCompareButtons();
+}
+
+function _saveMoCompare() {
+    try { localStorage.setItem(_moCmpKey(), JSON.stringify(_moCompare)); } catch (e) {}
+}
+
+function _syncMoCompareButtons() {
+    const sel = document.getElementById("moCompareBase");
+    if (sel) sel.value = _moCompare.base;
+    const snapSel = document.getElementById("moCompareSnap");
+    if (snapSel) {
+        snapSel.classList.toggle("hidden", _moCompare.base !== "date");
+        const opts = (_moSnapshots || []).map(s =>
+            `<option value="${escapeAttr(s.date)}"${s.date === _moCompare.snap ? " selected" : ""}>${escapeHtml(_fmtDateVi(s.date))}</option>`);
+        snapSel.innerHTML = opts.length ? opts.join("") : `<option value="">(chưa có bản nào)</option>`;
+    }
+    document.querySelectorAll(".mo-dim-btn").forEach(btn => {
+        const active = btn.dataset.moDim === _moCompare.dim;
+        btn.classList.toggle("bg-blue-600", active);
+        btn.classList.toggle("text-white", active);
+        btn.classList.toggle("hover:bg-blue-50", !active);
+    });
+}
+
+function _fmtDateVi(iso) {
+    const s = String(iso || "").slice(0, 10);
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : s;
+}
+
+window.setMoCompareBase = async function (mode) {
+    _moCompare.base = mode || "baseline";
+    _saveMoCompare();
+    _syncMoCompareButtons();
+    await _fetchModuleOverview();
+};
+
+window.setMoCompareSnap = async function (dateStr) {
+    _moCompare.snap = dateStr || "";
+    _saveMoCompare();
+    await _fetchModuleOverview();
+};
+
+window.setMoCompareDim = function (dim) {
+    _moCompare.dim = ["count", "pct", "both"].includes(dim) ? dim : "count";
+    _saveMoCompare();
+    _syncMoCompareButtons();
+    // Đổi chiều chỉ đổi cột nào được render — không cần gọi lại API.
+    if (_moduleGroupBy === "module" && !_moHasDelta) renderModuleTable();
+    else _fetchModuleOverview();
+};
+
+/** Cột delta đang bật theo `dim` — dùng cho cả thead và tbody để không lệch. */
+function _moActiveDeltaCols() {
+    if (!_moHasDelta) return [];
+    const dim = _moCompare.dim;
+    const out = [];
+    _MO_DELTA_METRICS.forEach(m => {
+        if (dim === "count" || dim === "both") out.push({ ...m, kind: "abs" });
+        if (dim === "pct" || dim === "both") out.push({ ...m, kind: "pct" });
+    });
+    return out;
+}
+
+/** Dựng lại phần thead của nhóm cột tăng/giảm (hàng 2 + ô nhóm ở hàng 1). */
+function _moSyncDeltaHead() {
+    const groupTh = document.getElementById("moDeltaGroupTh");
+    const row2 = document.getElementById("moDeltaHeadRow");
+    const head = document.getElementById("moduleTableHead");
+    if (!groupTh || !row2 || !head) return;
+    const cols = _moActiveDeltaCols();
+    const baseThs = head.querySelectorAll("tr:first-child th[data-col]");
+
+    if (!cols.length) {
+        groupTh.classList.add("hidden");
+        row2.classList.add("hidden");
+        row2.innerHTML = "";
+        baseThs.forEach(th => th.removeAttribute("rowspan"));
+        return;
+    }
+    const label = (_moCompareMeta && _moCompareMeta.label) || "mốc so sánh";
+    groupTh.classList.remove("hidden");
+    groupTh.setAttribute("colspan", String(cols.length));
+    groupTh.textContent = `So với ${label}`;
+    row2.classList.remove("hidden");
+    row2.innerHTML = cols.map(c => {
+        const col = `d_${c.key}_${c.kind}`;
+        const txt = c.kind === "abs" ? `± ${c.label}` : `±% ${c.label}`;
+        const tip = c.kind === "abs" && c.unit === "pp"
+            ? `Chênh lệch điểm phần trăm của ${c.label}`
+            : c.kind === "abs" ? `Chênh lệch số lượng của ${c.label}`
+            : `Thay đổi tương đối của ${c.label}`;
+        return `<th class="px-2 py-1 text-center text-xs font-normal" data-col="${col}" title="${escapeAttr(tip)}">${escapeHtml(txt)}</th>`;
+    }).join("");
+    baseThs.forEach(th => th.setAttribute("rowspan", "2"));
+}
+
+function _moSyncCompareInfo() {
+    const lbl = document.getElementById("moCompareLabel");
+    if (lbl) {
+        lbl.textContent = (_moHasDelta && _moCompareMeta && _moCompareMeta.label)
+            ? `(${_moCompareMeta.label})` : "";
+    }
+    const banner = document.getElementById("moCompareBanner");
+    if (!banner) return;
+    const msgs = [];
+    if (_moCompareMeta && _moCompareMeta.error) msgs.push(_moCompareMeta.error);
+    const removed = (_moDeltaInfo && _moDeltaInfo.removed) || [];
+    if (removed.length) {
+        const names = removed.slice(0, 5)
+            .map(x => x.process ? `${x.module} · ${x.process}` : x.module).join(", ");
+        msgs.push(`Có ở mốc cũ mà không còn ở bản này: ${names}`
+            + (removed.length > 5 ? ` và ${removed.length - 5} nhóm khác` : ""));
+    }
+    banner.innerHTML = msgs.map(m => `<div>${escapeHtml(m)}</div>`).join("");
+    banner.classList.toggle("hidden", !msgs.length);
+}
+
+window.pinBaselineFromModule = async function () {
+    if (!currentProjectSlug) return;
+    const label = prompt("Nhãn cho baseline này (có thể để trống):", "");
+    if (label === null) return;  // user bấm Cancel
+    try {
+        const r = await fetch(`/api/projects/${currentProjectSlug}/baselines`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || "Không chốt được baseline");
+        showToast(d.message || "Đã chốt baseline", "green");
+        _moCompare.base = "baseline";
+        _saveMoCompare();
+        _syncMoCompareButtons();
+        await _fetchModuleOverview();
+        if (typeof loadBaselineList === "function") { try { await loadBaselineList(); } catch (e) {} }
+    } catch (err) {
+        showToast("Lỗi: " + err.message, "red");
+    }
+};
+
 async function _fetchModuleOverview() {
-    if (_moduleGroupBy === "module") {
-        // Dùng data đã có sẵn trong metricsData (backward-compat).
+    const cmp = _moCompare.base || "off";
+    if (_moduleGroupBy === "module" && cmp === "off") {
+        // Dùng data đã có sẵn trong metricsData (backward-compat, không cần API).
+        _moCompareMeta = null;
+        _moDeltaInfo = null;
+        _moHasDelta = false;
         renderModuleTable();
         return;
     }
     // Fetch từ endpoint mới. BUG P0-B fix: bổ sung global filter query để
     // backend áp filter (trước đây endpoint trả ALL kể cả khi user filter
-    // theo module/process/pic).
+    // theo module/process/pic) — filter cũng được áp lên bản mốc so sánh.
     try {
         const qsFilter = _buildFilterQuery();
-        const url = `/api/projects/${currentProjectSlug}/module-overview?group_by=${_moduleGroupBy}${qsFilter ? "&" + qsFilter : ""}`;
+        const params = [`group_by=${_moduleGroupBy}`, `compare=${encodeURIComponent(cmp)}`];
+        if (cmp === "date" && _moCompare.snap) {
+            params.push(`compare_date=${encodeURIComponent(_moCompare.snap)}`);
+        }
+        if (qsFilter) params.push(qsFilter);
+        const url = `/api/projects/${currentProjectSlug}/module-overview?${params.join("&")}`;
         const r = await fetch(url);
         if (!r.ok) throw new Error(await r.text());
         const d = await r.json();
+        _moCompareMeta = d.compare_base || null;
+        _moDeltaInfo = d.delta || null;
+        _moHasDelta = !!d.delta;
+        _moSnapshots = d.snapshots || [];
+        _moBaselines = d.baselines || [];
+        _syncMoCompareButtons();
         _renderModuleTableCustom(d.rows, _moduleGroupBy);
     } catch (err) {
         console.error("[moduleOverview]", err);
@@ -3192,6 +3392,47 @@ function _mgProgressColor(pct) {
          : pct >= 30 ? "#f59e0b" : "#dc2626";
 }
 
+/** Class màu theo chiều tốt/xấu của chỉ số (xem POLARITY ở analyzer/module_delta.py). */
+function _moDeltaColorCls(n, polarity) {
+    const good = "text-green-600 font-semibold";
+    const bad = "text-red-600 font-semibold";
+    if (polarity === "up_good") return n > 0 ? good : bad;
+    if (polarity === "up_bad") return n > 0 ? bad : good;
+    if (polarity === "down_good") return n < 0 ? good : bad;
+    // neutral (SL): tăng không hẳn xấu nhưng là dấu hiệu scope creep → cam.
+    return "text-orange-600 font-semibold";
+}
+
+function _moDeltaCellHtml(v, c) {
+    if (v === null || v === undefined) {
+        return `<td class="px-2 py-2 text-center text-gray-300"
+                    title="Giá trị ở mốc so sánh bằng 0 — không tính được % tương đối">—</td>`;
+    }
+    const n = Number(v);
+    const decimals = c.kind === "pct" || c.unit === "pp";
+    const unit = c.kind === "pct" ? "%" : (c.unit === "pp" ? "pp" : "");
+    const txt = `${n > 0 ? "+" : ""}${decimals ? n.toFixed(1) : n}${unit}`;
+    const cls = n === 0 ? "text-gray-400" : _moDeltaColorCls(n, c.polarity);
+    return `<td class="px-2 py-2 text-center text-xs ${cls}">${escapeHtml(txt)}</td>`;
+}
+
+/** 4/8 ô delta của 1 row, đúng thứ tự cột mà `_moSyncDeltaHead` đã dựng. */
+function _moDeltaCells(r) {
+    const cols = _moActiveDeltaCols();
+    if (!cols.length) return "";
+    const d = r.delta || null;
+    return cols.map((c, i) => {
+        if (d && d.is_new) {
+            // Nhóm mới xuất hiện: không có gốc để so → hiện "Mới", không +100%.
+            return i === 0
+                ? `<td class="px-2 py-2 text-center"><span class="text-[10px] bg-sky-100 text-sky-700 rounded px-1">Mới</span></td>`
+                : `<td class="px-2 py-2 text-center text-gray-300">—</td>`;
+        }
+        const key = c.kind === "abs" ? `${c.key}_delta` : `${c.key}_delta_pct`;
+        return _moDeltaCellHtml(d ? d[key] : null, c);
+    }).join("");
+}
+
 function _mgRowHtml(r, opts = {}) {
     const color = _mgProgressColor(r.progress_pct);
     const indent = opts.indent ? "pl-6" : "";
@@ -3211,7 +3452,9 @@ function _mgRowHtml(r, opts = {}) {
     const dqCls = dqN > 0 ? "dq-mod-hit" : "";
     // Còn lại: click → drill scope=remaining (khớp số đếm); không bubble lên row All.
     const remClick = `onclick="event.stopPropagation();_moduleRemainingClick('${escapeAttr(r.module)}','${escapeAttr(r.process || "")}')"`;
-    return `<tr class="border-b hover:bg-blue-50 cursor-pointer ${dqCls}" ${dataAttrs} ${clickAttr}>
+    const rowTitle = `Click để xem function còn lại của ${escapeAttr(r.label || r.module || "")}`;
+    return `<tr class="border-b hover:bg-blue-50 cursor-pointer ${dqCls}" ${dataAttrs} ${clickAttr}
+                title="${rowTitle}">
         <td class="px-2 py-2 text-center">${r.stt}</td>
         <td class="px-2 py-2 font-semibold text-blue-700 ${indent}">
             ${opts.prefix || ""}${escapeHtml(r.label || r.module)}${dqBadge}
@@ -3232,6 +3475,7 @@ function _mgRowHtml(r, opts = {}) {
             title="Click xem ${remN} function còn lại (chưa Closed phase cuối)">
             <span class="${remCls}">${rem}</span>${remMh}
         </td>
+        ${_moDeltaCells(r)}
     </tr>`;
 }
 
@@ -3239,6 +3483,13 @@ function _renderModuleTableCustom(rows, mode) {
     const tbody = document.getElementById("moduleTable");
     if (!tbody) return;
     rows = _sortRowsByRisk(rows);
+    _moSyncDeltaHead();
+    _moSyncCompareInfo();
+    if (mode === "module") {
+        tbody.innerHTML = rows.map(r => _mgRowHtml(r)).join("");
+        _moAfterRender();
+        return;
+    }
     if (mode === "process") {
         // 1 hàng / (module, process) — nhưng col Module đang hiện label từ meta.
         // Trong table header col 2 là "Module" — để tránh mất context, hiển thị
@@ -3250,6 +3501,7 @@ function _renderModuleTableCustom(rows, mode) {
                 onclick: "_moduleRowClickGeneric(this)",
             });
         }).join("");
+        _moAfterRender();
         return;
     }
     if (mode === "both") {
@@ -3272,10 +3524,16 @@ function _renderModuleTableCustom(rows, mode) {
             }
         });
         tbody.innerHTML = parts.join("");
+        _moAfterRender();
         return;
     }
-    // fallback = module
-    renderModuleTable();
+    tbody.innerHTML = rows.map(r => _mgRowHtml(r)).join("");
+    _moAfterRender();
+}
+
+/** Áp lại ẩn/hiện cột sau mỗi lần render (số cột delta thay đổi theo `dim`). */
+function _moAfterRender() {
+    try { applyColumnVisibility("moduleOverview"); } catch (e) { /* picker chưa mount */ }
 }
 
 window._moToggleExpand = function (el) {
@@ -3305,51 +3563,12 @@ window._moduleRowClickGeneric = function (el) {
     if (mod) return openDrillDown("module", filters);
 };
 
+/**
+ * Render bảng từ `metricsData.module_overview` (không so sánh, không gọi API).
+ * Đi qua cùng `_mgRowHtml` với 2 mode kia để nhóm cột delta chỉ có một chỗ sinh.
+ */
 function renderModuleTable() {
-    const tbody = document.getElementById("moduleTable");
-    const rows = _sortRowsByRisk(metricsData.module_overview);
-    tbody.innerHTML = rows.map(r => {
-        const color = _mgProgressColor(r.progress_pct);
-        const rem = r.remaining != null ? r.remaining : "—";
-        const remN = Number(r.remaining) || 0;
-        const remCls = remN > 0 ? "fc-num fc-num-remain" : "fc-num fc-num-muted";
-        const remMh = (r.remaining_mh != null && r.remaining_mh > 0)
-            ? `<div class="text-[10px] text-teal-600/80">${r.remaining_mh} MH</div>` : "";
-        const dqN = _dqCountForModule(r.module);
-        const dqBadge = dqN > 0
-            ? `<span class="dq-hit-badge" onclick="event.stopPropagation(); openDqForModule('${escapeAttr(r.module)}')" title="${dqN} DQ issue">DQ ${dqN}</span>`
-            : "";
-        const dqCls = dqN > 0 ? "dq-mod-hit" : "";
-        const remClick = `onclick="event.stopPropagation();_moduleRemainingClick('${escapeAttr(r.module)}','')"`;
-        return `<tr class="border-b hover:bg-blue-50 cursor-pointer ${dqCls}"
-                    data-mod="${escapeAttr(r.module)}" onclick="_moduleRowClick(this)"
-                    title="Click để xem function còn lại của module ${escapeAttr(r.module)}">
-            <td class="px-2 py-2 text-center">${r.stt}</td>
-            <td class="px-2 py-2 font-semibold text-blue-700">${escapeHtml(r.module)}${dqBadge}</td>
-            <td class="px-2 py-2 text-center">${r.total}</td>
-            <td class="px-2 py-2 text-center">${r.quy_trinh_count}</td>
-            <td class="px-2 py-2">
-                <div class="progress-bar-wrap">
-                    <div class="progress-bar-fill" style="width:${Math.max(r.progress_pct, 8)}%;background:${color}">
-                        ${r.progress_pct}%
-                    </div>
-                </div>
-            </td>
-            <td class="px-2 py-2 text-center text-xs">${escapeHtml(r.active_phase)}</td>
-            <td class="px-2 py-2 text-center ${r.overdue_count > 0 ? 'text-red-600 font-bold' : ''}">${r.overdue_count}</td>
-            <td class="px-2 py-2 text-center">${_riskBadgeHtml(r.risk_level, r.risk_reason)}</td>
-            <td class="px-2 py-2 text-center cursor-pointer hover:bg-amber-50" ${remClick}
-                title="Click xem ${remN} function còn lại (chưa Closed phase cuối)">
-                <span class="${remCls}">${rem}</span>${remMh}
-            </td>
-        </tr>`;
-    }).join("");
-}
-
-// Click 1 row Module Overview → drill còn lại (mặc định); All trong modal.
-function _moduleRowClick(el) {
-    const mod = el.dataset.mod;
-    if (mod) openDrillDown("module", { module: mod, scope: "remaining" });
+    _renderModuleTableCustom(metricsData.module_overview || [], "module");
 }
 
 /**
@@ -4202,6 +4421,17 @@ async function exportOverdue(mode) {
     await downloadFile(`/api/projects/${currentProjectSlug}/export-overdue?` + params.toString(), "Overdue_Report.xlsx");
 }
 
+/** Filter cục bộ section Trễ hạn → param l_* cho nhóm «FL để import». */
+function _overdueExportLocalParams(params) {
+    const mods = _msInstances.overdueModule?.getSelected?.() || [];
+    const phases = _msInstances.overduePhase?.getSelected?.() || [];
+    const pic = document.getElementById("filterPIC")?.value || "";
+    if (mods.length) params.set("l_module", mods.join(","));
+    if (phases.length) params.set("l_phase", phases.join(","));
+    if (pic) params.set("l_pic", pic);
+}
+window._overdueExportLocalParams = _overdueExportLocalParams;
+
 
 /**
  * Xuất Excel Rlog coded tuần này + kế hoạch tuần tới.
@@ -4340,12 +4570,19 @@ function renderRlogWeekly() {
 
 
 // ========================================================================
-// T34 Task 1 — Xuất "Toàn bộ vấn đề" ra 1 Excel workbook (8 sheet)
+// T34 Task 1 — Xuất "Toàn bộ vấn đề" ra 1 Excel workbook nhiều sheet
 // ========================================================================
-// 1 nút header duy nhất → xuất Cover + 7 loại vấn đề với global filter apply.
-async function exportAllIssues() {
+/**
+ * Cover + 1 sheet cho mỗi tab của hub Issues, đã apply global filter.
+ *
+ * @param {{forceFull?: boolean}=} opts forceFull bỏ qua nhánh "focus 1 nhóm".
+ *   Menu «Tất cả tab» phải dùng cờ này: người bấm đã nói rõ là muốn cả file,
+ *   nếu vẫn để focus chi phối thì họ nhận đúng 1 sheet mà không hiểu vì sao.
+ */
+async function exportAllIssues(opts) {
+    const forceFull = !!(opts && opts.forceFull);
     // Khi đang focus 1 nhóm vấn đề → xuất scoped nhóm đó thay vì workbook full
-    if (typeof getIssueFocus === "function" && typeof exportActiveIssueFocus === "function") {
+    if (!forceFull && typeof getIssueFocus === "function" && typeof exportActiveIssueFocus === "function") {
         const focus = getIssueFocus();
         if (focus && focus !== "__all__") {
             await exportActiveIssueFocus();
@@ -4530,26 +4767,38 @@ function renderPmDimension(data) {
         ? `(${weekly.period_start} → ${weekly.period_end || "?"})` : "");
     setTxt("pmLinkCount", links.link_count ? `(${links.link_count})` : "");
 
+    _pmGanttState.plan = plan || null;
+    _pmGanttState.insights = data && data.schedule_insights;
+    _pmGanttState.ganttView = data && data.pm_gantt_view;
+    _pmPopulateGanttFilters(plan);
+
+    // Summary cards từ insights (nhẹ) — không cần full gantt grid
+    _paintPmGanttSummary(_pmGanttState.insights);
+    _paintPmGanttAlerts(_pmGanttState.insights);
+
+    if (_pmGanttState.ganttView) {
+        _pmRefreshGanttViews();
+    } else if (plan) {
+        if (_pmGanttObserver) {
+            _pmGanttObserver.disconnect();
+            _pmGanttObserver = null;
+        }
+        _pmShowGanttLoading();
+        _pmInitGanttLazyObserver();
+    } else {
+        _pmClearGanttPanels();
+    }
+
     const esc = (s) => String(s == null ? "" : s)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-    const schedBody = document.getElementById("pmScheduleBody");
-    if (schedBody) {
-        const rows = (plan && plan.schedule) || [];
-        if (!rows.length) {
-            schedBody.innerHTML = `<tr><td colspan="5" class="px-2 py-3 text-gray-400 text-center">Chưa có lịch trình</td></tr>`;
-        } else {
-            schedBody.innerHTML = rows.map((r) => {
-                const cls = r.is_phase_header ? "bg-amber-50 font-semibold" : "";
-                return `<tr class="${cls}">
-                    <td class="px-2 py-1 border-b">${esc(r.name)}</td>
-                    <td class="px-2 py-1 border-b whitespace-nowrap">${esc(r.start || "")}</td>
-                    <td class="px-2 py-1 border-b whitespace-nowrap">${esc(r.end || "")}</td>
-                    <td class="px-2 py-1 border-b">${esc((r.pic_fpt || []).join(", "))}</td>
-                    <td class="px-2 py-1 border-b text-gray-500">${esc(r.phase || "")}</td>
-                </tr>`;
-            }).join("");
+    if (!plan) {
+        const schedBody = document.getElementById("pmScheduleBody");
+        if (schedBody) {
+            schedBody.innerHTML = `<tr><td colspan="8" class="px-2 py-3 text-gray-400 text-center">Chưa có lịch trình</td></tr>`;
         }
+    } else {
+        _pmRenderScheduleTable(plan);
     }
 
     const msBody = document.getElementById("pmMilestoneBody");
@@ -4617,6 +4866,1018 @@ function renderPmDimension(data) {
     }
     _applyPmZoom();
 }
+
+// ---- PM Plan Gantt (Phase A/B/C) ----
+let _pmGanttLoadPromise = null;
+let _pmGanttObserver = null;
+
+function _pmShowGanttLoading() {
+    const wrap = document.getElementById("pmPlanGanttWrap");
+    if (wrap) {
+        wrap.innerHTML = `<p class="text-center text-gray-400 text-sm py-6">Đang tải Gantt lịch trình…</p>`;
+    }
+    const hm = document.getElementById("pmGanttHeatmap");
+    if (hm) hm.innerHTML = "";
+}
+
+function _pmClearGanttPanels() {
+    const wrap = document.getElementById("pmPlanGanttWrap");
+    if (wrap) {
+        wrap.innerHTML = `<p class="text-center text-gray-400 text-sm py-6">Chưa có lịch trình — nạp Kế hoạch (.xlsx)</p>`;
+    }
+    const hm = document.getElementById("pmGanttHeatmap");
+    if (hm) hm.innerHTML = "";
+    const sum = document.getElementById("pmGanttSummary");
+    if (sum) sum.innerHTML = "";
+    const alert = document.getElementById("pmGanttAlertBox");
+    if (alert) { alert.classList.add("hidden"); alert.innerHTML = ""; }
+}
+
+function _pmInitGanttLazyObserver() {
+    if (_pmGanttObserver || !_pmGanttState.plan) return;
+    const el = document.getElementById("pmPlanGanttPanel") || document.getElementById("section-pm");
+    if (!el || !window.IntersectionObserver) {
+        _pmLazyLoadGanttView();
+        return;
+    }
+    _pmGanttObserver = new IntersectionObserver((entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+            _pmLazyLoadGanttView();
+        }
+    }, { rootMargin: "120px", threshold: 0.05 });
+    _pmGanttObserver.observe(el);
+    const rect = el.getBoundingClientRect();
+    if (rect.top < window.innerHeight + 120 && rect.bottom > -120) {
+        _pmLazyLoadGanttView();
+    }
+}
+
+async function _pmLazyLoadGanttView() {
+    if (_pmGanttState.ganttView) {
+        _pmRefreshGanttViews();
+        return;
+    }
+    if (!_pmGanttState.plan || !currentProjectSlug) return;
+    if (_pmGanttLoadPromise) return _pmGanttLoadPromise;
+    _pmGanttLoadPromise = (async () => {
+        try {
+            const data = await apiJson(
+                `/api/projects/${encodeURIComponent(currentProjectSlug)}/pm/gantt-view`,
+                { cache: "no-store" },
+            );
+            _pmGanttState.ganttView = data.gantt_view || null;
+            if (_pmGanttState.ganttView) {
+                _pmRefreshGanttViews();
+            } else {
+                _pmClearGanttPanels();
+            }
+        } catch (err) {
+            console.warn("[pmLazyGantt]", err);
+            const wrap = document.getElementById("pmPlanGanttWrap");
+            if (wrap) {
+                wrap.innerHTML = `<p class="text-center text-red-500 text-sm py-6">Không tải Gantt: ${escapeHtml(err.message || String(err))}</p>`;
+            }
+        } finally {
+            _pmGanttLoadPromise = null;
+        }
+    })();
+    return _pmGanttLoadPromise;
+}
+
+const _PM_GANTT_SCALE_KEY = "pmGantt:timelineScale";
+const _PM_GANTT_SCALE_MIN = 0.5;
+const _PM_GANTT_SCALE_MAX = 3.0;
+const _PM_GANTT_SCALE_STEP = 0.1;
+const _PM_GANTT_DEADLINE_DAYS = 3;
+
+function _pmGanttLoadScale() {
+    try {
+        const v = parseFloat(localStorage.getItem(_PM_GANTT_SCALE_KEY));
+        if (Number.isFinite(v) && v >= _PM_GANTT_SCALE_MIN && v <= _PM_GANTT_SCALE_MAX) return v;
+    } catch (_) { /* ignore */ }
+    return 1;
+}
+
+let _pmGanttState = {
+    zoom: "month",
+    scale: _pmGanttLoadScale(),
+    plan: null,
+    insights: null,
+    ganttView: null,
+    viewMode: "timeline",
+    weekOffset: 0,
+    dayOffset: 0,
+    filterPic: "",
+    filterStatus: "all",
+    foldedPhases: {},
+};
+
+function _pmPhaseKey(r) {
+    return `${String(r.stt || "").trim()}|${String(r.name || "").trim()}`;
+}
+
+/** Gắn depth / phaseKey / childCount cho schedule phẳng (phase header + task). */
+function _pmAnnotateScheduleHierarchy(rows) {
+    const out = [];
+    let curPhaseKey = "";
+    let childBuf = [];
+    const flushPhaseMeta = () => {
+        const cnt = childBuf.length;
+        childBuf.forEach((r) => { r._phaseChildCount = cnt; });
+        childBuf = [];
+    };
+    rows.forEach((r) => {
+        const copy = { ...r };
+        if (copy.is_phase_header) {
+            flushPhaseMeta();
+            curPhaseKey = _pmPhaseKey(copy);
+            copy._depth = 0;
+            copy._phaseKey = curPhaseKey;
+            copy._parentPhaseKey = "";
+            out.push(copy);
+            return;
+        }
+        copy._depth = curPhaseKey ? 1 : 0;
+        copy._phaseKey = "";
+        copy._parentPhaseKey = curPhaseKey;
+        childBuf.push(copy);
+        out.push(copy);
+    });
+    flushPhaseMeta();
+    return out;
+}
+
+/** Ẩn task con khi giai đoạn đang thu gọn. */
+function _pmVisibleHierarchyRows(rows) {
+    const folded = _pmGanttState.foldedPhases || {};
+    return rows.filter((r) => {
+        if (r.is_phase_header) return true;
+        if (r._parentPhaseKey && folded[r._parentPhaseKey]) return false;
+        return true;
+    });
+}
+
+function _pmScheduleForDisplay(plan) {
+    const filtered = _pmFilteredSchedule(plan || { schedule: [] });
+    return _pmVisibleHierarchyRows(_pmAnnotateScheduleHierarchy(filtered));
+}
+
+function togglePmGanttPhase(phaseKey) {
+    if (!phaseKey) return;
+    const folded = { ...(_pmGanttState.foldedPhases || {}) };
+    if (folded[phaseKey]) delete folded[phaseKey];
+    else folded[phaseKey] = true;
+    _pmGanttState.foldedPhases = folded;
+    _pmRefreshGanttViews();
+}
+window.togglePmGanttPhase = togglePmGanttPhase;
+
+function expandAllPmGanttPhases() {
+    _pmGanttState.foldedPhases = {};
+    _pmRefreshGanttViews();
+}
+window.expandAllPmGanttPhases = expandAllPmGanttPhases;
+
+function collapseAllPmGanttPhases() {
+    const folded = {};
+    ((_pmGanttState.plan && _pmGanttState.plan.schedule) || []).forEach((r) => {
+        if (r.is_phase_header) folded[_pmPhaseKey(r)] = true;
+    });
+    _pmGanttState.foldedPhases = folded;
+    _pmRefreshGanttViews();
+}
+window.collapseAllPmGanttPhases = collapseAllPmGanttPhases;
+
+function _pmDaysUntilEnd(end, today) {
+    if (!end || !today) return null;
+    return Math.round((end - today) / 86400000);
+}
+
+/** Trạng thái màu + icon cho thanh Gantt. */
+function _pmBarVisual(r, today) {
+    if (r.is_phase_header) {
+        return { cls: " pm-gantt-bar--phase", icon: "◆", iconTitle: "Giai đoạn" };
+    }
+    if (r.done) {
+        return { cls: " pm-gantt-bar--done", icon: "✓", iconTitle: "Hoàn thành" };
+    }
+    if (r.overdue) {
+        return { cls: " pm-gantt-bar--overdue", icon: "⚠", iconTitle: "Quá hạn" };
+    }
+    const daysLeft = r.end ? _pmDaysUntilEnd(r.end, today) : null;
+    if (daysLeft != null && daysLeft >= 0 && daysLeft <= _PM_GANTT_DEADLINE_DAYS) {
+        return { cls: " pm-gantt-bar--deadline", icon: "⏰", iconTitle: `Còn ${daysLeft} ngày tới deadline` };
+    }
+    if (r.status) {
+        return { cls: " pm-gantt-bar--ontime", icon: "", iconTitle: "Đang thực hiện" };
+    }
+    return { cls: " pm-gantt-bar--planned", icon: "", iconTitle: "Chưa bắt đầu" };
+}
+
+function setPmGanttScale(scale) {
+    const stepped = Math.round(scale / _PM_GANTT_SCALE_STEP) * _PM_GANTT_SCALE_STEP;
+    _pmGanttState.scale = Math.min(_PM_GANTT_SCALE_MAX, Math.max(_PM_GANTT_SCALE_MIN, Number(stepped.toFixed(2))));
+    try { localStorage.setItem(_PM_GANTT_SCALE_KEY, String(_pmGanttState.scale)); } catch (_) { /* ignore */ }
+    _paintPmGanttScaleLabel();
+    if (_pmGanttState.viewMode === "timeline") _renderPmTimelineGantt();
+}
+function pmGanttZoomIn() { setPmGanttScale((_pmGanttState.scale || 1) + _PM_GANTT_SCALE_STEP); }
+function pmGanttZoomOut() { setPmGanttScale((_pmGanttState.scale || 1) - _PM_GANTT_SCALE_STEP); }
+function pmGanttZoomReset() { setPmGanttScale(1); }
+window.setPmGanttScale = setPmGanttScale;
+window.pmGanttZoomIn = pmGanttZoomIn;
+window.pmGanttZoomOut = pmGanttZoomOut;
+window.pmGanttZoomReset = pmGanttZoomReset;
+
+function _paintPmGanttScaleLabel() {
+    const el = document.getElementById("pmGanttScaleLabel");
+    if (el) el.textContent = Math.round((_pmGanttState.scale || 1) * 100) + "%";
+}
+
+let _pmGanttWheelBound = false;
+function _bindPmGanttWheelZoom() {
+    if (_pmGanttWheelBound) return;
+    const wrap = document.getElementById("pmPlanGanttWrap");
+    if (!wrap) return;
+    _pmGanttWheelBound = true;
+    wrap.addEventListener("wheel", (e) => {
+        if (!e.ctrlKey && !e.metaKey) return;
+        if (_pmGanttState.viewMode !== "timeline") return;
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -_PM_GANTT_SCALE_STEP : _PM_GANTT_SCALE_STEP;
+        setPmGanttScale((_pmGanttState.scale || 1) + delta);
+    }, { passive: false });
+}
+
+function setPmGanttViewMode(mode) {
+    const m = mode === "master" ? "master" : (mode === "detail" ? "detail" : "timeline");
+    _pmGanttState.viewMode = m;
+    _paintPmGanttViewBtns();
+    const tl = document.getElementById("pmPlanGanttWrap");
+    const master = document.getElementById("pmPlanMasterWrap");
+    const detail = document.getElementById("pmPlanDetailWrap");
+    const sliderRow = document.getElementById("pmGanttWeekSliderRow");
+    if (tl) tl.classList.toggle("hidden", m !== "timeline");
+    if (master) master.classList.toggle("hidden", m !== "master");
+    if (detail) detail.classList.toggle("hidden", m !== "detail");
+    if (sliderRow) sliderRow.classList.toggle("hidden", m === "master");
+    if (m === "master") {
+        renderPmPlanMasterGrid(_pmGanttState.ganttView, _pmGanttState.plan);
+    } else if (m === "detail") {
+        renderPmPlanDetailGrid(_pmGanttState.ganttView, _pmGanttState.plan);
+    } else {
+        _renderPmTimelineGantt();
+    }
+}
+window.setPmGanttViewMode = setPmGanttViewMode;
+
+function _paintPmGanttViewBtns() {
+    const tlBtn = document.getElementById("pmGanttViewTimeline");
+    const msBtn = document.getElementById("pmGanttViewMaster");
+    const dtBtn = document.getElementById("pmGanttViewDetail");
+    const mode = _pmGanttState.viewMode;
+    if (tlBtn) {
+        tlBtn.classList.toggle("bg-blue-600", mode === "timeline");
+        tlBtn.classList.toggle("text-white", mode === "timeline");
+    }
+    if (msBtn) {
+        msBtn.classList.toggle("bg-blue-600", mode === "master");
+        msBtn.classList.toggle("text-white", mode === "master");
+    }
+    if (dtBtn) {
+        dtBtn.classList.toggle("bg-blue-600", mode === "detail");
+        dtBtn.classList.toggle("text-white", mode === "detail");
+    }
+}
+
+function setPmGanttZoom(zoom) {
+    _pmGanttState.zoom = zoom === "week" ? "week" : "month";
+    _paintPmGanttZoomBtns();
+    _renderPmTimelineGantt();
+}
+window.setPmGanttZoom = setPmGanttZoom;
+
+function onPmGanttFilterChange() {
+    const picEl = document.getElementById("pmGanttFilterPic");
+    const stEl = document.getElementById("pmGanttFilterStatus");
+    _pmGanttState.filterPic = (picEl && picEl.value) || "";
+    _pmGanttState.filterStatus = (stEl && stEl.value) || "all";
+    _pmRefreshGanttViews();
+}
+window.onPmGanttFilterChange = onPmGanttFilterChange;
+
+function _pmPopulateGanttFilters(plan) {
+    const sel = document.getElementById("pmGanttFilterPic");
+    if (!sel) return;
+    const cur = _pmGanttState.filterPic || "";
+    const pics = new Set();
+    ((plan && plan.schedule) || []).forEach((r) => {
+        (r.pic_fpt || []).forEach((p) => { if (p) pics.add(String(p).trim()); });
+    });
+    const sorted = [...pics].sort((a, b) => a.localeCompare(b, "vi"));
+    sel.innerHTML = `<option value="">Tất cả PIC</option>`
+        + sorted.map((p) => `<option value="${escapeAttr(p)}">${escapeHtml(p)}</option>`).join("");
+    if (cur && sorted.includes(cur)) sel.value = cur;
+    else { sel.value = ""; _pmGanttState.filterPic = ""; }
+    const stEl = document.getElementById("pmGanttFilterStatus");
+    if (stEl) stEl.value = _pmGanttState.filterStatus || "all";
+}
+
+/** Lọc schedule cho Gantt/bảng — giữ phase header nếu còn task con. */
+function _pmFilteredSchedule(plan) {
+    const rows = (plan && plan.schedule) || [];
+    const picF = _pmGanttState.filterPic;
+    const statusF = _pmGanttState.filterStatus || "all";
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const passes = (r) => {
+        if (r.is_phase_header) return true;
+        if (picF) {
+            const pics = [...(r.pic_fpt || []), ...(r.pic_client || [])];
+            if (!pics.some((p) => p === picF)) return false;
+        }
+        const done = _pmItemDone(r);
+        const overdue = _pmItemOverdue(r, today);
+        if (statusF === "done" && !done) return false;
+        if (statusF === "overdue" && !overdue) return false;
+        if (statusF === "open" && (done || overdue)) return false;
+        return true;
+    };
+
+    const out = [];
+    let pendingHeader = null;
+    for (const r of rows) {
+        if (r.is_phase_header) {
+            pendingHeader = r;
+            continue;
+        }
+        if (!passes(r)) continue;
+        if (pendingHeader) {
+            out.push(pendingHeader);
+            pendingHeader = null;
+        }
+        out.push(r);
+    }
+    return out;
+}
+
+function _pmFilteredPlan(plan) {
+    if (!plan) return null;
+    return { ...plan, schedule: _pmFilteredSchedule(plan) };
+}
+
+function _pmRefreshGanttViews() {
+    const plan = _pmGanttState.plan;
+    const view = _pmGanttState.ganttView;
+    _paintPmGanttSummary(_pmGanttState.insights);
+    _paintPmGanttAlerts(_pmGanttState.insights);
+    _paintPmGanttHeatmap(view, plan);
+    _setupPmGanttSlider(view);
+    _paintPmGanttZoomBtns();
+    _paintPmGanttViewBtns();
+    _paintPmGanttScaleLabel();
+    _bindPmGanttWheelZoom();
+    if (_pmGanttState.viewMode === "master") {
+        renderPmPlanMasterGrid(view, plan);
+    } else if (_pmGanttState.viewMode === "detail") {
+        renderPmPlanDetailGrid(view, plan);
+    } else {
+        _renderPmTimelineGantt();
+    }
+    _pmRenderScheduleTable(plan);
+}
+
+function _pmRenderScheduleTable(planIn) {
+    const tbody = document.getElementById("pmScheduleBody");
+    if (!tbody) return;
+    const rows = _pmScheduleForDisplay(planIn || { schedule: [] });
+    if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="8" class="px-2 py-3 text-gray-400 text-center">Không có dòng phù hợp bộ lọc</td></tr>`;
+        return;
+    }
+    const folded = _pmGanttState.foldedPhases || {};
+    tbody.innerHTML = rows.map((r) => {
+        const isHdr = r.is_phase_header;
+        const phaseKey = r._phaseKey || "";
+        const isFolded = !!(phaseKey && folded[phaseKey]);
+        const childCnt = r._phaseChildCount || 0;
+        const indent = (r._depth || 0) * 14;
+        const cls = isHdr ? "bg-amber-50 font-semibold" : "";
+        let nameCell = "";
+        if (isHdr) {
+            const arrow = isFolded ? "▶" : "▼";
+            nameCell = `<button type="button" class="pm-gantt-toggle mr-1" onclick="togglePmGanttPhase('${escapeAttr(phaseKey)}')" title="${isFolded ? "Mở rộng" : "Thu gọn"} giai đoạn">${arrow}</button>`
+                + `<span>◆ ${escapeHtml(r.name)}</span>`
+                + (childCnt ? `<span class="pm-gantt-phase-count">${childCnt}</span>` : "");
+        } else {
+            nameCell = `<span style="padding-left:${indent}px">${escapeHtml(r.name)}</span>`;
+        }
+        return `<tr class="${cls}">
+            <td class="px-2 py-1 border-b">${nameCell}</td>
+            <td class="px-2 py-1 border-b whitespace-nowrap">${escapeHtml(r.start || "")}</td>
+            <td class="px-2 py-1 border-b whitespace-nowrap">${escapeHtml(r.end || "")}</td>
+            <td class="px-2 py-1 border-b whitespace-nowrap">${escapeHtml(r.status || "")}</td>
+            <td class="px-2 py-1 border-b whitespace-nowrap">${escapeHtml(r.actual_end || "")}</td>
+            <td class="px-2 py-1 border-b whitespace-nowrap">${r.percent_complete != null ? escapeHtml(String(r.percent_complete)) : ""}</td>
+            <td class="px-2 py-1 border-b">${escapeHtml((r.pic_fpt || []).join(", "))}</td>
+            <td class="px-2 py-1 border-b text-gray-500">${escapeHtml(r.phase || "")}</td>
+        </tr>`;
+    }).join("");
+}
+
+function _pmFilterGridRows(gridRows, plan) {
+    const f = _pmGanttState.filterPic;
+    const st = _pmGanttState.filterStatus || "all";
+    const folded = _pmGanttState.foldedPhases || {};
+    let rows = gridRows || [];
+    if (f || st !== "all") {
+        const keys = new Set(_pmFilteredSchedule(plan || { schedule: [] }).map((r) => `${r.stt}|${r.name}`));
+        rows = rows.filter((row) => {
+            if (row.kind === "milestone") return false;
+            return keys.has(`${row.stt}|${row.name}`);
+        });
+    }
+    const out = [];
+    let curPhaseKey = "";
+    rows.forEach((row) => {
+        if (row.kind === "phase_header") {
+            curPhaseKey = `${row.stt || ""}|${row.name || ""}`;
+            out.push(row);
+            return;
+        }
+        if (curPhaseKey && folded[curPhaseKey]) return;
+        out.push(row);
+    });
+    return out;
+}
+
+function _pmComputeHeatmapClient(ganttView, plan) {
+    const axis = (ganttView && ganttView.week_axis) || [];
+    const n = axis.length;
+    if (!n || !plan) return null;
+    const totals = new Array(n).fill(0);
+    const picMap = {};
+    const tasks = _pmFilteredSchedule(plan).filter((r) => !r.is_phase_header);
+    tasks.forEach((task) => {
+        const start = _pmParseDate(task.start);
+        const end = _pmParseDate(task.end);
+        if (!start || !end) return;
+        const pic = ((task.pic_fpt || [])[0]) || "(chưa PIC)";
+        if (!picMap[pic]) picMap[pic] = new Array(n).fill(0);
+        axis.forEach((w, wi) => {
+            const ws = _pmParseDate(w.start);
+            const we = _pmParseDate(w.end);
+            if (ws && we && start <= we && end >= ws) {
+                totals[wi]++;
+                picMap[pic][wi]++;
+            }
+        });
+    });
+    const ranked = Object.entries(picMap).sort((a, b) => {
+        const sa = a[1].reduce((s, v) => s + v, 0);
+        const sb = b[1].reduce((s, v) => s + v, 0);
+        return sb - sa;
+    }).slice(0, 8);
+    const rows = [{ label: "Tổng", counts: totals, kind: "total" }];
+    ranked.forEach(([label, counts]) => rows.push({ label, counts, kind: "pic" }));
+    return {
+        week_labels: axis.map((w) => w.label || ""),
+        rows,
+        max_count: Math.max(...totals, 0),
+    };
+}
+
+function onPmGanttWeekSlide(val) {
+    const n = Number(val) || 0;
+    if (_pmGanttState.viewMode === "detail") {
+        _pmGanttState.dayOffset = n;
+    } else {
+        _pmGanttState.weekOffset = n;
+    }
+    _setupPmGanttSlider(_pmGanttState.ganttView);
+    if (_pmGanttState.viewMode === "detail") {
+        renderPmPlanDetailGrid(_pmGanttState.ganttView, _pmGanttState.plan);
+    } else if (_pmGanttState.viewMode === "timeline") {
+        _renderPmTimelineGantt();
+    }
+    _paintPmGanttHeatmap(_pmGanttState.ganttView, _pmGanttState.plan);
+}
+window.onPmGanttWeekSlide = onPmGanttWeekSlide;
+
+function _setupPmGanttSlider(ganttView) {
+    const slider = document.getElementById("pmGanttWeekSlider");
+    const label = document.getElementById("pmGanttWeekSliderLabel");
+    const labelFor = document.querySelector("#pmGanttWeekSliderRow label");
+    if (!slider) return;
+
+    if (_pmGanttState.viewMode === "detail") {
+        if (labelFor) labelFor.textContent = "Ngày hiển thị:";
+        const axis = (ganttView && ganttView.day_axis) || [];
+        const win = (ganttView && ganttView.default_window_days) || 21;
+        if (!axis.length) {
+            slider.max = "0";
+            slider.value = "0";
+            if (label) label.textContent = "—";
+            return;
+        }
+        const maxOff = Math.max(0, axis.length - win);
+        slider.max = String(maxOff);
+        if (_pmGanttState.dayOffset > maxOff) _pmGanttState.dayOffset = maxOff;
+        slider.value = String(_pmGanttState.dayOffset);
+        if (label) {
+            const slice = axis.slice(_pmGanttState.dayOffset, _pmGanttState.dayOffset + win);
+            label.textContent = slice.length
+                ? `${_pmFmtDay(slice[0].date)} → ${_pmFmtDay(slice[slice.length - 1].date)}`
+                : "—";
+        }
+        return;
+    }
+
+    if (labelFor) labelFor.textContent = "Tuần hiển thị:";
+    const axis = (ganttView && ganttView.week_axis) || [];
+    const win = (ganttView && ganttView.default_window_weeks) || 12;
+    if (!axis.length) {
+        slider.max = "0";
+        slider.value = "0";
+        if (label) label.textContent = "—";
+        return;
+    }
+    const maxOff = Math.max(0, axis.length - win);
+    slider.max = String(maxOff);
+    if (_pmGanttState.weekOffset > maxOff) _pmGanttState.weekOffset = maxOff;
+    slider.value = String(_pmGanttState.weekOffset);
+    if (label) {
+        const off = _pmGanttState.weekOffset;
+        const slice = axis.slice(off, off + win);
+        label.textContent = slice.length
+            ? `${slice[0].label} → ${slice[slice.length - 1].label}`
+            : "—";
+    }
+}
+
+function _pmFmtDay(ymd) {
+    if (!ymd) return "—";
+    const m = String(ymd).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? `${m[3]}/${m[2]}` : ymd;
+}
+
+function _paintPmGanttZoomBtns() {
+    const weekBtn = document.getElementById("pmGanttZoomWeek");
+    const monthBtn = document.getElementById("pmGanttZoomMonth");
+    if (weekBtn) {
+        weekBtn.classList.toggle("bg-blue-600", _pmGanttState.zoom === "week");
+        weekBtn.classList.toggle("text-white", _pmGanttState.zoom === "week");
+    }
+    if (monthBtn) {
+        monthBtn.classList.toggle("bg-blue-600", _pmGanttState.zoom === "month");
+        monthBtn.classList.toggle("text-white", _pmGanttState.zoom === "month");
+    }
+}
+
+function _pmItemDone(r) {
+    const s = String(r.status || "").trim().toLowerCase();
+    if (s === "closed" || s === "cancelled") return true;
+    const pct = r.percent_complete;
+    if (typeof pct === "number" && pct >= 100) return true;
+    return false;
+}
+
+function _pmItemOverdue(r, today) {
+    if (r.is_phase_header || _pmItemDone(r)) return false;
+    if (!r.end) return false;
+    const end = r.end instanceof Date ? r.end : _pmParseDate(r.end);
+    if (!end) return false;
+    return end < today;
+}
+
+function _paintPmGanttSummary(insights) {
+    const box = document.getElementById("pmGanttSummary");
+    if (!box) return;
+    const s = insights && insights.summary;
+    if (!s || !s.total_tasks) {
+        box.innerHTML = "";
+        return;
+    }
+    const card = (val, label, cls) =>
+        `<div class="rounded-lg border px-2 py-1.5 text-center ${cls}">
+            <div class="text-lg font-bold tabular-nums">${val}</div>
+            <div class="text-[10px] uppercase opacity-80">${label}</div>
+        </div>`;
+    box.innerHTML = [
+        card(s.overdue || 0, "Quá hạn", "bg-red-50 border-red-200 text-red-800"),
+        card(s.done || 0, "Hoàn thành", "bg-emerald-50 border-emerald-200 text-emerald-800"),
+        card(s.in_progress || 0, "Đang làm", "bg-sky-50 border-sky-200 text-sky-800"),
+        card(s.avg_slip_days ? `${s.avg_slip_days} ng` : "—", "TB trễ (actual)", "bg-orange-50 border-orange-200 text-orange-800"),
+        card(s.max_slip_days || "—", "Trễ max (ngày)", "bg-amber-50 border-amber-200 text-amber-900"),
+    ].join("");
+}
+
+function _paintPmGanttAlerts(insights) {
+    const box = document.getElementById("pmGanttAlertBox");
+    if (!box) return;
+    const items = (insights && insights.overdue_items) || [];
+    if (!items.length) {
+        box.classList.add("hidden");
+        box.innerHTML = "";
+        return;
+    }
+    box.classList.remove("hidden");
+    const esc = (t) => escapeHtml(String(t || ""));
+    const rows = items.slice(0, 8).map((it) =>
+        `<li><b>${esc(it.name)}</b> — Kế hoạch đến ${esc(it.end || "—")} · ${esc(it.status || "—")}</li>`
+    ).join("");
+    box.innerHTML = `<div class="font-semibold text-red-800 mb-1">⚠ ${items.length} việc quá hạn kế hoạch (chưa hoàn thành)</div><ul class="list-disc pl-4 text-red-700 space-y-0.5">${rows}</ul>`;
+}
+
+function _pmHeatmapLevel(count, max) {
+    if (!count) return 0;
+    const ratio = count / (max || 1);
+    if (ratio >= 0.75) return 4;
+    if (ratio >= 0.5) return 3;
+    if (ratio >= 0.25) return 2;
+    return 1;
+}
+
+function _paintPmGanttHeatmap(ganttView, plan) {
+    const box = document.getElementById("pmGanttHeatmap");
+    if (!box) return;
+    const hm = _pmComputeHeatmapClient(ganttView, plan) || (ganttView && ganttView.resource_heatmap);
+    const axis = (ganttView && ganttView.week_axis) || [];
+    if (!hm || !hm.rows || !hm.rows.length || !axis.length) {
+        box.innerHTML = "";
+        return;
+    }
+    const win = (ganttView && ganttView.default_window_weeks) || 12;
+    const off = _pmGanttState.viewMode === "detail" ? 0 : (_pmGanttState.weekOffset || 0);
+    const slice = axis.slice(off, off + win);
+    if (!slice.length) {
+        box.innerHTML = "";
+        return;
+    }
+    const sliceIdx = new Set(slice.map((w) => w.index));
+    const max = hm.max_count || 1;
+
+    let html = `<div class="text-[10px] text-gray-500 mb-1">Tải việc theo tuần (task active) — ${slice[0].label} → ${slice[slice.length - 1].label}</div>
+        <table class="pm-heatmap-table text-xs"><thead><tr><th class="pm-heatmap-label">PIC / Tổng</th>`;
+    slice.forEach((w) => {
+        html += `<th class="pm-heatmap-th">${escapeHtml(w.label || "")}</th>`;
+    });
+    html += `</tr></thead><tbody>`;
+    hm.rows.forEach((row) => {
+        const bold = row.kind === "total" ? " font-semibold" : "";
+        html += `<tr><td class="pm-heatmap-label${bold}">${escapeHtml(row.label || "")}</td>`;
+        slice.forEach((w) => {
+            const idx = w.index;
+            const cnt = (row.counts && idx >= 0 && idx < row.counts.length) ? (row.counts[idx] || 0) : 0;
+            const lvl = _pmHeatmapLevel(cnt, max);
+            html += `<td class="heatmap-cell pm-heatmap-lvl-${lvl}" title="${escapeAttr(row.label)} · ${w.label}: ${cnt} task">
+                <span class="heatmap-tooltip">${escapeHtml(row.label)} · ${cnt}</span>${cnt || ""}</td>`;
+        });
+        html += `</tr>`;
+    });
+    html += `</tbody></table>`;
+    box.innerHTML = html;
+}
+
+function _pmParseDate(v) {
+    if (!v) return null;
+    if (v instanceof Date && !isNaN(v)) return v;
+    const s = String(v).trim();
+    if (!s) return null;
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+    const d = new Date(s);
+    return isNaN(d) ? null : d;
+}
+
+function _pmDateYmd(d) {
+    if (!(d instanceof Date) || isNaN(d)) return "";
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Cập nhật state Gantt PM và vẽ lại (giữ API cho test / gọi ngoài).
+ */
+function renderPmPlanGantt(plan, insights, ganttView) {
+    _pmGanttState.plan = plan || null;
+    _pmGanttState.insights = insights || null;
+    _pmGanttState.ganttView = ganttView || null;
+    _pmRefreshGanttViews();
+}
+window.renderPmPlanGantt = renderPmPlanGantt;
+
+/** Timeline Gantt — schedule đã lọc từ _pmGanttState.plan */
+function _renderPmTimelineGantt() {
+    const ganttView = _pmGanttState.ganttView;
+    const wrap = document.getElementById("pmPlanGanttWrap");
+    if (!wrap) return;
+
+    const rows = _pmScheduleForDisplay(_pmGanttState.plan || { schedule: [] });
+    if (!rows.length) {
+        const full = _pmGanttState.plan && (_pmGanttState.plan.schedule || []).length;
+        const msg = full
+            ? "Không có dòng phù hợp bộ lọc"
+            : "Chưa có lịch trình — nạp Kế hoạch (.xlsx)";
+        wrap.innerHTML = `<p class="text-center text-gray-400 text-sm py-6">${escapeHtml(msg)}</p>`;
+        return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const folded = _pmGanttState.foldedPhases || {};
+
+    const parsed = rows.map((r, idx) => {
+        const start = _pmParseDate(r.start);
+        const end = _pmParseDate(r.end);
+        const actualEnd = _pmParseDate(r.actual_end);
+        return {
+            idx,
+            name: r.name || "",
+            start,
+            end,
+            actualEnd,
+            status: r.status || "",
+            percent_complete: r.percent_complete,
+            pic_fpt: r.pic_fpt || [],
+            pic_client: r.pic_client || [],
+            phase: r.phase || "",
+            is_phase_header: !!r.is_phase_header,
+            note: r.note || "",
+            done: _pmItemDone(r),
+            overdue: false,
+            _depth: r._depth || 0,
+            _phaseKey: r._phaseKey || "",
+            _parentPhaseKey: r._parentPhaseKey || "",
+            _phaseChildCount: r._phaseChildCount || 0,
+        };
+    });
+    parsed.forEach((r) => { r.overdue = _pmItemOverdue(r, today); });
+
+    const axis = (ganttView && ganttView.week_axis) || [];
+    const windowWeeks = (ganttView && ganttView.default_window_weeks) || 12;
+    let windowMin = null;
+    let windowMax = null;
+    if (axis.length) {
+        const off = _pmGanttState.weekOffset || 0;
+        const slice = axis.slice(off, off + windowWeeks);
+        if (slice.length) {
+            windowMin = _pmParseDate(slice[0].start);
+            windowMax = _pmParseDate(slice[slice.length - 1].end);
+        }
+    }
+
+    const allDates = [];
+    parsed.forEach((r) => {
+        if (r.start) allDates.push(r.start);
+        if (r.end) allDates.push(r.end);
+        if (r.actualEnd) allDates.push(r.actualEnd);
+    });
+    if (!allDates.length && !windowMin) {
+        wrap.innerHTML = `<p class="text-center text-gray-400 text-sm py-6">Lịch trình chưa có ngày Start/End để vẽ Gantt</p>`;
+        return;
+    }
+
+    let minDate = windowMin || new Date(Math.min(...allDates));
+    let maxDate = windowMax || new Date(Math.max(...allDates));
+    const rangeMs = maxDate - minDate;
+    const padMs = Math.max(rangeMs * 0.03, 1000 * 60 * 60 * 24 * 2);
+    minDate = new Date(minDate.getTime() - padMs);
+    maxDate = new Date(maxDate.getTime() + padMs);
+    const rangeDays = Math.max(1, (maxDate - minDate) / (1000 * 60 * 60 * 24));
+
+    const zoom = _pmGanttState.zoom;
+    const basePxPerDay = zoom === "week" ? 10 : 2.4;
+    const scale = _pmGanttState.scale || 1;
+    const pxPerDay = basePxPerDay * scale;
+    const trackW = Math.max(480, Math.round(rangeDays * pxPerDay));
+    const labelW = 280;
+    const dateToPx = (d) => ((d - minDate) / (1000 * 60 * 60 * 24)) * pxPerDay;
+    const ticks = _generateGanttTicks(minDate, maxDate, zoom, dateToPx);
+
+    wrap.style.setProperty("--pm-gantt-label-w", labelW + "px");
+    wrap.style.setProperty("--pm-gantt-track-w", trackW + "px");
+
+    const parts = [];
+    parts.push(`<div class="pm-gantt-inner">`);
+    parts.push(`<div class="pm-gantt-ruler">
+        <div class="pm-gantt-ruler-label">
+            <span>Công việc</span>
+            <span class="pm-gantt-ruler-actions no-print">
+                <button type="button" class="pm-gantt-phase-action" onclick="expandAllPmGanttPhases()" title="Mở tất cả giai đoạn">⊞</button>
+                <button type="button" class="pm-gantt-phase-action" onclick="collapseAllPmGanttPhases()" title="Thu tất cả giai đoạn">⊟</button>
+            </span>
+        </div>
+        <div class="pm-gantt-ruler-track">
+            ${ticks.map((tk) => `<div class="pm-gantt-tick" style="left:${tk.px}px">${escapeHtml(tk.label)}</div>`).join("")}
+        </div>
+    </div>`);
+
+    const todayPx = dateToPx(today);
+    if (todayPx >= 0 && todayPx <= trackW) {
+        parts.push(`<div class="pm-gantt-today-line" style="left:calc(var(--pm-gantt-label-w) + ${todayPx}px)" title="Hôm nay"></div>`);
+    }
+
+    const markers = (ganttView && ganttView.milestone_markers) || [];
+    markers.forEach((m) => {
+        const md = _pmParseDate(m.date);
+        if (!md) return;
+        const px = dateToPx(md);
+        if (px < 0 || px > trackW) return;
+        const kind = m.kind === "wbs" ? "wbs" : "section";
+        const icon = kind === "wbs" ? "⬥" : "◆";
+        const cls = kind === "wbs" ? "pm-gantt-milestone pm-gantt-milestone--wbs" : "pm-gantt-milestone pm-gantt-milestone--section";
+        parts.push(`<div class="${cls}" style="left:calc(var(--pm-gantt-label-w) + ${px}px)"
+            title="${escapeAttr((m.stt ? m.stt + " · " : "") + (m.name || "") + (kind === "wbs" ? " (Milestone)" : " (Giai đoạn)"))}">${icon}</div>`);
+    });
+
+    parsed.forEach((r) => {
+        const isHdr = r.is_phase_header;
+        const isFolded = !!(r._phaseKey && folded[r._phaseKey]);
+        const depthCls = r._depth ? ` pm-gantt-row--depth-${r._depth}` : "";
+        const rowCls = "pm-gantt-row" + (isHdr ? " pm-gantt-row--phase" : "") + depthCls;
+        const statusBadge = r.status && !isHdr
+            ? `<span class="pm-gantt-status">${escapeHtml(r.status)}</span>` : "";
+
+        let labelInner = "";
+        if (isHdr) {
+            const arrow = isFolded ? "▶" : "▼";
+            const cnt = r._phaseChildCount ? `<span class="pm-gantt-phase-count">${r._phaseChildCount}</span>` : "";
+            labelInner = `<button type="button" class="pm-gantt-toggle" onclick="togglePmGanttPhase('${escapeAttr(r._phaseKey)}')" title="${isFolded ? "Mở rộng" : "Thu gọn"} giai đoạn">${arrow}</button>`
+                + `<span class="pm-gantt-phase-icon">◆</span>`
+                + `<b class="pm-gantt-name" title="${escapeAttr(r.name)}">${escapeHtml(r.name)}</b>${cnt}`;
+        } else {
+            labelInner = `<span class="pm-gantt-name" style="padding-left:${(r._depth || 0) * 14}px" title="${escapeAttr(r.name)}">${escapeHtml(r.name)}</span>${statusBadge}`;
+        }
+
+        let barHtml = "";
+        if (r.start && r.end) {
+            const leftPx = dateToPx(r.start);
+            const rightPx = dateToPx(r.end);
+            const widthPx = Math.max(4, rightPx - leftPx);
+            const visual = _pmBarVisual(r, today);
+            const stateCls = visual.cls;
+
+            const slipDays = r.actualEnd && r.end
+                ? Math.round((r.actualEnd - r.end) / 86400000) : null;
+            const tipParts = [
+                r.name,
+                `Kế hoạch: ${_pmDateYmd(r.start)} → ${_pmDateYmd(r.end)}`,
+                r.actualEnd ? `Thực tế: ${_pmDateYmd(r.actualEnd)}` : null,
+                slipDays != null ? `Slip: ${slipDays} ngày` : null,
+                r.status ? `TT: ${r.status}` : null,
+                r.percent_complete != null ? `%: ${r.percent_complete}` : null,
+                r.overdue ? "⚠ Quá hạn kế hoạch" : null,
+                visual.iconTitle || null,
+                r.phase ? `Giai đoạn: ${r.phase}` : null,
+                (r.pic_fpt || []).length ? `PIC FPT: ${r.pic_fpt.join(", ")}` : null,
+                (r.pic_client || []).length ? `PIC KH: ${r.pic_client.join(", ")}` : null,
+                r.note || null,
+            ].filter(Boolean);
+            const tip = tipParts.join("\n");
+            const iconHtml = visual.icon
+                ? `<span class="pm-gantt-bar-icon" title="${escapeAttr(visual.iconTitle || "")}">${visual.icon}</span>` : "";
+            const inner = widthPx > 70
+                ? iconHtml + escapeHtml((r.pic_fpt || []).slice(0, 2).join(", ") || (isHdr ? r.name : ""))
+                : iconHtml;
+            barHtml = `<div class="pm-gantt-bar${stateCls}"
+                style="left:${leftPx}px;width:${widthPx}px" title="${escapeAttr(tip)}">${inner}</div>`;
+
+            if (r.actualEnd && r.start) {
+                const actRight = dateToPx(r.actualEnd);
+                const actW = Math.max(3, actRight - leftPx);
+                const slipLate = slipDays != null && slipDays > 0;
+                barHtml += `<div class="pm-gantt-bar pm-gantt-bar--actual${slipLate ? " pm-gantt-bar--actual-late" : ""}"
+                    style="left:${leftPx}px;width:${actW}px" title="${escapeAttr(tip)}"></div>`;
+            }
+        } else if (!isHdr) {
+            barHtml = `<span class="pm-gantt-nodate">(Chưa có ngày)</span>`;
+        }
+
+        parts.push(`<div class="${rowCls}">
+            <div class="pm-gantt-label">${labelInner}</div>
+            <div class="pm-gantt-track">${barHtml}</div>
+        </div>`);
+    });
+
+    parts.push(`</div>`);
+    parts.push(`<div class="pm-gantt-legend no-print">
+        <span class="pm-gantt-legend-item"><i class="pm-gantt-legend-swatch pm-gantt-legend-swatch--ontime"></i> Đang làm</span>
+        <span class="pm-gantt-legend-item"><i class="pm-gantt-legend-swatch pm-gantt-legend-swatch--deadline"></i> Sắp deadline</span>
+        <span class="pm-gantt-legend-item"><i class="pm-gantt-legend-swatch pm-gantt-legend-swatch--overdue"></i> Quá hạn</span>
+        <span class="pm-gantt-legend-item"><i class="pm-gantt-legend-swatch pm-gantt-legend-swatch--done"></i> Hoàn thành</span>
+        <span class="pm-gantt-legend-item">◆ Giai đoạn · ⬥ Milestone</span>
+    </div>`);
+    wrap.innerHTML = parts.join("");
+    _paintPmGanttScaleLabel();
+}
+
+/** Master week grid — Phase C */
+function renderPmPlanMasterGrid(ganttView, planForFilter) {
+    const wrap = document.getElementById("pmPlanMasterWrap");
+    if (!wrap) return;
+    const axis = (ganttView && ganttView.week_axis) || [];
+    const plan = planForFilter || _pmGanttState.plan;
+    const rows = _pmFilterGridRows((ganttView && ganttView.master_grid && ganttView.master_grid.rows) || [], plan);
+    if (!axis.length) {
+        wrap.innerHTML = `<p class="text-center text-gray-400 text-sm py-6">Chưa có trục tuần — cần sheet Khung/Gantt hoặc lịch trình có ngày</p>`;
+        return;
+    }
+    let html = `<table class="pm-master-table"><thead><tr>
+        <th class="pm-master-label-th">Công việc</th>`;
+    axis.forEach((w) => {
+        const month = w.month ? `<span class="pm-master-month">${escapeHtml(w.month)}</span>` : "";
+        html += `<th class="pm-master-week-th">${month}<span>${escapeHtml(w.label || "")}</span></th>`;
+    });
+    html += `</tr></thead><tbody>`;
+    const folded = _pmGanttState.foldedPhases || {};
+    rows.forEach((row) => {
+        const kind = row.kind || "task";
+        const phaseKey = kind === "phase_header" ? `${row.stt || ""}|${row.name || ""}` : "";
+        const isFolded = !!(phaseKey && folded[phaseKey]);
+        const rowCls = "pm-master-row"
+            + (kind === "phase_header" ? " pm-master-row--phase" : "")
+            + (kind === "milestone" ? " pm-master-row--ms" : "");
+        const activeSet = new Set(row.week_active || []);
+        let labelHtml = escapeHtml(row.name || "");
+        if (kind === "phase_header") {
+            const arrow = isFolded ? "▶" : "▼";
+            labelHtml = `<button type="button" class="pm-gantt-toggle" onclick="togglePmGanttPhase('${escapeAttr(phaseKey)}')">${arrow}</button>`
+                + `<span class="pm-gantt-phase-icon">◆</span> ${labelHtml}`;
+        } else if (kind === "milestone") {
+            labelHtml = `<span class="pm-gantt-phase-icon pm-gantt-phase-icon--ms">⬥</span> ${labelHtml}`;
+        }
+        html += `<tr class="${rowCls}"><td class="pm-master-label">${labelHtml}</td>`;
+        axis.forEach((w) => {
+            const active = activeSet.has(w.index);
+            let cellCls = "pm-master-cell";
+            if (active) {
+                cellCls += " active";
+                if (row.done) cellCls += " done";
+                else if (row.overdue) cellCls += " overdue";
+            }
+            html += `<td class="${cellCls}"></td>`;
+        });
+        html += `</tr>`;
+    });
+    html += `</tbody></table>`;
+    wrap.innerHTML = html;
+}
+window.renderPmPlanMasterGrid = renderPmPlanMasterGrid;
+
+/** Day detail grid — Phase D */
+function renderPmPlanDetailGrid(ganttView, planForFilter) {
+    const wrap = document.getElementById("pmPlanDetailWrap");
+    if (!wrap) return;
+    const axis = (ganttView && ganttView.day_axis) || [];
+    const plan = planForFilter || _pmGanttState.plan;
+    const win = (ganttView && ganttView.default_window_days) || 21;
+    const off = _pmGanttState.dayOffset || 0;
+    const slice = axis.slice(off, off + win);
+    const allRows = (ganttView && ganttView.day_grid && ganttView.day_grid.rows) || [];
+    const rows = _pmFilterGridRows(allRows, plan);
+    if (!slice.length) {
+        wrap.innerHTML = `<p class="text-center text-gray-400 text-sm py-6">Chưa có trục ngày — cần sheet chi tiết có cột M/T/W hoặc lịch trình có ngày</p>`;
+        return;
+    }
+    let html = `<table class="pm-detail-table"><thead><tr>
+        <th class="pm-detail-label-th">Công việc</th>`;
+    slice.forEach((d) => {
+        html += `<th class="pm-detail-day-th"><span class="pm-detail-dow">${escapeHtml(d.label || "")}</span>
+            <span class="pm-detail-date">${_pmFmtDay(d.date)}</span></th>`;
+    });
+    html += `</tr></thead><tbody>`;
+    const folded = _pmGanttState.foldedPhases || {};
+    rows.forEach((row) => {
+        const kind = row.kind || "task";
+        const phaseKey = kind === "phase_header" ? `${row.stt || ""}|${row.name || ""}` : "";
+        const isFolded = !!(phaseKey && folded[phaseKey]);
+        const rowCls = "pm-detail-row"
+            + (kind === "phase_header" ? " pm-detail-row--phase" : "");
+        const activeSet = new Set(row.day_active || []);
+        let labelHtml = escapeHtml(row.name || "");
+        if (kind === "phase_header") {
+            const arrow = isFolded ? "▶" : "▼";
+            labelHtml = `<button type="button" class="pm-gantt-toggle" onclick="togglePmGanttPhase('${escapeAttr(phaseKey)}')">${arrow}</button>`
+                + `<span class="pm-gantt-phase-icon">◆</span> ${labelHtml}`;
+        }
+        html += `<tr class="${rowCls}"><td class="pm-detail-label">${labelHtml}</td>`;
+        slice.forEach((d) => {
+            const active = activeSet.has(d.index);
+            let cellCls = "pm-detail-cell";
+            if (active) {
+                cellCls += " active";
+                if (row.done) cellCls += " done";
+                else if (row.overdue) cellCls += " overdue";
+            }
+            html += `<td class="${cellCls}"></td>`;
+        });
+        html += `</tr>`;
+    });
+    html += `</tbody></table>`;
+    wrap.innerHTML = html;
+}
+window.renderPmPlanDetailGrid = renderPmPlanDetailGrid;
 
 async function pmImportPlan(input) {
     if (!currentProjectSlug) { showToast("⚠️ Chưa chọn project"); return; }
@@ -4808,11 +6069,24 @@ const pageState = {
     fitgap:     { page: 1, size: PAGE_DEFAULT_SIZE },
     // Task 3: Function Diff — 1 pager dùng chung cho tab active
     fdiff:      { page: 1, size: PAGE_DEFAULT_SIZE },
+    // Thiếu/Trùng FID · Thời gian dài · Báo cáo tuần GAP.
+    // 3 bảng này trước đây tự giữ pageSize riêng nên select "Hiển thị" không
+    // có tác dụng — giờ dùng chung pageState như mọi bảng khác.
+    fid:        { page: 1, size: PAGE_DEFAULT_SIZE },
+    dur:        { page: 1, size: PAGE_DEFAULT_SIZE },
+    weeklyGap:  { page: 1, size: PAGE_DEFAULT_SIZE },
+    // BA backlog + PIC overload (bảng tổng & bảng chi tiết)
+    baTasks:           { page: 1, size: PAGE_DEFAULT_SIZE },
+    picOverload:       { page: 1, size: PAGE_DEFAULT_SIZE },
+    picOverloadDetail: { page: 1, size: PAGE_DEFAULT_SIZE },
 };
 
 /** Cắt page slice từ list theo pageState[sectionKey]. */
 function _pageSlice(sectionKey, items) {
-    const st = pageState[sectionKey] || { page: 1, size: PAGE_DEFAULT_SIZE };
+    // Ghi ngược state khi key chưa khai báo — nếu dùng object tạm thì việc
+    // clamp page ở dưới bị mất, và size user chọn không giữ được giữa 2 render.
+    const st = pageState[sectionKey]
+        || (pageState[sectionKey] = { page: 1, size: PAGE_DEFAULT_SIZE });
     const total = items.length;
     if (!st.size || st.size <= 0) {
         // size=0 → Tất cả
@@ -4883,15 +6157,272 @@ function pagerSetSize(sectionKey, sizeVal) {
     if (typeof st._onChange === "function") st._onChange();
 }
 
+/** Rebuild options cho filter Status của section Unassigned từ data hiện tại.
+ * Preserve giá trị đang chọn nếu status đó vẫn còn (options thay đổi khi
+ * global filter đổi hoặc sync ra data mới). */
+function _unassignedPopulateStatusFilter(items) {
+    const sel = document.getElementById("unassignedStatusFilter");
+    if (!sel) return;
+    const cur = sel.value;
+    const statuses = [...new Set(
+        (items || []).map(i => String(i.status || "").trim()).filter(Boolean),
+    )].sort();
+    sel.innerHTML = `<option value="">Tất cả status</option>` +
+        statuses.map(s => `<option value="${escapeAttr(s)}"${s === cur ? " selected" : ""}>${escapeHtml(s)}</option>`).join("");
+    // Nếu status cũ không còn trong dataset mới → auto reset về "tất cả"
+    if (cur && !statuses.includes(cur)) sel.value = "";
+}
+
+// --------------------------------------------------------------------------
+// Local Module + Phase multi-select cho section Chưa PIC.
+//
+// User phản hồi 06/08/2026: Document phase thiếu PIC thường không phải blocker
+// thực sự (tài liệu tạm chưa gán), làm loãng bảng "task cần hành động". Nên
+// mặc định bỏ tick Document; user vẫn có thể tick lại nếu muốn xem đủ.
+// Cùng nguyên tắc với section Đình trệ (`_stalledDefaultPhases`) — reuse helper
+// `_stalledIsDocPhase` để bỏ dấu / lowercase / keyword «document|tai lieu»
+// giữ nhất quán, không hardcode tên chính xác.
+// --------------------------------------------------------------------------
+
+/** Module có trong danh sách Chưa PIC hiện tại (theo global filter đã áp). */
+function _unassignedAllModules() {
+    const items = metricsData?.unassigned_tasks || [];
+    const seen = new Set();
+    const out = [];
+    for (const it of items) {
+        const m = String(it.module || "").trim();
+        if (m && !seen.has(m)) { seen.add(m); out.push(m); }
+    }
+    out.sort();
+    return out;
+}
+
+/** Phase có trong danh sách Chưa PIC hiện tại; fallback structure.all_phases
+ * để user thấy đủ lựa chọn ngay cả khi dataset đang lọc còn ít. Giữ thứ tự
+ * luồng, không sort alphabet — Document/Analysis/Dev/UAT phải theo pipeline. */
+function _unassignedAllPhases() {
+    const items = metricsData?.unassigned_tasks || [];
+    const inItems = new Set(items.map(i => String(i.phase || "").trim()).filter(Boolean));
+    const sources = [
+        metricsData?.structure?.all_phases,
+        structureCache?.all_phases,
+    ];
+    for (const src of sources) {
+        const clean = (src || []).map(p => String(p || "").trim()).filter(Boolean);
+        if (clean.length) {
+            // Ưu tiên thứ tự structure, thêm phase mới ở data nếu structure thiếu.
+            const out = clean.slice();
+            const known = new Set(clean);
+            for (const p of inItems) if (!known.has(p)) out.push(p);
+            return out;
+        }
+    }
+    return [...inItems].sort();
+}
+
+/** Default: tất cả phase TRỪ Document. Nếu không còn phase nào ngoài Document
+ * → fallback về tất cả, thà hiện dư còn hơn ẩn hết. */
+function _unassignedDefaultPhases(allPhases) {
+    const all = allPhases || _unassignedAllPhases();
+    const kept = all.filter(p => !_stalledIsDocPhase(p));
+    return kept.length ? kept : all.slice();
+}
+
+function _unassignedPhaseLsKey() {
+    return `unassignedPhaseSel:${currentProjectSlug || "default"}`;
+}
+
+/** Lựa chọn phase đã lưu; phase mới thấy lần đầu (không nằm trong `known`)
+ * được tự tick trừ khi là Document — user không bị âm thầm ẩn phase mới. */
+function _loadUnassignedPhaseSel(allPhases) {
+    const all = allPhases || _unassignedAllPhases();
+    if (!all.length) return [];
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(_unassignedPhaseLsKey()) || "null"); }
+    catch (e) { saved = null; }
+    if (!saved || !Array.isArray(saved.selected)) {
+        return _unassignedDefaultPhases(all);
+    }
+    const known = new Set((saved.known || []).map(p => String(p || "").trim()));
+    const sel = new Set(
+        saved.selected.map(p => String(p || "").trim()).filter(p => all.includes(p))
+    );
+    for (const p of all) {
+        if (!known.has(p) && !_stalledIsDocPhase(p)) sel.add(p);
+    }
+    return all.filter(p => sel.has(p));
+}
+
+function _saveUnassignedPhaseSel(selected, allPhases) {
+    const all = allPhases || _unassignedAllPhases();
+    try {
+        localStorage.setItem(_unassignedPhaseLsKey(), JSON.stringify({
+            selected: selected || [],
+            known: all,
+        }));
+    } catch (e) { /* localStorage full / private mode — bỏ qua */ }
+}
+
+/** Init 2 multi-select. Idempotent — gọi lại sẽ setOptions() thay vì tạo mới,
+ * giữ selection người dùng qua các lần refresh dashboard / sync API. */
+function _initUnassignedFilters() {
+    if (typeof createMultiSelect !== "function") return;
+    const modEl = document.getElementById("unassignedModuleMS");
+    const phEl = document.getElementById("unassignedPhaseMS");
+    if (!modEl || !phEl) return;
+
+    const modules = _unassignedAllModules();
+    const onModuleChange = () => {
+        if (pageState.unassigned) pageState.unassigned.page = 1;
+        renderUnassignedSection();
+    };
+    if (!_msInstances.unassignedModule) {
+        createMultiSelect({
+            el: "#unassignedModuleMS",
+            key: "unassignedModule",
+            label: "Module",
+            options: modules,
+            selected: [],
+            allText: "Tất cả Module",
+            onChange: onModuleChange,
+        });
+    } else {
+        _msInstances.unassignedModule.setOptions(modules, /*dropInvalid=*/false);
+        if (typeof _msInstances.unassignedModule.setOnChange === "function") {
+            _msInstances.unassignedModule.setOnChange(onModuleChange);
+        }
+    }
+
+    const allPhases = _unassignedAllPhases();
+    const phaseSel = _loadUnassignedPhaseSel(allPhases);
+    const onPhaseChange = (arr) => {
+        if (pageState.unassigned) pageState.unassigned.page = 1;
+        _saveUnassignedPhaseSel(arr, allPhases);
+        renderUnassignedSection();
+    };
+    if (!_msInstances.unassignedPhase) {
+        createMultiSelect({
+            el: "#unassignedPhaseMS",
+            key: "unassignedPhase",
+            label: "Phase",
+            options: allPhases,
+            selected: phaseSel,
+            allText: "Tất cả Phase",
+            onChange: onPhaseChange,
+        });
+    } else {
+        _msInstances.unassignedPhase.setOptions(allPhases, /*dropInvalid=*/false);
+        _msInstances.unassignedPhase.setSelected(phaseSel, /*silent=*/true);
+        if (typeof _msInstances.unassignedPhase.setOnChange === "function") {
+            _msInstances.unassignedPhase.setOnChange(onPhaseChange);
+        }
+    }
+}
+
+function _unassignedSelectedModules() {
+    const raw = _msInstances.unassignedModule?.getSelected?.() || [];
+    return raw.map(m => String(m || "").trim()).filter(Boolean);
+}
+
+function _unassignedSelectedPhases() {
+    const raw = _msInstances.unassignedPhase?.getSelected?.() || [];
+    return raw.map(p => String(p || "").trim()).filter(Boolean);
+}
+
+/** Reset Phase filter về mặc định (tất cả trừ Document). */
+function resetUnassignedPhaseFilter() {
+    const all = _unassignedAllPhases();
+    const def = _unassignedDefaultPhases(all);
+    _saveUnassignedPhaseSel(def, all);
+    if (_msInstances.unassignedPhase?.setSelected) {
+        _msInstances.unassignedPhase.setSelected(def); // onChange tự re-render
+    } else {
+        renderUnassignedSection();
+    }
+}
+window.resetUnassignedPhaseFilter = resetUnassignedPhaseFilter;
+
+/** Onchange handler cho dropdown status — reset page, re-render bảng. */
+function onUnassignedStatusChange() {
+    if (pageState.unassigned) pageState.unassigned.page = 1;
+    renderUnassignedSection();
+}
+window.onUnassignedStatusChange = onUnassignedStatusChange;
+
+/** Filter cục bộ section Chưa PIC → params cho nhóm «FL để import».
+ *
+ * Phase chỉ set khi user KHÔNG chọn tất cả — nếu chọn hết thì l_phase rỗng
+ * (nghĩa là không lọc) để backend không phải tách chuỗi dài không cần thiết. */
+function _unassignedExportLocalParams(params) {
+    const status = document.getElementById("unassignedStatusFilter")?.value || "";
+    if (status) params.set("l_status", status);
+    const mods = _unassignedSelectedModules();
+    if (mods.length) params.set("l_module", mods.join(","));
+    const phases = _unassignedSelectedPhases();
+    const allPhases = _unassignedAllPhases();
+    if (phases.length && phases.length < allPhases.length) {
+        params.set("l_phase", phases.join(","));
+    }
+}
+window._unassignedExportLocalParams = _unassignedExportLocalParams;
+
+/** Nút Chi tiết → truyền scope hiện tại vào drill-down để modal cùng lọc. */
+function openUnassignedDrill() {
+    const status = document.getElementById("unassignedStatusFilter")?.value || "";
+    const mods = _unassignedSelectedModules();
+    const phases = _unassignedSelectedPhases();
+    const allPhases = _unassignedAllPhases();
+    const filters = {};
+    if (status) filters.status = status;
+    if (mods.length) filters.module = mods.join(",");
+    // Chỉ pass phase khi user thực sự lọc — tick hết = không lọc.
+    if (phases.length && phases.length < allPhases.length) {
+        filters.phase = phases.join(",");
+    }
+    openDrillDown("unassigned", filters);
+}
+window.openUnassignedDrill = openUnassignedDrill;
+
 function renderUnassignedSection() {
-    const items = metricsData.unassigned_tasks || [];
-    const total = metricsData.unassigned_tasks_total || items.length;
+    const allItems = metricsData.unassigned_tasks || [];
+    _unassignedPopulateStatusFilter(allItems);
+    _initUnassignedFilters();
+    const statusF = document.getElementById("unassignedStatusFilter")?.value || "";
+    const modsSel = new Set(_unassignedSelectedModules());
+    const phasesSel = new Set(_unassignedSelectedPhases());
+    const allPhases = _unassignedAllPhases();
+    // Convention multi-select: rỗng = không lọc. Tick hết cũng coi là không lọc
+    // để tránh miss phase mới chưa từng thấy trước đó.
+    const phaseIsFiltering = phasesSel.size > 0 && phasesSel.size < allPhases.length;
+
+    const items = allItems.filter(i => {
+        if (statusF && String(i.status || "").trim() !== statusF) return false;
+        if (modsSel.size && !modsSel.has(String(i.module || "").trim())) return false;
+        if (phaseIsFiltering && !phasesSel.has(String(i.phase || "").trim())) return false;
+        return true;
+    });
+    const totalAll = metricsData.unassigned_tasks_total || allItems.length;
+    const shownTotal = items.length;
+
+    // Chú thích các filter đang áp — hiển thị trên count để user hiểu tại sao
+    // số hiện tại nhỏ hơn tổng, tránh nghi ngờ dashboard sai.
+    const filterBits = [];
+    if (statusF) filterBits.push(`status=${statusF}`);
+    if (modsSel.size) filterBits.push(`module (${modsSel.size})`);
+    if (phaseIsFiltering) filterBits.push(`phase (${phasesSel.size}/${allPhases.length})`);
+    const filterNote = filterBits.length ? ` (lọc ${filterBits.join(", ")})` : "";
+
     const tbody = document.getElementById("unassignedTable");
     if (!tbody) return;
-    if (items.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="11" class="px-4 py-6 text-center text-gray-500">Không có task nào chưa được giao PIC</td></tr>`;
+    if (shownTotal === 0) {
+        const msg = filterBits.length
+            ? `Không có task nào chưa có PIC khớp bộ lọc hiện tại`
+            : "Không có task nào chưa được giao PIC";
+        tbody.innerHTML = `<tr><td colspan="11" class="px-4 py-6 text-center text-gray-500">${msg}</td></tr>`;
         renderPager("unassignedShowMoreWrap", "unassigned", 0, () => renderUnassignedSection());
-        document.getElementById("unassignedCount").textContent = "0 task chưa có PIC";
+        document.getElementById("unassignedCount").textContent = filterBits.length
+            ? `0/${totalAll} task chưa có PIC${filterNote}`
+            : "0 task chưa có PIC";
         return;
     }
     const { start, end, pageItems } = _pageSlice("unassigned", items);
@@ -4913,10 +6444,11 @@ function renderUnassignedSection() {
         </tr>`;
     }).join("");
 
-    renderPager("unassignedShowMoreWrap", "unassigned", items.length, () => renderUnassignedSection());
+    renderPager("unassignedShowMoreWrap", "unassigned", shownTotal, () => renderUnassignedSection());
     try { applyColumnVisibility("unassigned"); } catch (e) {}
-    document.getElementById("unassignedCount").textContent =
-        `Đang xem ${start + 1}–${end}/${total} task chưa có PIC`;
+    document.getElementById("unassignedCount").textContent = filterBits.length
+        ? `Đang xem ${start + 1}–${end}/${shownTotal}${filterNote}, tổng ${totalAll} task chưa có PIC`
+        : `Đang xem ${start + 1}–${end}/${totalAll} task chưa có PIC`;
 }
 
 // ========================================================================
@@ -5076,6 +6608,100 @@ function renderDurationTable() {
 // ========================================================================
 // V2: STALLED
 // ========================================================================
+/** Bỏ dấu + lowercase để match tên phase không phụ thuộc cách viết trong FL. */
+function _stalledNormPhase(name) {
+    return String(name || "")
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/gi, "d")
+        .toLowerCase().trim();
+}
+
+/** Phase tài liệu — mặc định KHÔNG lọc vào bảng đình trệ. */
+function _stalledIsDocPhase(name) {
+    const n = _stalledNormPhase(name);
+    return n.includes("document") || n.includes("tai lieu");
+}
+
+/** Danh sách phase của project (theo thứ tự luồng, không alphabet). */
+function _stalledAllPhases() {
+    const data = metricsData?.stalled_tasks || {};
+    const sources = [
+        data.phases,
+        (data.funnel || []).map(f => f.phase),
+        metricsData?.structure?.all_phases,
+        structureCache?.all_phases,
+    ];
+    for (const src of sources) {
+        const clean = (src || []).map(p => String(p || "").trim()).filter(Boolean);
+        if (clean.length) return clean;
+    }
+    return [];
+}
+
+/**
+ * Mặc định: mọi phase TRỪ Document.
+ * Không hardcode tên phase — match keyword đã bỏ dấu. Nếu file nào không có
+ * phase nào ngoài Document thì trả về tất cả: thà hiện dư còn hơn hiện bảng
+ * trống làm PM tưởng hết task đình trệ.
+ */
+function _stalledDefaultPhases(allPhases) {
+    const all = allPhases || _stalledAllPhases();
+    const kept = all.filter(p => !_stalledIsDocPhase(p));
+    return kept.length ? kept : all.slice();
+}
+
+function _stalledPhaseLsKey() {
+    return `stalledPhaseSel:${currentProjectSlug || "default"}`;
+}
+
+/**
+ * Lựa chọn Phase chờ đã lưu, merge với phase mới xuất hiện trong file.
+ * Lưu cả `known` để phân biệt "user cố tình bỏ check" vs "phase mới chưa từng
+ * thấy" — phase mới được tự check (trừ Document) để không âm thầm ẩn task.
+ */
+function _loadStalledPhaseSel(allPhases) {
+    const all = allPhases || _stalledAllPhases();
+    if (!all.length) return [];
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(_stalledPhaseLsKey()) || "null"); }
+    catch (e) { saved = null; }
+    if (!saved || !Array.isArray(saved.selected)) {
+        return _stalledDefaultPhases(all);
+    }
+    const known = new Set((saved.known || []).map(p => String(p || "").trim()));
+    const sel = new Set(
+        saved.selected.map(p => String(p || "").trim()).filter(p => all.includes(p))
+    );
+    for (const p of all) {
+        if (!known.has(p) && !_stalledIsDocPhase(p)) sel.add(p);
+    }
+    // Selected rỗng = "không lọc" theo convention multi-select → giữ nguyên ý user.
+    return all.filter(p => sel.has(p));
+}
+
+function _saveStalledPhaseSel(selected, allPhases) {
+    const all = allPhases || _stalledAllPhases();
+    try {
+        localStorage.setItem(_stalledPhaseLsKey(), JSON.stringify({
+            selected: selected || [],
+            known: all,
+        }));
+    } catch (e) { /* localStorage full / private mode — bỏ qua */ }
+}
+
+/** Trả filter Phase chờ về mặc định (tất cả trừ Document). */
+function resetStalledPhaseFilter() {
+    const all = _stalledAllPhases();
+    const def = _stalledDefaultPhases(all);
+    _saveStalledPhaseSel(def, all);
+    if (_msInstances.stalledPhase?.setSelected) {
+        _msInstances.stalledPhase.setSelected(def);  // onChange tự re-render
+    } else {
+        renderStalledChartsAndTable(undefined, def);
+    }
+}
+window.resetStalledPhaseFilter = resetStalledPhaseFilter;
+
 function populateStalledFilters() {
     // Module options từ stalled items hiện tại (sau global filter);
     // fallback all_modules nếu chưa có item.
@@ -5108,6 +6734,32 @@ function populateStalledFilters() {
             _msInstances.stalledModule.setOnChange(onFilterChange);
         }
     }
+
+    // --- Filter Phase chờ (multi) ---
+    const allPhases = _stalledAllPhases();
+    const phaseSel = _loadStalledPhaseSel(allPhases);
+    const onPhaseChange = (arr) => {
+        pageState.stalled.page = 1;
+        _saveStalledPhaseSel(arr, allPhases);
+        renderStalledChartsAndTable(undefined, arr);
+    };
+    if (!_msInstances.stalledPhase) {
+        createMultiSelect({
+            el: "#stalledPhaseMS",
+            key: "stalledPhase",
+            label: "Phase chờ",
+            options: allPhases,
+            selected: phaseSel,
+            allText: "Tất cả Phase chờ",
+            onChange: onPhaseChange,
+        });
+    } else {
+        _msInstances.stalledPhase.setOptions(allPhases, /*dropInvalid=*/false);
+        _msInstances.stalledPhase.setSelected(phaseSel, /*silent=*/true);
+        if (typeof _msInstances.stalledPhase.setOnChange === "function") {
+            _msInstances.stalledPhase.setOnChange(onPhaseChange);
+        }
+    }
 }
 
 /** Local Module multi-select đã chọn (trim, bỏ rỗng). */
@@ -5118,13 +6770,29 @@ function _stalledSelectedModules(override) {
     return raw.map(m => String(m || "").trim()).filter(Boolean);
 }
 
-/** Lọc stalled items theo local Module multi-select (client-side, giống Overdue). */
-function _stalledFilteredItems(selectedOverride) {
+/** Phase chờ đang chọn. Rỗng = không lọc (convention chung của multi-select). */
+function _stalledSelectedPhases(override) {
+    const raw = override != null
+        ? (Array.isArray(override) ? override : [])
+        : (_msInstances.stalledPhase?.getSelected?.() || []);
+    return raw.map(p => String(p || "").trim()).filter(Boolean);
+}
+
+/**
+ * Lọc stalled items theo local Module + Phase chờ (client-side, giống Overdue).
+ * Phase lọc theo `waiting_phase` — phase đang bị kẹt, không phải phase vừa xong.
+ */
+function _stalledFilteredItems(selectedOverride, phaseOverride) {
     let items = metricsData?.stalled_tasks?.items || [];
     const fmArr = _stalledSelectedModules(selectedOverride);
     if (fmArr.length) {
         const set = new Set(fmArr);
         items = items.filter(i => set.has(String(i.module || "").trim()));
+    }
+    const phArr = _stalledSelectedPhases(phaseOverride);
+    if (phArr.length) {
+        const set = new Set(phArr);
+        items = items.filter(i => set.has(String(i.waiting_phase || "").trim()));
     }
     return items;
 }
@@ -5185,23 +6853,57 @@ function _stalledDerivedTransitions(items) {
     });
 }
 
-/** Badge «Đang lọc Module=APP» — làm rõ lọc cục bộ vs global «Tất cả module». */
-function _updateStalledScopeBanner(selectedOverride) {
+/** Gộp danh sách dài thành "A, B, C +n" cho banner. */
+function _stalledFmtList(arr, max = 3) {
+    return arr.length <= max
+        ? arr.join(", ")
+        : `${arr.slice(0, max).join(", ")} +${arr.length - max}`;
+}
+
+/**
+ * Badge «Đang lọc …» — làm rõ lọc cục bộ vs global, và nói rõ số hiện/tổng.
+ * Badge sidebar + stalled_count vẫn đếm toàn bộ (còn nuôi risk level của
+ * bảng Module), nên phải ghi tỷ lệ ra đây để PM không tưởng lệch số.
+ */
+function _updateStalledScopeBanner(selectedOverride, phaseOverride) {
     const el = document.getElementById("stalledScopeBanner");
     if (!el) return;
     const mods = _stalledSelectedModules(selectedOverride);
-    if (!mods.length) {
-        el.innerHTML = "📂 Section: toàn bộ (chưa lọc Module cục bộ)";
+    const phases = _stalledSelectedPhases(phaseOverride);
+    const allPhases = _stalledAllPhases();
+    const hidden = allPhases.filter(p => !phases.includes(p));
+    // Phase filter chỉ đáng báo khi thực sự ẩn bớt phase nào đó.
+    const phaseActive = phases.length > 0 && hidden.length > 0;
+
+    if (!mods.length && !phaseActive) {
+        el.innerHTML = "📂 Section: toàn bộ (chưa lọc cục bộ)";
         el.className = "chart-scope stalled-scope";
         el.setAttribute("title", "Lọc cục bộ section Đình trệ — không đổi global filter phía trên");
         return;
     }
-    const fmt = mods.length <= 3
-        ? mods.join(", ")
-        : `${mods.slice(0, 3).join(", ")} +${mods.length - 3}`;
-    el.innerHTML = `🔍 Đang lọc Module=<b>${escapeHtml(fmt)}</b> <span class="text-gray-400">(lọc cục bộ section)</span>`;
+
+    const shown = _stalledFilteredItems(selectedOverride, phaseOverride).length;
+    const total = metricsData?.stalled_tasks?.items_total
+        || (metricsData?.stalled_tasks?.items || []).length;
+    const bits = [];
+    const titleBits = [];
+    if (mods.length) {
+        bits.push(`Module=<b>${escapeHtml(_stalledFmtList(mods))}</b>`);
+        titleBits.push(`Module=${mods.join(", ")}`);
+    }
+    if (phaseActive) {
+        bits.push(`Phase chờ=<b>${escapeHtml(_stalledFmtList(phases, 4))}</b>`);
+        titleBits.push(`Phase chờ=${phases.join(", ")} (đang ẩn: ${hidden.join(", ")})`);
+    }
+    const ratio = total > shown
+        ? ` <span class="text-gray-400">— hiện ${shown}/${total} task (badge sidebar đếm toàn bộ)</span>`
+        : "";
+    el.innerHTML = `🔍 Đang lọc ${bits.join(" · ")}${ratio}`;
     el.className = "chart-scope stalled-scope active";
-    el.setAttribute("title", `Lọc cục bộ section Đình trệ: Module=${mods.join(", ")} — global filter không đổi`);
+    el.setAttribute(
+        "title",
+        `Lọc cục bộ section Đình trệ: ${titleBits.join(" · ")} — global filter không đổi`
+    );
 }
 
 function renderStalledSection() {
@@ -5210,18 +6912,24 @@ function renderStalledSection() {
 }
 
 /**
- * Render funnel + transitions + table theo local Module filter hiện tại.
- * @param {string[]|undefined} selectedOverride — từ onChange MultiSelect (tránh race).
+ * Render funnel + transitions + table theo local Module + Phase chờ hiện tại.
+ * Funnel KHÔNG lọc theo phase: đó là tiến độ Closed toàn trình, không phải
+ * danh sách đình trệ — ẩn bar sẽ mất bức tranh so sánh giữa các phase.
+ * @param {string[]|undefined} selectedOverride — Module, từ onChange MultiSelect (tránh race).
+ * @param {string[]|undefined} phaseOverride — Phase chờ, tương tự.
  */
-function renderStalledChartsAndTable(selectedOverride) {
+function renderStalledChartsAndTable(selectedOverride, phaseOverride) {
     const selected = _stalledSelectedModules(selectedOverride);
-    const items = _stalledFilteredItems(selected);
+    const phases = _stalledSelectedPhases(phaseOverride);
+    const items = _stalledFilteredItems(selected, phases);
     const funnel = _stalledDerivedFunnel(selected);
-    const transitions = selected.length
+    const allPhases = _stalledAllPhases();
+    const phaseNarrows = phases.length > 0 && phases.length < allPhases.length;
+    const transitions = (selected.length || phaseNarrows)
         ? _stalledDerivedTransitions(items)
         : (metricsData?.stalled_tasks?.transitions || []);
 
-    _updateStalledScopeBanner(selected);
+    _updateStalledScopeBanner(selected, phases);
 
     // Funnel — count NGOÀI bar để không overlap với label
     const totalTop = funnel.length ? Math.max(...funnel.map(f => f.closed), 1) : 1;
@@ -5253,12 +6961,13 @@ function renderStalledChartsAndTable(selectedOverride) {
         }
     }
 
-    renderStalledTable(selected);
+    renderStalledTable(selected, phases);
 }
 
-function renderStalledTable(selectedOverride) {
+function renderStalledTable(selectedOverride, phaseOverride) {
     const selected = _stalledSelectedModules(selectedOverride);
-    const items = _stalledFilteredItems(selected);
+    const phases = _stalledSelectedPhases(phaseOverride);
+    const items = _stalledFilteredItems(selected, phases);
     const tbody = document.getElementById("stalledTable");
     if (!tbody) return;
     const { start, end, pageItems } = _pageSlice("stalled", items);
@@ -5273,43 +6982,55 @@ function renderStalledTable(selectedOverride) {
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(i.completed_phase)}</td>
             <td class="px-2 py-2 text-center text-xs text-red-500">${escapeHtml(i.waiting_phase)}</td>
             <td class="px-2 py-2 text-center text-xs">${i.completed_date || "-"}</td>
+            <td class="px-2 py-2 text-center text-xs">${i.waiting_start_date || "-"}</td>
             <td class="px-2 py-2 text-center font-bold">${i.wait_days}</td>
             <td class="px-2 py-2 text-center text-xs">${escapeHtml(i.priority)}</td>
             ${_viewIconCell(i.ma_cn, {title: "Xem chi tiết function đình trệ"})}
         </tr>`;
     }).join("");
 
-    renderPager("stalledShowMoreWrap", "stalled", items.length, () => renderStalledTable(selected));
+    renderPager("stalledShowMoreWrap", "stalled", items.length, () => renderStalledTable(selected, phases));
     try { applyColumnVisibility("stalled"); } catch (e) {}
     const cnt = document.getElementById("stalledCount");
     if (cnt) {
         const totalAll = metricsData?.stalled_tasks?.items_total
             || (metricsData?.stalled_tasks?.items || []).length;
-        const localNote = selected.length
-            ? ` · Đang lọc Module=${selected.join(", ")}`
-            : "";
-        const trimNote = (!selected.length && totalAll > items.length)
+        const allPhases = _stalledAllPhases();
+        const hiddenPhases = allPhases.filter(p => phases.length && !phases.includes(p));
+        const noteBits = [];
+        if (selected.length) noteBits.push(`Module=${selected.join(", ")}`);
+        if (hiddenPhases.length) noteBits.push(`ẩn Phase chờ=${hiddenPhases.join(", ")}`);
+        const localNote = noteBits.length ? ` · Đang lọc ${noteBits.join(" · ")}` : "";
+        const trimNote = (!noteBits.length && totalAll > items.length)
             ? ` (hiển thị top ${items.length}/${totalAll})`
             : "";
         cnt.textContent = items.length === 0
-            ? (selected.length
-                ? `Không có task đình trệ khớp Module=${selected.join(", ")}`
+            ? (noteBits.length
+                ? `Không có task đình trệ khớp filter (${noteBits.join(" · ")})`
                 : "Không có task bị đình trệ")
             : `Đang xem ${start + 1}–${end}/${items.length} task bị đình trệ${localNote}${trimNote}`;
     }
 }
 
-/** Chi tiết drill — truyền local Module nếu đang lọc cục bộ. */
+/** Chi tiết drill — truyền local Module + Phase chờ nếu đang lọc cục bộ. */
 function openStalledDrillDown() {
     const mods = _stalledSelectedModules();
-    const filters = mods.length ? { module: mods.join(",") } : {};
+    const phases = _stalledSelectedPhases();
+    const allPhases = _stalledAllPhases();
+    const filters = {};
+    if (mods.length) filters.module = mods.join(",");
+    // Chỉ gửi khi thực sự thu hẹp — gửi full list là request dài vô ích.
+    if (phases.length && phases.length < allPhases.length) {
+        filters.waiting_phase = phases.join(",");
+    }
     openDrillDown("stalled", filters);
 }
 window.openStalledDrillDown = openStalledDrillDown;
 
 /**
- * Xuất Excel Đình trệ — respect local Module filter + global filter (g_*).
- * Pattern giống exportOverdue.
+ * Xuất Excel Đình trệ — respect local Module + Phase chờ + global filter (g_*).
+ * Phải gửi cả Phase chờ, nếu không file xuất ra sẽ nhiều dòng hơn bảng đang
+ * hiện và PM dễ gửi báo cáo lệch số.
  */
 async function exportStalled(mode) {
     if (!currentProjectSlug) {
@@ -5318,9 +7039,14 @@ async function exportStalled(mode) {
     }
     if (!mode) mode = "both";
     const fmArr = _stalledSelectedModules();
+    const phArr = _stalledSelectedPhases();
+    const allPhases = _stalledAllPhases();
     const params = new URLSearchParams({ mode });
     // Local widget filter
     if (fmArr.length) params.set("module", fmArr.join(","));
+    if (phArr.length && phArr.length < allPhases.length) {
+        params.set("waiting_phase", phArr.join(","));
+    }
     // Global filter (header) — key g_* để không đè local
     if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
     if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
@@ -5332,6 +7058,18 @@ async function exportStalled(mode) {
     );
 }
 window.exportStalled = exportStalled;
+
+/** Filter cục bộ section Đình trệ → param l_* cho nhóm «FL để import». */
+function _stalledExportLocalParams(params) {
+    const mods = _stalledSelectedModules();
+    const phases = _stalledSelectedPhases();
+    const allPhases = _stalledAllPhases();
+    if (mods.length) params.set("l_module", mods.join(","));
+    if (phases.length && phases.length < allPhases.length) {
+        params.set("l_waiting_phase", phases.join(","));
+    }
+}
+window._stalledExportLocalParams = _stalledExportLocalParams;
 
 // ========================================================================
 // V2 + Phase D: RISK SCORE (+ Resource / Dependency dimensions)
@@ -7237,7 +8975,9 @@ async function downloadFile(url, defaultName) {
 }
 
 /**
- * Menu chọn mode xuất chart: Tổng hợp | Chi tiết | Cả hai.
+ * Menu chọn kiểu xuất, 2 nhóm:
+ *   «Danh sách lỗi» — Tổng hợp | Chi tiết | Cả hai (file để lọc/soi trong Excel)
+ *   «FL để import»  — chỉ hiện khi caller truyền flKinds (tab issue)
  * Dùng 1 dropdown floating dùng chung cho mọi nút 📥.
  */
 let _exportModeMenuEl = null;
@@ -7246,14 +8986,38 @@ function _ensureExportModeMenu() {
     if (_exportModeMenuEl) return _exportModeMenuEl;
     const el = document.createElement("div");
     el.id = "exportModeMenu";
-    el.className = "hidden absolute z-50 bg-white border border-gray-200 rounded shadow-lg text-xs py-1 min-w-[140px]";
+    el.className = "hidden absolute z-50 bg-white border border-gray-200 rounded shadow-lg text-xs py-1 min-w-[190px]";
     el.innerHTML = `
-        <button type="button" data-mode="summary"
-                class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700">Tổng hợp</button>
-        <button type="button" data-mode="detail"
-                class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700">Chi tiết</button>
-        <button type="button" data-mode="both"
-                class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700 font-medium">Cả hai</button>
+        <div data-list-head class="px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-wide text-gray-400">Danh sách lỗi</div>
+        <div data-mode-group>
+            <button type="button" data-mode="summary"
+                    class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700">Tổng hợp</button>
+            <button type="button" data-mode="detail"
+                    class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700">Chi tiết</button>
+            <button type="button" data-mode="both"
+                    class="block w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700 font-medium">Cả hai</button>
+        </div>
+        <button type="button" data-mode="both" data-single-list
+                class="hidden w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-gray-700 font-medium"
+                title="Xuất đúng các cột đang hiện trên lưới + 1 cột trống để điền tay">
+            Theo lưới đang xem
+        </button>
+        <div data-fl-group class="hidden">
+            <div class="border-t border-gray-100 mt-1 px-3 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-gray-400">FL để import</div>
+            <button type="button" data-fl-import
+                    class="block w-full text-left px-3 py-1.5 hover:bg-amber-50 text-amber-700"
+                    title="File Function List (header dòng 1) chỉ chứa các dòng có vấn đề — sửa rồi import lại">
+                Chỉ dòng có vấn đề
+            </button>
+        </div>
+        <div data-all-group class="hidden">
+            <div data-all-sep class="border-t border-gray-100 mt-1 px-3 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-gray-400">Gộp nhiều tab</div>
+            <button type="button" data-all-tabs
+                    class="block w-full text-left px-3 py-1.5 hover:bg-indigo-50 text-indigo-700 font-medium"
+                    title="Một workbook, mỗi tab một sheet — gửi 1 lần thay vì gửi rời từng file">
+                Tất cả tab
+            </button>
+        </div>
     `;
     document.body.appendChild(el);
     _exportModeMenuEl = el;
@@ -7267,12 +9031,19 @@ function _ensureExportModeMenu() {
 }
 
 /**
- * Mở menu chọn mode cạnh nút.
+ * Mở menu chọn kiểu xuất cạnh nút.
  * @param {Event} event
  * @param {string} chartKey — key export-chart, hoặc "" nếu dùng customFn
  * @param {function(string)=} customFn — optional (mode) => void cho overdue/stalled
+ * @param {{flKinds?: string, extraParams?: function(URLSearchParams): void,
+ *          singleList?: boolean, allTabs?: {label: string, run: function},
+ *          onlyAllTabs?: boolean}=} opts
+ *        flKinds — loại issue của tab (xem FL_REIMPORT_KINDS ở backend). Có
+ *        giá trị thì menu hiện thêm nhóm «FL để import» giới hạn đúng loại đó.
+ *        allTabs — thêm mục xuất gộp cả hub thành 1 file nhiều sheet.
+ *        onlyAllTabs — tab lẻ chưa có export riêng, chỉ hiện mục gộp.
  */
-function openExportModePicker(event, chartKey, customFn) {
+function openExportModePicker(event, chartKey, customFn, opts) {
     if (event) {
         event.preventDefault();
         event.stopPropagation();
@@ -7290,6 +9061,47 @@ function openExportModePicker(event, chartKey, customFn) {
             }
         };
     });
+
+    // Tab chỉ có 1 dạng danh sách (VD FID) → gộp 3 mode thành 1 dòng, tránh
+    // bày 3 lựa chọn cho ra cùng 1 file.
+    const onlyAll = !!(opts && opts.onlyAllTabs);
+    const singleList = !!(opts && opts.singleList);
+    menu.querySelector("[data-mode-group]")?.classList.toggle("hidden", singleList || onlyAll);
+    const singleBtn = menu.querySelector("[data-single-list]");
+    if (singleBtn) singleBtn.classList.toggle("hidden", !singleList || onlyAll);
+    // Ẩn luôn tiêu đề nhóm khi không có mục nào của nhóm đó
+    menu.querySelector("[data-list-head]")?.classList.toggle("hidden", onlyAll);
+
+    const allTabs = opts && opts.allTabs;
+    const allGroup = menu.querySelector("[data-all-group]");
+    if (allGroup) {
+        allGroup.classList.toggle("hidden", !allTabs);
+        // Mục gộp đứng một mình thì không cần đường kẻ phân nhóm
+        allGroup.querySelector("[data-all-sep]")?.classList.toggle("hidden", onlyAll);
+        const allBtn = allGroup.querySelector("[data-all-tabs]");
+        if (allBtn && allTabs) {
+            allBtn.textContent = allTabs.label || "Tất cả tab";
+            allBtn.onclick = (ev) => {
+                ev.stopPropagation();
+                menu.classList.add("hidden");
+                allTabs.run();
+            };
+        }
+    }
+
+    const flKinds = (opts && opts.flKinds) || "";
+    const flGroup = menu.querySelector("[data-fl-group]");
+    if (flGroup) {
+        flGroup.classList.toggle("hidden", !flKinds);
+        const flBtn = flGroup.querySelector("[data-fl-import]");
+        if (flBtn) {
+            flBtn.onclick = (ev) => {
+                ev.stopPropagation();
+                menu.classList.add("hidden");
+                exportFlReimportScoped(flKinds, opts && opts.extraParams);
+            };
+        }
+    }
     const anchor = (event && event.currentTarget) || (event && event.target);
     const rect = anchor && anchor.getBoundingClientRect
         ? anchor.getBoundingClientRect()
@@ -7300,6 +9112,37 @@ function openExportModePicker(event, chartKey, customFn) {
     menu.style.left = `${Math.round(Math.max(8, rect.right - 140))}px`;
 }
 window.openExportModePicker = openExportModePicker;
+
+/**
+ * Xuất FL re-import giới hạn đúng 1 loại issue của tab đang mở.
+ *
+ * Không truyền `kinds` thì backend union mọi loại issue (256 dòng ở MPHG) —
+ * đứng ở tab Thiếu FID mà nhận file như vậy thì không biết phải sửa gì.
+ *
+ * @param {string} kinds — overdue|unassigned|stalled|dq|fid (comma-sep được)
+ * @param {function(URLSearchParams): void=} extraParams — thêm filter cục bộ
+ */
+async function exportFlReimportScoped(kinds, extraParams) {
+    if (!currentProjectSlug) { showToast("Chưa chọn project", "red"); return; }
+    const params = new URLSearchParams();
+    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
+    params.set("kinds", kinds);
+    if (typeof extraParams === "function") extraParams(params);
+    showToast("📥 Đang tạo FL để import…");
+    try {
+        await downloadFile(
+            `/api/projects/${currentProjectSlug}/export-fl-reimport?` + params.toString(),
+            `FL_import_${kinds}_${currentProjectSlug}.xlsx`
+        );
+    } catch (err) {
+        console.error("[exportFlReimportScoped]", err);
+        showToast("❌ Lỗi khi xuất FL để import", "red");
+    }
+}
+window.exportFlReimportScoped = exportFlReimportScoped;
 
 /**
  * Xuất Excel cho 1 chart chính (module_overview, task_type, effort_heatmap…).
@@ -7807,17 +9650,50 @@ function checkRefreshReminder() {
 }
 
 /**
- * P6: hiển thị warnings sau upload dưới dạng toast xếp chồng.
+ * P6: hiển thị warnings sau upload.
  * warnings: [{level: "critical"|"warning"|"info", code, message}]
+ *
+ * Critical → banner cố định (chỉ có 1 element #toast dùng chung và nó tự tắt
+ * sau 3.5s, nên toast không đủ cho lỗi kiểu «file thiếu 300 dòng»).
+ * Còn lại vẫn là toast xếp chồng.
  */
 function _showUploadWarnings(warnings) {
     const colorByLevel = { critical: "red", warning: "orange", info: "blue" };
-    warnings.forEach((w, i) => {
+    const critical = warnings.filter(w => w.level === "critical");
+    const rest = warnings.filter(w => w.level !== "critical");
+
+    const wrap = document.getElementById("uploadCriticalWarn");
+    if (wrap) {
+        if (!critical.length) {
+            wrap.classList.add("hidden");
+            wrap.innerHTML = "";
+        } else {
+            wrap.classList.remove("hidden");
+            wrap.innerHTML = critical.map(w => `
+                <div class="bg-red-50 border-l-4 border-red-500 rounded px-4 py-3 mb-3 flex items-start gap-3">
+                    <span class="text-xl leading-none">⚠️</span>
+                    <div class="flex-1 text-sm text-red-800">${escapeHtml(w.message || "")}</div>
+                    <button type="button" onclick="_dismissUploadWarning(this)"
+                            class="text-red-400 hover:text-red-700 text-lg leading-none"
+                            title="Ẩn cảnh báo">×</button>
+                </div>`).join("");
+        }
+    }
+
+    rest.forEach((w, i) => {
         const c = colorByLevel[w.level] || "gray";
         // Stagger 400ms để 3-4 toast không đè lên nhau
         setTimeout(() => showToast(`⚠️ ${w.message}`, c), i * 400);
     });
 }
+
+function _dismissUploadWarning(btn) {
+    const box = btn?.closest("div");
+    const wrap = document.getElementById("uploadCriticalWarn");
+    box?.remove();
+    if (wrap && !wrap.querySelector("div")) wrap.classList.add("hidden");
+}
+window._dismissUploadWarning = _dismissUploadWarning;
 
 // ========================================================================
 // HELPERS
@@ -9816,18 +11692,32 @@ function refreshSidebarGroupSelect() {
 // nhóm bị ẩn khi đang ở "Tất cả", không ảnh hưởng khi lọc theo 1 nhóm cụ thể.
 // ========================================================================
 const SIDEBAR_HIDDEN_GROUPS_KEY = "ihrp_sidebar_hidden_groups_v1";
-// Mặc định ẩn "Phân tích" + "Quản trị" — 2 nhóm gom phần lớn section EXTENDED
-// (process/effort/duration/scope-creep/pm/compare/kanban/bookmarks/digest/...).
-const DEFAULT_HIDDEN_SIDEBAR_GROUPS = ["analysis", "admin"];
+// Mặc định hiện tất cả nhóm — trước đây ẩn analysis/admin gây sidebar trống khi bấm PHÂN TÍCH / QUẢN TRỊ
+const DEFAULT_HIDDEN_SIDEBAR_GROUPS = [];
 
 let _sidebarHiddenGroups = null;
 
 function _loadHiddenSidebarGroups() {
+    const UNHIDE_MIGRATION_KEY = "ihrp.sidebar.unhide-analysis-admin-v1";
     try {
         const raw = localStorage.getItem(SIDEBAR_HIDDEN_GROUPS_KEY);
-        if (raw === null) return new Set(DEFAULT_HIDDEN_SIDEBAR_GROUPS);
-        const arr = JSON.parse(raw);
-        return new Set(Array.isArray(arr) ? arr.map(String) : []);
+        let set;
+        if (raw === null) {
+            set = new Set(DEFAULT_HIDDEN_SIDEBAR_GROUPS);
+        } else {
+            const arr = JSON.parse(raw);
+            set = new Set(Array.isArray(arr) ? arr.map(String) : []);
+        }
+        // Một lần: bỏ ẩn Phân tích + Quản trị (user cũ lưu hidden mặc định)
+        if (localStorage.getItem(UNHIDE_MIGRATION_KEY) !== "1") {
+            set.delete("analysis");
+            set.delete("admin");
+            localStorage.setItem(UNHIDE_MIGRATION_KEY, "1");
+            try {
+                localStorage.setItem(SIDEBAR_HIDDEN_GROUPS_KEY, JSON.stringify(Array.from(set)));
+            } catch (e) { /* ignore */ }
+        }
+        return set;
     } catch (e) {
         return new Set(DEFAULT_HIDDEN_SIDEBAR_GROUPS);
     }
@@ -9867,13 +11757,14 @@ function applySidebarGroupFilter() {
     const membership = buildSidebarSectionMembership(st);
     const isAll = active === SIDEBAR_GROUP_ALL;
     const hiddenGroups = _ensureHiddenSidebarGroups();
-    // A1 — khi ở "Tất cả", nhóm bị ẩn mặc định (analysis/admin) vẫn ẩn cho tới
-    // khi user bật lại qua "Thêm dashboard". Section không có membership (vd
-    // section-ba-tasks) luôn hiện.
+    // A1 — khi ở "Tất cả", nhóm trong hiddenGroups vẫn ẩn (user tắt qua «Thêm dashboard»).
+    // Section không có membership (vd section-ba-tasks) luôn hiện.
     const groupVisible = (gid) => !gid || !hiddenGroups.has(gid);
 
-    // Sidebar links
-    document.querySelectorAll('#sidebarNav a[href^="#section-"]').forEach(a => {
+    // Sidebar links (legacy nav + v2 hub items)
+    document.querySelectorAll(
+        '#sidebarNav .sidebar-nav-item, #sidebarNav a[href^="#section-"]'
+    ).forEach(a => {
         const sid = (a.getAttribute("href") || "").slice(1);
         const show = isAll ? groupVisible(membership[sid]) : membership[sid] === active;
         a.classList.toggle("group-filtered-out", !show);
@@ -10561,10 +12452,10 @@ const CHART_HELP = {
     },
     "section-module": {
         title: "📊 Tổng quan theo Module",
-        meaning: "Bảng tóm tắt mỗi phân hệ: khối lượng, số quy trình, tiến độ, phase đang làm, số function trễ.",
-        logic: "SL = số function trong module; QT = số quy trình unique; Tiến độ = % function Closed ở phase cuối; “Đang ở” = phase active nhiều nhất; Trễ = số function unique có ít nhất 1 phase overdue.",
-        example: "Module PR: 60 function, 12 quy trình, 45% Closed, đang ở Dev, 8 function trễ.",
-        note: "Module đã xong 100% hiện “✓ Hoàn thành” thay vì tên phase."
+        meaning: "Bảng tóm tắt mỗi phân hệ: khối lượng, số quy trình, tiến độ, phase đang làm, số function trễ, và mức tăng/giảm so với mốc bạn chọn.",
+        logic: "SL = số function trong module; QT = số quy trình unique; Tiến độ = số phase-record đã Closed ÷ (SL × số phase) — weighted theo phase, KHÔNG phải % Closed phase cuối; “Đang ở” = phase active nhiều nhất; Trễ = số function unique có ít nhất 1 phase overdue; Còn lại = function chưa Closed ở phase cuối.",
+        example: "Module PR: 60 function, 12 quy trình, tiến độ 45%, đang ở Dev, 8 function trễ, so với baseline v2: +3 SL, +6pp tiến độ, −2 trễ.",
+        note: "Nhóm cột “So với …” lấy mốc từ dropdown (Baseline gần nhất / Tuần trước / Bản trước / Bản cụ thể). Cột ± của Tiến độ là ĐIỂM phần trăm (72%→78% = +6pp), cột ±% mới là thay đổi tương đối. Ô “—” nghĩa là mốc bằng 0 nên không tính được %; nhãn “Mới” là module chưa có ở mốc so sánh."
     },
     "section-tasktype": {
         title: "📈 Tiến độ theo công việc",
@@ -10648,7 +12539,7 @@ const CHART_HELP = {
         meaning: "Function bị kẹt giữa hai phase: phase trước Closed, phase sau chưa bắt đầu, và End của phase chờ đã quá hạn. Deadline chưa tới / chưa có End → không hiện. Đã Closed hết (hoặc phase cuối Closed) thì bỏ qua.",
         logic: "Với mỗi cặp phase liền nhau: pred Closed + phase sau None/Open + End phase chờ < hôm nay → vào list. Chờ (ngày) = hôm nay − End phase trước. Loại function có phase cuối Closed hoặc mọi phase Closed/Cancelled.",
         example: "Analysis Closed, Dev Open nhưng Dev End còn tương lai → không đình trệ. Dev End đã qua mà vẫn Open → stalled.",
-        note: "Chờ > 7 ngày tô cam, > 14 ngày tô đỏ. Danh sách transitions cho biết chặng chuyển giao nào tắc nhiều nhất."
+        note: "Chờ > 7 ngày tô cam, > 14 ngày tô đỏ. Danh sách transitions cho biết chặng chuyển giao nào tắc nhiều nhất. Filter «Phase chờ» lọc theo cột Phase chờ (phase đang bị kẹt), mặc định bật mọi phase trừ Document — nút ↺ Mặc định trả về trạng thái này. Filter chỉ đổi bảng + transitions + Excel + Chi tiết; Funnel Closed/Phase và badge Đình trệ ở sidebar vẫn đếm toàn bộ vì còn dùng cho risk level của bảng Module."
     },
     "section-risk": {
         title: "⚡ Top Functions rủi ro cao",
@@ -12380,6 +14271,7 @@ async function refreshProjectBaseline() {
     } catch (err) {
         console.warn("[baseline]", err);
     }
+    await loadBaselineList();
 }
 
 async function onBaselineSnapshotChange(val) {
@@ -12405,21 +14297,123 @@ async function onBaselineSnapshotChange(val) {
 window.onBaselineSnapshotChange = onBaselineSnapshotChange;
 
 async function clearProjectBaseline() {
+    // Có chuỗi baseline → bỏ chốt nghĩa là xóa bản đang dùng, con trỏ tự lùi
+    // về bản trước đó. Chỉ project chưa migrate mới đi đường legacy.
+    const active = _baselineChain.active;
+    if (active && active.id) return window.unpinBaseline(active.id);
     const sel = document.getElementById("bslSnapshotSelect");
     if (sel) sel.value = "";
     await onBaselineSnapshotChange("");
 }
 window.clearProjectBaseline = clearProjectBaseline;
 
+/**
+ * Chốt 1 bản trong lịch sử thành baseline (chuỗi bất biến).
+ * Không dùng PUT /baseline nữa: field cũ chỉ trỏ vào snapshots/ nên baseline
+ * mất khi snapshot bị prune hoặc đổi nội dung khi upload lại cùng ngày.
+ */
 async function setProjectBaseline(snapDate) {
-    const sel = document.getElementById("bslSnapshotSelect");
-    if (sel) {
-        _populateBaselineSnapshotSelect();
-        sel.value = snapDate || "";
+    if (!currentProjectSlug) return;
+    try {
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/baselines`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ snapshot_date: snapDate || "" }),
+        });
+        showToast(data.message || "Đã chốt baseline");
+        await refreshProjectBaseline();
+        await _reloadBaselineSvAndForecast();
+    } catch (err) {
+        showToast("Lỗi chốt baseline: " + err.message, "red");
     }
-    await onBaselineSnapshotChange(snapDate || "");
 }
 window.setProjectBaseline = setProjectBaseline;
+
+let _baselineChain = { items: [], active: null };
+
+/** Danh sách baseline đã chốt + rà cờ lệch nội dung so với snapshot gốc. */
+async function loadBaselineList() {
+    if (!currentProjectSlug) return;
+    try {
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/baselines`);
+        _baselineChain = { items: data.items || [], active: data.active || null };
+    } catch (err) {
+        console.warn("[baselines]", err);
+        _baselineChain = { items: [], active: null };
+    }
+    renderBaselineChain();
+}
+window.loadBaselineList = loadBaselineList;
+
+function renderBaselineChain() {
+    const wrap = document.getElementById("baselineChainWrap");
+    const cnt = document.getElementById("baselineChainCount");
+    const items = _baselineChain.items || [];
+    const activeId = _baselineChain.active && _baselineChain.active.id;
+    if (cnt) cnt.textContent = items.length ? `(${items.length} bản)` : "(chưa có)";
+    if (!wrap) return;
+    if (!items.length) {
+        wrap.innerHTML = `<p class="text-xs text-gray-400 italic px-1">
+            Chưa chốt baseline nào. Bấm «Chốt bản hiện tại» để lấy bản đang xem làm kế hoạch gốc.</p>`;
+        return;
+    }
+    wrap.innerHTML = `
+        <table class="w-full text-xs">
+            <thead class="bg-gray-100 text-gray-700">
+                <tr>
+                    <th class="px-2 py-1 text-left">Ver</th>
+                    <th class="px-2 py-1 text-left">Ngày bản gốc</th>
+                    <th class="px-2 py-1 text-left">Nhãn</th>
+                    <th class="px-2 py-1 text-left">Người chốt</th>
+                    <th class="px-2 py-1 text-left">Chốt lúc</th>
+                    <th class="px-2 py-1 text-right">SL</th>
+                    <th class="px-2 py-1 text-right">Tiến độ</th>
+                    <th class="px-2 py-1 text-left">Checksum</th>
+                    <th class="px-2 py-1"></th>
+                </tr>
+            </thead>
+            <tbody>${items.map(b => {
+                const isActive = b.id === activeId;
+                const drift = b.source_drifted
+                    ? ` <span class="text-[10px] px-1 rounded bg-amber-100 text-amber-800 border border-amber-300"
+                              title="Bản gốc trong lịch sử đã bị ghi đè nội dung. Baseline vẫn giữ đúng bản đã chốt.">⚠ gốc đã đổi</span>`
+                    : "";
+                return `<tr class="border-b ${isActive ? "bg-amber-50/60" : "hover:bg-gray-50"}">
+                    <td class="px-2 py-1 font-semibold">v${b.version}${isActive
+                        ? ` <span class="text-[10px] px-1 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">đang dùng</span>` : ""}</td>
+                    <td class="px-2 py-1 font-mono">${escapeHtml(b.snapshot_date || "")}${drift}</td>
+                    <td class="px-2 py-1">${escapeHtml(b.label || "—")}</td>
+                    <td class="px-2 py-1">${escapeHtml(b.created_by || "—")}</td>
+                    <td class="px-2 py-1">${escapeHtml((b.created_at || "").replace("T", " "))}</td>
+                    <td class="px-2 py-1 text-right">${b.total_functions ?? "—"}</td>
+                    <td class="px-2 py-1 text-right">${b.overall_pct ?? "—"}%</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(String(b.checksum || "").slice(0, 8))}</td>
+                    <td class="px-2 py-1 text-right no-print">
+                        <button type="button" onclick="unpinBaseline('${escapeAttr(b.id)}')"
+                                class="text-[10px] px-2 py-0.5 border rounded hover:bg-red-50 text-red-600"
+                                title="Xóa bản baseline này">✕</button>
+                    </td>
+                </tr>`;
+            }).join("")}</tbody>
+        </table>`;
+}
+
+window.unpinBaseline = async function (baselineId) {
+    if (!currentProjectSlug || !baselineId) return;
+    if (!confirm("Xóa bản baseline này? Các so sánh đang trỏ vào nó sẽ lùi về baseline trước đó.")) return;
+    try {
+        const data = await apiJson(
+            `/api/projects/${currentProjectSlug}/baselines/${encodeURIComponent(baselineId)}`,
+            { method: "DELETE" },
+        );
+        showToast(data.message || "Đã xóa baseline");
+        await refreshProjectBaseline();
+        await _reloadBaselineSvAndForecast();
+        try { await _fetchModuleOverview(); } catch (e) {}
+    } catch (err) {
+        showToast("Lỗi xóa baseline: " + err.message, "red");
+    }
+};
 
 async function _reloadBaselineSvAndForecast() {
     if (!currentProjectSlug) return;
@@ -15493,14 +17487,65 @@ async function _resetChartConfig(target_id) {
     }
 }
 
-/** Inject gear button vào mỗi section (chạy 1 lần sau khi apply config). */
+/**
+ * Tìm container actions của section header (nơi chứa nút Xuất/filter),
+ * để gắn gear ⚙️ *inline* thay vì chồng absolute lên nút Xuất.
+ *
+ * Pattern đang dùng đại trà (DQ, Overdue, Unassigned, Stalled, FID, ...):
+ *   <section id="section-*">
+ *     <div class="flex ... justify-between ...">   ← header row (row 1)
+ *        <div>...title...</div>
+ *        <div class="flex ... gap-2 ...">           ← ACTIONS host
+ *            [filter] [column picker] [Xuất]
+ *        </div>
+ *     </div>
+ *     ...
+ *   </section>
+ *
+ * Chọn container cuối cùng trong header row có ít nhất 1 <button>/<select>/
+ * col-picker — đó chính là actions host. Không match được → trả null, caller
+ * fallback về absolute top-right.
+ */
+function _findSectionHeaderActionsHost(sec) {
+    if (!sec) return null;
+    // Section-hub (Issues / Timeline / Weekly ...): actions host = .section-tabs-tools
+    // (chứa nút Xuất tab đang chọn — đó là chỗ hợp lý cạnh nút Xuất chung).
+    const hubTools = sec.querySelector(":scope > .section-hub-head .section-tabs-tools");
+    if (hubTools) return hubTools;
+
+    // Section thông thường: header row = flex justify-between hoặc flex items-center,
+    // hoặc pattern hub-head (đã handle ở trên nhưng giữ để đề phòng nested markup).
+    const headerRow = sec.querySelector(
+        ':scope > div.flex[class*="justify-between"], '
+        + ':scope > div.flex.items-center, '
+        + ':scope > .section-hub-head'
+    ) || sec.firstElementChild;
+    if (!headerRow) return null;
+
+    // Duyệt ngược các div flex bên trong → chọn cái cuối chứa button/select/col-picker.
+    const candidates = headerRow.querySelectorAll(
+        ':scope > div.flex, :scope > div[class*="flex"]'
+    );
+    for (let i = candidates.length - 1; i >= 0; i--) {
+        const c = candidates[i];
+        if (c.querySelector("button, select, [data-col-picker]")) return c;
+    }
+    return null;
+}
+
+/** Inject gear button vào mỗi section (chạy 1 lần sau khi apply config).
+ *
+ * Rule 06/08/2026: gear chèn INLINE vào header actions row → tránh chồng lên
+ * nút Xuất/filter đang chiếm góc phải-trên. Section không có actions row thì
+ * fallback về absolute top-right (giữ hành vi cũ). */
 function injectChartConfigGears() {
     document.querySelectorAll('#dashboard [id^="section-"]').forEach(sec => {
         if (_CHART_CFG_SKIP_SECTIONS.has(sec.id)) return;
-        if (sec.querySelector(":scope > .chart-config-gear")) return; // đã inject
-        // Ensure relative positioning để absolute gear đứng đúng
-        const cs = getComputedStyle(sec);
-        if (cs.position === "static") sec.style.position = "relative";
+        // Marker attribute — descendant sections (tab-pane trong hub) có gear
+        // riêng nên KHÔNG dùng `:scope .chart-config-gear` để check idempotent
+        // (sẽ match nhầm gear của inner section).
+        if (sec.dataset.gearInjected === "1") return;
+
         const btn = document.createElement("button");
         btn.className = "chart-config-gear no-print";
         btn.type = "button";
@@ -15511,7 +17556,19 @@ function injectChartConfigGears() {
             e.stopPropagation();
             openChartConfigPopover(sec.id, btn);
         };
-        sec.appendChild(btn);
+
+        const actionsHost = _findSectionHeaderActionsHost(sec);
+        if (actionsHost) {
+            // Inline: nút riêng ngay cạnh Xuất, không chồng, không đè.
+            btn.classList.add("chart-config-gear-inline");
+            actionsHost.appendChild(btn);
+        } else {
+            // Fallback: floating top-right cho section không có actions row.
+            const cs = getComputedStyle(sec);
+            if (cs.position === "static") sec.style.position = "relative";
+            sec.appendChild(btn);
+        }
+        sec.dataset.gearInjected = "1";
     });
 }
 
@@ -16280,9 +18337,9 @@ window.resetSectionOrder = async function () {
         const btnReset = document.getElementById("btnLayoutReset");
         if (btnReset) btnReset.classList.add("hidden");
         showToast("Đã khôi phục thứ tự: tiến độ trước, vấn đề sau");
-        // Rebuild sidebar link order if helper exists
-        if (typeof _sgApplyNavOrder === "function") _sgApplyNavOrder();
-        else if (typeof renderSidebarGroups === "function") renderSidebarGroups();
+        // Rebuild sidebar link order if helper exists (hook tuỳ chọn)
+        if (typeof window._sgApplyNavOrder === "function") window._sgApplyNavOrder();
+        else if (typeof window.renderSidebarGroups === "function") window.renderSidebarGroups();
     } catch (err) {
         console.error("[resetSectionOrder]", err);
         showToast("Reset thất bại: " + err.message, "red");
@@ -16363,6 +18420,7 @@ const _PRESENT_LAZY_LOADERS = {
     "section-gantt-calendar": "loadGanttCalendar",
     "section-dataquality":    "loadDataQuality",
     "section-fid-check":      "loadFidCheck",
+    "section-source-checklist": "loadSourceChecklist",
     "section-duration-flag":  "loadDurationFlag",
     "section-weekly-gap":     "loadWeeklyGap",
     "section-aging-wip":      "loadAgingWip",
@@ -16659,12 +18717,28 @@ async function loadDataQuality() {
 // FID CHECK — Dev Closed thiếu / trùng FID
 // ==========================================================================
 
+// Page/size do pageState.fid giữ — xem _pageSlice / renderPager.
 const _fidState = {
     issues: [],
     filtered: [],
-    page: 1,
-    pageSize: 50,
+    moduleStats: {},        // {module: {rows, with_fid, dev_closed}}
+    modulesWithoutFid: [],  // module không có row nào điền FID
+    summaryAll: {},         // summary chưa qua filter cục bộ — để ghi chú "toàn bộ: N"
 };
+
+// Module rỗng vẫn phải lọc được, nếu không filter mặc định sẽ ẩn luôn issue
+// của nó mà không ai thấy.
+const FID_NO_MODULE = "(Chưa có Module)";
+const FID_TYPE_LABELS = { missing_fid: "Thiếu FID", duplicate_fid: "Trùng FID" };
+
+function _fidModKey(m) {
+    return String(m || "").trim() || FID_NO_MODULE;
+}
+
+/** Token gửi qua API cho module rỗng — CSV không chở được chuỗi rỗng. */
+function _fidModWire(m) {
+    return m === FID_NO_MODULE ? "__no_module__" : m;
+}
 
 async function loadFidCheck() {
     const section = document.getElementById("section-fid-check");
@@ -16674,7 +18748,10 @@ async function loadFidCheck() {
         const url = `/api/projects/${currentProjectSlug}/fid-check${qs ? "?" + qs : ""}`;
         const d = await apiJson(url);
         _fidState.issues = d.issues || [];
-        _fidState.page = 1;
+        _fidState.moduleStats = d.module_stats || {};
+        _fidState.modulesWithoutFid = d.modules_without_fid || [];
+        _fidState.summaryAll = d.summary || {};
+        pageState.fid.page = 1;
 
         // Cảnh báo không có cột FID
         const warn = document.getElementById("fidNoColumnWarn");
@@ -16684,7 +18761,6 @@ async function loadFidCheck() {
         _fidPopulateModuleFilter();
 
         section.classList.remove("hidden");
-        _fidRenderSummaryCards(d.summary || {});
         _fidApplyFiltersAndRender();
 
         // Cập nhật badge
@@ -16696,77 +18772,278 @@ async function loadFidCheck() {
 }
 window.loadFidCheck = loadFidCheck;
 
+/**
+ * Badge sidebar cố ý đếm TOÀN BỘ issue, không theo filter cục bộ của section —
+ * badge là chỉ báo "dự án còn N vấn đề", giống các tab issue khác. Chênh lệch
+ * với bảng được giải thích ở banner + ghi chú "toàn bộ: N" trên card.
+ */
 function _updateFidBadge(count) {
-    // Badge trên sidebar tab
-    document.querySelectorAll('[data-badge="fid_issues"]').forEach(el => {
-        el.textContent = count > 0 ? String(count) : "";
-        el.style.display = count > 0 ? "" : "none";
-    });
+    if (typeof setIssueTabCount === "function") {
+        setIssueTabCount("fid_issues", count);
+    }
 }
 
+/**
+ * Toàn bộ module có trong dữ liệu (không chỉ module đang có issue) — lấy từ
+ * `module_stats`. Nếu chỉ lấy từ issue thì module 0 issue sẽ không có trong
+ * dropdown, khi đó card «Dev đã Closed» loại luôn mẫu số của nó mà user không
+ * có cách nào tick lại.
+ */
+function _fidAllModules() {
+    const keys = Object.keys(_fidState.moduleStats || {});
+    const fromIssues = (_fidState.issues || []).map(it => it.module);
+    return [...new Set([...keys, ...fromIssues].map(_fidModKey))].sort();
+}
+
+/**
+ * Mặc định: bỏ check module KHÔNG DÙNG FID (không row nào điền FID).
+ * Suy từ `modules_without_fid` của backend — không hardcode tên module, nên
+ * FL đổi mã module hoặc sang dự án khác vẫn đúng.
+ * Nếu mọi module đều không dùng FID thì check tất cả: thà hiện dư còn hơn bảng
+ * trống làm PM tưởng đã đủ FID.
+ */
+function _fidDefaultModules(allModules) {
+    const all = allModules || _fidAllModules();
+    const skip = new Set((_fidState.modulesWithoutFid || []).map(_fidModKey));
+    const kept = all.filter(m => !skip.has(m));
+    return kept.length ? kept : all.slice();
+}
+
+function _fidModuleLsKey() {
+    return `fidModuleSel:${currentProjectSlug || "default"}`;
+}
+
+/** Lựa chọn đã lưu + merge module mới (auto-check nếu module đó có dùng FID). */
+function _fidLoadModuleSel(allModules) {
+    const all = allModules || _fidAllModules();
+    if (!all.length) return [];
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(_fidModuleLsKey()) || "null"); }
+    catch (e) { saved = null; }
+    if (!saved || !Array.isArray(saved.selected)) return _fidDefaultModules(all);
+
+    const known = new Set((saved.known || []).map(m => String(m || "").trim()));
+    const skip = new Set((_fidState.modulesWithoutFid || []).map(_fidModKey));
+    const sel = new Set(
+        saved.selected.map(m => String(m || "").trim()).filter(m => all.includes(m))
+    );
+    for (const m of all) {
+        if (!known.has(m) && !skip.has(m)) sel.add(m);
+    }
+    return all.filter(m => sel.has(m));
+}
+
+function _fidSaveModuleSel(selected, allModules) {
+    const all = allModules || _fidAllModules();
+    try {
+        localStorage.setItem(_fidModuleLsKey(), JSON.stringify({
+            selected: selected || [], known: all,
+        }));
+    } catch (e) { /* localStorage full / private mode */ }
+}
+
+/** Trả cả 2 filter về mặc định. */
+function resetFidFilters() {
+    const all = _fidAllModules();
+    const def = _fidDefaultModules(all);
+    _fidSaveModuleSel(def, all);
+    _msInstances.fidType?.setSelected?.([], /*silent=*/true);
+    if (_msInstances.fidModule?.setSelected) {
+        _msInstances.fidModule.setSelected(def);  // onChange tự re-render
+    } else {
+        _fidApplyFiltersAndRender();
+    }
+}
+window.resetFidFilters = resetFidFilters;
+
 function _fidPopulateModuleFilter() {
-    const sel = document.getElementById("fidModuleFilter");
-    if (!sel) return;
-    const mods = [...new Set((_fidState.issues || []).map(it => it.module).filter(Boolean))].sort();
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">Tất cả module</option>' +
-        mods.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join("");
-    if (mods.includes(cur)) sel.value = cur;
-    sel.onchange = () => { _fidState.page = 1; _fidApplyFiltersAndRender(); };
+    const all = _fidAllModules();
+    const sel = _fidLoadModuleSel(all);
+    const onModuleChange = (arr) => {
+        pageState.fid.page = 1;
+        _fidSaveModuleSel(arr, all);
+        _fidApplyFiltersAndRender();
+    };
+    if (!_msInstances.fidModule) {
+        createMultiSelect({
+            el: "#fidModuleMS",
+            key: "fidModule",
+            label: "Module",
+            options: all,
+            selected: sel,
+            allText: "Tất cả module",
+            onChange: onModuleChange,
+        });
+    } else {
+        _msInstances.fidModule.setOptions(all, /*dropInvalid=*/false);
+        _msInstances.fidModule.setSelected(sel, /*silent=*/true);
+        if (typeof _msInstances.fidModule.setOnChange === "function") {
+            _msInstances.fidModule.setOnChange(onModuleChange);
+        }
+    }
+
+    // Loại issue — multi, mặc định để rỗng = tất cả.
+    const typeOpts = Object.values(FID_TYPE_LABELS);
+    const onTypeChange = () => { pageState.fid.page = 1; _fidApplyFiltersAndRender(); };
+    if (!_msInstances.fidType) {
+        createMultiSelect({
+            el: "#fidTypeMS",
+            key: "fidType",
+            label: "Loại",
+            options: typeOpts,
+            selected: [],
+            allText: "Tất cả loại",
+            onChange: onTypeChange,
+        });
+    } else if (typeof _msInstances.fidType.setOnChange === "function") {
+        _msInstances.fidType.setOnChange(onTypeChange);
+    }
+}
+
+function _fidSelectedModules() {
+    return (_msInstances.fidModule?.getSelected?.() || [])
+        .map(m => String(m || "").trim()).filter(Boolean);
+}
+
+/** Label đang chọn → issue_type code. Rỗng = không lọc. */
+function _fidSelectedTypes() {
+    const labels = new Set(_msInstances.fidType?.getSelected?.() || []);
+    return Object.entries(FID_TYPE_LABELS)
+        .filter(([, label]) => labels.has(label))
+        .map(([code]) => code);
 }
 
 function _fidApplyFiltersAndRender() {
-    const mod = (document.getElementById("fidModuleFilter")?.value || "").trim();
-    const typ = (document.getElementById("fidTypeFilter")?.value || "").trim();
+    const mods = _fidSelectedModules();
+    const types = _fidSelectedTypes();
+    const modSet = new Set(mods);
+    const typeSet = new Set(types);
     _fidState.filtered = (_fidState.issues || []).filter(it => {
-        if (mod && it.module !== mod) return false;
-        if (typ && it.issue_type !== typ) return false;
+        if (mods.length && !modSet.has(_fidModKey(it.module))) return false;
+        if (types.length && !typeSet.has(it.issue_type)) return false;
         return true;
     });
-    document.getElementById("fidTypeFilter").onchange = () => { _fidState.page = 1; _fidApplyFiltersAndRender(); };
+    _fidRenderSummaryCards(mods, types);
+    _fidUpdateScopeBanner(mods, types);
     _fidRenderTable();
 }
 
-function _fidRenderSummaryCards(summary) {
+/**
+ * 4 card theo filter đang chọn, kèm ghi chú số toàn bộ khi có lọc.
+ * Card nằm trong section nên phải khớp bảng — để lệch thì PM đọc 47 mà đếm
+ * được 30 dòng. Số toàn bộ vẫn ghi nhỏ bên dưới để không mất thông tin.
+ */
+function _fidRenderSummaryCards(mods, types) {
     const el = document.getElementById("fidSummaryCards");
     if (!el) return;
-    const total = summary.total_issues || 0;
-    const missing = summary.missing || 0;
-    const dup = summary.duplicate || 0;
-    const devClosed = summary.total_dev_closed_rows || 0;
+    const all = _fidState.summaryAll || {};
+    const items = _fidState.filtered || [];
+    const modsSel = mods || _fidSelectedModules();
+    const typesSel = types || _fidSelectedTypes();
+    const allModules = _fidAllModules();
+    const modNarrows = modsSel.length > 0 && modsSel.length < allModules.length;
+    const typeNarrows = typesSel.length > 0
+        && typesSel.length < Object.keys(FID_TYPE_LABELS).length;
+    const narrowed = modNarrows || typeNarrows;
+
+    const total = items.length;
+    const missing = items.filter(i => i.issue_type === "missing_fid").length;
+    const dup = items.filter(i => i.issue_type === "duplicate_fid").length;
+    // Dev đã Closed chỉ thu hẹp theo Module (loại issue không đổi mẫu số).
+    const stats = _fidState.moduleStats || {};
+    let devClosed = all.total_dev_closed_rows || 0;
+    if (modNarrows) {
+        devClosed = 0;
+        for (const [m, st] of Object.entries(stats)) {
+            if (modsSel.includes(_fidModKey(m))) devClosed += st.dev_closed || 0;
+        }
+    }
+
+    const note = (val, allVal) => (narrowed && allVal != null && allVal !== val)
+        ? `<div class="text-[10px] text-gray-400 mt-0.5">toàn bộ: ${allVal}</div>`
+        : "";
+
     el.innerHTML = `
         <div class="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
             <div class="text-2xl font-bold text-red-700">${total}</div>
             <div class="text-xs text-red-600 mt-1">Tổng issues</div>
+            ${note(total, all.total_issues)}
         </div>
         <div class="bg-orange-50 border border-orange-200 rounded-lg p-3 text-center">
             <div class="text-2xl font-bold text-orange-700">${missing}</div>
             <div class="text-xs text-orange-600 mt-1">Thiếu FID</div>
+            ${note(missing, all.missing)}
         </div>
         <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-center">
             <div class="text-2xl font-bold text-yellow-700">${dup}</div>
             <div class="text-xs text-yellow-600 mt-1">Trùng FID</div>
+            ${note(dup, all.duplicate)}
         </div>
         <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
             <div class="text-2xl font-bold text-blue-700">${devClosed}</div>
             <div class="text-xs text-blue-600 mt-1">Dev đã Closed</div>
+            ${note(devClosed, all.total_dev_closed_rows)}
         </div>`;
+}
+
+/** Banner: module nào đang bị ẩn và vì sao (không dùng FID vs user tự bỏ). */
+function _fidUpdateScopeBanner(mods, types) {
+    const el = document.getElementById("fidScopeBanner");
+    if (!el) return;
+    const modsSel = mods || _fidSelectedModules();
+    const typesSel = types || _fidSelectedTypes();
+    const allModules = _fidAllModules();
+    const hidden = modsSel.length
+        ? allModules.filter(m => !modsSel.includes(m))
+        : [];
+    const noFid = new Set((_fidState.modulesWithoutFid || []).map(_fidModKey));
+    const hiddenNoFid = hidden.filter(m => noFid.has(m));
+    const hiddenManual = hidden.filter(m => !noFid.has(m));
+
+    const bits = [];
+    if (hiddenNoFid.length) {
+        bits.push(
+            `đang ẩn <b>${escapeHtml(hiddenNoFid.join(", "))}</b> `
+            + `<span class="text-gray-400">(không có chức năng nào điền FID → không dùng FID)</span>`
+        );
+    }
+    if (hiddenManual.length) {
+        bits.push(`bỏ chọn <b>${escapeHtml(hiddenManual.join(", "))}</b>`);
+    }
+    if (typesSel.length && typesSel.length < Object.keys(FID_TYPE_LABELS).length) {
+        const labels = typesSel.map(t => FID_TYPE_LABELS[t]).join(", ");
+        bits.push(`chỉ loại <b>${escapeHtml(labels)}</b>`);
+    }
+
+    if (!bits.length) {
+        el.innerHTML = "📂 Section: toàn bộ module (chưa lọc cục bộ)";
+        el.className = "chart-scope";
+        return;
+    }
+    el.innerHTML = `🔍 Module: ${bits.join(" · ")}`;
+    el.className = "chart-scope active";
+    el.setAttribute(
+        "title",
+        "Lọc cục bộ section Thiếu/Trùng FID — global filter không đổi. "
+        + "Bấm ↺ Mặc định để trả về trạng thái bỏ module không dùng FID."
+    );
 }
 
 function _fidRenderTable() {
     const tbody = document.getElementById("fidCheckTable");
     if (!tbody) return;
     const items = _fidState.filtered || [];
-    const ps = _fidState.pageSize;
-    const page = _fidState.page;
     const total = items.length;
-    const start = (page - 1) * ps;
-    const slice = items.slice(start, start + ps);
+    const { start, pageItems: slice } = _pageSlice("fid", items);
 
     if (!slice.length) {
-        tbody.innerHTML = `<tr><td colspan="8" class="px-3 py-6 text-center text-gray-400">${
-            total === 0 ? "✅ Không có issue FID nào" : "Không có kết quả phù hợp"
-        }</td></tr>`;
+        // Mặc định đã bỏ module không dùng FID nên bảng trống rất dễ bị hiểu là
+        // lỗi — chỉ thẳng sang nút Mặc định / filter.
+        const msg = (_fidState.issues || []).length === 0
+            ? "✅ Không có issue FID nào"
+            : "Không có kết quả phù hợp — kiểm tra filter Module / Loại ở trên";
+        tbody.innerHTML =
+            `<tr><td colspan="8" class="px-3 py-6 text-center text-gray-400">${msg}</td></tr>`;
         document.getElementById("fidPagerWrap").innerHTML = "";
         return;
     }
@@ -16788,31 +19065,285 @@ function _fidRenderTable() {
         </tr>`).join("");
 
     // Pager — dùng renderPager giống các section khác
-    if (!pageState.fid) pageState.fid = { page: 1, size: _fidState.pageSize };
-    pageState.fid.page = _fidState.page;
-    renderPager("fidPagerWrap", "fid", total, () => {
-        _fidState.page = pageState.fid?.page || 1;
-        _fidRenderTable();
-    });
+    renderPager("fidPagerWrap", "fid", total, () => _fidRenderTable());
 }
 
-async function exportFidIssuesFL() {
-    if (!currentProjectSlug) { showToast("Chưa chọn project", "red"); return; }
-    const params = new URLSearchParams();
-    if (globalFilters.modules.length) params.set("g_module", globalFilters.modules.join(","));
-    if (globalFilters.processes.length) params.set("g_process", globalFilters.processes.join(","));
-    if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
-    params.set("fid_issues", "1");
-    showToast("📥 Đang tạo FL update FID…");
-    try {
-        const url = `/api/projects/${currentProjectSlug}/export-fl-reimport?` + params.toString();
-        await downloadFile(url, `FL_FID_${currentProjectSlug}.xlsx`);
-    } catch (err) {
-        console.error("[exportFidIssuesFL]", err);
-        showToast("❌ Lỗi khi xuất FL FID", "red");
+/** Filter cục bộ của section → query param, để file xuất khớp bảng đang xem. */
+window._fidExportParams = _fidExportParams;
+function _fidExportParams(params) {
+    const mods = _fidSelectedModules();
+    const allModules = _fidAllModules();
+    if (mods.length && mods.length < allModules.length) {
+        params.set("fid_module", mods.map(_fidModWire).join(","));
+    }
+    const types = _fidSelectedTypes();
+    if (types.length && types.length < Object.keys(FID_TYPE_LABELS).length) {
+        params.set("fid_type", types.join(","));
     }
 }
-window.exportFidIssuesFL = exportFidIssuesFL;
+
+/** Menu 2 lựa chọn: danh sách lỗi (theo lưới) hoặc FL chỉ dòng lỗi FID. */
+function openFidExportPicker(event) {
+    openExportModePicker(event, "", exportFidIssueList, {
+        singleList: true,
+        flKinds: "fid",
+        extraParams: _fidExportParams,
+    });
+}
+window.openFidExportPicker = openFidExportPicker;
+
+/**
+ * Xuất danh sách lỗi FID — 7 cột như lưới + cột trống «FID cần cập nhật».
+ * File này KHÔNG import lại được (sheet tên Loi_FID), chỉ để lọc + điền tay.
+ */
+async function exportFidIssueList() {
+    if (!currentProjectSlug) { showToast("Chưa chọn project", "red"); return; }
+    const params = new URLSearchParams();
+    if (globalFilters.modules.length) params.set("module", globalFilters.modules.join(","));
+    if (globalFilters.processes.length) params.set("process", globalFilters.processes.join(","));
+    if (globalFilters.pics.length) params.set("pic", globalFilters.pics.join(","));
+    if (globalFilters.projectCodes.length) params.set("g_project", globalFilters.projectCodes.join(","));
+    _fidExportParams(params);
+    showToast("📥 Đang tạo danh sách lỗi FID…");
+    try {
+        await downloadFile(
+            `/api/projects/${currentProjectSlug}/export-fid-issues?` + params.toString(),
+            `Loi_FID_${currentProjectSlug}.xlsx`
+        );
+    } catch (err) {
+        console.error("[exportFidIssueList]", err);
+        showToast("❌ Lỗi khi xuất danh sách lỗi FID", "red");
+    }
+}
+window.exportFidIssueList = exportFidIssueList;
+
+// Giữ tên cũ cho deep-link / bookmark cũ trỏ tới nút export FID.
+window.exportFidIssuesFL = () => exportFlReimportScoped("fid", _fidExportParams);
+
+// ==========================================================================
+// SOURCE CHECKLIST — checklist lấy source test Rlog theo ngày dev coded
+// ==========================================================================
+
+const _scState = { payload: null, expanded: new Set() };
+
+async function loadSourceChecklist() {
+    const section = document.getElementById("section-source-checklist");
+    if (!section || !currentProjectSlug) return;
+    const lookback = parseInt(document.getElementById("scLookback")?.value || "14", 10) || 14;
+    try {
+        const qs = _buildFilterQuery();
+        const url = `/api/projects/${currentProjectSlug}/source-checklist?lookback=${lookback}`
+            + (qs ? "&" + qs : "");
+        const d = await apiJson(url);
+        _scState.payload = d;
+        // Mở sẵn ngày gần nhất còn việc tồn để PM thấy ngay
+        _scState.expanded = new Set(
+            (d.days || []).filter(x => x.pending_count > 0).slice(0, 1).map(x => x.date)
+        );
+        _scPopulateModuleFilter();
+        section.classList.remove("hidden");
+        _scRenderPhaseWarn(d);
+        _scRenderSummaryCards(d);
+        renderSourceChecklist();
+        _scUpdateBadge(d.summary?.total_pending || 0);
+    } catch (err) {
+        console.error("[loadSourceChecklist]", err);
+        section.classList.add("hidden");
+    }
+}
+window.loadSourceChecklist = loadSourceChecklist;
+
+function _scUpdateBadge(count) {
+    if (typeof setIssueTabCount === "function") {
+        setIssueTabCount("source_checklist", count);
+    }
+}
+
+function _scPopulateModuleFilter() {
+    const sel = document.getElementById("scModuleFilter");
+    if (!sel) return;
+    const mods = [...new Set(
+        (_scState.payload?.days || [])
+            .flatMap(d => d.items || [])
+            .map(it => it.module)
+            .filter(Boolean)
+    )].sort();
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Tất cả module</option>' +
+        mods.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join("");
+    if (mods.includes(cur)) sel.value = cur;
+}
+
+function _scRenderPhaseWarn(d) {
+    const el = document.getElementById("scPhaseWarn");
+    if (!el) return;
+    const msgs = [];
+    if (d.taker_phase_source === "next_after_dev") {
+        msgs.push(`⚠️ File không có phase <strong>Config Local</strong>. Hệ thống đang lấy phase ngay sau Dev là <strong>${escapeHtml(d.taker_phase || "")}</strong> để xác định người lấy source.`);
+    } else if (d.taker_phase_source === "none") {
+        msgs.push("⚠️ Không xác định được phase config local trong file — không thể chỉ ra ai phải lấy source. Bổ sung phase Config Local vào Function List rồi import lại.");
+    }
+    if (d.rlog_column_detected === false) {
+        msgs.push("ℹ️ File không có cột <strong>RlogID</strong> → đang tính trên mọi chức năng có Dev đến hạn.");
+    }
+    el.innerHTML = msgs.join("<br>");
+    el.classList.toggle("hidden", msgs.length === 0);
+}
+
+function _scRenderSummaryCards(d) {
+    const wrap = document.getElementById("scSummaryCards");
+    if (!wrap) return;
+    const s = d.summary || {};
+    const high = (s.by_severity || {}).high || 0;
+    wrap.innerHTML = `
+        <div class="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-red-700">${s.total_pending || 0}</div>
+            <div class="text-xs text-red-600 mt-1">Chưa lấy source</div>
+        </div>
+        <div class="bg-orange-50 border border-orange-200 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-orange-700">${s.days_with_pending || 0}/${s.days_with_coded || 0}</div>
+            <div class="text-xs text-orange-600 mt-1">Ngày còn tồn / ngày có Dev đến hạn</div>
+        </div>
+        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-yellow-700">${s.max_days_pending || 0}</div>
+            <div class="text-xs text-yellow-600 mt-1">Tồn lâu nhất (ngày)</div>
+        </div>
+        <div class="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-green-700">${s.total_done || 0}/${s.total_coded || 0}</div>
+            <div class="text-xs text-green-600 mt-1">Đã có người lấy source</div>
+        </div>`
+        + (high > 0
+            ? `<div class="col-span-2 md:col-span-4 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+                   🔴 ${high} việc mức <strong>cao</strong>: chưa có người config local, hoặc Dev đến hạn ≥ 3 ngày mà chưa ai lấy source.
+               </div>`
+            : "");
+}
+
+function _scToggleDay(dateIso) {
+    if (_scState.expanded.has(dateIso)) _scState.expanded.delete(dateIso);
+    else _scState.expanded.add(dateIso);
+    renderSourceChecklist();
+}
+window._scToggleDay = _scToggleDay;
+
+function renderSourceChecklist() {
+    const wrap = document.getElementById("scDayList");
+    if (!wrap) return;
+    const d = _scState.payload;
+    if (!d) { wrap.innerHTML = ""; return; }
+
+    const stateF = document.getElementById("scStateFilter")?.value || "pending";
+    const modF = (document.getElementById("scModuleFilter")?.value || "").trim();
+
+    const days = (d.days || []).map(day => {
+        const items = (day.items || []).filter(it => {
+            if (modF && it.module !== modF) return false;
+            if (stateF === "pending" && it.state !== "pending") return false;
+            return true;
+        });
+        return { ...day, _items: items };
+    }).filter(day => day._items.length > 0);
+
+    if (!days.length) {
+        wrap.innerHTML = `<p class="text-center text-gray-400 py-6 text-sm">${
+            stateF === "pending"
+                ? `✅ Trong ${d.lookback_days} ngày gần nhất, mọi Rlog có Dev đến hạn đều đã có người config local lấy source`
+                : "Không có Rlog nào có Dev đến hạn trong khoảng thời gian này"
+        }</p>`;
+        return;
+    }
+
+    const sevBadge = (it) => {
+        if (it.state === "done") {
+            return `<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Đã lấy</span>`;
+        }
+        if (it.state === "not_required") {
+            return `<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">Không cần</span>`;
+        }
+        const cls = it.severity === "high"
+            ? "bg-red-100 text-red-800"
+            : "bg-amber-100 text-amber-800";
+        return `<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}">${
+            it.severity === "high" ? "Cao" : "Vừa"
+        }</span>`;
+    };
+
+    wrap.innerHTML = days.map(day => {
+        const open = _scState.expanded.has(day.date);
+        const pending = day.pending_count;
+        const headCls = pending > 0
+            ? "bg-red-50 border-red-200 hover:bg-red-100"
+            : "bg-green-50 border-green-200 hover:bg-green-100";
+        // Badge Dev.Status — Closed = xanh, non-Closed = cam (cần theo dõi
+        // để user biết phase Dev có thể chưa thực sự đóng).
+        const devStatusBadge = (s) => {
+            const st = (s || "").trim();
+            if (!st) return `<span class="text-gray-400">—</span>`;
+            const cls = st === "Closed"
+                ? "bg-green-100 text-green-800"
+                : st === "Cancelled"
+                    ? "bg-gray-100 text-gray-600"
+                    : "bg-amber-100 text-amber-800";
+            return `<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}">${escapeHtml(st)}</span>`;
+        };
+
+        const rows = day._items.map(it => `
+            <tr class="border-t text-sm">
+                <td class="px-2 py-2 font-mono text-xs">${escapeHtml(it.rlog_id || "—")}</td>
+                <td class="px-2 py-2 font-mono text-xs">${escapeHtml(it.ma_cn || "")}</td>
+                <td class="px-2 py-2">${escapeHtml(it.ten_cn || "")}</td>
+                <td class="px-2 py-2 text-xs">${escapeHtml(it.module || "")}</td>
+                <td class="px-2 py-2 text-xs text-gray-600">${escapeHtml(it.dev_pic || "—")}</td>
+                <td class="px-2 py-2">${devStatusBadge(it.dev_status)}</td>
+                <td class="px-2 py-2 text-xs ${it.taker_pic ? "" : "text-red-600 font-medium"}">${escapeHtml(it.taker_pic || "chưa có ai")}</td>
+                <td class="px-2 py-2 text-xs text-gray-600">${escapeHtml(it.taker_status || "—")}</td>
+                <td class="px-2 py-2">${sevBadge(it)}</td>
+                <td class="px-2 py-2 text-xs text-gray-600">${escapeHtml(it.reason_label || "")}</td>
+            </tr>`).join("");
+
+        return `
+        <div class="border rounded-lg overflow-hidden">
+            <button type="button" onclick="_scToggleDay('${escapeAttr(day.date)}')"
+                    class="w-full flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-left border-b ${headCls}">
+                <span class="text-sm font-semibold text-gray-800">
+                    ${open ? "▾" : "▸"} ${escapeHtml(day.date_label)} (${escapeHtml(day.weekday_label)})
+                    — ${day.coded_count} Rlog Dev đến hạn
+                </span>
+                <span class="text-xs">
+                    ${pending > 0
+                        ? `<span class="text-red-700 font-semibold">⚠️ ${pending} việc chưa lấy source test</span>`
+                        : `<span class="text-green-700">✅ đã lấy source đủ</span>`}
+                    <span class="text-gray-500 ml-2">· ${day.days_since_coded} ngày trước</span>
+                </span>
+            </button>
+            ${pending > 0 ? `
+            <div class="px-3 py-2 bg-amber-50 border-b text-xs text-amber-900">
+                📋 Việc cần làm: <strong>làm checklist lấy source test</strong> cho ${pending} Rlog Dev đến hạn ngày ${escapeHtml(day.date_label)}.
+                Người lấy source: <strong>người config local</strong>${d.taker_phase ? ` (phase ${escapeHtml(d.taker_phase)})` : ""}.
+            </div>` : ""}
+            <div class="${open ? "" : "hidden"} overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-100 text-gray-700 text-xs">
+                        <tr>
+                            <th class="px-2 py-2 text-left w-24">Rlog ID</th>
+                            <th class="px-2 py-2 text-left w-24">Mã CN</th>
+                            <th class="px-2 py-2 text-left">Tên chức năng</th>
+                            <th class="px-2 py-2 text-left w-16">Module</th>
+                            <th class="px-2 py-2 text-left w-28">Dev PIC</th>
+                            <th class="px-2 py-2 text-left w-24">Dev Status</th>
+                            <th class="px-2 py-2 text-left w-28">Người lấy source</th>
+                            <th class="px-2 py-2 text-left w-20">Taker Status</th>
+                            <th class="px-2 py-2 text-left w-16">Mức</th>
+                            <th class="px-2 py-2 text-left">Lý do</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>`;
+    }).join("");
+}
+window.renderSourceChecklist = renderSourceChecklist;
 
 // ==========================================================================
 
@@ -17126,22 +19657,30 @@ window.saveDqOwnership = async function (key, patch) {
     }
 };
 
+/** Module hiệu lực của section DQ = local ∩ global (local thắng nếu giao rỗng). */
+function _dqEffectiveModules() {
+    const localMods = _dqState.filterModules || [];
+    const globalMods = (typeof globalFilters !== "undefined" && globalFilters.modules) || [];
+    if (localMods.length && globalMods.length) {
+        const gSet = new Set(globalMods);
+        const inter = localMods.filter(m => gSet.has(m));
+        return inter.length ? inter : localMods;
+    }
+    return localMods.length ? localMods : globalMods;
+}
+
+/** Cho nhóm «FL để import» của tab DQ — dùng g_module vì endpoint đó filter data. */
+function _dqExportModuleParam(params) {
+    const mods = _dqEffectiveModules();
+    if (mods && mods.length) params.set("g_module", mods.join(","));
+}
+window._dqExportModuleParam = _dqExportModuleParam;
+
 window.exportDataQuality = function () {
     // T35 Task 3 — Export respect cả global filter + local Module filter.
     // Local modules (nếu chọn) giao với global modules → gửi param `module`.
     const p = new URLSearchParams();
-    const localMods = _dqState.filterModules || [];
-    const globalMods = (typeof globalFilters !== "undefined" && globalFilters.modules) || [];
-    let modules;
-    if (localMods.length && globalMods.length) {
-        const gSet = new Set(globalMods);
-        modules = localMods.filter(m => gSet.has(m));
-        if (!modules.length) modules = localMods; // fallback: local thắng nếu giao rỗng
-    } else if (localMods.length) {
-        modules = localMods;
-    } else if (globalMods.length) {
-        modules = globalMods;
-    }
+    const modules = _dqEffectiveModules();
     if (modules && modules.length) p.set("module", modules.join(","));
     if (typeof globalFilters !== "undefined") {
         if (globalFilters.processes && globalFilters.processes.length) {
@@ -17204,6 +19743,9 @@ async function _agingFetch() {
         _agingState.items = d.items || [];
         _agingState.summary = d.summary || null;
         _agingState.page = 1;
+        if (typeof setIssueTabCount === "function") {
+            setIssueTabCount("aging_wip", d.summary?.total_aging || 0);
+        }
         _agingRenderSummary();
         _agingRenderTable();
     } catch (err) {
@@ -17257,36 +19799,60 @@ function _agingRenderSummary() {
 function _agingRenderTable() {
     const tbody = document.getElementById("agingTable");
     if (!tbody) return;
+    const s = _agingState.summary || {};
     const items = _agingState.items.slice().sort((a, b) => {
         const av = a[_agingState.sortBy], bv = b[_agingState.sortBy];
+        const aNull = av == null || av === "";
+        const bNull = bv == null || bv === "";
+        if (aNull && bNull) return 0;
+        if (aNull) return 1;
+        if (bNull) return -1;
         const cmp = (av > bv ? 1 : av < bv ? -1 : 0);
         return _agingState.sortDesc ? -cmp : cmp;
     });
     if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-green-600">
-            ✅ Không có WIP nào vượt ngưỡng ${_agingState.threshold} ngày!
-        </td></tr>`;
+        const msg = (s.total_wip || 0) > 0
+            ? `Có ${s.total_wip} WIP nhưng thiếu Start/End — bổ sung ngày để tính aging`
+            : "Không có WIP In-progress";
+        tbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-gray-500">${escapeHtml(msg)}</td></tr>`;
         const pager = document.getElementById("agingPagerWrap");
         if (pager) pager.innerHTML = "";
         return;
     }
     const start = (_agingState.page - 1) * _agingState.pageSize;
     const pageItems = items.slice(start, start + _agingState.pageSize);
-    const overColor = (over) => over > 30 ? "text-red-700 font-bold" : over >= 7 ? "text-orange-700 font-semibold" : "text-yellow-700";
-    tbody.innerHTML = pageItems.map(it => `
-        <tr class="border-b hover:bg-slate-50">
+    const overColor = (over, isAging) => {
+        if (over == null) return "text-gray-400";
+        if (!isAging) return "text-emerald-700";
+        if (over > 30) return "text-red-700 font-bold";
+        if (over >= 7) return "text-orange-700 font-semibold";
+        return "text-yellow-700";
+    };
+    tbody.innerHTML = pageItems.map(it => {
+        const isAging = !!it.is_aging;
+        const rowCls = it.missing_date ? "bg-amber-50/80" : (isAging ? "" : "bg-emerald-50/40");
+        const agingTxt = it.aging_days != null ? `${it.aging_days}d` : "—";
+        const overTxt = it.over_by_days == null ? "—"
+            : (it.over_by_days >= 0 ? `+${it.over_by_days}d` : `−${Math.abs(it.over_by_days)}d`);
+        const statusBadge = isAging
+            ? `<span class="text-[10px] text-orange-700 font-semibold">Aging</span>`
+            : (it.missing_date
+                ? `<span class="text-[10px] text-amber-700">Thiếu ngày</span>`
+                : `<span class="text-[10px] text-emerald-700">Trong ngưỡng</span>`);
+        return `
+        <tr class="border-b hover:bg-slate-50 ${rowCls}">
             <td class="px-2 py-1.5 font-mono text-xs">${escapeHtml(it.ma_cn || "—")}</td>
             <td class="px-2 py-1.5">${escapeHtml(it.ten_cn || "")}</td>
             <td class="px-2 py-1.5 text-blue-700">${escapeHtml(it.module || "")}</td>
-            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.phase || "")}</td>
+            <td class="px-2 py-1.5 text-xs">${escapeHtml(it.phase || "")} ${statusBadge}</td>
             <td class="px-2 py-1.5 text-xs">${escapeHtml(it.pic || "—")}</td>
             <td class="px-2 py-1.5 text-xs">${escapeHtml(it.start_date || "—")}</td>
-            <td class="px-2 py-1.5 text-right font-semibold">${it.aging_days}d</td>
-            <td class="px-2 py-1.5 text-right ${overColor(it.over_by_days)}">+${it.over_by_days}d</td>
+            <td class="px-2 py-1.5 text-right font-semibold">${agingTxt}</td>
+            <td class="px-2 py-1.5 text-right ${overColor(it.over_by_days, isAging)}">${overTxt}</td>
             <td class="px-2 py-1.5 text-xs">${escapeHtml(it.priority || "")}</td>
             ${_viewIconCell(it.ma_cn, {title: "Xem chi tiết function aging"})}
-        </tr>
-    `).join("");
+        </tr>`;
+    }).join("");
     const totalPages = Math.max(1, Math.ceil(items.length / _agingState.pageSize));
     const pager = document.getElementById("agingPagerWrap");
     if (pager) {
@@ -18672,7 +21238,7 @@ function _renderDigestList(items, settings) {
                             <td class="px-3 py-2 text-xs text-gray-600">${escapeHtml(ts)}</td>
                             <td class="px-3 py-2 text-right text-xs text-gray-600">${sizeKb} KB</td>
                             <td class="px-3 py-2 text-center">
-                                <a href="${url}" class="text-blue-600 hover:underline text-xs mr-3" download>⬇ Tải</a>
+                                <a href="${url}" class="text-blue-600 hover:underline text-xs mr-3" download>📥 Tải</a>
                                 <button onclick="_deleteDigest('${escapeAttr(it.filename)}')"
                                         class="text-red-500 hover:text-red-700 text-xs">🗑 Xoá</button>
                             </td>
@@ -18931,16 +21497,26 @@ let _integState = {
     integrations: [],
     capabilities: null,
     editing: null,   // integration đang edit; null = tạo mới
+    loadedSlug: null,  // slug mà cache đang thuộc về — tránh hiện list của project khác
+    loading: false,    // đang fetch (chặn double-fetch)
+    _fetchPromise: null, // promise in-flight để await chung
+    _fetchingSlug: null,
+    detailId: null,
+    filters: { q: "", source_app: "", env: "", visibility: "" },
 };
 
-/** Mở modal → luôn refresh list từ backend. */
-async function openIntegrationsModal() {
+/** Mở modal — hiện cache ngay, refresh nền (không chặn UI). */
+function openIntegrationsModal() {
     const modal = document.getElementById("integrationsModal");
     if (!modal) return;
     modal.classList.remove("hidden");
     modal.classList.add("flex");
     _integSetTab("list");
-    await _integReloadList();
+    if (_integState.loadedSlug === (currentProjectSlug || "default") && _integState.integrations.length) {
+        _integPopulateFilterDropdowns();
+        _integRenderList();
+    }
+    _integReloadList({ background: true });
 }
 
 function closeIntegrationsModal() {
@@ -18968,18 +21544,331 @@ function _integSetTab(name) {
     }
 }
 
-async function _integReloadList() {
+async function _integReloadList(opts = {}) {
+    const background = !!(opts && opts.background);
     try {
-        const r = await fetch(`/api/projects/${currentProjectSlug}/integrations`);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const data = await r.json();
-        _integState.integrations = data.integrations || [];
-        _integState.capabilities = data.capabilities || null;
+        await _integFetchForSlug(currentProjectSlug, { force: !background });
+        _integPopulateFilterDropdowns();
         _integRenderList();
-        _integRefreshSyncQuickMenu();   // đồng bộ dropdown header
+        _integRenderSyncQuickMenu();
     } catch (err) {
-        showToast("Không load được danh sách integration: " + err.message, "red");
+        if (!background) {
+            showToast("Không load được danh sách integration: " + err.message, "red");
+        }
     }
+}
+
+function _integReadFiltersFromDom() {
+    const qEl = document.getElementById("integFilterQ");
+    const saEl = document.getElementById("integFilterSourceApp");
+    const envEl = document.getElementById("integFilterEnv");
+    const visEl = document.getElementById("integFilterVisibility");
+    _integState.filters = {
+        q: (qEl && qEl.value) || "",
+        source_app: (saEl && saEl.value) || "",
+        env: (envEl && envEl.value) || "",
+        visibility: (visEl && visEl.value) || "",
+    };
+}
+
+function _integOnFilterChange() {
+    _integReadFiltersFromDom();
+    _integRenderList();
+}
+
+function _integClearFilters() {
+    const qEl = document.getElementById("integFilterQ");
+    const saEl = document.getElementById("integFilterSourceApp");
+    const envEl = document.getElementById("integFilterEnv");
+    const visEl = document.getElementById("integFilterVisibility");
+    if (qEl) qEl.value = "";
+    if (saEl) saEl.value = "";
+    if (envEl) envEl.value = "";
+    if (visEl) visEl.value = "";
+    _integOnFilterChange();
+}
+
+function _integPopulateFilterDropdowns() {
+    const items = _integState.integrations || [];
+    const apps = [...new Set(items.map((it) => String(it.source_app || "").trim()).filter(Boolean))].sort();
+    const envs = [...new Set(items.map((it) => String(it.env || "").trim()).filter(Boolean))].sort();
+    const saSel = document.getElementById("integFilterSourceApp");
+    const envSel = document.getElementById("integFilterEnv");
+    const curSa = _integState.filters.source_app || "";
+    const curEnv = _integState.filters.env || "";
+    if (saSel) {
+        saSel.innerHTML = `<option value="">Tất cả</option>`
+            + apps.map((a) => `<option value="${_escapeAttr(a)}">${_escapeHtml(a)}</option>`).join("");
+        saSel.value = apps.includes(curSa) ? curSa : "";
+    }
+    if (envSel) {
+        envSel.innerHTML = `<option value="">Tất cả</option>`
+            + envs.map((e) => `<option value="${_escapeAttr(e)}">${_escapeHtml(e)}</option>`).join("");
+        envSel.value = envs.includes(curEnv) ? curEnv : "";
+    }
+}
+
+function _integFilterClient(items) {
+    const f = _integState.filters || {};
+    const sa = (f.source_app || "").trim().toLowerCase();
+    const ev = (f.env || "").trim().toLowerCase();
+    const vis = (f.visibility || "").trim().toLowerCase();
+    const query = (f.q || "").trim().toLowerCase();
+    return (items || []).filter((it) => {
+        if (sa && String(it.source_app || "").toLowerCase() !== sa) return false;
+        if (ev && String(it.env || "").toLowerCase() !== ev) return false;
+        if (vis && String(it.visibility || "").toLowerCase() !== vis) return false;
+        if (query) {
+            const blob = [
+                it.name, it.base_url, it.source_app, it.owner_contact,
+            ].map((x) => String(x || "")).join(" ").toLowerCase();
+            if (!blob.includes(query)) return false;
+        }
+        return true;
+    }).sort((a, b) => {
+        const ka = `${String(a.source_app || "").toLowerCase()}|${String(a.name || "").toLowerCase()}`;
+        const kb = `${String(b.source_app || "").toLowerCase()}|${String(b.name || "").toLowerCase()}`;
+        return ka.localeCompare(kb, "vi");
+    });
+}
+
+function _integHealthBadge(it) {
+    const okAt = it.last_success_at ? new Date(it.last_success_at).getTime() : 0;
+    const errAt = it.last_error_at ? new Date(it.last_error_at).getTime() : 0;
+    let label = "—";
+    let cls = "bg-slate-100 text-slate-600";
+    if (errAt && errAt >= okAt) {
+        label = "lỗi";
+        cls = "bg-red-100 text-red-800";
+    } else if (okAt || it.last_sync_status === "ok") {
+        label = "ok";
+        cls = "bg-green-100 text-green-800";
+    } else if (it.last_sync_status === "error") {
+        label = "lỗi sync";
+        cls = "bg-red-100 text-red-800";
+    }
+    const tip = [
+        it.last_success_at ? `OK: ${it.last_success_at}` : null,
+        it.last_error_at ? `Lỗi: ${it.last_error_at}` : null,
+        it.last_sync_message ? String(it.last_sync_message).slice(0, 120) : null,
+    ].filter(Boolean).join(" · ");
+    return `<span title="${_escapeAttr(tip)}" class="inline-block text-xs px-2 py-0.5 rounded ${cls}">${label}</span>`;
+}
+
+async function _integExportRegistry() {
+    try {
+        const data = await apiJson(`/api/projects/${encodeURIComponent(currentProjectSlug)}/integrations/export`);
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `integrations_${currentProjectSlug || "project"}.json`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        showToast("Đã xuất registry JSON", "green");
+    } catch (err) {
+        showToast("Export thất bại: " + err.message, "red");
+    }
+}
+
+function _integImportRegistryClick() {
+    const inp = document.getElementById("integImportFile");
+    if (inp) inp.click();
+}
+
+async function _integImportRegistryFile(inputEl) {
+    const file = inputEl && inputEl.files && inputEl.files[0];
+    if (!file) return;
+    try {
+        const text = await file.text();
+        const payload = JSON.parse(text);
+        const mode = confirm("Import merge (OK) — gộp theo id.\nCancel = replace toàn bộ registry.") ? "merge" : "replace";
+        const result = await apiJson(
+            `/api/projects/${encodeURIComponent(currentProjectSlug)}/integrations/import`,
+            { method: "POST", body: JSON.stringify({ ...payload, mode }) },
+        );
+        showToast(`Import ${result.imported} integration(s) — tổng ${result.total}`, "green");
+        inputEl.value = "";
+        await _integReloadList();
+    } catch (err) {
+        showToast("Import thất bại: " + err.message, "red");
+        inputEl.value = "";
+    }
+}
+
+function _integImportPostmanClick() {
+    const inp = document.getElementById("integPostmanFile");
+    if (inp) inp.click();
+}
+
+async function _integImportPostmanFile(inputEl) {
+    const file = inputEl && inputEl.files && inputEl.files[0];
+    if (!file) return;
+    try {
+        const text = await file.text();
+        const collection = JSON.parse(text);
+        const mode = confirm("Postman import merge (OK) — gộp theo id.\nCancel = replace toàn bộ.") ? "merge" : "replace";
+        const result = await apiJson(
+            `/api/projects/${encodeURIComponent(currentProjectSlug)}/integrations/import-postman`,
+            { method: "POST", body: JSON.stringify({ collection, mode }) },
+        );
+        const hint = result.env_prefix
+            ? ` — thêm .env: ${result.env_prefix}_KEY hoặc _TOKEN/_USERNAME/_PASSWORD`
+            : "";
+        showToast(
+            `Postman: ${result.endpoint_count} endpoint(s) · ${result.integration_name || ""}${hint}`,
+            "green",
+        );
+        inputEl.value = "";
+        await _integReloadList();
+    } catch (err) {
+        showToast("Import Postman thất bại: " + err.message, "red");
+        inputEl.value = "";
+    }
+}
+
+function _integBuildCurl(integ, ep) {
+    const auth = integ.auth || {};
+    const method = auth.method || "";
+    if (method === "database") {
+        return "# Database endpoint — execute SQL query trong editor";
+    }
+    const base = String(integ.base_url || "").replace(/\/$/, "");
+    let path = String(ep.path || "").trim();
+    if (path && !path.startsWith("/")) path = "/" + path;
+    let url = base ? base + path : path || "(base_url + path)";
+    const httpMethod = (ep.http_method || "GET").toUpperCase();
+    const prefix = (auth.credential_env || auth.bearer_env || auth.apikey_env || "PREFIX").toUpperCase();
+    const parts = [`curl -sS -X ${httpMethod}`];
+    if (method === "bearer_token") {
+        parts.push(`-H 'Authorization: Bearer $${prefix}_TOKEN'`);
+    } else if (method === "basic_auth") {
+        parts.push(`-u '$${prefix}_USERNAME:$${prefix}_PASSWORD'`);
+    } else if (method === "api_key") {
+        const loc = (auth.apikey_location || "header").toLowerCase();
+        const hdr = auth.apikey_header || "X-API-Key";
+        if (loc === "query") {
+            url += (url.includes("?") ? "&" : "?") + `${hdr}=$${prefix}_KEY`;
+        } else {
+            parts.push(`-H '${hdr}: $${prefix}_KEY'`);
+        }
+    } else if (method === "form_login") {
+        parts.push("# form_login: POST login trước để lấy session cookie");
+    }
+    const params = ep.params || {};
+    if (params && typeof params === "object" && httpMethod === "GET") {
+        const qs = Object.entries(params).map(([k, v]) => `${k}=${v}`).join("&");
+        if (qs) url += (url.includes("?") ? "&" : "?") + qs;
+    }
+    parts.push(`'${url}'`);
+    return parts.join(" \\\n  ");
+}
+
+function _integCloseDetail() {
+    _integState.detailId = null;
+    const pane = document.getElementById("integDetailPane");
+    if (pane) pane.classList.add("hidden");
+}
+
+async function _integShowDetail(integrationId) {
+    const it = (_integState.integrations || []).find((i) => i.id === integrationId);
+    if (!it) return;
+    _integState.detailId = integrationId;
+    const pane = document.getElementById("integDetailPane");
+    const title = document.getElementById("integDetailTitle");
+    const meta = document.getElementById("integDetailMeta");
+    const epBox = document.getElementById("integDetailEndpoints");
+    if (!pane || !title || !meta || !epBox) return;
+    pane.classList.remove("hidden");
+    title.textContent = it.name || "—";
+    const docs = it.docs_url
+        ? `<a href="${_escapeAttr(it.docs_url)}" target="_blank" rel="noopener" class="text-cyan-700 underline">Docs</a>`
+        : "—";
+    meta.innerHTML = [
+        `Nguồn: ${_escapeHtml(it.source_app || "—")}`,
+        `Env: ${_escapeHtml(it.env || "—")}`,
+        `Visibility: ${_escapeHtml(it.visibility || "—")}`,
+        `Owner: ${_escapeHtml(it.owner_contact || "—")}`,
+        `Docs: ${docs}`,
+    ].join(" · ");
+    const endpoints = it.endpoints || [];
+    if (!endpoints.length) {
+        epBox.innerHTML = `<p class="text-gray-500 italic">Chưa có endpoint.</p>`;
+        return;
+    }
+    epBox.innerHTML = endpoints.map((ep) => {
+        const curl = _integBuildCurl(it, ep);
+        return `<div class="border rounded p-2 bg-white dark:bg-slate-800 dark:border-slate-600">
+            <div class="font-semibold text-gray-800 dark:text-gray-100">${_escapeHtml(ep.name || ep.path || "endpoint")}</div>
+            <div class="text-[11px] text-gray-500">${_escapeHtml(ep.http_method || "GET")} ${_escapeHtml(ep.path || "")} · ${_escapeHtml(ep.response_type || "")}</div>
+            <pre class="mt-1 p-2 bg-slate-900 text-green-200 rounded text-[10px] overflow-x-auto whitespace-pre-wrap">${_escapeHtml(curl)}</pre>
+            <div class="flex flex-wrap gap-1 mt-1">
+                <button type="button" onclick="_integTestFromList('${_escapeAttr(it.id)}')"
+                        class="bg-amber-500 hover:bg-amber-600 text-white px-2 py-0.5 rounded text-[11px]">🔍 Test auth</button>
+                <button type="button" onclick="_integPreviewEndpointJson('${_escapeAttr(it.id)}','${_escapeAttr(ep.id)}')"
+                        class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded text-[11px]">Schema preview</button>
+            </div>
+            <pre id="integPreview-${_escapeAttr(it.id)}-${_escapeAttr(ep.id)}" class="hidden mt-1 p-2 bg-slate-100 dark:bg-slate-900 rounded text-[10px] overflow-x-auto max-h-40"></pre>
+        </div>`;
+    }).join("");
+}
+
+async function _integPreviewEndpointJson(integrationId, endpointId) {
+    const pre = document.getElementById(`integPreview-${integrationId}-${endpointId}`);
+    if (!pre) return;
+    pre.classList.remove("hidden");
+    pre.textContent = "Đang tải preview…";
+    try {
+        const data = await apiJson(
+            `/api/projects/${encodeURIComponent(currentProjectSlug)}/integrations/${encodeURIComponent(integrationId)}/preview-json`,
+            { method: "POST", body: JSON.stringify({ endpoint_id: endpointId, limit: 3 }) },
+        );
+        const keys = (data.flat_keys || data.fields || []).slice(0, 40);
+        const samples = (data.sample_records || []).slice(0, 2);
+        pre.textContent = JSON.stringify({ keys, samples }, null, 2);
+    } catch (err) {
+        pre.textContent = "Preview lỗi: " + err.message;
+    }
+}
+
+/**
+ * Fetch integrations cho đúng slug. Cache theo slug — đổi project phải fetch lại.
+ * Nhiều caller cùng lúc share 1 promise (không spam GET).
+ */
+async function _integFetchForSlug(slug, opts = {}) {
+    const force = !!(opts && opts.force);
+    const s = slug || currentProjectSlug || "default";
+    if (!force && _integState.loadedSlug === s && _integState.capabilities) {
+        return {
+            integrations: _integState.integrations,
+            capabilities: _integState.capabilities,
+        };
+    }
+    // Share in-flight promise (cùng slug) — trừ khi force.
+    if (!force && _integState._fetchPromise && _integState._fetchingSlug === s) {
+        return _integState._fetchPromise;
+    }
+    _integState.loading = true;
+    _integState._fetchingSlug = s;
+    const p = (async () => {
+        try {
+            const data = await apiJson(`/api/projects/${encodeURIComponent(s)}/integrations`);
+            // Chỉ ghi cache nếu slug vẫn khớp (tránh race đổi project giữa chừng)
+            if ((_integState._fetchingSlug === s) || (currentProjectSlug || "default") === s) {
+                _integState.integrations = data.integrations || [];
+                _integState.capabilities = data.capabilities || null;
+                _integState.loadedSlug = s;
+            }
+            return data;
+        } finally {
+            _integState.loading = false;
+            if (_integState._fetchingSlug === s) {
+                _integState._fetchingSlug = null;
+                _integState._fetchPromise = null;
+            }
+        }
+    })();
+    _integState._fetchPromise = p;
+    return p;
 }
 
 function _integRenderList() {
@@ -18987,16 +21876,28 @@ function _integRenderList() {
     const empty = document.getElementById("integListEmpty");
     if (!tbody) return;
     tbody.innerHTML = "";
-    const items = _integState.integrations || [];
+    const allItems = _integState.integrations || [];
+    const items = _integFilterClient(allItems);
+    if (!allItems.length) {
+        empty?.classList.remove("hidden");
+        empty.textContent = "Chưa có integration nào. Nhấn \"➕ Thêm mới\" để tạo.";
+        _integCloseDetail();
+        return;
+    }
     if (!items.length) {
         empty?.classList.remove("hidden");
+        empty.textContent = "Không có integration phù hợp bộ lọc.";
         return;
     }
     empty?.classList.add("hidden");
     for (const it of items) {
         const tr = document.createElement("tr");
-        tr.className = "border-b dark:border-slate-700";
-        const statusBadge = _integStatusBadge(it.last_sync_status, it.last_sync_message);
+        tr.className = "border-b dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/40 cursor-pointer";
+        tr.onclick = (ev) => {
+            if (ev.target.closest("button, select, a")) return;
+            _integShowDetail(it.id);
+        };
+        const healthBadge = _integHealthBadge(it);
         const lastAt = it.last_synced_at
             ? new Date(it.last_synced_at).toLocaleString("vi-VN")
             : "<span class='text-gray-400 italic'>chưa sync</span>";
@@ -19005,12 +21906,17 @@ function _integRenderList() {
             .join("");
         tr.innerHTML = `
             <td class="px-2 py-2 font-medium">${_escapeHtml(it.name)}</td>
-            <td class="px-2 py-2 text-xs text-gray-500 break-all">${_escapeHtml(it.base_url)}</td>
+            <td class="px-2 py-2 text-xs">${_escapeHtml(it.source_app || "—")}</td>
+            <td class="px-2 py-2 text-xs">${_escapeHtml(it.env || "—")}</td>
+            <td class="px-2 py-2 text-xs">${_escapeHtml(it.visibility || "—")}</td>
+            <td class="px-2 py-2 text-xs text-gray-500 break-all max-w-[140px]">${_escapeHtml(it.base_url)}</td>
             <td class="px-2 py-2 text-center">${(it.endpoints || []).length}</td>
             <td class="px-2 py-2 text-xs">${lastAt}</td>
-            <td class="px-2 py-2">${statusBadge}</td>
+            <td class="px-2 py-2">${healthBadge}</td>
             <td class="px-2 py-2 text-center">
                 <div class="flex flex-wrap gap-1 justify-center items-center">
+                    <button onclick="_integShowDetail('${_escapeAttr(it.id)}')"
+                            class="bg-cyan-100 hover:bg-cyan-200 text-cyan-900 px-2 py-1 rounded text-xs" title="Chi tiết">📋</button>
                     <button onclick="_integTestFromList('${_escapeAttr(it.id)}')"
                             class="bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 rounded text-xs" title="Test login">🔍</button>
                     ${endpointsOpts
@@ -19026,6 +21932,11 @@ function _integRenderList() {
             </td>
         `;
         tbody.appendChild(tr);
+    }
+    if (_integState.detailId) {
+        const still = items.some((i) => i.id === _integState.detailId);
+        if (still) _integShowDetail(_integState.detailId);
+        else _integCloseDetail();
     }
 }
 
@@ -19073,6 +21984,16 @@ function _integOpenEditor(integrationId) {
     const it = _integState.editing;
     document.getElementById("integName").value = it?.name || "";
     document.getElementById("integBaseUrl").value = it?.base_url || "";
+    const srcEl = document.getElementById("integSourceApp");
+    const envEl = document.getElementById("integEnv");
+    const visEl = document.getElementById("integVisibility");
+    const ownerEl = document.getElementById("integOwnerContact");
+    const docsEl = document.getElementById("integDocsUrl");
+    if (srcEl) srcEl.value = it?.source_app || "";
+    if (envEl) envEl.value = it?.env || "prod";
+    if (visEl) visEl.value = it?.visibility || "internal";
+    if (ownerEl) ownerEl.value = it?.owner_contact || "";
+    if (docsEl) docsEl.value = it?.docs_url || "";
     const auth = it?.auth || {};
 
     // Auth method: set dropdown value + trigger show/hide field group
@@ -19675,6 +22596,11 @@ function _integReadEditorPayload() {
     return {
         name: document.getElementById("integName").value.trim(),
         base_url: document.getElementById("integBaseUrl").value.trim(),
+        source_app: (document.getElementById("integSourceApp")?.value || "").trim(),
+        visibility: (document.getElementById("integVisibility")?.value || "internal").trim(),
+        owner_contact: (document.getElementById("integOwnerContact")?.value || "").trim(),
+        env: (document.getElementById("integEnv")?.value || "prod").trim(),
+        docs_url: (document.getElementById("integDocsUrl")?.value || "").trim(),
         auth: {
             method: authMethod,
             // form_login fields (backend chỉ dùng khi method=form_login)
@@ -19838,7 +22764,8 @@ async function _integTestFromList(integrationId) {
             method: "POST",
         });
         const data = await r.json();
-        showToast((data.status === "ok" ? "✔ " : "✕ ") + (data.message || "").slice(0, 200),
+        const ms = data.elapsed_ms != null ? ` (${data.elapsed_ms} ms)` : "";
+        showToast((data.status === "ok" ? "✔ " : "✕ ") + (data.message || "").slice(0, 200) + ms,
                   data.status === "ok" ? "green" : "red");
         await _integReloadList();
     } catch (err) {
@@ -19999,7 +22926,7 @@ function _syncShowResult(success, data, endpointName) {
             result.classList.remove("hidden", "bg-red-50", "text-red-700", "border-red-200");
             result.classList.add("bg-emerald-50", "dark:bg-emerald-900/20", "text-emerald-800", "dark:text-emerald-200", "border", "border-emerald-200");
             result.innerHTML = `
-                <div class="font-bold text-base mb-1">📥 ${rowsImported} chức năng đã kéo về</div>
+                <div class="font-bold text-base mb-1">🔄 ${rowsImported} chức năng đã kéo về</div>
                 <div class="text-xs space-y-0.5">
                     <div>• Snapshot: <code class="font-mono">${escapeHtml(String(snapId))}</code></div>
                     ${stats.overall_pct != null ? `<div>• Tiến độ tổng: <strong>${stats.overall_pct}%</strong></div>` : ""}
@@ -20062,6 +22989,7 @@ function _resetListPagesAfterSync() {
     const keys = [
         "overdue", "unassigned", "duration", "stalled", "risk",
         "sla", "capacity", "slow", "deps", "baseline", "fitgap", "fdiff",
+        "fid", "dur", "weeklyGap",
     ];
     for (const k of keys) {
         if (pageState[k]) pageState[k].page = 1;
@@ -20092,10 +23020,45 @@ function _clearLazySectionCaches() {
 }
 
 /**
+ * Re-fire lazy loader của tab đang mở trên MỖI hub — đảm bảo section
+ * có lazy loader riêng (FID Check / Source Checklist / Duration Flag /
+ * Weekly Gap / Anomaly / EVM S-curve / PMO Risk cross-project / Kanban /
+ * Function Diff / Executive Dashboard / …) hiển thị data mới sau sync,
+ * không phải đợi user click sang tab khác rồi quay lại.
+ *
+ * Cơ chế: `activateHubTab(hubId, sectionId)` (sidebar_hubs.js) invoke
+ * `tab.lazy` global fn nếu định nghĩa. Do đã đặt `_cacheBustToken` trước
+ * đó, mọi fetch trong loader (đi qua `_buildFilterQuery` / `_appendCacheBust`)
+ * sẽ đính `?_=<ts>` → bypass cache trình duyệt / proxy.
+ */
+function _refreshActiveHubTabs() {
+    if (typeof activateHubTab !== "function") return;
+    document.querySelectorAll(".section-hub").forEach(hub => {
+        if (!hub || !hub.id) return;
+        const activePane = hub.querySelector(".tab-pane.active");
+        const sectionId = activePane && activePane.dataset ? activePane.dataset.pane : null;
+        if (!sectionId) return;
+        try {
+            activateHubTab(hub.id, sectionId, { skipStore: true, skipScroll: true });
+        } catch (e) {
+            console.warn("[refresh active hub tab]", hub.id, sectionId, e);
+        }
+    });
+}
+
+/**
  * Sau sync thành công: cập nhật header ngay + reload metrics (gồm stalled
  * trong payload) + mọi section lazy (DQ / aging / gantt / fitgap / fdiff…)
  * với cache-bust. Hủy filter-fetch đang debounce để tránh response cũ đè
  * metricsData.stalled_tasks mới.
+ *
+ * Sau khi metrics chính đã apply, `_refreshActiveHubTabs()` re-kích hoạt
+ * loader của tab đang mở — cần thiết cho các section KHÔNG đi qua
+ * renderDashboard/applyDashboardResponse setTimeout (FID / Source
+ * Checklist / Duration / Weekly Gap / Anomaly / EVM S-curve / PMO Risk
+ * cross-project). Không cần reload thủ công cho tab đang ẩn: khi user
+ * click sang tab đó, `activateHubTab` tự invoke lazy loader (data lấy
+ * fresh vì cache-bust còn active trong 2.5s).
  */
 async function _refreshAfterSync(syncData) {
     _applySyncHeaderOptimistic(syncData);
@@ -20119,6 +23082,11 @@ async function _refreshAfterSync(syncData) {
 
     await tryLoadDashboardForCurrent(true, { cacheBust: true });
 
+    // Re-fire lazy loader của tab đang mở (tab bị ẩn để activateHubTab tự
+    // fetch khi user click). Đặt sau tryLoadDashboardForCurrent để không
+    // đua với renderDashboard đang re-render.
+    try { _refreshActiveHubTabs(); } catch (_) { /* ignore */ }
+
     // Giữ token đủ lâu để setTimeout lazy trong applyDashboardResponse
     // (burndown 100ms / fitgap 120 / fdiff 150 / kanban 500) kịp gắn `?_=`
     setTimeout(() => {
@@ -20126,6 +23094,7 @@ async function _refreshAfterSync(syncData) {
     }, 2500);
 }
 window._refreshAfterSync = _refreshAfterSync;
+window._refreshActiveHubTabs = _refreshActiveHubTabs;
 
 /** Sync 1 endpoint — dùng chung cho list & quick menu.
  *  Nếu endpoint có project_code_field → mở modal chọn mã trước khi sync.
@@ -20426,9 +23395,20 @@ function toggleSyncQuickMenu(event) {
     // Đóng menu header khác trước khi mở sync
     closeHdrMenus({ except: "syncQuickMenu" });
     if (willOpen) {
-        _integRefreshSyncQuickMenu();
+        // Mở NGAY — không await fetch. Cache hit → hiện list tức thì;
+        // miss → skeleton «Đang tải…» rồi fill khi xong (tránh lag vài giây
+        // như trước khi chờ /integrations rồi mới unhide).
+        const slug = currentProjectSlug || "default";
+        const cacheOk = _integState.loadedSlug === slug && _integState.capabilities;
+        if (cacheOk) {
+            _integRenderSyncQuickMenu();
+        } else {
+            menu.innerHTML = `<div class="p-3 text-xs text-gray-500">Đang tải danh sách API…</div>`;
+        }
         menu.classList.remove("hidden");
         if (btn) btn.setAttribute("aria-expanded", "true");
+        // Refresh nền; khi xong (hoặc đã cache) re-render nếu menu vẫn mở
+        _integRefreshSyncQuickMenu({ background: true });
         setTimeout(() => {
             document.addEventListener("click", _integCloseSyncMenuOnce, { once: true });
         }, 0);
@@ -20500,18 +23480,28 @@ function _integCloseSyncMenuOnce(e) {
     if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
-async function _integRefreshSyncQuickMenu() {
+async function _integRefreshSyncQuickMenu(opts = {}) {
     const menu = document.getElementById("syncQuickMenu");
     if (!menu) return;
-    if (!_integState.integrations.length && !_integState.capabilities) {
-        // Chưa fetch → fetch nền
-        try {
-            const data = await apiJson(`/api/projects/${currentProjectSlug}/integrations`);
-            _integState.integrations = data.integrations || [];
-            _integState.capabilities = data.capabilities || null;
-        } catch {}
+    const slug = currentProjectSlug || "default";
+    const cacheOk = _integState.loadedSlug === slug && _integState.capabilities;
+    try {
+        if (!cacheOk) {
+            await _integFetchForSlug(slug);
+        }
+    } catch (e) {
+        if (!menu.classList.contains("hidden") && !(_integState.integrations || []).length) {
+            menu.innerHTML = `<div class="p-3 text-xs text-red-600">Không tải được danh sách API.
+                <button type="button" class="underline ml-1" onclick="_integRefreshSyncQuickMenu()">Thử lại</button>
+            </div>`;
+            return;
+        }
     }
-    _integRenderSyncQuickMenu();
+    // Preload (background + menu đang đóng): chỉ cập nhật state, không đụng DOM.
+    // Menu đang mở: luôn re-render để user thấy list mới.
+    if (!menu.classList.contains("hidden") || !(opts && opts.background)) {
+        _integRenderSyncQuickMenu();
+    }
 }
 
 function _integRenderSyncQuickMenu() {
@@ -20519,6 +23509,11 @@ function _integRenderSyncQuickMenu() {
     if (!menu) return;
     menu.innerHTML = "";
     const items = _integState.integrations || [];
+    // Cache thuộc project khác → đừng hiện list sai
+    if (_integState.loadedSlug && _integState.loadedSlug !== (currentProjectSlug || "default")) {
+        menu.innerHTML = `<div class="p-3 text-xs text-gray-500">Đang tải danh sách API…</div>`;
+        return;
+    }
     if (!items.length) {
         menu.innerHTML = `
             <div class="p-4 text-xs text-gray-500">
@@ -20544,6 +23539,10 @@ function _integRenderSyncQuickMenu() {
             `).join("")}
         </div>`);
     }
+    if (!parts.length) {
+        // Có integration nhưng chưa cấu hình endpoint
+        parts.push(`<div class="p-3 text-xs text-amber-700">Integration chưa có endpoint. Mở quản lý để thêm.</div>`);
+    }
     parts.push(`<div class="px-3 py-2">
         <button onclick="openIntegrationsModal(); toggleSyncQuickMenu(event)"
                 class="w-full text-xs text-cyan-700 hover:underline">⚙️ Quản lý integrations…</button>
@@ -20551,13 +23550,29 @@ function _integRenderSyncQuickMenu() {
     menu.innerHTML = parts.join("");
 }
 
-// Auto-fetch integrations sau khi loadProjectList (không block init) — cho dropdown Sync hiển thị ngay
+/** Prefetch list API sau khi biết đúng project — không dùng timeout cố định
+ *  với slug «default» (race trước đây khiến menu hiện «Chưa có integration»). */
+function _integPrefetchAfterProjectReady() {
+    const slug = currentProjectSlug || "default";
+    if (!slug) return;
+    _integFetchForSlug(slug).then(() => {
+        const menu = document.getElementById("syncQuickMenu");
+        if (menu && !menu.classList.contains("hidden")) _integRenderSyncQuickMenu();
+    }).catch(() => {});
+}
+
+// Prefetch sau loadProjectList (đúng slug), và mỗi lần đổi project.
 document.addEventListener("DOMContentLoaded", () => {
-    setTimeout(() => {
-        if (typeof currentProjectSlug === "string" && currentProjectSlug) {
-            _integRefreshSyncQuickMenu();
-        }
-    }, 1200);
+    // loadProjectList được gọi trong DOMContentLoaded khác — chờ nó xong rồi prefetch.
+    // Fallback 2.5s nếu promise không gắn được (hot-reload / thứ tự script).
+    const kick = () => _integPrefetchAfterProjectReady();
+    if (typeof loadProjectList === "function") {
+        // Không gọi lại loadProjectList — chỉ schedule sau tick để slug đã restore.
+        setTimeout(kick, 0);
+        setTimeout(kick, 800);
+    } else {
+        setTimeout(kick, 1200);
+    }
 });
 
 
@@ -22174,7 +25189,7 @@ function _archRenderTable() {
                        title="Bỏ đánh dấu baseline">✕ Baseline</button>`
             : `<button type="button" onclick="setProjectBaseline('${escapeAttr(s.date)}')"
                        class="text-[10px] px-2 py-0.5 border rounded hover:bg-amber-50"
-                       title="Đánh dấu làm kế hoạch gốc (baseline)">📐 Baseline</button>`;
+                       title="Chốt bản này làm kế hoạch gốc — file được copy sang thư mục baseline nên không bị xóa khi lịch sử đầy">📐 Chốt baseline</button>`;
         return `<tr class="border-b ${archived ? "opacity-70 bg-slate-50" : "hover:bg-white"}${isBaseline ? " bg-amber-50/60" : ""}">
             <td class="px-2 py-1 font-mono">${escapeHtml(s.date)}${blBadge}</td>
             <td class="px-2 py-1">${src}</td>
@@ -23876,29 +26891,27 @@ function applyColumnVisibility(tableId, tableEl) {
     }
     if (!tableEl) return;
     const hidden = new Set(_colPickerHidden(tableId));
-    const ths = tableEl.querySelectorAll("thead th");
-    const colIndex = [];
-    ths.forEach((th, i) => {
+    // Ô nhóm cột (data-col-group, VD "So với Baseline v2" colspan=8) không phải
+    // một cột dữ liệu → loại hẳn khỏi phép đếm. Nếu để lại, thead 2 hàng sẽ làm
+    // index th lệch một bước so với td trong tbody.
+    const ths = Array.from(tableEl.querySelectorAll("thead th"))
+        .filter(th => !th.hasAttribute("data-col-group"));
+    const cols = [];
+    ths.forEach(th => {
         const col = th.getAttribute("data-col");
-        if (!col) {
-            colIndex.push(null);
-            return;
-        }
-        colIndex.push(col);
         const locked = th.getAttribute("data-col-locked") === "1";
-        const hide = !locked && hidden.has(col);
+        const hide = !!col && !locked && hidden.has(col);
+        cols.push(col ? { col, hide } : null);
+        if (!col) return;
         th.classList.toggle("col-picker-hidden", hide);
         th.style.display = hide ? "none" : "";
     });
     tableEl.querySelectorAll("tbody tr").forEach(tr => {
         Array.from(tr.children).forEach((td, i) => {
-            const col = colIndex[i];
-            if (!col) return;
-            const th = ths[i];
-            const locked = th && th.getAttribute("data-col-locked") === "1";
-            const hide = !locked && hidden.has(col);
-            td.classList.toggle("col-picker-hidden", hide);
-            td.style.display = hide ? "none" : "";
+            const c = cols[i];
+            if (!c) return;
+            td.classList.toggle("col-picker-hidden", c.hide);
+            td.style.display = c.hide ? "none" : "";
         });
     });
 }
@@ -24559,7 +27572,8 @@ async function loadPicUpcoming() {
 window.loadPicUpcoming = loadPicUpcoming;
 
 // ─────────────────── DURATION FLAG ─────────────────────────────
-const _durState = { items: [], page: 1, pageSize: 20, phases: [] };
+// Page/size do pageState.dur giữ — xem _pageSlice / renderPager.
+const _durState = { items: [], phases: [] };
 
 async function loadDurationFlag() {
     if (!currentProjectSlug) return;
@@ -24576,9 +27590,9 @@ async function loadDurationFlag() {
     if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
 
     try {
-        const data = await apiFetch(`/api/projects/${currentProjectSlug}/duration-flag?` + params);
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/duration-flag?` + params);
         _durState.items = data.items || [];
-        _durState.page = 1;
+        pageState.dur.page = 1;
         _durState.phases = data.phases_checked || [];
 
         // Populate phase filter
@@ -24586,7 +27600,10 @@ async function loadDurationFlag() {
         _durRenderSummaryCards(data.summary || {}, threshold);
         _durRenderTable();
     } catch (err) {
+        // Trước đây chỉ log — lỗi API im lặng nên tab hiện bảng rỗng như thể
+        // không có vi phạm. Phải báo ra để không che lỗi server.
         console.error("[loadDurationFlag]", err);
+        showToast("Lỗi tải Thời gian dài: " + (err.message || err), "red");
     }
 }
 window.loadDurationFlag = loadDurationFlag;
@@ -24626,10 +27643,7 @@ function _durRenderTable() {
         document.getElementById("durPagerWrap").innerHTML = "";
         return;
     }
-    if (!pageState.dur) pageState.dur = { page: 1, size: _durState.pageSize };
-    pageState.dur.page = _durState.page;
-    const start = (_durState.page - 1) * _durState.pageSize;
-    const slice = items.slice(start, start + _durState.pageSize);
+    const { pageItems: slice } = _pageSlice("dur", items);
 
     // Màu cảnh báo theo số ngày
     function _durationBadge(days) {
@@ -24652,14 +27666,12 @@ function _durRenderTable() {
             <td class="px-2 py-1.5 text-gray-600">${escapeHtml(it.pic)}</td>
         </tr>`).join("");
 
-    renderPager("durPagerWrap", "dur", total, () => {
-        _durState.page = pageState.dur?.page || 1;
-        _durRenderTable();
-    });
+    renderPager("durPagerWrap", "dur", total, () => _durRenderTable());
 }
 
 // ─────────────────── WEEKLY GAP REPORT ─────────────────────────────────────
-const _weeklyGapState = { items: [], page: 1, pageSize: 25, weekOffset: 0 };
+// Page/size do pageState.weeklyGap giữ — xem _pageSlice / renderPager.
+const _weeklyGapState = { items: [], weekOffset: 0 };
 
 async function loadWeeklyGap() {
     if (!currentProjectSlug) return;
@@ -24675,9 +27687,9 @@ async function loadWeeklyGap() {
     if (globalFilters.pics.length) params.set("g_pic", globalFilters.pics.join(","));
 
     try {
-        const data = await apiFetch(`/api/projects/${currentProjectSlug}/weekly-gap-report?` + params);
+        const data = await apiJson(`/api/projects/${currentProjectSlug}/weekly-gap-report?` + params);
         _weeklyGapState.items = data.items || [];
-        _weeklyGapState.page = 1;
+        pageState.weeklyGap.page = 1;
 
         const labelEl = document.getElementById("weeklyGapLabel");
         if (labelEl) labelEl.textContent = data.week_label || "—";
@@ -24696,6 +27708,36 @@ function shiftWeek(delta) {
     loadWeeklyGap();
 }
 window.shiftWeek = shiftWeek;
+
+/**
+ * Xuất Excel danh sách phase có duration dài — cùng filter với lưới đang xem.
+ * Nút 📥 trên tab bar gọi hàm này qua config `exportFn`.
+ */
+function exportDurationFlag() {
+    if (!currentProjectSlug) return;
+    const params = new URLSearchParams();
+    params.set("threshold", document.getElementById("durThreshold")?.value || "60");
+    const phaseF = document.getElementById("durPhaseFilter")?.value || "";
+    if (phaseF) params.set("phase", phaseF);
+    const qs = _buildFilterQuery();
+    const url = `/api/projects/${currentProjectSlug}/export-duration-flag?` + params
+        + (qs ? "&" + qs : "");
+    showToast("📥 Đang tạo file Thời gian dài…");
+    downloadFile(url, `iHRP_Thoi_Gian_Dai_${currentProjectSlug}.xlsx`);
+}
+window.exportDurationFlag = exportDurationFlag;
+
+/** Xuất Excel checklist lấy source test — theo lookback đang chọn. */
+function exportSourceChecklist() {
+    if (!currentProjectSlug) return;
+    const lookback = document.getElementById("scLookback")?.value || "14";
+    const qs = _buildFilterQuery();
+    const url = `/api/projects/${currentProjectSlug}/export-source-checklist?lookback=${lookback}`
+        + (qs ? "&" + qs : "");
+    showToast("📥 Đang tạo file Checklist lấy source test…");
+    downloadFile(url, `iHRP_Lay_Source_Test_${currentProjectSlug}.xlsx`);
+}
+window.exportSourceChecklist = exportSourceChecklist;
 
 async function exportWeeklyGap() {
     if (!currentProjectSlug) return;
@@ -24761,10 +27803,7 @@ function _weeklyGapRenderTable() {
         return;
     }
 
-    if (!pageState.weeklyGap) pageState.weeklyGap = { page: 1, size: _weeklyGapState.pageSize };
-    pageState.weeklyGap.page = _weeklyGapState.page;
-    const start = (_weeklyGapState.page - 1) * _weeklyGapState.pageSize;
-    const slice = items.slice(start, start + _weeklyGapState.pageSize);
+    const { start, pageItems: slice } = _pageSlice("weeklyGap", items);
 
     const today = new Date().toISOString().slice(0, 10);
 
@@ -24802,10 +27841,7 @@ function _weeklyGapRenderTable() {
         </tr>`;
     }).join("");
 
-    renderPager("weeklyGapPagerWrap", "weeklyGap", total, () => {
-        _weeklyGapState.page = pageState.weeklyGap?.page || 1;
-        _weeklyGapRenderTable();
-    });
+    renderPager("weeklyGapPagerWrap", "weeklyGap", total, () => _weeklyGapRenderTable());
 }
 
 /* ========================================================
@@ -24888,4 +27924,577 @@ function _weeklyGapRenderTable() {
     window.expandWeeklyActivity = expandWeeklyActivity;
     window.closeWeeklyActivityModal = closeWeeklyActivityModal;
     window.handleWeeklyActivityModalBgClick = handleWeeklyActivityModalBgClick;
+})();
+
+
+// ========================================================================
+// TRẠNG THÁI BẢN ĐANG CHẠY — phát hiện code mới, tải lại, restart, reset
+// ========================================================================
+(function () {
+    "use strict";
+
+    /*
+     * Ba trạng thái lệch nhau mà trước đây không thấy được, gây ra vài lần truy
+     * bug rất tốn công:
+     *
+     *   a) Server chạy code cũ  — PRODUCTION không auto-reload, sửa .py/template
+     *      xong quên restart thì backend vẫn là bản lúc khởi động.
+     *   b) Tab giữ bundle JS cũ — bấm chuyển tab KHÔNG nạp lại JS. Tab mở từ sáng
+     *      vẫn chạy bundle của sáng, dù trên đĩa đã khác. Triệu chứng điển hình là
+     *      toast `<tên hàm> is not defined` với tên không tồn tại trong source.
+     *   c) Repo có commit mới — chỉ báo, không tự pull.
+     *
+     * (b) phải so `static_mtime` với **thời điểm trang được nạp**, không phải với
+     * lúc server khởi động: trang có thể được nạp muộn hơn server rất nhiều.
+     */
+    const PAGE_LOADED_AT = Math.floor(Date.now() / 1000);
+    const POLL_MS = 60000;
+    // Cooldown auto-check git remote — `git fetch` cần mạng + có thể mất 20s
+    // khi offline (timeout), không muốn spam mỗi lần focus tab.
+    const AUTO_GIT_CHECK_COOLDOWN_MS = 30 * 60 * 1000; // 30 phút
+    // Delay boot auto-check để không đua với first paint / dashboard load.
+    const AUTO_GIT_CHECK_BOOT_DELAY_MS = 6000;
+    // Localstorage key — share cooldown giữa các tab, tránh mỗi tab tự fetch.
+    const AUTO_GIT_CHECK_KEY = "ihrp_last_git_check_ts";
+    // Ngưỡng "đã lâu chưa kiểm tra remote" hiển thị mờ trên modal.
+    const _GIT_STALE_MIN = 30;
+
+    let _info = null;
+    let _git = null;
+    let _polling = false;
+    let _restartWait = null;
+    let _lastToastBehind = -1;   // tránh toast cùng số commit N lần liên tiếp
+    let _autoGitCheckRunning = false;
+
+    const $ = (id) => document.getElementById(id);
+
+    function staleJs() {
+        return !!_info && _info.static_mtime > PAGE_LOADED_AT;
+    }
+
+    function _readLastGitCheck() {
+        try { return parseInt(localStorage.getItem(AUTO_GIT_CHECK_KEY) || "0", 10) || 0; }
+        catch (e) { return 0; }
+    }
+    function _writeLastGitCheck(ts) {
+        try { localStorage.setItem(AUTO_GIT_CHECK_KEY, String(ts)); } catch (e) {}
+    }
+
+    /** Việc cần làm, nặng nhất trước.
+     *
+     * Thứ tự ưu tiên: restart (server code cũ) > update (remote có commit
+     * mới) > reload (JS/CSS cũ) > ok. User bấm restart sẽ pull xong lên cùng
+     * flow, còn reload chỉ chữa được (b) nên đứng cuối.
+     */
+    function verdict() {
+        if (!_info) return null;
+        if (_info.needs_restart) {
+            return {
+                level: "restart",
+                short: "Cần restart",
+                cls: "bg-amber-400/90 text-amber-950",
+                title: "Server đang chạy code cũ",
+                body: "Có file .py hoặc template đã sửa sau khi server khởi động. "
+                    + "Chế độ PRODUCTION không tự nạp lại, nên các sửa đổi đó "
+                    + "chưa có hiệu lực. Bấm «Restart server» để áp dụng.",
+                alertCls: "border-amber-300 bg-amber-50 text-amber-900 "
+                    + "dark:bg-amber-900/25 dark:border-amber-700 dark:text-amber-100",
+            };
+        }
+        if (_git && _git.available && (_git.behind || 0) > 0) {
+            const n = _git.behind || 0;
+            return {
+                level: "update",
+                short: `🆕 ${n} commit mới`,
+                cls: "bg-cyan-400/95 text-cyan-950",
+                title: `GitHub có ${n} commit mới`,
+                body: `Nhánh ${_git.branch || "?"} đang sau remote ${n} commit. `
+                    + (_git.dirty_files > 0
+                        ? `Đang có ${_git.dirty_files} file chưa commit — commit hoặc stash trước, `
+                          + "rồi chạy `git pull` trong terminal, sau đó bấm «Restart server»."
+                        : "Chạy `git pull` trong terminal rồi bấm «Restart server»."),
+                alertCls: "border-cyan-300 bg-cyan-50 text-cyan-900 "
+                    + "dark:bg-cyan-900/25 dark:border-cyan-700 dark:text-cyan-100",
+            };
+        }
+        if (staleJs()) {
+            return {
+                level: "reload",
+                short: "Cần tải lại",
+                cls: "bg-blue-400/90 text-blue-950",
+                title: "Tab này đang giữ bundle JS cũ",
+                body: "JS/CSS trên đĩa đã đổi sau khi trang được nạp. Bấm chuyển "
+                    + "tab không nạp lại JS, nên tab này vẫn chạy bản cũ. "
+                    + "Bấm «Tải lại giao diện».",
+                alertCls: "border-blue-300 bg-blue-50 text-blue-900 "
+                    + "dark:bg-blue-900/25 dark:border-blue-700 dark:text-blue-100",
+            };
+        }
+        // OK — ghi rõ trạng thái remote để user không phải mở modal chỉ để xác nhận
+        // "không có update". Trước khi kiểm remote lần đầu thì chỉ nói local đã khớp.
+        const remoteKnown = _git && _git.available && _git.upstream;
+        const remoteText = remoteKnown
+            ? (_git.behind === 0
+                ? " Không có commit mới trên GitHub."
+                : "")
+            : "";
+        return {
+            level: "ok",
+            short: "",
+            cls: "",
+            title: "Đang chạy bản mới nhất",
+            body: "Server và tab này đều khớp với code trên đĩa." + remoteText,
+            alertCls: "border-emerald-300 bg-emerald-50 text-emerald-900 "
+                + "dark:bg-emerald-900/25 dark:border-emerald-700 dark:text-emerald-100",
+        };
+    }
+
+    function paintBadge() {
+        const btn = $("buildStatusBtn");
+        const icon = $("buildStatusIcon");
+        const text = $("buildStatusText");
+        if (!btn || !icon || !text) return;
+        const v = verdict();
+        btn.className = "flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors "
+            + (v && v.level !== "ok" ? v.cls + " hover:brightness-95"
+                                     : "bg-white/10 hover:bg-white/20");
+        if (v && v.level === "restart") icon.textContent = "♻️";
+        else if (v && v.level === "update") icon.textContent = "🆕";
+        else if (v && v.level === "reload") icon.textContent = "🔄";
+        else icon.textContent = "🔄";
+        if (v && v.short) {
+            text.textContent = v.short;
+            text.classList.remove("hidden");
+        } else {
+            text.classList.add("hidden");
+        }
+        btn.title = v ? v.title : "Trạng thái bản đang chạy";
+    }
+
+    /** Notify 1 lần khi phát hiện có commit mới (dedupe theo số behind). */
+    function _maybeToastRemoteUpdate() {
+        if (!_git || !_git.available) return;
+        const behind = _git.behind || 0;
+        if (behind > 0 && _lastToastBehind !== behind) {
+            _lastToastBehind = behind;
+            showToast(
+                `🆕 GitHub có ${behind} commit mới — bấm biểu tượng trên header để xem chi tiết.`,
+                "green",
+            );
+        } else if (behind === 0) {
+            // Reset counter khi đã cập nhật xong — lần sau có commit mới sẽ toast lại.
+            _lastToastBehind = 0;
+        }
+    }
+
+    /** Auto-check remote với cooldown share qua localStorage.
+     *
+     * Chỉ chạy khi cách lần cuối check ≥ AUTO_GIT_CHECK_COOLDOWN_MS. Manual
+     * bấm nút «Kiểm tra» đi qua ``checkGithub`` (không qua đây) nên luôn chạy.
+     */
+    async function _autoCheckGit(reason) {
+        if (_autoGitCheckRunning) return;
+        const now = Date.now();
+        const last = _readLastGitCheck();
+        if (now - last < AUTO_GIT_CHECK_COOLDOWN_MS) return; // vẫn trong cooldown
+        _autoGitCheckRunning = true;
+        try {
+            _git = await apiJson("/api/git-info?fetch=1");
+            _writeLastGitCheck(now);
+            paintBadge();
+            if (!$("buildStatusModal").classList.contains("hidden")) renderGit();
+            _maybeToastRemoteUpdate();
+        } catch (e) {
+            // /api/git-info chỉ trả về từ localhost — non-localhost hoặc git
+            // fetch fail thì im lặng, không spam user.
+        } finally {
+            _autoGitCheckRunning = false;
+        }
+    }
+
+    async function refresh() {
+        if (_polling) return;
+        _polling = true;
+        try {
+            _info = await apiJson("/api/build-info");
+            paintBadge();
+            if (!$("buildStatusModal").classList.contains("hidden")) render();
+        } catch (e) {
+            // Server có thể đang restart — im lặng, lần poll sau sẽ lấy lại.
+        } finally {
+            _polling = false;
+        }
+    }
+
+    function row(label, value, hint) {
+        return `<tr>
+            <td class="px-3 py-1.5 text-gray-500 dark:text-gray-400 align-top whitespace-nowrap">${escapeHtml(label)}</td>
+            <td class="px-3 py-1.5 text-gray-800 dark:text-gray-100">${value}
+                ${hint ? `<div class="text-[11px] text-gray-400 mt-0.5">${escapeHtml(hint)}</div>` : ""}
+            </td>
+        </tr>`;
+    }
+
+    function render() {
+        if (!_info) return;
+        const v = verdict();
+
+        const alert = $("buildStatusAlert");
+        alert.className = "rounded-lg border px-3 py-2 leading-relaxed " + v.alertCls;
+        alert.innerHTML = `<div class="font-semibold mb-0.5">${escapeHtml(v.title)}</div>`
+            + `<div>${escapeHtml(v.body)}</div>`;
+
+        const py = _info.python || {};
+        $("buildStatusTable").innerHTML = [
+            row("Server khởi động", escapeHtml(_info.started_at_text || "—")),
+            row("Trang nạp lúc",
+                new Date(PAGE_LOADED_AT * 1000).toLocaleTimeString("vi-VN"),
+                staleJs() ? "JS trên đĩa mới hơn mốc này" : ""),
+            row("Python",
+                `${escapeHtml(py.version || "?")} · ${py.in_venv ? "venv" : "hệ thống"}`,
+                py.executable || ""),
+            row("Đang theo dõi",
+                `${_info.watched.sources} file .py · ${_info.watched.templates} template `
+                + `· ${_info.watched.static} JS/CSS`,
+                "Lấy từ module process đang nạp, không phải danh sách cố định"),
+        ].join("");
+
+        const files = _info.server_changed.concat(_info.static_changed);
+        if (files.length) {
+            $("buildStatusFiles").classList.remove("hidden");
+            $("buildStatusFilesList").innerHTML = files.map((f) => {
+                const needRestart = _info.server_changed.indexOf(f) >= 0;
+                return `<div>${escapeHtml(f.mtime_text)} &nbsp;${escapeHtml(f.path)}`
+                    + `<span class="text-[10px] ml-1 ${needRestart ? "text-amber-700" : "text-blue-600"}">`
+                    + `${needRestart ? "restart" : "reload"}</span></div>`;
+            }).join("");
+        } else {
+            $("buildStatusFiles").classList.add("hidden");
+        }
+
+        _paintApplyBtn();
+        if (_git) renderGit();
+    }
+
+    /** 1 nút gộp — chọn hành động theo verdict và cho phép trước cả khi mở modal.
+     *
+     * Bốn trạng thái nút:
+     *   • restart / update  → "♻️ Restart & tải lại" (server đổi code hoặc remote
+     *     có commit mới; sau restart, waitForServer sẽ location.reload).
+     *   • reload            → "🔄 Tải lại giao diện" (chỉ JS/CSS đổi).
+     *   • ok                → "🔄 Tải lại giao diện" (idempotent — user luôn có
+     *     đường force reload ngay cả khi mọi thứ khớp).
+     *
+     * Không disable khi `restart_available === false`: fallback về reload để user
+     * ít nhất áp dụng được thay đổi JS/CSS/HTML mà không cần console.
+     */
+    function _paintApplyBtn() {
+        const btn = $("btnApplyUpdate");
+        const icon = $("btnApplyUpdateIcon");
+        const label = $("btnApplyUpdateLabel");
+        if (!btn || !icon || !label) return;
+        const v = verdict();
+        const wantRestart = !!(v && (v.level === "restart" || v.level === "update"));
+        const canRestart = !!(_info && _info.restart_available);
+        // Restart cần env cho phép; nếu không có, luôn fallback reload.
+        const doRestart = wantRestart && canRestart;
+        if (doRestart) {
+            icon.textContent = "♻️";
+            label.textContent = "Restart & tải lại";
+            btn.className = "text-xs px-3 py-1.5 rounded bg-amber-600 text-white "
+                + "hover:bg-amber-700 inline-flex items-center gap-1.5";
+            btn.title = "Khởi động lại server, sau đó tự động tải lại trang.";
+        } else {
+            icon.textContent = "🔄";
+            label.textContent = "Tải lại giao diện";
+            btn.className = "text-xs px-3 py-1.5 rounded bg-blue-600 text-white "
+                + "hover:bg-blue-700 inline-flex items-center gap-1.5";
+            btn.title = wantRestart && !canRestart
+                ? (_info?.restart_blocked_reason
+                    || "Không restart được từ đây, sẽ chỉ tải lại giao diện.")
+                : "Nạp lại HTML + JS + CSS từ server.";
+        }
+        btn.disabled = false;
+        btn.dataset.action = doRestart ? "restart" : "reload";
+    }
+
+    /** Handler cho nút gộp — quyết định restart hay chỉ reload.
+     *
+     * Chỉ restart khi verdict yêu cầu + môi trường cho phép. Các case khác:
+     * chạy location.reload() — nhẹ, luôn an toàn, hiếm khi mất dữ liệu vì
+     * app dùng server-side state.
+     */
+    async function applyUpdate() {
+        // Nếu chưa poll lần nào (mở nhanh trước khi refresh xong) → poll ngay
+        // để có verdict đúng, tránh vô tình chỉ reload khi thực sự cần restart.
+        if (!_info) await refresh();
+        const v = verdict();
+        const wantRestart = !!(v && (v.level === "restart" || v.level === "update"));
+        if (wantRestart && _info && _info.restart_available) {
+            // restart() gọi tiếp waitForServer() → location.reload() khi server lên.
+            await restart();
+            return;
+        }
+        location.reload();
+    }
+
+    function _formatRelativeMinutes(ts) {
+        if (!ts) return "";
+        const diff = Math.floor((Date.now() - ts) / 60000);
+        if (diff < 1) return "vừa xong";
+        if (diff < 60) return `${diff} phút trước`;
+        const hrs = Math.floor(diff / 60);
+        if (hrs < 24) return `${hrs} giờ trước`;
+        return `${Math.floor(hrs / 24)} ngày trước`;
+    }
+
+    function renderGit() {
+        const box = $("buildStatusGit");
+        if (!_git || !box) return;
+        // Timestamp check gần nhất — user biết vừa auto-check xong,
+        // không phải bấm lại vô ích.
+        const lastCheck = _readLastGitCheck();
+        const stampHtml = lastCheck
+            ? `<div class="text-[10px] text-gray-400 mb-1">
+                    Đã kiểm tra ${escapeHtml(_formatRelativeMinutes(lastCheck))}
+               </div>`
+            : "";
+        if (_git.error) {
+            box.innerHTML = stampHtml
+                + `<span class="text-red-600">${escapeHtml(_git.error)}</span>`;
+            return;
+        }
+        if (!_git.available) {
+            box.innerHTML = stampHtml
+                + escapeHtml(_git.reason || "Không đọc được thông tin git.");
+            return;
+        }
+        const bits = [];
+        if (stampHtml) bits.push(stampHtml);
+        bits.push(
+            `Nhánh <b>${escapeHtml(_git.branch || "?")}</b> tại <code>${escapeHtml(_git.commit || "?")}</code>`
+        );
+        if (_git.commit_subject) bits.push(escapeHtml(_git.commit_subject));
+
+        if (!_git.upstream) {
+            bits.push('<span class="text-gray-500">Nhánh này chưa gắn upstream nên không so được với remote.</span>');
+        } else if (_git.behind > 0) {
+            bits.push(`<span class="text-amber-700 font-medium">Remote có ${_git.behind} commit mới `
+                + `chưa có ở máy này.</span>`);
+        } else if (_git.upstream) {
+            // Đã so upstream (fetched hoặc so từ trạng thái đã fetch trước) —
+            // luôn nói rõ để user không cần đoán.
+            bits.push('<span class="text-emerald-700">Đã là bản mới nhất so với remote.</span>');
+        }
+        if (_git.ahead > 0) {
+            bits.push(`<span class="text-gray-500">Máy này đang có ${_git.ahead} commit chưa push.</span>`);
+        }
+        if (_git.fetch_error) {
+            bits.push(`<span class="text-red-600">${escapeHtml(_git.fetch_error)}</span>`);
+        }
+
+        /*
+         * Cảnh báo dirty là phần quan trọng nhất ở đây. Upload/pull không merge —
+         * `git pull` khi đang có file chưa commit sẽ conflict hoặc buộc
+         * stash/reset, tức có thể mất việc đang làm. Vì thế app **không** tự pull.
+         */
+        if (_git.dirty_files > 0) {
+            bits.push(`<div class="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900 dark:bg-amber-900/25 dark:border-amber-700 dark:text-amber-100">`
+                + `Đang có <b>${_git.dirty_files} file chưa commit</b>. Hãy commit hoặc `
+                + `stash trước khi <code>git pull</code>, nếu không sẽ conflict hoặc mất thay đổi. `
+                + `App cố ý không tự pull vì lý do này.</div>`);
+        } else if (_git.behind > 0) {
+            bits.push('<div class="mt-1 text-gray-600 dark:text-gray-300">Working tree sạch. '
+                + 'Cập nhật bằng <code>git pull</code> trong terminal, rồi bấm «Restart server».</div>');
+        }
+        box.innerHTML = bits.join('<div class="mt-0.5"></div>');
+    }
+
+    async function checkGithub() {
+        const btn = $("btnCheckGithub");
+        const box = $("buildStatusGit");
+        if (btn) { btn.disabled = true; btn.textContent = "Đang kiểm tra…"; }
+        if (box) box.innerHTML = "Đang gọi <code>git fetch</code>…";
+        try {
+            _git = await apiJson("/api/git-info?fetch=1");
+            _writeLastGitCheck(Date.now());
+        } catch (e) {
+            _git = { error: "Không kiểm tra được: " + (e.message || e) };
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = "Kiểm tra lại"; }
+            renderGit();
+            paintBadge();
+            // Feedback rõ ràng — tránh case user bấm rồi không biết có/không update.
+            if (_git && !_git.error) {
+                if (_git.available && (_git.behind || 0) > 0) {
+                    _maybeToastRemoteUpdate();
+                } else if (_git.available && _git.upstream) {
+                    showToast("✅ Đã là bản mới nhất trên GitHub.", "green");
+                } else if (_git.available && !_git.upstream) {
+                    showToast("Nhánh chưa gắn upstream — không so được với remote.", "red");
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Restart
+    // ------------------------------------------------------------------
+
+    async function restart() {
+        if (!_info || !_info.restart_available) {
+            showToast(_info?.restart_blocked_reason || "Không restart được từ đây.", "red");
+            return;
+        }
+        const oldStamp = _info.started_at;
+        try {
+            await apiJson("/api/restart", { method: "POST" });
+        } catch (e) {
+            showToast("Không gọi được restart: " + (e.message || e), "red");
+            return;
+        }
+        closeModal();
+        waitForServer(oldStamp);
+    }
+
+    /**
+     * Chờ server mới lên rồi tự tải lại trang.
+     *
+     * Poll `/api/health` vì endpoint đó không cần đăng nhập nên trả lời được cả
+     * lúc app chưa dựng xong. Mất kết nối trong lúc này là **bình thường** —
+     * process cũ đã bị kill — nên lỗi mạng không được coi là thất bại.
+     */
+    function waitForServer(oldStamp) {
+        const overlay = $("restartOverlay");
+        overlay.classList.remove("hidden");
+        overlay.classList.add("flex");
+        const t0 = Date.now();
+        const giveUpBtn = $("btnRestartGiveUp");
+        const elapsedEl = $("restartOverlayElapsed");
+
+        clearInterval(_restartWait);
+        _restartWait = setInterval(async () => {
+            const sec = Math.floor((Date.now() - t0) / 1000);
+            if (elapsedEl) elapsedEl.textContent = `Đã chờ ${sec}s`;
+            // Sau 25s mà chưa lên thì cho người dùng đường thoát, đừng khoá cứng UI.
+            if (sec > 25 && giveUpBtn) giveUpBtn.classList.remove("hidden");
+            if (sec > 20 && $("restartOverlayMsg")) {
+                $("restartOverlayMsg").textContent =
+                    "Lâu hơn dự kiến. Nếu môi trường cần cài thêm package thì lần "
+                    + "khởi động này sẽ chậm. Xem cửa sổ start.bat vừa mở để biết chi tiết.";
+            }
+            try {
+                const r = await fetch("/api/health", { cache: "no-store" });
+                if (!r.ok) return;
+                const j = await r.json();
+                if (j.started_at && j.started_at !== oldStamp) {
+                    clearInterval(_restartWait);
+                    if (elapsedEl) elapsedEl.textContent = "Server đã lên — đang tải lại…";
+                    setTimeout(() => location.reload(), 400);
+                }
+            } catch (e) {
+                // Server đang xuống — đúng như kỳ vọng.
+            }
+        }, 1500);
+    }
+
+    function cancelWait() {
+        clearInterval(_restartWait);
+        const overlay = $("restartOverlay");
+        overlay.classList.add("hidden");
+        overlay.classList.remove("flex");
+        $("btnRestartGiveUp").classList.add("hidden");
+    }
+
+    // ------------------------------------------------------------------
+    // Reset tuỳ chọn giao diện (localStorage)
+    // ------------------------------------------------------------------
+
+    /**
+     * Xoá tuỳ chọn giao diện đã lưu trong trình duyệt.
+     *
+     * Đây là thứ **reload không chữa được**: tuỳ chọn cũ trỏ tới module/section đã
+     * biến mất sẽ làm filter ra rỗng hoặc layout lệch, mà không có thông báo nào.
+     *
+     * Không gọi là "clear cache": HTTP cache thì JS không xoá được (và cũng không
+     * cần — server đã gửi `no-cache` cho cả HTML lẫn JS/CSS). Liệt kê rõ những gì
+     * sẽ mất trước khi xoá, vì đây là dữ liệu người dùng đã tự sắp đặt.
+     */
+    function resetPrefs() {
+        let keys = [];
+        try {
+            for (let i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
+        } catch (e) {
+            showToast("Trình duyệt không cho truy cập localStorage.", "red");
+            return;
+        }
+        if (!keys.length) {
+            showToast("Không có tuỳ chọn nào đang lưu.", "blue");
+            return;
+        }
+        const preview = keys.slice(0, 12).join("\n  ");
+        const more = keys.length > 12 ? `\n  …và ${keys.length - 12} khoá nữa` : "";
+        const ok = confirm(
+            `Xoá ${keys.length} tuỳ chọn giao diện đang lưu trong trình duyệt?\n\n`
+            + "Sẽ mất: project đang chọn, theme sáng/tối, thứ tự và nhóm sidebar, "
+            + "chế độ xem biểu đồ, cỡ trang, các bộ lọc đã ghi nhớ.\n\n"
+            + "KHÔNG ảnh hưởng dữ liệu dự án trên server (Function List, snapshot, "
+            + "baseline, BA task đều nằm ở server).\n\n"
+            + `Khoá sẽ xoá:\n  ${preview}${more}`
+        );
+        if (!ok) return;
+        try {
+            localStorage.clear();
+        } catch (e) {
+            showToast("Xoá thất bại: " + (e.message || e), "red");
+            return;
+        }
+        location.reload();
+    }
+
+    // ------------------------------------------------------------------
+    // Modal + vòng poll
+    // ------------------------------------------------------------------
+
+    async function openModal() {
+        const modal = $("buildStatusModal");
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+        if (!_info) await refresh();
+        render();
+    }
+
+    function closeModal() {
+        const modal = $("buildStatusModal");
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+        refresh();
+        setInterval(refresh, POLL_MS);
+        // Kiểm ngay khi quay lại tab: đây đúng lúc người dùng vừa sửa code xong.
+        window.addEventListener("focus", () => {
+            refresh();
+            // Focus lại tab sau lúc idle → chạy auto-check nếu qua cooldown.
+            // Không delay vì user đã "chủ động" quay lại.
+            _autoCheckGit("focus");
+        });
+        // Auto-check GitHub lần đầu — delay để không đua với first paint. Nhờ
+        // cooldown localStorage nên nhiều tab cùng lúc chỉ 1 tab thật sự fetch.
+        setTimeout(() => _autoCheckGit("boot"), AUTO_GIT_CHECK_BOOT_DELAY_MS);
+        const modal = $("buildStatusModal");
+        if (modal) {
+            modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+        }
+    });
+
+    window.openBuildStatus = openModal;
+    window.closeBuildStatus = closeModal;
+    window.refreshBuildStatus = refresh;
+    window.checkGithubUpdate = checkGithub;
+    window.applyUpdate = applyUpdate;      // nút gộp restart + reload
+    window.restartServer = restart;        // giữ export cho tương thích (waitForServer, integration khác)
+    window.cancelRestartWait = cancelWait;
+    window.resetUiPrefs = resetPrefs;
 })();

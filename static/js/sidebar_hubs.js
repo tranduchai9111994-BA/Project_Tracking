@@ -54,15 +54,23 @@
                     icon: "ti-alert-circle",
                     badges: true,
                     lazy: true,
+                    exportAllFn: "exportAllIssues",
+                    exportAllLabel_vi: "Tất cả tab (1 file nhiều sheet)",
+                    exportAllLabel_en: "All tabs (one file, many sheets)",
+                    // `export` = chart key cho exportChartData; `exportFn` = tên hàm
+                    // global nhận (mode). Tab issue dùng exportFn vì mỗi tab có
+                    // endpoint riêng chứ không đi qua /export-chart.
+                    // `flKinds` → menu hiện thêm nhóm «FL để import».
                     tabs: [
-                        { section: "section-overdue", label_vi: "Trễ hạn", label_en: "Overdue", help: "overdue", badge: "overdue" },
-                        { section: "section-unassigned", label_vi: "Chưa PIC", label_en: "Unassigned", help: "unassigned", badge: "unassigned" },
-                        { section: "section-stalled", label_vi: "Đình trệ", label_en: "Stalled", help: "stalled", badge: "stalled" },
-                        { section: "section-aging-wip", label_vi: "WIP tồn đọng", label_en: "Aging WIP", help: "aging", lazy: "loadAgingWip" },
-                        { section: "section-dataquality", label_vi: "Data Quality", label_en: "Data Quality", help: "dataquality", lazy: "loadDataQuality" },
-                        { section: "section-fid-check", label_vi: "Thiếu FID", label_en: "FID Check", help: "fid-check", badge: "fid_issues", lazy: "loadFidCheck" },
-                        { section: "section-duration-flag", label_vi: "Thời gian dài", label_en: "Long Duration", help: "duration-flag", lazy: "loadDurationFlag" },
-                        { section: "section-weekly-gap", label_vi: "Báo cáo tuần", label_en: "Weekly Report", help: "weekly-gap", lazy: "loadWeeklyGap" },
+                        { section: "section-overdue", label_vi: "Trễ hạn", label_en: "Overdue", help: "overdue", badge: "overdue", exportFn: "exportOverdue", flKinds: "overdue", extraParamsFn: "_overdueExportLocalParams" },
+                        { section: "section-unassigned", label_vi: "Chưa PIC", label_en: "Unassigned", help: "unassigned", badge: "unassigned", export: "unassigned", flKinds: "unassigned" },
+                        { section: "section-stalled", label_vi: "Đình trệ", label_en: "Stalled", help: "stalled", badge: "stalled", exportFn: "exportStalled", flKinds: "stalled", extraParamsFn: "_stalledExportLocalParams" },
+                        { section: "section-aging-wip", label_vi: "WIP tồn đọng", label_en: "Aging WIP", help: "aging", badge: "aging_wip", lazy: "loadAgingWip", exportFn: "exportAgingWip", singleList: true },
+                        { section: "section-dataquality", label_vi: "Data Quality", label_en: "Data Quality", help: "dataquality", badge: "dq", lazy: "loadDataQuality", exportFn: "exportDataQuality", flKinds: "dq", singleList: true, extraParamsFn: "_dqExportModuleParam" },
+                        { section: "section-fid-check", label_vi: "Thiếu FID", label_en: "FID Check", help: "fid-check", badge: "fid_issues", lazy: "loadFidCheck", exportFn: "exportFidIssueList", flKinds: "fid", singleList: true, extraParamsFn: "_fidExportParams" },
+                        { section: "section-source-checklist", label_vi: "Lấy source test", label_en: "Source checklist", help: "source-checklist", badge: "source_checklist", lazy: "loadSourceChecklist", exportFn: "exportSourceChecklist", singleList: true },
+                        { section: "section-duration-flag", label_vi: "Thời gian dài", label_en: "Long Duration", help: "duration-flag", badge: "duration_flag", lazy: "loadDurationFlag", exportFn: "exportDurationFlag", singleList: true },
+                        { section: "section-weekly-gap", label_vi: "Báo cáo tuần", label_en: "Weekly Report", help: "weekly-gap", badge: "weekly_gap", lazy: "loadWeeklyGap", exportFn: "exportWeeklyGap", singleList: true },
                     ],
                 },
                 {
@@ -170,7 +178,7 @@
             label_vi: "PHÂN TÍCH",
             label_en: "ANALYSIS",
             icon: "ti-chart-pie",
-            defaultCollapsed: true,
+            defaultCollapsed: false,
             items: [
                 {
                     id: "section-analysis",
@@ -196,7 +204,7 @@
             label_vi: "QUẢN TRỊ",
             label_en: "ADMIN",
             icon: "ti-settings",
-            defaultCollapsed: true,
+            defaultCollapsed: false,
             items: [
                 {
                     id: "section-admin",
@@ -299,6 +307,69 @@
             parent.remove();
             _emptyParentCleanup(p);
         }
+    }
+
+    /**
+     * Nút 📥 trên tab bar → mở menu xuất cho tab đang mở.
+     *
+     * Tab chart khai `export` (chart key, đi qua /export-chart); tab issue khai
+     * `exportFn` (tên hàm global, mỗi tab một endpoint riêng). Trước đây chỉ đọc
+     * `export` nên toàn bộ 9 tab Issues rơi vào nhánh "chưa có export riêng"
+     * dù hàm xuất của chúng vẫn hoạt động khi bấm nút trong thân section.
+     */
+    function _openTabExport(ev, tab, item) {
+        const toast = (msg) => {
+            if (typeof showToast === "function") showToast(msg, "orange");
+        };
+        if (typeof openExportModePicker !== "function") {
+            toast(_t("Chưa tải xong menu xuất, thử lại sau", "Export menu not ready"));
+            return;
+        }
+
+        const opts = {};
+        if (tab) {
+            if (tab.flKinds) opts.flKinds = tab.flKinds;
+            if (tab.singleList) opts.singleList = true;
+            // Filter cục bộ của section → file xuất khớp lưới đang xem, giống
+            // hệt nút export nằm trong thân section.
+            const extra = tab.extraParamsFn && global[tab.extraParamsFn];
+            if (typeof extra === "function") opts.extraParams = extra;
+        }
+        // Hub có nhiều tab xuất được → cho xuất gộp 1 file nhiều sheet.
+        if (item && item.exportAllFn && typeof global[item.exportAllFn] === "function") {
+            opts.allTabs = {
+                label: _t(item.exportAllLabel_vi, item.exportAllLabel_en),
+                // forceFull: người bấm "Tất cả tab" muốn cả file, không phải
+                // 1 sheet theo nhóm đang focus.
+                run: () => global[item.exportAllFn]({ forceFull: true }),
+            };
+        }
+
+        let handler = null;
+        if (tab && tab.exportFn) {
+            const fn = global[tab.exportFn];
+            if (typeof fn === "function") {
+                handler = (mode) => fn(mode);
+            } else {
+                // Section lazy chưa mở lần nào → hàm xuất chưa được định nghĩa.
+                toast(_t(
+                    "Mở tab này một lần rồi xuất lại",
+                    "Open this tab once, then export",
+                ));
+                return;
+            }
+        }
+
+        if (!handler && !(tab && tab.export)) {
+            if (opts.allTabs) {
+                // Tab lẻ không xuất được nhưng vẫn cho xuất gộp cả hub.
+                openExportModePicker(ev, "", null, { allTabs: opts.allTabs, onlyAllTabs: true });
+                return;
+            }
+            toast(_t("Tab này chưa có export riêng", "This tab has no export yet"));
+            return;
+        }
+        openExportModePicker(ev, (tab && tab.export) || "", handler, opts);
     }
 
     let _hubsBuilt = false;
@@ -416,11 +487,7 @@
                     const p = hub.querySelector(`.tab-pane[data-pane="${t.section}"]`);
                     return p && p.classList.contains("active");
                 });
-                if (active && active.export && typeof openExportModePicker === "function") {
-                    openExportModePicker(ev, active.export);
-                } else if (typeof showToast === "function") {
-                    showToast("Tab này chưa có export riêng", "orange");
-                }
+                _openTabExport(ev, active, item);
             });
 
             if (insertBefore && insertBefore.parentElement) {
@@ -507,12 +574,20 @@
         if (!wrap) return;
         wrap.innerHTML = "";
 
+        // Một lần: mở PHÂN TÍCH + QUẢN TRỊ (trước đây defaultCollapsed=true → chỉ thấy header mờ)
+        const BOTTOM_GROUPS_EXPANDED_KEY = "ihrp.sidebar.bottom-groups-expanded-v2";
+        if (_lsGet(BOTTOM_GROUPS_EXPANDED_KEY) !== "1") {
+            _lsSet(COLLAPSE_KEY("analysis"), "0");
+            _lsSet(COLLAPSE_KEY("admin"), "0");
+            _lsSet(BOTTOM_GROUPS_EXPANDED_KEY, "1");
+        }
+
         SIDEBAR_NAV_TREE.forEach((g) => {
             const groupEl = document.createElement("div");
             groupEl.className = "sidebar-nav-group";
             groupEl.dataset.group = g.group;
 
-            const collapsedPref = _lsGet(COLLAPSE_KEY(g.group), g.defaultCollapsed ? "1" : "0");
+            let collapsedPref = _lsGet(COLLAPSE_KEY(g.group), g.defaultCollapsed ? "1" : "0");
             if (collapsedPref === "1" && !g.noCollapse) groupEl.classList.add("is-collapsed");
 
             const label = document.createElement("button");
@@ -523,9 +598,24 @@
                 + `<span>${_t(g.label_vi, g.label_en)}</span>`
                 + (g.noCollapse ? "" : `<i class="ti ti-chevron-down sidebar-collapse-icon" aria-hidden="true"></i>`);
             if (!g.noCollapse) {
+                const chevron = label.querySelector(".sidebar-collapse-icon");
+                if (chevron) {
+                    chevron.addEventListener("click", (ev) => {
+                        ev.stopPropagation();
+                        groupEl.classList.toggle("is-collapsed");
+                        _lsSet(COLLAPSE_KEY(g.group), groupEl.classList.contains("is-collapsed") ? "1" : "0");
+                    });
+                }
                 label.addEventListener("click", () => {
-                    groupEl.classList.toggle("is-collapsed");
-                    _lsSet(COLLAPSE_KEY(g.group), groupEl.classList.contains("is-collapsed") ? "1" : "0");
+                    groupEl.classList.remove("is-collapsed");
+                    _lsSet(COLLAPSE_KEY(g.group), "0");
+                    if (typeof global.setSidebarGroupHidden === "function") {
+                        global.setSidebarGroupHidden(g.group, false);
+                    }
+                    const first = (g.items || [])[0];
+                    if (first && typeof global.scrollToSection === "function") {
+                        global.scrollToSection(first.id);
+                    }
                 });
             }
             groupEl.appendChild(label);
@@ -603,12 +693,19 @@
 
     function updateSidebarIssueBadges() {
         const s = (global.metricsData && global.metricsData.summary) || {};
-        const stalled = (global.metricsData && global.metricsData.stalled_tasks
-            && global.metricsData.stalled_tasks.items) || [];
+        const tc = s.issue_tab_counts || {};
+        const stalledData = (global.metricsData && global.metricsData.stalled_tasks) || {};
+        const stalledItems = stalledData.items || [];
         const counts = {
-            overdue: Number(s.total_overdue) || 0,
-            unassigned: Number(s.unassigned_count) || 0,
-            stalled: stalled.length || Number(s.stalled_count) || 0,
+            overdue: Number(tc.overdue ?? s.total_overdue) || 0,
+            unassigned: Number(tc.unassigned ?? s.unassigned_count) || 0,
+            stalled: Number(tc.stalled ?? stalledData.items_total ?? stalledItems.length) || 0,
+            aging_wip: Number(tc.aging_wip) || 0,
+            dq: Number(tc.dq ?? s.dq_total_count) || 0,
+            fid_issues: Number(tc.fid_issues) || 0,
+            source_checklist: Number(tc.source_checklist) || 0,
+            duration_flag: Number(tc.duration_flag) || 0,
+            weekly_gap: Number(tc.weekly_gap) || 0,
         };
         document.querySelectorAll("[data-badges-for] [data-b]").forEach((el) => {
             const k = el.getAttribute("data-b");
@@ -621,13 +718,26 @@
                 el.classList.toggle("sidebar-badge--warning", n > 0);
             }
         });
-        // Tab badges trong Issues hub
+        // Tab badges trong Issues hub — ẩn khi 0 để PM chỉ mở tab có việc
         document.querySelectorAll(".section-tab-badge[data-badge]").forEach((el) => {
             const k = el.getAttribute("data-badge");
             const n = counts[k] || 0;
             el.textContent = n > 0 ? String(n) : "";
             el.classList.toggle("is-zero", n === 0);
+            el.classList.toggle("section-tab-badge--danger", k === "overdue" && n > 0);
+            el.classList.toggle("section-tab-badge--warning", n > 0 && k !== "overdue");
         });
+    }
+
+    /** Cập nhật 1 badge tab issue (lazy section) rồi refresh toàn bộ. */
+    function setIssueTabCount(key, count) {
+        if (!global.metricsData) global.metricsData = {};
+        if (!global.metricsData.summary) global.metricsData.summary = {};
+        if (!global.metricsData.summary.issue_tab_counts) {
+            global.metricsData.summary.issue_tab_counts = {};
+        }
+        global.metricsData.summary.issue_tab_counts[key] = Number(count) || 0;
+        updateSidebarIssueBadges();
     }
 
     let _io = null;
@@ -665,6 +775,13 @@
         const target = document.getElementById(hubId && document.getElementById(hubId) ? hubId : sectionId)
             || document.getElementById(sectionId);
         if (!target) return;
+        // Bỏ ẩn nhóm filter (Phân tích / Quản trị…) khi user chủ động mở hub
+        if (typeof global.setSidebarGroupHidden === "function"
+            && typeof global.buildSidebarSectionMembership === "function") {
+            const membership = global.buildSidebarSectionMembership();
+            const gid = membership[hubId || sectionId];
+            if (gid) global.setSidebarGroupHidden(gid, false);
+        }
         // Mở group sidebar chứa item
         const navItem = document.querySelector(`#sidebarNavLinks .sidebar-nav-item[data-nav-id="${hubId || sectionId}"]`);
         if (navItem) {
@@ -737,6 +854,7 @@
     global.scrollToSection = scrollToSection;
     global.migrateSectionOrder = migrateSectionOrder;
     global.updateSidebarIssueBadges = updateSidebarIssueBadges;
+    global.setIssueTabCount = setIssueTabCount;
     global.focusSidebarSearch = focusSidebarSearch;
     global.filterSidebarNav = filterSidebarNav;
     global.initSidebarHubsUX = initSidebarHubsUX;

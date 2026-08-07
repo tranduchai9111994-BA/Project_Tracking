@@ -3,7 +3,7 @@
 Dashboard **local** cho PM/BA triển khai **iHRP / HRIS**: upload hoặc sync Function List Excel → auto-detect cột → metrics đa chiều → Forecast / PMO / BA UX → export · Public API · LAN.
 
 > **Dành cho đánh giá ngoài (Claude / reviewer):** bắt đầu từ mục [Gợi ý đọc cho review](#gợi-ý-đọc-cho-review-claude) bên dưới.  
-> **Ngày đồng bộ docs với code:** 2026-08-01.
+> **Ngày đồng bộ docs với code:** 2026-08-04.
 
 ---
 
@@ -75,8 +75,9 @@ Guides chuyên đề (khi cần sâu): Integrations, Public API, LAN, Archive, C
 - Core: auto-detect FL · overdue / status / PIC · multi-project · snapshot · archive · disk janitor  
 - Forecast: UAT/Golive theo tháng · Manpower MH/MD/MM · PIC Overload · Rlog · Chiều PM  
 - **PMO A–F:** Baseline SV · Completion forecast · EVM · Scope creep/CR · Risk+cascade+overload · UAT Quality · SQLite `meta.db` dual-write (meta slice)  
-- **BA UX:** Auto-diff · saved filters · insight trends · DQ highlights · bulk tags · critical path (heuristic) · FL re-import verify · bottleneck · PIC upcoming · Module còn lại · insight strip collapse · DQ help  
-- Export chart Tong_hop/Chi_tiet · Public API · LAN · Help unified  
+- **BA UX:** Auto-diff · saved filters · insight trends · DQ highlights · bulk tags · critical path (heuristic) · FL re-import verify · bottleneck · PIC upcoming · Module còn lại (+ drill `scope=remaining|all`) · insight strip collapse · DQ help  
+- **Issues hub (2026-08):** Thiếu/Trùng FID (filter Module/Loại multi, tự bỏ module không dùng FID) · Thời gian dài (Start→End) · Báo cáo tuần GAP · Stalled nới rule + gate prev-phases-closed + filter Phase chờ · Status map Not Started theo PIC  
+- Export chart Tong_hop/Chi_tiet · Weekly GAP Excel 2-sheet · Public API · LAN · Help unified  
 
 **Hạn chế (trung thực):** SQLite chỉ meta; critical path heuristic; FL verify chỉ ô yellow-hit trước đó. Ước lượng theo hệ số (`estimate_ratio`) đã có — không khóa số SOVI. Chi tiết → [SYSTEM_OVERVIEW § Gaps](SYSTEM_OVERVIEW.md#10-gaps--hạn-chế-trung-thực).
 

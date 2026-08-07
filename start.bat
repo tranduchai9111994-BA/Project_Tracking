@@ -148,7 +148,13 @@ echo ============================================================
 echo.
 
 REM Mo browser sau 3s (chay ngam, khong block)
-start "" /min cmd /c "timeout /t 3 /nobreak >nul && start %APP_URL%"
+REM IHRP_NO_BROWSER=1: bo qua buoc nay. Dung khi restart tu dashboard — nguoi dung
+REM da co tab dang mo, tab do tu reload sau khi server len lai.
+if /I "%IHRP_NO_BROWSER%"=="1" (
+    echo   [i] Bo qua mo browser ^(IHRP_NO_BROWSER=1^).
+) else (
+    start "" /min cmd /c "timeout /t 3 /nobreak >nul && start %APP_URL%"
+)
 
 REM Chay Flask (foreground)
 set PYTHONIOENCODING=utf-8
@@ -156,6 +162,17 @@ python app.py
 set FLASK_EXIT=%ERRORLEVEL%
 
 echo.
+
+REM IHRP_RESTART=1: instance nay do nut "Restart server" tren dashboard khoi chay.
+REM Khi do lan restart KE TIEP se taskkill python nay, lam FLASK_EXIT khac 0 — day
+REM la restart co chu y, khong phai loi. Neu van `pause` thi moi lan restart de lai
+REM mot cua so treo kem thong bao "[LOI]" sai lech. Nen tu dong dong cua so.
+REM Chay tay (double-click) thi khong co bien nay: van dung lai de doc log.
+if /I "%IHRP_RESTART%"=="1" (
+    echo Server dung ^(restart tu dashboard hoac da bi thay the^). Dong cua so.
+    exit /b %FLASK_EXIT%
+)
+
 if %FLASK_EXIT% NEQ 0 (
     echo ============================================================
     echo   [LOI] Server thoat voi ma loi %FLASK_EXIT%

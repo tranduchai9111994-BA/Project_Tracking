@@ -17,6 +17,7 @@ import re
 import sys
 import shutil
 import tempfile
+import time
 import zipfile
 from datetime import date, datetime
 from typing import Any, Optional
@@ -84,15 +85,44 @@ if _auth_store.ensure_default_admin():
     )
 
 # --------------------------------------------------------------------------
-# Cache-busting cho static assets — mtime của file thành ?v= query param.
-# Khi dev sửa dashboard.js / style.css, mtime đổi → browser tự fetch bản mới,
-# tránh bug UI "hiện số 0" do trình duyệt cache JS/CSS cũ.
+# Cache-busting cho static assets — ?v= query param cho JS/CSS, để browser
+# không dùng bản cache cũ (từng gây bug UI "hiện số 0").
 # --------------------------------------------------------------------------
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+# Định danh **bản đang chạy**, cố định suốt đời process.
+_BUILD_STAMP = str(int(time.time()))
+
+
+def _templates_track_disk() -> bool:
+    """Jinja có nạp lại template khi file trên đĩa đổi hay không."""
+    cfg = app.config.get("TEMPLATES_AUTO_RELOAD")
+    return bool(app.debug) if cfg is None else bool(cfg)
+
 
 def _static_ver(rel_path: str) -> str:
-    """Trả về mtime của file static để làm cache-busting query param."""
+    """
+    Chuỗi phiên bản gắn vào URL của JS/CSS.
+
+    Trả **mtime file** khi template nạp lại theo đĩa (chạy `--debug`): sửa file
+    nào chỉ file đó bị tải lại, mà HTML cũng đã theo kịp.
+
+    Trả **stamp của process** khi chạy PRODUCTION — mặc định của `start.bat`:
+    `debug=False` nên Jinja giữ template đã biên dịch trong RAM và Python không
+    nạp lại `.py`. Ở chế độ đó, dùng mtime tạo ra trạng thái lai độc hại: `?v=`
+    được tính **lúc render** nên đổi ngay khi sửa file → browser tải **JS mới**,
+    trong khi **HTML và backend vẫn là bản lúc khởi động**. Nút của HTML cũ gọi
+    vào hàm của JS mới, hàm đó gọi endpoint backend cũ chưa có, và lỗi hiện ra ở
+    chỗ chẳng liên quan gì tới thay đổi vừa làm — rất khó truy (đã xảy ra thật:
+    section FID hiện filter cũ kèm lỗi khi bấm xuất).
+
+    Ghim theo process biến nó thành hành vi đoán được: **chưa restart thì không
+    gì đổi; restart thì HTML + JS + backend đổi cùng nhau.** Đánh đổi: mỗi lần
+    restart browser tải lại toàn bộ asset thay vì chỉ file đã sửa — không đáng
+    kể vì phục vụ từ localhost.
+    """
+    if not _templates_track_disk():
+        return _BUILD_STAMP
     full = os.path.join(_STATIC_DIR, rel_path.replace("/", os.sep))
     try:
         return str(int(os.path.getmtime(full)))
@@ -652,8 +682,18 @@ def _project_to_dict(p: Project) -> dict:
 
 @app.route("/api/health", methods=["GET"])
 def api_health():
-    """Health check công khai (không cần login) — cho LAN / monitor."""
-    return jsonify({"ok": True, "auth": not _AUTH_DISABLED})
+    """
+    Health check công khai (không cần login) — cho LAN / monitor.
+
+    `started_at` để frontend biết server **mới** đã lên sau khi restart: chỉ cần
+    kiểm mốc này khác mốc cũ. Endpoint này không cần auth nên poll được cả trong
+    lúc server đang khởi động lại, khi các endpoint khác chưa sẵn sàng.
+    """
+    return jsonify({
+        "ok": True,
+        "auth": not _AUTH_DISABLED,
+        "started_at": int(_BUILD_STAMP),
+    })
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -794,6 +834,114 @@ def api_auth_change_password():
 # Frontend routing
 # ==========================================================================
 
+# ==========================================================================
+# Trạng thái bản đang chạy — phát hiện code trên đĩa mới hơn process
+# ==========================================================================
+
+@app.route("/api/build-info", methods=["GET"])
+def api_build_info():
+    """
+    So code trên đĩa với process đang chạy.
+
+    Dùng cho badge "cần restart / cần tải lại" trên header. Chỉ đọc mtime nên rẻ,
+    poll được. **Không** gọi git ở đây: `git fetch` cần mạng và có thể treo, đặt
+    trong vòng poll là tự bắn vào chân — xem `/api/git-info`.
+    """
+    from analyzer import build_info as bi
+    from analyzer import restart_service as rs
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    info = bi.build_info(root, float(_BUILD_STAMP))
+    can, why = rs.can_restart(root)
+    info["restart_available"] = can
+    info["restart_blocked_reason"] = why
+    info["build_stamp"] = _BUILD_STAMP
+    return jsonify(info)
+
+
+@app.route("/api/git-info", methods=["GET"])
+def api_git_info():
+    """
+    Trạng thái git — **chỉ báo cáo**, không pull.
+
+    Query: fetch=1 để gọi `git fetch` (chậm, cần mạng) rồi so ahead/behind.
+    Mặc định không fetch để gọi được nhanh.
+
+    Cố ý không có endpoint pull/checkout: nó sẽ là đường thực thi code tuỳ ý từ
+    UI web, và working tree ở đây thường có nhiều file chưa commit nên pull tự
+    động đồng nghĩa stash/reset — tức xoá việc chưa commit của người dùng.
+    """
+    from analyzer import build_info as bi
+    from analyzer import lan_security as ls
+
+    # Tên nhánh, commit và số file dirty là thông tin nội bộ của máy chủ.
+    if not ls.is_localhost_request(request):
+        return jsonify({
+            "error": "Thông tin git chỉ xem được từ máy chủ (localhost).",
+            "code": "LOCALHOST_ONLY",
+        }), 403
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    want_fetch = str(request.args.get("fetch") or "").strip() in ("1", "true", "yes")
+    return jsonify(bi.git_status(root, fetch=want_fetch))
+
+
+@app.route("/api/restart", methods=["POST"])
+def api_restart():
+    """
+    Khởi động lại server qua launcher (`start.bat`).
+
+    Bảo vệ hai lớp: `install_admin_guard` đã chặn mọi POST từ non-localhost, và ở
+    đây thêm yêu cầu role admin. Đây là endpoint có tác động mạnh nhất trong app —
+    nó làm process hiện tại bị kill — nên không nới hai lớp này.
+
+    Process này sẽ chết sau ~2 giây. Client phải coi việc mất kết nối ngay sau đó
+    là bình thường và poll `/api/health` tới khi `started_at` đổi.
+    """
+    from analyzer import restart_service as rs
+
+    user = _auth_current_user()
+    if _AUTH_DISABLED:
+        user = {"role": "admin"}
+    if not user or user.get("role") != "admin":
+        return jsonify({
+            "error": "Chỉ admin mới restart được server.", "code": "FORBIDDEN",
+        }), 403
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    try:
+        result = rs.spawn_restart(root)
+    except rs.RestartUnsupported as e:
+        return jsonify({"error": str(e), "code": "RESTART_UNSUPPORTED"}), 501
+    except OSError as e:
+        return jsonify({
+            "error": f"Không khởi chạy được {rs.LAUNCHER_WINDOWS}: {e}",
+            "code": "RESTART_FAILED",
+        }), 500
+
+    result["success"] = True
+    result["old_started_at"] = int(_BUILD_STAMP)
+    return jsonify(result)
+
+
+@app.after_request
+def _no_cache_html(response):
+    """
+    Buộc browser hỏi lại server trước khi dùng HTML đã lưu.
+
+    HTML trước đây không mang chỉ thị cache nào (chỉ `Vary: Cookie`), nên browser
+    áp heuristic và có thể dùng lại bản cũ. Bản cũ đó nhúng `?v=` cũ ở thẻ
+    `<script>`, khiến bundle JS bị ghim theo bản cũ — đúng cái mà `_BUILD_STAMP`
+    sinh ra để tránh. File static không cần thêm gì: Flask đã trả
+    `Cache-Control: no-cache` + ETag theo mtime cho chúng.
+
+    Chỉ chạm HTML. JSON của API và file Excel tải về không bị ảnh hưởng.
+    """
+    if response.mimetype == "text/html":
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -882,6 +1030,53 @@ def restore_project(slug):
 # Upload & core metrics (per-project)
 # ==========================================================================
 
+#: Dưới ngưỡng này so với bản trước thì coi là bất thường (0.70 = mất >30% dòng).
+ROW_DROP_WARN_RATIO = 0.70
+
+
+def _row_count_drop_warning(history: list[dict], new_rows: int) -> list[dict]:
+    """
+    Cảnh báo khi file vừa upload ít dòng hơn bản trước một cách bất thường.
+
+    Upload **thay thế toàn bộ** dữ liệu project (không merge theo Mã CN), nên
+    upload nhầm một file FL rút gọn — điển hình là file «Xuất FL để import» chỉ
+    chứa các dòng có issue — sẽ làm dashboard/badge/EVM sai ngay mà không ai
+    biết vì sao. Chỉ cảnh báo, không chặn: thu hẹp scope thật cũng là việc hợp lệ.
+
+    Args:
+        history: upload_history mới nhất trước (newest-first, entry[0] là lần này).
+    """
+    if new_rows <= 0:
+        return []  # đã có cảnh báo empty_rows riêng
+    prev = next(
+        (e for e in (history or [])[1:] if int(e.get("row_count") or 0) > 0), None
+    )
+    if not prev:
+        return []
+    prev_rows = int(prev.get("row_count") or 0)
+    if new_rows >= prev_rows * ROW_DROP_WARN_RATIO:
+        return []
+    lost = prev_rows - new_rows
+    pct = round(lost / prev_rows * 100)
+    return [{
+        "level": "critical",
+        "code": "row_count_drop",
+        "message": (
+            f"File này chỉ có {new_rows} dòng, ít hơn bản trước "
+            f"({prev_rows} dòng — {prev.get('filename') or 'không rõ tên'}) "
+            f"{lost} dòng ({pct}%). Upload ghi đè toàn bộ dữ liệu project, "
+            f"không merge theo Mã CN — nếu đây là file xuất chỉ chứa dòng có "
+            f"issue thì hãy khôi phục bản trước ở mục Lịch sử / Snapshot."
+        ),
+        "detail": {
+            "new_rows": new_rows,
+            "prev_rows": prev_rows,
+            "prev_filename": prev.get("filename") or "",
+            "prev_time": prev.get("time") or "",
+        },
+    }]
+
+
 def _upload_and_process(slug: str) -> tuple:
     """
     Nội bộ: nhận multipart/form-data với file, xử lý và lưu state.
@@ -937,7 +1132,7 @@ def _upload_and_process(slug: str) -> tuple:
         except OSError:
             pass
         folder = _project_mgr.get_project_folder(slug)
-        ps.append_upload_history(
+        hist = ps.append_upload_history(
             folder,
             filename=file.filename,
             row_count=len(data.rows),
@@ -952,6 +1147,7 @@ def _upload_and_process(slug: str) -> tuple:
         warnings: list[dict] = []
         if len(data.rows) == 0:
             warnings.append({"level": "critical", "code": "empty_rows", "message": "File không có dòng chức năng nào"})
+        warnings.extend(_row_count_drop_warning(hist, len(data.rows)))
         if not data.all_phases:
             warnings.append({"level": "critical", "code": "no_phases", "message": "Không phát hiện phase group nào (pattern 'Phase - Attr')"})
         rej = getattr(data, "estimate_mh_rejected", []) or []
@@ -1663,6 +1859,8 @@ def _parse_drill_filters(source: dict) -> dict:
         "module", "phase", "status", "pic", "priority",
         "complexity", "fit_gap", "giai_doan", "process",
         "task_type", "ma_cn", "level",
+        # Filter Phase chờ của section Đình trệ (multi, comma-sep)
+        "waiting_phase",
     )
     return {k: source.get(k, "") for k in valid_keys if source.get(k, "") != ""}
 
@@ -2027,7 +2225,7 @@ def export_stalled(slug=None):
     Chấp nhận 2 loại filter (áp tuần tự, giống export-overdue):
       1. Global filter — g_module / g_process / g_pic:
          → filter parsed data → recompute stalled_tasks.
-      2. Local widget filter — module (comma-sep multi):
+      2. Local widget filter — module / waiting_phase (comma-sep multi):
          → thu hẹp thêm trên stalled items.
     """
     try:
@@ -2050,14 +2248,20 @@ def export_stalled(slug=None):
 
     if request.method == "POST":
         body = request.get_json(silent=True) or {}
-        filters = {"module": body.get("module")}
+        filters = {
+            "module": body.get("module"),
+            "waiting_phase": body.get("waiting_phase"),
+        }
         g_modules = _as_list(body.get("g_module") or body.get("g_modules"))
         g_processes = _as_list(body.get("g_process") or body.get("g_processes"))
         g_pics = _as_list(body.get("g_pic") or body.get("g_pics"))
         g_project_codes = _project_codes_from_body(body)
         mode = (body.get("mode") or "both").strip().lower()
     else:
-        filters = {"module": request.args.get("module")}
+        filters = {
+            "module": request.args.get("module"),
+            "waiting_phase": request.args.get("waiting_phase"),
+        }
         g_modules = _parse_multi_arg("g_module")
         g_processes = _parse_multi_arg("g_process")
         g_pics = _parse_multi_arg("g_pic")
@@ -2196,7 +2400,29 @@ def pm_get(slug: str):
         st.get("data") if st else None,
     )
     bundle["fl_links"] = fl_links
+    if bundle.get("plan"):
+        from analyzer.pm_plan_gantt import compute_pm_schedule_insights
+        bundle["schedule_insights"] = compute_pm_schedule_insights(bundle["plan"])
+        # Gantt view nặng — lazy qua GET /pm/gantt-view (Phase perf 08/2026)
+        bundle["pm_gantt_view"] = None
+    else:
+        bundle["schedule_insights"] = None
+        bundle["pm_gantt_view"] = None
     return jsonify(bundle)
+
+
+@app.route("/api/projects/<slug>/pm/gantt-view", methods=["GET"])
+def pm_gantt_view(slug: str):
+    """Lazy bundle Gantt PM — week/day grid + heatmap (tách khỏi GET /pm)."""
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    from analyzer import pm_store as _pm_store
+    from analyzer.pm_plan_gantt import build_pm_gantt_view
+    pdir = _project_mgr.get_project_folder(slug)
+    bundle = _pm_store.load_pm_bundle(pdir)
+    plan = bundle.get("plan")
+    view = build_pm_gantt_view(plan) if plan else None
+    return jsonify({"gantt_view": view})
 
 
 @app.route("/api/projects/<slug>/pm/plan/preview", methods=["POST"])
@@ -2345,8 +2571,9 @@ def project_export_all_issues(slug: str):
     """
     Xuất 1 workbook Excel duy nhất chứa mọi loại vấn đề, mỗi loại 1 sheet.
 
-    Cover + Overdue + Chưa PIC + Đình trệ + High Risk + Aging WIP +
-    Data Quality + Bookmark.
+    Cover + 9 tab của hub Issues (Overdue, Chưa PIC, Đình trệ, Aging WIP,
+    Data Quality, Thiếu/Trùng FID, Lấy source test, Thời gian dài, Báo cáo
+    tuần) + High Risk + Bookmark.
 
     Query params (đồng nhất với các endpoint export khác):
       g_module / g_process / g_pic  → global filter (comma-separated
@@ -2362,6 +2589,10 @@ def project_export_all_issues(slug: str):
     from analyzer.data_quality import compute_data_quality
     from analyzer.advanced_metrics import compute_aging_wip
     from analyzer.risk_scorer import compute_all_risk_scores
+    from analyzer.fid_check import compute_fid_issues
+    from analyzer.source_checklist import compute_source_checklist
+    from analyzer.duration_flag import compute_long_duration
+    from analyzer.weekly_gap_report import compute_weekly_gap
     from analyzer import project_store as ps
     from exporter.export_all_issues import export_all_issues
 
@@ -2418,7 +2649,7 @@ def project_export_all_issues(slug: str):
     risk_list = [r for r in risk_scores if r.get("risk_score", 0) >= 30]
 
     aging_payload = compute_aging_wip(filtered, threshold_days=threshold)
-    aging_items = aging_payload.get("items", []) or []
+    aging_items = [i for i in (aging_payload.get("items") or []) if i.get("is_aging")]
 
     dq_payload = compute_data_quality(filtered)
     dq_issues = dq_payload.get("issues", []) or []
@@ -2444,6 +2675,15 @@ def project_export_all_issues(slug: str):
                     "fit_gap": r.meta.get("fit_gap", ""),
                 })
 
+    # 4 loại còn lại của hub Issues — trước đây file "tổng hợp" thiếu chúng nên
+    # PM vẫn phải xuất rời 4 file. Dùng ngưỡng/lookback default của từng
+    # analyzer (endpoint riêng mới đọc tham số từ UI); ở đây ưu tiên gói đủ.
+    fid_issues = compute_fid_issues(filtered).get("issues", []) or []
+    sc_days = compute_source_checklist(filtered).get("days", []) or []
+    dur_payload = compute_long_duration(filtered)
+    dur_items = dur_payload.get("items", []) or []
+    wg_items = compute_weekly_gap(filtered).get("items", []) or []
+
     project = _project_mgr.get_project(slug)
     project_name = project.name if project else slug
 
@@ -2466,6 +2706,11 @@ def project_export_all_issues(slug: str):
             aging_wip_items=aging_items,
             data_quality_issues=dq_issues,
             bookmark_functions=bookmark_functions,
+            fid_issues=fid_issues,
+            source_checklist_days=sc_days,
+            duration_items=dur_items,
+            duration_threshold=int(dur_payload.get("threshold_days") or 0),
+            weekly_gap_items=wg_items,
             filter_info={
                 "modules": fmodules,
                 "processes": fprocesses,
@@ -2487,12 +2732,57 @@ def project_export_all_issues(slug: str):
 # FL re-import — xuất issues đúng format Function List + mẫu schema
 # ==========================================================================
 
+#: `kinds` hợp lệ cho /export-fl-reimport — giới hạn union về đúng 1 tab issue.
+FL_REIMPORT_KINDS = ("overdue", "unassigned", "stalled", "dq", "fid")
+
+#: Module rỗng không gửi được qua CSV → dùng token này trên đường truyền.
+FID_NO_MODULE_TOKEN = "__no_module__"
+
+
+def _fid_issues_for_request(data, body: Optional[dict] = None) -> list[dict]:
+    """
+    Issue FID đã áp filter cục bộ của section (`fid_module`, `fid_type`).
+
+    Dùng chung cho /export-fid-issues và /export-fl-reimport để hai file không
+    bao giờ lệch nhau — và cả hai khớp đúng bảng PM đang xem.
+    """
+    from analyzer.fid_check import compute_fid_issues
+
+    issues = compute_fid_issues(data).get("issues") or []
+
+    def _multi(key: str) -> list[str]:
+        if body is not None:
+            raw = body.get(key) or []
+            if isinstance(raw, str):
+                return [x.strip() for x in raw.split(",") if x.strip()]
+            return [str(x).strip() for x in raw if str(x).strip()]
+        return _parse_multi_arg(key)
+
+    modules = _multi("fid_module")
+    types = _multi("fid_type")
+    if modules:
+        keep = set(modules)
+        issues = [
+            it for it in issues
+            if (str(it.get("module") or "").strip() or FID_NO_MODULE_TOKEN) in keep
+        ]
+    if types:
+        keep_t = set(types)
+        issues = [it for it in issues if it.get("issue_type") in keep_t]
+    return issues
+
+
 @app.route("/api/projects/<slug>/export-fl-reimport", methods=["GET", "POST"])
 def project_export_fl_reimport(slug: str):
     """
     Xuất Excel Function List (header row 1) chỉ các CN dính issue:
     overdue / unassigned / stalled / anomalies (+ missing_deadline).
     Tôn trọng global filter. Tô vàng PIC/Status; xanh nhạt date-chain.
+
+    `kinds` (comma-sep, xem FL_REIMPORT_KINDS) thu hẹp union về đúng loại issue
+    của tab đang mở — đứng ở tab Thiếu FID mà file ra 256 dòng của mọi loại
+    issue thì PM không biết phải sửa gì. Không truyền `kinds` → union đầy đủ
+    (giữ nguyên hành vi nút «Xuất FL chỉnh sửa» ở section Archive).
     """
     from analyzer.data_quality import ANOMALY_CODES, compute_data_quality
     from exporter.fl_reimport_export import collect_issue_hits, export_fl_reimport
@@ -2528,29 +2818,102 @@ def project_export_fl_reimport(slug: str):
     else:
         filtered = state["data"]
 
-    engine = DashboardEngine()
-    metrics = engine.compute_all(filtered)
-    overdue_list = metrics.get("overdue_list", []) or []
-    unassigned_list = metrics.get("unassigned_tasks", []) or []
-    stalled_list = (metrics.get("stalled_tasks", {}) or {}).get("items", []) or []
+    if request.method == "POST":
+        kinds_raw = body.get("kinds") or ""
+        if isinstance(kinds_raw, (list, tuple)):
+            kinds_raw = ",".join(str(x) for x in kinds_raw)
+    else:
+        kinds_raw = request.args.get("kinds") or ""
+    kinds = {k.strip().lower() for k in str(kinds_raw).split(",") if k.strip()}
+    unknown = kinds - set(FL_REIMPORT_KINDS)
+    if unknown:
+        return jsonify({
+            "error": (
+                f"kinds không hợp lệ: {', '.join(sorted(unknown))}. "
+                f"Hợp lệ: {', '.join(FL_REIMPORT_KINDS)}."
+            ),
+        }), 400
+    # Rỗng = tất cả (backward compat với call site cũ không truyền kinds)
+    want = (lambda k: True) if not kinds else (lambda k: k in kinds)
 
-    dq = compute_data_quality(filtered)
-    # Anomaly + DQ liên quan re-import (deadline / PIC / status)
-    reimport_codes = set(ANOMALY_CODES) | {
-        "missing_deadline", "blank_pic", "invalid_status", "closed_no_end",
-    }
-    anomaly_issues = [
-        it for it in (dq.get("issues") or [])
-        if it.get("code") in reimport_codes
-    ]
+    # Filter cục bộ của widget (l_*) — file xuất phải khớp bảng PM đang xem,
+    # nếu không thì lại đúng lỗi "lọc còn 5 dòng mà file ra 40 dòng".
+    def _local(key: str) -> list[str]:
+        if request.method == "POST":
+            raw = body.get(key) or []
+            if isinstance(raw, str):
+                return [x.strip() for x in raw.split(",") if x.strip()]
+            return [str(x).strip() for x in raw if str(x).strip()]
+        return _parse_multi_arg(key)
 
-    # FID issues nếu được yêu cầu (?fid_issues=1)
+    def _narrow(items: list, field: str, values: list[str]) -> list:
+        """Field có thể là scalar (module/phase) hoặc list (pic) → khớp giao nhau."""
+        if not values:
+            return items
+        keep = set(values)
+
+        def _hit(it: dict) -> bool:
+            val = it.get(field)
+            if isinstance(val, (list, tuple, set)):
+                return any(str(v).strip() in keep for v in val)
+            return str(val or "").strip() in keep
+
+        return [it for it in items if _hit(it)]
+
+    # Chỉ compute những gì thực sự cần — engine.compute_all khá nặng.
+    overdue_list: list = []
+    unassigned_list: list = []
+    stalled_list: list = []
+    if want("overdue") or want("unassigned") or want("stalled"):
+        metrics = DashboardEngine().compute_all(filtered)
+        l_module = _local("l_module")
+        if want("overdue"):
+            overdue_list = metrics.get("overdue_list", []) or []
+            overdue_list = _narrow(overdue_list, "module", l_module)
+            overdue_list = _narrow(overdue_list, "phase", _local("l_phase"))
+            overdue_list = _narrow(overdue_list, "pic", _local("l_pic"))
+        if want("unassigned"):
+            unassigned_list = _narrow(
+                metrics.get("unassigned_tasks", []) or [], "module", l_module
+            )
+            # Filter Phase — user tick bỏ Document (mặc định) hoặc chọn subset
+            # trên UI section-unassigned; export tôn trọng đúng scope đang xem.
+            unassigned_list = _narrow(
+                unassigned_list, "phase", _local("l_phase")
+            )
+            # Filter Status của phase thiếu PIC — user filter theo Open /
+            # Assigned / In-progress / ... trên UI section-unassigned.
+            unassigned_list = _narrow(
+                unassigned_list, "status", _local("l_status")
+            )
+        if want("stalled"):
+            stalled_list = (metrics.get("stalled_tasks", {}) or {}).get("items", []) or []
+            stalled_list = _narrow(stalled_list, "module", l_module)
+            stalled_list = _narrow(
+                stalled_list, "waiting_phase", _local("l_waiting_phase")
+            )
+
+    anomaly_issues: list = []
+    if want("dq"):
+        dq = compute_data_quality(filtered)
+        # Anomaly + DQ liên quan re-import (deadline / PIC / status)
+        reimport_codes = set(ANOMALY_CODES) | {
+            "missing_deadline", "blank_pic", "invalid_status", "closed_no_end",
+        }
+        anomaly_issues = [
+            it for it in (dq.get("issues") or [])
+            if it.get("code") in reimport_codes
+        ]
+
+    # FID issues khi ?fid_issues=1 hoặc kinds có "fid"
     fid_issues_list: list = []
-    include_fid = request.args.get("fid_issues") or (body.get("fid_issues") if request.method == "POST" else None)
+    include_fid = (
+        request.args.get("fid_issues")
+        or (body.get("fid_issues") if request.method == "POST" else None)
+        or ("fid" in kinds)
+    )
     if include_fid:
-        from analyzer.fid_check import compute_fid_issues
-        fid_result = compute_fid_issues(filtered)
-        fid_issues_list = fid_result.get("issues") or []
+        fid_issues_list = _fid_issues_for_request(filtered, body if request.method == "POST" else None)
 
     hits = collect_issue_hits(
         overdue_list=overdue_list,
@@ -2770,6 +3133,8 @@ def export_chart_endpoint(slug):
         fproject_codes = _project_codes_from_body(body)
         group_by = (body.get("group_by") or "module").strip().lower()
         mode = (body.get("mode") or "both").strip().lower()
+        compare = body.get("compare")
+        compare_date = str(body.get("compare_date") or "")
         if isinstance(fmodules, str):
             fmodules = [x.strip() for x in fmodules.split(",") if x.strip()]
         if isinstance(fprocesses, str):
@@ -2784,6 +3149,8 @@ def export_chart_endpoint(slug):
         fproject_codes = _parse_project_code_args()
         group_by = (request.args.get("group_by") or "module").strip().lower()
         mode = (request.args.get("mode") or "both").strip().lower()
+        compare = request.args.get("compare")
+        compare_date = request.args.get("compare_date") or ""
 
     if not chart:
         return jsonify({"error": "Thiếu tham số chart"}), 400
@@ -2810,6 +3177,20 @@ def export_chart_endpoint(slug):
             metrics = st["metrics"]
             data_for_export = st["data"]
             subtitle = ""
+
+        if chart == "module_overview":
+            # Bảng này có group_by + nhóm cột tăng/giảm. `metrics["module_overview"]`
+            # luôn là bản group theo module nên phải tính lại theo group_by, rồi
+            # gắn delta để sheet Excel khớp đúng những gì UI đang hiện.
+            metrics = dict(metrics)
+            rows, cmp_note = _module_overview_rows_for_export(
+                slug, data_for_export, group_by=group_by,
+                compare=compare, compare_date=compare_date,
+                filters=(fmodules, fprocesses, fpics, fproject_codes),
+            )
+            metrics["module_overview"] = rows
+            if cmp_note:
+                subtitle = f"{subtitle} · {cmp_note}" if subtitle else cmp_note
 
         filepath = export_chart(
             chart=chart,
@@ -4239,6 +4620,11 @@ def project_custom_dashboard_export(slug: str, item_id: str):
 #
 # Storage: uploads/projects/<slug>/integrations.json (list các integration).
 # Module logic: analyzer/integrations.py.
+# Eager-import: lần bấm «Đồng bộ» đầu không phải chờ cold-import (~0.6s).
+try:
+    from analyzer import integrations as _integ_warm  # noqa: F401
+except Exception:
+    _integ_warm = None  # type: ignore
 # ==========================================================================
 
 
@@ -4266,6 +4652,52 @@ def project_integrations(slug: str):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"integration": created}), 201
+
+
+@app.route("/api/projects/<slug>/integrations/export", methods=["GET"])
+def project_integrations_export(slug: str):
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    return jsonify(integ_mod.export_registry(folder))
+
+
+@app.route("/api/projects/<slug>/integrations/import", methods=["POST"])
+def project_integrations_import(slug: str):
+    from analyzer import integrations as integ_mod
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode") or "merge"
+    try:
+        result = integ_mod.import_registry(folder, body, mode=mode)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/integrations/import-postman", methods=["POST"])
+def project_integrations_import_postman(slug: str):
+    """Import Postman Collection v2.0/v2.1 → 1 integration + endpoints."""
+    from analyzer.postman_import import import_postman_collection
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    body = request.get_json(silent=True) or {}
+    collection = body.get("collection") if isinstance(body.get("collection"), dict) else body
+    if not isinstance(collection, dict):
+        return jsonify({"error": "Body phải là Postman collection JSON hoặc {collection: ...}"}), 400
+    mode = body.get("mode") or "merge"
+    env_prefix = body.get("env_prefix") or None
+    try:
+        result = import_postman_collection(
+            folder, collection, mode=mode, env_prefix=env_prefix,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(result)
 
 
 @app.route("/api/projects/<slug>/integrations/<integration_id>",
@@ -4517,9 +4949,126 @@ def project_phase_matrix(slug: str):
     })
 
 
+# Cache rows overview của bản mốc so sánh. Pickle của 1 bản là bất biến nên
+# memo hoá an toàn; khóa có upload_time/checksum để tự hết hiệu lực khi bản
+# cùng ngày bị ghi đè.
+_MODULE_DELTA_CACHE: dict[tuple, list] = {}
+_MODULE_DELTA_CACHE_MAX = 8
+
+
+def _load_compare_base_data(slug: str, base: dict):
+    """ParsedData của mốc so sánh (baseline bất biến hoặc snapshot)."""
+    if base.get("source") == "baseline":
+        loaded = _project_mgr.get_baseline_manager(slug).load_baseline(str(base.get("id") or ""))
+    else:
+        loaded = _project_mgr.get_snapshot_manager(slug).load_snapshot(str(base.get("id") or ""))
+    return (loaded or {}).get("parsed")
+
+
+def _base_overview_rows(slug: str, base: dict, group_by: str, filters: tuple):
+    """
+    Rows overview của bản mốc, đã áp CÙNG bộ filter với bản hiện tại.
+
+    Không áp cùng filter thì hai bên so trên hai tập function khác nhau và số
+    delta sẽ vô nghĩa — vì vậy filter được truyền vào tường minh (export gửi
+    filter qua body, dashboard gửi qua query) chứ không đọc lại request.
+
+    Args:
+        filters: (modules, processes, pics, project_codes).
+
+    Chỉ gọi `_overview_by` (không `compute_all`) để không kéo theo risk score /
+    SLA / stalled của bản cũ — những thứ bảng này không dùng.
+    """
+    from analyzer.dashboard_engine import DashboardEngine
+
+    fmodules, fprocesses, fpics, fcodes = filters
+    meta = base.get("meta") or {}
+    version_token = str(meta.get("checksum") or meta.get("upload_time") or "")
+    cache_key = (
+        slug, base.get("source"), str(base.get("id") or ""), version_token, group_by,
+        tuple(sorted(fmodules)), tuple(sorted(fprocesses)),
+        tuple(sorted(fpics)), tuple(sorted(fcodes)),
+    )
+    if cache_key in _MODULE_DELTA_CACHE:
+        return _MODULE_DELTA_CACHE[cache_key]
+
+    parsed = _load_compare_base_data(slug, base)
+    if parsed is None:
+        return None
+
+    if fmodules or fprocesses or fpics or fcodes:
+        parsed = _filter_parsed_data(
+            parsed, modules=fmodules, processes=fprocesses,
+            pics=fpics, project_codes=fcodes,
+        )
+    rows = DashboardEngine()._overview_by(parsed, group_by=group_by)
+
+    if len(_MODULE_DELTA_CACHE) >= _MODULE_DELTA_CACHE_MAX:
+        _MODULE_DELTA_CACHE.pop(next(iter(_MODULE_DELTA_CACHE)), None)
+    _MODULE_DELTA_CACHE[cache_key] = rows
+    return rows
+
+
+def _module_overview_rows_for_export(
+    slug: str, data, *, group_by: str, compare, compare_date: str, filters: tuple,
+):
+    """
+    Rows bảng Tổng quan theo Module cho export Excel + ghi chú mốc so sánh.
+
+    `metrics["module_overview"]` luôn group theo module, nên không dùng trực
+    tiếp được khi user chọn group_by khác. Trả (rows, note_vi).
+    """
+    from analyzer.dashboard_engine import DashboardEngine
+    from analyzer.module_delta import compute_module_overview_delta
+
+    gb = (group_by or "module").strip().lower()
+    if gb not in ("module", "process", "both"):
+        gb = "module"
+    rows = DashboardEngine()._overview_by(data, group_by=gb)
+
+    base, mode, _baselines, _snaps = _resolve_compare_for_project(slug, compare, compare_date)
+    if mode == "off" or base.get("error"):
+        return rows, ""
+    base_rows = _base_overview_rows(slug, base, gb, filters)
+    if base_rows is None:
+        return rows, ""
+    delta = compute_module_overview_delta(rows, base_rows, group_by=gb)
+    note = f"So với {base.get('label') or base.get('id')}"
+    removed = delta.get("removed") or []
+    if removed:
+        note += f" · {len(removed)} nhóm có ở mốc cũ mà không còn ở bản này"
+    return delta["rows"], note
+
+
+def _resolve_compare_for_project(slug: str, mode_raw, compare_date: str = ""):
+    """(base dict, mode đã chuẩn hoá, baselines[]) cho 1 project."""
+    from analyzer.compare_base import normalize_mode, resolve_compare_base
+
+    bmgr = _project_mgr.get_baseline_manager(slug)
+    baselines = bmgr.list_baselines()
+    if not baselines:
+        _migrate_legacy_baseline(slug)
+        baselines = bmgr.list_baselines()
+    mode = normalize_mode(mode_raw, has_baseline=bool(baselines))
+    snaps = _project_mgr.get_snapshot_manager(slug).list_snapshots()
+    base = resolve_compare_base(
+        snaps, baselines, mode=mode, explicit_date=compare_date or "",
+    )
+    return base, mode, baselines, snaps
+
+
 @app.route("/api/projects/<slug>/module-overview")
 def project_module_overview(slug: str):
     """
+    Rows bảng Tổng quan theo Module + (tùy chọn) delta so với một mốc.
+
+    Query:
+      group_by      module | process | both
+      compare       baseline | week | previous | date | off (default: baseline
+                    nếu project đã chốt baseline, else previous)
+      compare_date  YYYY-MM-DD, chỉ dùng khi compare=date
+      module/process/pic/g_project — global filter, áp cho CẢ bản mốc.
+
     BUG P0-B fix: endpoint TRƯỚC ĐÂY dùng `state["data"]` (raw, không filter).
     Khi user chọn group_by=process kèm global filter (VD chỉ 1 module), backend
     vẫn tính trên toàn bộ data → bảng hiển thị ALL processes, không apply filter.
@@ -4527,6 +5076,10 @@ def project_module_overview(slug: str):
     truyền qua query params.
     """
     from analyzer.dashboard_engine import DashboardEngine
+    from analyzer.module_delta import (
+        METRICS, POLARITY, compute_module_overview_delta,
+    )
+
     state, err = _require_state(slug)
     if err:
         return err
@@ -4536,16 +5089,52 @@ def project_module_overview(slug: str):
     data = _filtered_data_from_request(state)
     # DashboardEngine.__init__(today=None, ...): pass no arg → dùng date.today().
     engine = DashboardEngine()
-    return jsonify({
+    rows = engine._overview_by(data, group_by=group_by)
+
+    payload = {
         "group_by": group_by,
-        "rows": engine._overview_by(data, group_by=group_by),
+        "rows": rows,
         "applied_filter": {
             "modules": _parse_multi_arg("module"),
             "processes": _parse_multi_arg("process"),
             "pics": _parse_multi_arg("pic"),
             "project_codes": _parse_project_code_args(),
         },
-    })
+        "metrics": [dict(m) for m in METRICS],
+        "polarity": dict(POLARITY),
+    }
+
+    base, mode, baselines, snaps = _resolve_compare_for_project(
+        slug, request.args.get("compare"), request.args.get("compare_date") or "",
+    )
+    payload["compare_base"] = base
+    payload["baselines"] = baselines
+    payload["snapshots"] = [
+        {"date": s.get("date"), "upload_time": s.get("upload_time")} for s in snaps
+    ]
+    if mode == "off" or base.get("error"):
+        payload["delta"] = None
+        return jsonify(payload)
+
+    base_rows = _base_overview_rows(slug, base, group_by, (
+        _parse_multi_arg("module"), _parse_multi_arg("process"),
+        _parse_multi_arg("pic"), _parse_project_code_args(),
+    ))
+    if base_rows is None:
+        payload["delta"] = None
+        payload["compare_base"] = dict(
+            base,
+            error=f"Không load được dữ liệu của mốc so sánh ({base.get('label') or base.get('id')}).",
+        )
+        return jsonify(payload)
+
+    delta = compute_module_overview_delta(rows, base_rows, group_by=group_by)
+    payload["rows"] = delta["rows"]
+    payload["delta"] = {
+        "removed": delta["removed"],
+        "summary": delta["summary"],
+    }
+    return jsonify(payload)
 
 
 @app.route("/api/projects/<slug>/smart-suggestions")
@@ -5166,6 +5755,80 @@ def project_fid_check(slug: str):
     return jsonify(result)
 
 
+@app.route("/api/projects/<slug>/source-checklist")
+def project_source_checklist(slug: str):
+    """
+    Trả về cảnh báo checklist lấy source test Rlog theo từng ngày dev coded.
+
+    Query params:
+      lookback   — số ngày lùi lại tính từ hôm nay (mặc định 14, chặn 1–365)
+      g_module, g_process, g_pic — global filters
+    """
+    from analyzer.source_checklist import compute_source_checklist
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    try:
+        lookback = int(request.args.get("lookback") or 14)
+    except (TypeError, ValueError):
+        lookback = 14
+    result = compute_source_checklist(data, lookback_days=lookback)
+    return jsonify(result)
+
+
+def _send_single_issue_sheet(writer, payload_arg, *, filename: str, **kw):
+    """
+    Gói 1 sheet của export_all_issues thành workbook riêng rồi trả về client.
+
+    Hai tab "Lấy source test" và "Thời gian dài" trước đây không có nút xuất
+    nào; viết exporter riêng cho chúng sẽ nhân đôi định nghĩa cột với file tổng
+    hợp và hai bên lệch nhau ngay lần sửa cột đầu tiên. Dùng lại writer nên
+    sheet rời và sheet trong file gộp luôn giống hệt.
+    """
+    import openpyxl
+
+    from analyzer.i18n import normalize_lang
+
+    lang = normalize_lang(request.args.get("lang"))
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    writer(wb, payload_arg, lang=lang, **kw)
+    buf = io.BytesIO()
+    wb.save(buf)
+    wb.close()
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.route("/api/projects/<slug>/export-source-checklist")
+def project_export_source_checklist(slug: str):
+    """Xuất Excel checklist lấy source test. Cùng params với /source-checklist."""
+    from analyzer.source_checklist import compute_source_checklist
+    from exporter.export_all_issues import _write_source_checklist_sheet
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    try:
+        lookback = int(request.args.get("lookback") or 14)
+    except (TypeError, ValueError):
+        lookback = 14
+    result = compute_source_checklist(data, lookback_days=lookback)
+    return _send_single_issue_sheet(
+        _write_source_checklist_sheet,
+        result.get("days", []) or [],
+        filename=f"iHRP_Lay_Source_Test_{slug}_{date.today():%Y%m%d}.xlsx",
+    )
+
+
 @app.route("/api/projects/<slug>/duration-flag")
 def project_duration_flag(slug: str):
     """
@@ -5185,6 +5848,30 @@ def project_duration_flag(slug: str):
     phase_f = request.args.get("phase") or ""
     result = compute_long_duration(data, threshold_days=threshold, phase_filter=phase_f)
     return jsonify(result)
+
+
+@app.route("/api/projects/<slug>/export-duration-flag")
+def project_export_duration_flag(slug: str):
+    """Xuất Excel phase có duration dài. Cùng params với /duration-flag."""
+    from analyzer.duration_flag import compute_long_duration
+    from exporter.export_all_issues import _write_duration_sheet
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    try:
+        threshold = int(request.args.get("threshold") or 60)
+    except (TypeError, ValueError):
+        threshold = 60
+    phase_f = request.args.get("phase") or ""
+    result = compute_long_duration(data, threshold_days=threshold, phase_filter=phase_f)
+    return _send_single_issue_sheet(
+        _write_duration_sheet,
+        result.get("items", []) or [],
+        filename=f"iHRP_Thoi_Gian_Dai_{slug}_{date.today():%Y%m%d}.xlsx",
+        threshold_days=int(result.get("threshold_days") or threshold),
+    )
 
 
 @app.route("/api/projects/<slug>/weekly-gap-report")
@@ -5280,6 +5967,56 @@ def project_export_data_quality(slug: str):
     subtitle = f"Project: {project.name if project else slug} | Ngày: {date.today().strftime('%d/%m/%Y')}"
     filepath = export_data_quality_report(payload, output_dir="uploads", subtitle=subtitle)
     return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
+
+
+@app.route("/api/projects/<slug>/export-fid-issues")
+def project_export_fid_issues(slug: str):
+    """
+    Xuất danh sách lỗi FID (7 cột như lưới + cột trống «FID cần cập nhật»).
+
+    Chỉ các record có vấn đề FID — không union với overdue/stalled/DQ như
+    /export-fl-reimport. Tôn trọng global filter + filter cục bộ
+    (`fid_module`, `fid_type`) để file khớp đúng bảng đang xem.
+    """
+    from exporter.excel_exporter import export_fid_issues_report
+
+    state, err = _require_state(slug)
+    if err:
+        return err
+    data = _filtered_data_from_request(state)
+    issues = _fid_issues_for_request(data)
+    if not issues:
+        return jsonify({
+            "error": "Không có issue FID nào trong phạm vi đang lọc để xuất.",
+        }), 400
+
+    project = _project_mgr.get_project(slug)
+    scope_bits = []
+    mods = _parse_multi_arg("fid_module")
+    types = _parse_multi_arg("fid_type")
+    if mods:
+        labels = [
+            "(Chưa có Module)" if m == FID_NO_MODULE_TOKEN else m for m in mods
+        ]
+        scope_bits.append(f"Module: {', '.join(labels)}")
+    if types:
+        names = {"missing_fid": "Thiếu FID", "duplicate_fid": "Trùng FID"}
+        scope_bits.append(f"Loại: {', '.join(names.get(t, t) for t in types)}")
+    subtitle = (
+        f"Project: {project.name if project else slug}"
+        + (f" | {' | '.join(scope_bits)}" if scope_bits else "")
+        + f" | Tổng {len(issues)} issue"
+        + f" | Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+    )
+    filepath = export_fid_issues_report(
+        issues,
+        output_dir=_project_mgr.get_export_dir(slug),
+        subtitle=subtitle,
+        project_slug=slug,
+    )
+    return send_file(
+        filepath, as_attachment=True, download_name=os.path.basename(filepath),
+    )
 
 
 @app.route("/api/projects/<slug>/export-rlog-weekly", methods=["GET", "POST"])
@@ -5833,6 +6570,102 @@ def project_baseline(slug: str):
     })
 
 
+@app.route("/api/projects/<slug>/baselines", methods=["GET", "POST"])
+def project_baselines(slug: str):
+    """
+    Chuỗi baseline bất biến của project (re-baseline v1, v2, v3...).
+
+    GET  → {items[], active, legacy_snapshot_id, snapshots[]}
+           `items` sort giảm dần; `active` = baseline gần nhất (mốc so sánh).
+           Kèm rà cờ `source_drifted` cho baseline mà snapshot gốc đã bị ghi đè.
+    POST body {snapshot_date?: "YYYY-MM-DD", label?, note?}
+           snapshot_date rỗng → chốt snapshot mới nhất (bản đang xem).
+    """
+    from analyzer import project_store as ps
+
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    folder = _project_dir_for(slug)
+    smgr = _project_mgr.get_snapshot_manager(slug)
+    bmgr = _project_mgr.get_baseline_manager(slug)
+    snaps = smgr.list_snapshots()
+
+    if request.method == "GET":
+        if not bmgr.list_baselines():
+            _migrate_legacy_baseline(slug)
+        items = bmgr.refresh_source_drift(_project_mgr.get_snapshot_dir(slug), snaps)
+        active = bmgr.resolve_latest(None)
+        return jsonify({
+            "items": items,
+            "active": active,
+            "legacy_snapshot_id": (
+                ps.load_project_settings(folder).get("baseline_snapshot_id") or ""
+            ) or None,
+            "snapshots": snaps,
+        })
+
+    body = request.get_json(silent=True) or {}
+    snap_id = str(body.get("snapshot_date") or "").strip()
+    if not snap_id:
+        if not snaps:
+            return jsonify({
+                "error": "Chưa có bản nào để chốt. Upload file Function List trước.",
+            }), 400
+        snap_id = str(snaps[0].get("date") or "")
+
+    entry_src = next((s for s in snaps if s.get("date") == snap_id), None)
+    if not entry_src:
+        return jsonify({"error": f"Không tìm thấy bản '{snap_id}' trong project này."}), 400
+
+    user = _auth_current_user() or {}
+    pinned = bmgr.pin_from_snapshot(
+        _project_mgr.get_snapshot_dir(slug),
+        entry_src,
+        label=str(body.get("label") or ""),
+        note=str(body.get("note") or ""),
+        created_by=str(user.get("username") or ""),
+    )
+    if not pinned:
+        return jsonify({
+            "error": f"Không đọc được dữ liệu của bản '{snap_id}' để chốt baseline.",
+        }), 500
+
+    # Giữ con trỏ legacy trỏ vào baseline mới nhất để 8 endpoint cũ
+    # (EVM, Scope creep, Forecast Gantt...) vẫn thấy baseline đang hiệu lực.
+    ps.save_project_settings(folder, {"baseline_snapshot_id": snap_id})
+    return jsonify({
+        "ok": True,
+        "baseline": pinned,
+        "items": bmgr.list_baselines(),
+        "message": f"Đã chốt baseline v{pinned['version']} từ bản {snap_id}.",
+    })
+
+
+@app.route("/api/projects/<slug>/baselines/<baseline_id>", methods=["DELETE"])
+def project_baseline_delete(slug: str, baseline_id: str):
+    """Xóa 1 bản baseline đã chốt (kèm file bất biến của nó)."""
+    from analyzer import project_store as ps
+
+    if not _project_mgr.project_exists(slug):
+        return jsonify({"error": "Project không tồn tại"}), 404
+    bmgr = _project_mgr.get_baseline_manager(slug)
+    if not bmgr.delete(baseline_id):
+        return jsonify({"error": f"Không tìm thấy baseline '{baseline_id}'."}), 404
+
+    # Đồng bộ lại con trỏ legacy về baseline còn lại gần nhất (hoặc xóa hẳn).
+    active = bmgr.resolve_latest(None)
+    ps.save_project_settings(
+        _project_dir_for(slug),
+        {"baseline_snapshot_id": str(active.get("snapshot_date")) if active else ""},
+    )
+    return jsonify({
+        "ok": True,
+        "items": bmgr.list_baselines(),
+        "active": active,
+        "message": "Đã xóa baseline.",
+    })
+
+
 @app.route("/api/projects/<slug>/baseline-sv")
 def project_baseline_sv(slug: str):
     """
@@ -5840,27 +6673,21 @@ def project_baseline_sv(slug: str):
 
     SV = end_hiện_tại − end_baseline (ngày). Cần đã đánh dấu baseline.
     """
-    from analyzer import project_store as ps
     from analyzer.baseline_sv import compute_baseline_sv
 
     state, err = _require_state(slug)
     if err:
         return err
-    folder = _project_dir_for(slug)
-    settings = ps.load_project_settings(folder)
-    snap_id = (settings.get("baseline_snapshot_id") or "").strip()
+    baseline, snap_id, _entry = _resolve_project_baseline(slug)
     if not snap_id:
         return jsonify({
-            "error": "Chưa đánh dấu baseline. Chọn 1 snapshot làm kế hoạch gốc.",
+            "error": "Chưa chốt baseline. Bấm «Chốt baseline» để lấy 1 bản làm kế hoạch gốc.",
             "baseline_snapshot_id": None,
             "summary": None,
         }), 400
-
-    smgr = _project_mgr.get_snapshot_manager(slug)
-    loaded = smgr.load_snapshot(snap_id)
-    if not loaded or not loaded.get("parsed"):
+    if baseline is None:
         return jsonify({
-            "error": f"Không load được snapshot baseline '{snap_id}'.",
+            "error": f"Không load được baseline '{snap_id}' (file có thể đã bị xóa).",
             "baseline_snapshot_id": snap_id,
         }), 404
 
@@ -5877,7 +6704,7 @@ def project_baseline_sv(slug: str):
 
     result = compute_baseline_sv(
         data,
-        loaded["parsed"],
+        baseline,
         baseline_snapshot_id=snap_id,
         top_functions=top,
     )
@@ -5900,18 +6727,68 @@ def project_completion_forecast(slug: str):
     return jsonify(compute_completion_forecast(data, phase=phase or None))
 
 
-def _load_baseline_for_project(slug: str):
-    """Trả (baseline ParsedData|None, snap_id str)."""
+def _migrate_legacy_baseline(slug: str) -> None:
+    """
+    Chuyển baseline kiểu cũ (`baseline_snapshot_id`) vào chuỗi baseline bất biến.
+
+    Chạy 1 lần khi chain còn rỗng. Nếu file snapshot đã bị prune thì không
+    migrate được — bỏ qua im lặng, resolver sẽ fallback logic cũ.
+    """
     from analyzer import project_store as ps
+    try:
+        folder = _project_dir_for(slug)
+        snap_id = (ps.load_project_settings(folder).get("baseline_snapshot_id") or "").strip()
+        if not snap_id:
+            return
+        smgr = _project_mgr.get_snapshot_manager(slug)
+        entry = next((s for s in smgr.list_snapshots() if s.get("date") == snap_id), None)
+        if not entry:
+            return
+        _project_mgr.get_baseline_manager(slug).pin_from_snapshot(
+            _project_mgr.get_snapshot_dir(slug),
+            entry,
+            label="Baseline gốc (tự chuyển từ bản cũ)",
+            created_by="system",
+        )
+    except Exception:
+        pass
+
+
+def _resolve_project_baseline(slug: str, as_of=None):
+    """
+    Trả (ParsedData|None, snapshot_date str, entry dict|None) của baseline.
+
+    Ưu tiên chuỗi baseline bất biến trong `baselines/`; nếu chain rỗng thì tự
+    migrate baseline kiểu cũ rồi thử lại; cuối cùng mới fallback đọc trực tiếp
+    `baseline_snapshot_id` từ `snapshots/` (có thể đã bị prune).
+
+    `as_of` (date) giới hạn "baseline gần nhất tính đến ngày đó" — dùng khi so
+    sánh một bản kéo về trong quá khứ.
+    """
+    from analyzer import project_store as ps
+
+    bmgr = _project_mgr.get_baseline_manager(slug)
+    if not bmgr.list_baselines():
+        _migrate_legacy_baseline(slug)
+    entry = bmgr.resolve_latest(as_of)
+    if entry:
+        loaded = bmgr.load_baseline(str(entry.get("id") or ""))
+        if loaded and loaded.get("parsed"):
+            return loaded["parsed"], str(entry.get("snapshot_date") or ""), entry
+
     folder = _project_dir_for(slug)
-    settings = ps.load_project_settings(folder)
-    snap_id = (settings.get("baseline_snapshot_id") or "").strip()
-    baseline = None
+    snap_id = (ps.load_project_settings(folder).get("baseline_snapshot_id") or "").strip()
     if snap_id:
         loaded = _project_mgr.get_snapshot_manager(slug).load_snapshot(snap_id)
         if loaded and loaded.get("parsed"):
-            baseline = loaded["parsed"]
-    return baseline, snap_id
+            return loaded["parsed"], snap_id, None
+    return None, snap_id, None
+
+
+def _load_baseline_for_project(slug: str):
+    """Trả (baseline ParsedData|None, snapshot_date str) — giữ chữ ký cũ."""
+    baseline, snap_date, _entry = _resolve_project_baseline(slug)
+    return baseline, snap_date
 
 
 def _snapshot_series_for_project(slug: str, current_data=None):

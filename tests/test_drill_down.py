@@ -379,3 +379,62 @@ def test_unassigned_drill_count_matches_summary(today):
     summary = engine._summary(data)
     drill_items = drill_down(data, "unassigned", {}, today)
     assert summary["unassigned_count"] == len(drill_items)
+
+
+def test_unassigned_drill_status_filter(today):
+    """Filter status trong drill-down phải khớp dropdown cục bộ trên
+    section «Chưa PIC» — user drill từ bảng đang lọc phải ra cùng scope.
+
+    _make_multi_overdue_data: F3.Dev status="Open" no PIC → unassigned.
+    """
+    from datetime import timedelta
+    from parser.excel_parser import (
+        ParsedData, FunctionRow, PhaseData, PhaseGroup,
+    )
+
+    def _pd(start_off=None, end_off=None, status=None, pics=None):
+        return PhaseData(
+            start_date=(today + timedelta(days=start_off)) if start_off is not None else None,
+            end_date=(today + timedelta(days=end_off)) if end_off is not None else None,
+            status=status,
+            pics=pics or [],
+        )
+
+    # 2 unassigned với status khác nhau → filter Open lấy 1, Assigned lấy 1
+    rows = [
+        FunctionRow(row_num=2, meta={
+            "ma_cn": "U1", "ten_cn": "U1", "module": "M1",
+            "priority": "Must-have",
+        }, phases={
+            "Analysis": _pd(-15, -12, "Closed", ["A"]),
+            "Dev": _pd(-8, -1, "Open", []),  # unassigned, Open
+        }),
+        FunctionRow(row_num=3, meta={
+            "ma_cn": "U2", "ten_cn": "U2", "module": "M2",
+            "priority": "Must-have",
+        }, phases={
+            "Analysis": _pd(-15, -12, "Closed", ["B"]),
+            "Dev": _pd(-8, -1, "Assigned", []),  # unassigned, Assigned
+        }),
+    ]
+    data = ParsedData(
+        headers={}, meta_columns={},
+        phase_groups=[PhaseGroup(name="Analysis"), PhaseGroup(name="Dev")],
+        rows=rows,
+        all_modules=["M1", "M2"], all_phases=["Analysis", "Dev"],
+        all_pics=["A", "B"],
+        all_statuses=["Open", "Assigned", "Closed"],
+    )
+
+    all_items = drill_down(data, "unassigned", {}, today)
+    assert {i["ma_cn"] for i in all_items} == {"U1", "U2"}
+
+    only_open = drill_down(data, "unassigned", {"status": "Open"}, today)
+    assert {i["ma_cn"] for i in only_open} == {"U1"}
+
+    only_assigned = drill_down(data, "unassigned", {"status": "Assigned"}, today)
+    assert {i["ma_cn"] for i in only_assigned} == {"U2"}
+
+    # Status không tồn tại → rỗng
+    none_match = drill_down(data, "unassigned", {"status": "Closed"}, today)
+    assert none_match == []

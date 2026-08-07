@@ -1,4 +1,4 @@
-"""
+﻿"""
 Xuất báo cáo Excel:
 - export_overdue_report: danh sách task trễ (single sheet)
 - export_full_report:    báo cáo tổng hợp nhiều sheet (Overdue / Unassigned / Long Duration / Stalled / High Risk / Summary)
@@ -303,16 +303,20 @@ def export_stalled_report(
 
     mode = _normalize_export_mode(mode)
     items = list(stalled_items or [])
-    if filters:
-        mods = _norm_multi_filter(filters.get("module"))
-        if mods:
-            items = [i for i in items if i.get("module") in mods]
+    mods = _norm_multi_filter(filters.get("module")) if filters else []
+    # Filter Phase chờ — khớp cột "Phase chờ" trên dashboard, để file xuất ra
+    # không nhiều hơn số dòng PM đang nhìn thấy.
+    waiting = _norm_multi_filter(filters.get("waiting_phase")) if filters else []
+    if mods:
+        items = [i for i in items if i.get("module") in mods]
+    if waiting:
+        items = [i for i in items if i.get("waiting_phase") in waiting]
 
     filter_parts = []
-    if filters:
-        mods = _norm_multi_filter(filters.get("module"))
-        if mods:
-            filter_parts.append(f"Module: {', '.join(mods)}")
+    if mods:
+        filter_parts.append(f"Module: {', '.join(mods)}")
+    if waiting:
+        filter_parts.append(f"Phase chờ: {', '.join(waiting)}")
     subtitle = f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
     if filter_parts:
         subtitle += "  |  Bộ lọc: " + " | ".join(filter_parts)
@@ -1245,6 +1249,7 @@ def _func_meta(row) -> dict[str, Any]:
     m = row.meta or {}
     return {
         "ma_cn": m.get("ma_cn") or "",
+        "fid": str(m.get("fid") or "").strip(),
         "rlog_id": _row_rlog_id(row) or "",
         "ten_cn": m.get("ten_cn") or "",
         "module": m.get("module") or "",
@@ -1257,9 +1262,12 @@ def _func_meta(row) -> dict[str, Any]:
     }
 
 
+# Cột meta đứng đầu mọi sheet Chi_tiet. Thứ tự phải khớp 1:1 với
+# `_meta_cell_values` — lệch là toàn bộ sheet lệch cột mà không báo lỗi.
 DETAIL_META_COLUMNS: list[tuple[str, int]] = [
     ("STT", 6),
     ("Mã CN", 14),
+    ("FID", 12),
     ("Rlog ID", 14),
     ("Tên chức năng", 40),
     ("Module", 10),
@@ -1274,6 +1282,7 @@ def _meta_cell_values(idx: int, meta: dict[str, Any]) -> list[Any]:
     return [
         idx + 1,
         meta.get("ma_cn", ""),
+        meta.get("fid", ""),
         meta.get("rlog_id", ""),
         meta.get("ten_cn", ""),
         meta.get("module", ""),
@@ -1282,6 +1291,45 @@ def _meta_cell_values(idx: int, meta: dict[str, Any]) -> list[Any]:
         meta.get("complexity", ""),
         meta.get("ma_du_an", ""),
     ]
+
+
+_RLOG_COL_NAME = "Rlog ID"
+
+
+def _detail_meta(parsed_data) -> tuple[list[tuple[str, int]], Any]:
+    """
+    Trả về ``(columns, values_fn)`` cho phần meta đầu sheet Chi_tiet.
+
+    Hai thứ này **luôn đi cùng nhau** vì chúng phải khớp số phần tử; tách rời ở
+    9 call site như trước thì thêm/bớt cột là lệch cả sheet mà openpyxl không
+    báo gì — dữ liệu vẫn ghi, chỉ nằm sai cột.
+
+    Ẩn cột ``Rlog ID`` khi FL không khai cột đó (FL của dự án bỏ
+    ``Analysis - RlogID`` từ 30/07: 68 → 65 cột). Bày một cột trống trơn khiến
+    PM tưởng hệ thống đọc lỗi, trong khi nguồn không có dữ liệu để đọc.
+    Điều kiện là *có khai cột*, không phải *có giá trị* — file khai cột nhưng
+    mới điền lác đác vẫn phải hiện, nếu không PM không biết chỗ nào còn thiếu.
+    """
+    from analyzer.rlog_weekly import _file_has_rlog_column
+
+    show_rlog = True
+    if parsed_data is not None:
+        try:
+            show_rlog = _file_has_rlog_column(parsed_data)
+        except Exception:
+            show_rlog = True  # nghi ngờ thì hiện — thà dư cột còn hơn mất cột
+
+    if show_rlog:
+        return list(DETAIL_META_COLUMNS), _meta_cell_values
+
+    keep = [i for i, c in enumerate(DETAIL_META_COLUMNS) if c[0] != _RLOG_COL_NAME]
+    columns = [DETAIL_META_COLUMNS[i] for i in keep]
+
+    def values(idx: int, meta: dict[str, Any]) -> list[Any]:
+        full = _meta_cell_values(idx, meta)
+        return [full[i] for i in keep]
+
+    return columns, values
 
 
 def _phase_status_map(row, phases: list[str]) -> dict[str, str]:
@@ -1365,6 +1413,10 @@ def export_chart(
     book = _SheetBook()
     sub = subtitle or f"Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
 
+    # Cột meta + hàm ghi ô phải lấy cùng lúc từ 1 chỗ để không lệch nhau
+    # (xem docstring `_detail_meta`). Rlog ID tự ẩn nếu FL không khai cột.
+    meta_cols, meta_vals = _detail_meta(parsed_data)
+
     # ------------------------------------------------------------------
     # Helpers nội bộ ghi sheet
     # ------------------------------------------------------------------
@@ -1395,11 +1447,11 @@ def export_chart(
         """Chi_tiet từ parsed_data.rows; row_builder(row, meta) → list extra values."""
         if not do_det or parsed_data is None:
             return
-        columns = list(DETAIL_META_COLUMNS) + list(extra_cols)
+        columns = list(meta_cols) + list(extra_cols)
         data_rows = []
         for idx, r in enumerate(getattr(parsed_data, "rows", []) or []):
             meta = _func_meta(r)
-            data_rows.append(_meta_cell_values(idx, meta) + list(row_builder(r, meta)))
+            data_rows.append(meta_vals(idx, meta) + list(row_builder(r, meta)))
         write_detail(title, columns, data_rows)
 
     def detail_from_items(
@@ -1485,26 +1537,55 @@ def export_chart(
 
     elif chart == "module_overview":
         items = metrics.get("module_overview") or []
-        write_summary(
-            "TỔNG QUAN THEO MODULE",
-            [
-                ("STT", 6), ("Module", 12), ("Số CN", 10), ("Số QT", 10),
-                ("% Progress", 12), ("Phase active", 18), ("Overdue", 10),
-            ],
-            [
-                [
-                    i.get("stt", idx + 1), i.get("module", ""), i.get("total", 0),
-                    i.get("quy_trinh_count", 0), i.get("progress_pct", 0),
-                    i.get("active_phase", ""), i.get("overdue_count", 0),
-                ]
-                for idx, i in enumerate(items)
-            ],
-        )
+        gb = (group_by or "module").strip().lower()
+        # Có delta khi caller đã gắn (xem _module_overview_rows_for_export).
+        has_delta = any(isinstance(i.get("delta"), dict) for i in items)
+        columns = [("STT", 6), ("Module", 14)]
+        if gb == "process":
+            columns.append(("Quy trình", 22))
+        columns += [
+            ("Số CN", 10), ("Số QT", 10), ("% Progress", 12),
+            ("Phase active", 18), ("Overdue", 10),
+            ("Còn lại", 10), ("Đánh giá", 16),
+        ]
+        # Điểm phần trăm cho Tiến độ, phần trăm tương đối cho các cột %.
+        delta_cols = [
+            ("± SL", 9, "total_delta"), ("±% SL", 9, "total_delta_pct"),
+            ("± Tiến độ (pp)", 14, "progress_delta"), ("±% Tiến độ", 11, "progress_delta_pct"),
+            ("± Trễ", 9, "overdue_delta"), ("±% Trễ", 10, "overdue_delta_pct"),
+            ("± Còn lại", 11, "remaining_delta"), ("±% Còn lại", 11, "remaining_delta_pct"),
+        ]
+        if has_delta:
+            columns += [(name, width) for name, width, _key in delta_cols]
+
+        risk_label = {"risk": "Rủi ro", "warning": "Cần theo dõi", "safe": "An toàn"}
+        rows_out = []
+        for idx, i in enumerate(items):
+            row = [i.get("stt", idx + 1), i.get("module", "")]
+            if gb == "process":
+                row.append(i.get("process", ""))
+            row += [
+                i.get("total", 0), i.get("quy_trinh_count", 0), i.get("progress_pct", 0),
+                i.get("active_phase", ""), i.get("overdue_count", 0),
+                i.get("remaining", 0),
+                risk_label.get(i.get("risk_level"), i.get("risk_level") or ""),
+            ]
+            if has_delta:
+                d = i.get("delta") or {}
+                if d.get("is_new"):
+                    row += ["Mới"] + [""] * (len(delta_cols) - 1)
+                else:
+                    row += [
+                        "" if d.get(key) is None else d.get(key)
+                        for _name, _w, key in delta_cols
+                    ]
+            rows_out.append(row)
+        write_summary("TỔNG QUAN THEO MODULE", columns, rows_out)
         if parsed_data is not None:
             phs, det = build_phase_status_detail_rows(parsed_data)
-            columns = list(DETAIL_META_COLUMNS) + [(p, 12) for p in phs]
+            columns = list(meta_cols) + [(p, 12) for p in phs]
             data_rows = [
-                _meta_cell_values(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                meta_vals(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
                 for idx, it in enumerate(det)
             ]
             write_detail("CHI TIẾT CHỨC NĂNG — Status theo phase", columns, data_rows)
@@ -1531,9 +1612,9 @@ def export_chart(
         )
         if parsed_data is not None:
             phs, det = build_phase_status_detail_rows(parsed_data)
-            columns = list(DETAIL_META_COLUMNS) + [(p, 12) for p in phs]
+            columns = list(meta_cols) + [(p, 12) for p in phs]
             data_rows = [
-                _meta_cell_values(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                meta_vals(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
                 for idx, it in enumerate(det)
             ]
             write_detail("CHI TIẾT CHỨC NĂNG — Status theo phase", columns, data_rows)
@@ -1550,9 +1631,9 @@ def export_chart(
         )
         if parsed_data is not None:
             phs, det = build_phase_status_detail_rows(parsed_data)
-            columns = list(DETAIL_META_COLUMNS) + [(p, 12) for p in phs]
+            columns = list(meta_cols) + [(p, 12) for p in phs]
             data_rows = [
-                _meta_cell_values(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                meta_vals(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
                 for idx, it in enumerate(det)
             ]
             write_detail("CHI TIẾT CHỨC NĂNG — Status theo phase", columns, data_rows)
@@ -1592,13 +1673,13 @@ def export_chart(
             for tt in tt_detail:
                 if tt not in tt_cols:
                     tt_cols.append(tt)
-            columns_det = list(DETAIL_META_COLUMNS) + [(tt, 14) for tt in tt_cols]
+            columns_det = list(meta_cols) + [(tt, 14) for tt in tt_cols]
             # DETAIL_META có Complexity; task_type cũ không có — giữ đủ meta chuẩn
             detail_rows = []
             for idx, it in enumerate(detail_items):
                 st_map = it.get("statuses") or {}
                 detail_rows.append(
-                    _meta_cell_values(idx, it) + [st_map.get(tt, "") for tt in tt_cols]
+                    meta_vals(idx, it) + [st_map.get(tt, "") for tt in tt_cols]
                 )
             write_detail(
                 "CHI TIẾT CHỨC NĂNG — Status theo loại công việc",
@@ -1675,9 +1756,9 @@ def export_chart(
         )
         if parsed_data is not None:
             phs, det = build_phase_status_detail_rows(parsed_data)
-            columns = list(DETAIL_META_COLUMNS) + [("Giai đoạn", 14)] + [(p, 12) for p in phs]
+            columns = list(meta_cols) + [("Giai đoạn", 14)] + [(p, 12) for p in phs]
             data_rows = [
-                _meta_cell_values(idx, it)
+                meta_vals(idx, it)
                 + [it.get("giai_doan", "")]
                 + [(it.get("statuses") or {}).get(p, "") for p in phs]
                 for idx, it in enumerate(det)
@@ -1703,9 +1784,9 @@ def export_chart(
         )
         if parsed_data is not None:
             phs, det = build_phase_status_detail_rows(parsed_data)
-            columns = list(DETAIL_META_COLUMNS) + [(p, 12) for p in phs]
+            columns = list(meta_cols) + [(p, 12) for p in phs]
             data_rows = [
-                _meta_cell_values(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
+                meta_vals(idx, it) + [(it.get("statuses") or {}).get(p, "") for p in phs]
                 for idx, it in enumerate(det)
             ]
             write_detail("CHI TIẾT CHỨC NĂNG — theo Quy trình", columns, data_rows)
@@ -1824,17 +1905,12 @@ def export_chart(
                         continue
                     st = _normalize_export_status(getattr(pd, "status", None))
                     for pic in pics:
-                        detail_rows.append([
-                            len(detail_rows) + 1,
-                            meta["ma_cn"], meta["rlog_id"], meta["ten_cn"],
-                            meta["module"], meta["quy_trinh"], meta["priority"],
-                            pic, ph, st,
-                        ])
+                        detail_rows.append(
+                            meta_vals(len(detail_rows), meta) + [pic, ph, st]
+                        )
             write_detail(
                 "CHI TIẾT FUNCTION × PHASE × PIC",
-                [
-                    ("STT", 6), ("Mã CN", 14), ("Rlog ID", 14), ("Tên chức năng", 40),
-                    ("Module", 10), ("Quy trình", 22), ("Priority", 12),
+                list(meta_cols) + [
                     ("PIC", 18), ("Phase", 16), ("Status", 12),
                 ],
                 detail_rows,
@@ -1988,12 +2064,12 @@ def export_chart(
                     if event is None:
                         continue
                     detail_rows.append(
-                        _meta_cell_values(len(detail_rows), meta)
+                        meta_vals(len(detail_rows), meta)
                         + [ph, event.isoformat(), _week_monday(event).isoformat()]
                     )
             write_detail(
                 "CHI TIẾT SỰ KIỆN CLOSED (burndown)",
-                list(DETAIL_META_COLUMNS) + [
+                list(meta_cols) + [
                     ("Phase", 16), ("Ngày Closed", 13), ("Tuần (Monday)", 14),
                 ],
                 detail_rows,
@@ -2943,6 +3019,7 @@ def export_aging_wip_report(
     ws = wb.active
     ws.title = "AgingWIP"
     items = payload.get("items") or []
+    items = [it for it in items if it.get("is_aging")]
     summary = payload.get("summary") or {}
     threshold = payload.get("threshold_days", 14)
 
@@ -3134,6 +3211,92 @@ def export_data_quality_report(
 
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, f"Data_Quality_{date.today().strftime('%Y%m%d')}.xlsx")
+    wb.save(filepath)
+    wb.close()
+    return filepath
+
+
+# ==========================================================================
+# FID issues — danh sách lỗi theo đúng lưới dashboard
+# ==========================================================================
+
+#: Nền vàng cho ô cần PM điền tay (giống quy ước tô vàng của FL re-import).
+_FID_INPUT_FILL = PatternFill(start_color="FFF59D", end_color="FFF59D", fill_type="solid")
+
+_FID_TYPE_LABELS = {"missing_fid": "Thiếu FID", "duplicate_fid": "Trùng FID"}
+
+
+def export_fid_issues_report(
+    issues: list[dict[str, Any]],
+    output_dir: str = "uploads",
+    subtitle: str = "",
+    project_slug: str = "",
+) -> str:
+    """
+    Xuất danh sách lỗi FID — 7 cột đúng như lưới dashboard (bỏ cột số thứ tự),
+    cộng 1 cột trống ``FID cần cập nhật`` tô vàng để PM điền tay.
+
+    File này KHÔNG import lại được (chỉ là danh sách để lọc/soi trong Excel) —
+    muốn import thì dùng /export-fl-reimport?kinds=fid. Vì vậy sheet đặt tên
+    ``Loi_FID`` chứ không phải ``Function List``: upload nhầm file này sẽ bị
+    parser từ chối thay vì ghi đè project bằng vài chục dòng.
+
+    Args:
+        issues: list issue từ analyzer.fid_check.compute_fid_issues()["issues"],
+                đã áp filter của section.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Loi_FID"
+
+    columns = [
+        ("Mã CN", 16),
+        ("Tên chức năng", 44),
+        ("Module", 10),
+        ("FID hiện tại", 14),
+        ("Loại issue", 12),
+        ("Dev phase", 14),
+        ("Chi tiết", 52),
+        ("FID cần cập nhật", 18),
+    ]
+    data_rows = [
+        [
+            it.get("ma_cn", ""),
+            it.get("ten_cn", ""),
+            it.get("module", ""),
+            it.get("fid", "") or "",
+            _FID_TYPE_LABELS.get(it.get("issue_type"), it.get("issue_type", "")),
+            it.get("dev_phase", ""),
+            it.get("detail", ""),
+            "",  # PM điền tay
+        ]
+        for it in issues
+    ]
+
+    missing = sum(1 for it in issues if it.get("issue_type") == "missing_fid")
+    dup = sum(1 for it in issues if it.get("issue_type") == "duplicate_fid")
+    _write_sheet(
+        ws,
+        title="DEV CLOSED — THIẾU / TRÙNG FID",
+        subtitle=(
+            subtitle
+            or f"Tổng {len(issues)} issue | Thiếu FID={missing} · Trùng FID={dup} "
+               f"| Ngày xuất: {date.today().strftime('%d/%m/%Y')}"
+        ),
+        columns=columns,
+        data_rows=data_rows,
+    )
+
+    # Tô vàng cột nhập tay (header row 4 → data từ row 5)
+    input_col = len(columns)
+    for offset in range(len(data_rows)):
+        ws.cell(row=5 + offset, column=input_col).fill = _FID_INPUT_FILL
+
+    os.makedirs(output_dir, exist_ok=True)
+    suffix = f"_{project_slug}" if project_slug else ""
+    filepath = os.path.join(
+        output_dir, f"Loi_FID{suffix}_{date.today().strftime('%Y%m%d')}.xlsx"
+    )
     wb.save(filepath)
     wb.close()
     return filepath

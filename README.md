@@ -25,6 +25,6 @@ pytest -q
 | [docs/FEATURE_CATALOG.md](docs/FEATURE_CATALOG.md) | Checklist feature đã ship |
 | [docs/BUSINESS_LOGIC.md](docs/BUSINESS_LOGIC.md) | Rule / công thức |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Kiến trúc kỹ thuật |
-| [docs/CHANGELOG_PMO_BA.md](docs/CHANGELOG_PMO_BA.md) | PMO A–F + BA UX |
+| [docs/CHANGELOG_PMO_BA.md](docs/CHANGELOG_PMO_BA.md) | PMO A–F + BA UX + Issues 2026-08 |
 
 Nguyên tắc parse / overdue / PIC: [`.cursorrules`](.cursorrules).

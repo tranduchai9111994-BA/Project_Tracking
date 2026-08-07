@@ -250,9 +250,9 @@ def compute_aging_wip(
         },
         "items": [
           {row_num, ma_cn, ten_cn, module, quy_trinh, phase, status,
-           start_date, end_date, pic, aging_days, over_by_days,
-           priority, complexity}, ...
-        ]  # sắp theo aging_days desc
+           start_date, end_date, pic, aging_days, over_by_days, is_aging,
+           missing_date, priority, complexity}, ...
+        ]  # TẤT CẢ WIP In-progress (kể cả chưa vượt ngưỡng); sort aging desc
       }
     """
     if today is None:
@@ -275,17 +275,7 @@ def compute_aging_wip(
                 continue
             total_wip += 1
 
-            # Ngày bắt đầu tính aging: ưu tiên Start; fallback End (nếu End
-            # đã qua nhưng chưa Close thì vẫn đang aging).
-            anchor = pd.start_date or pd.end_date
-            if not anchor:
-                # Không có date → skip (không đủ thông tin tính aging)
-                continue
-            aging = (today - anchor).days
-            if aging < threshold_days:
-                continue
-
-            items.append({
+            base = {
                 "row_num": row.row_num,
                 "ma_cn": ma_cn,
                 "ten_cn": ten_cn,
@@ -296,18 +286,43 @@ def compute_aging_wip(
                 "start_date": pd.start_date.isoformat() if pd.start_date else None,
                 "end_date": pd.end_date.isoformat() if pd.end_date else None,
                 "pic": ", ".join(pd.pics) if pd.pics else "",
-                "aging_days": aging,
                 "threshold_days": threshold_days,
-                "over_by_days": aging - threshold_days,
                 "priority": priority,
                 "complexity": complexity,
+            }
+
+            # Ngày bắt đầu tính aging: ưu tiên Start; fallback End.
+            anchor = pd.start_date or pd.end_date
+            if not anchor:
+                items.append({
+                    **base,
+                    "aging_days": None,
+                    "over_by_days": None,
+                    "is_aging": False,
+                    "missing_date": True,
+                })
+                continue
+
+            aging = (today - anchor).days
+            is_aging = aging >= threshold_days
+            items.append({
+                **base,
+                "aging_days": aging,
+                "over_by_days": aging - threshold_days,
+                "is_aging": is_aging,
+                "missing_date": False,
             })
 
-    items.sort(key=lambda x: x["aging_days"], reverse=True)
+    # Aging trước (desc), rồi WIP còn lại theo aging_days asc.
+    items.sort(key=lambda x: (
+        not x.get("is_aging"),
+        -(x.get("aging_days") if x.get("aging_days") is not None else -1),
+    ))
 
-    total_aging = len(items)
-    avg_aging = round(sum(i["aging_days"] for i in items) / total_aging, 1) if total_aging else 0.0
-    max_aging = max((i["aging_days"] for i in items), default=0)
+    aging_only = [i for i in items if i.get("is_aging")]
+    total_aging = len(aging_only)
+    avg_aging = round(sum(i["aging_days"] for i in aging_only) / total_aging, 1) if total_aging else 0.0
+    max_aging = max((i["aging_days"] for i in aging_only), default=0)
 
     return {
         "threshold_days": threshold_days,

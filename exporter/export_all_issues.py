@@ -66,6 +66,10 @@ BANNER_COLORS = {
     "aging":       "FFC000",  # Vàng nhạt
     "data_quality":"595959",  # Xám
     "bookmark":    "7030A0",  # Tím
+    "fid":         "B45309",  # Nâu cam
+    "source":      "0F766E",  # Xanh teal
+    "duration":    "4338CA",  # Tím xanh
+    "weekly_gap":  "1D4ED8",  # Xanh dương
 }
 
 HEADER_FILL = PatternFill(start_color="DEEBF7", end_color="DEEBF7", fill_type="solid")
@@ -247,9 +251,14 @@ def export_all_issues(
     filter_info: Optional[dict] = None,
     output_dir: str = "uploads",
     lang: str = "vi",
+    fid_issues: Optional[list[dict]] = None,
+    source_checklist_days: Optional[list[dict]] = None,
+    duration_items: Optional[list[dict]] = None,
+    duration_threshold: int = 0,
+    weekly_gap_items: Optional[list[dict]] = None,
 ) -> str:
     """
-    Xuất 1 workbook 8 sheet (Cover + 7 loại vấn đề).
+    Xuất 1 workbook: Cover + 1 sheet cho mỗi loại vấn đề.
 
     Args:
       project_name: tên project (hiển thị ở cover).
@@ -259,6 +268,11 @@ def export_all_issues(
         — để render dòng "Filter đang áp dụng" ở cover.
       output_dir: thư mục output (mặc định uploads/).
       lang: 'vi' | 'en' — tên sheet + banner theo ngôn ngữ UI.
+      fid_issues, source_checklist_days, duration_items, weekly_gap_items:
+        4 loại bổ sung (2026-08d) để file khớp đủ 9 tab hub Issues. Optional +
+        default None để caller cũ không phải sửa; **None = bỏ sheet**, khác với
+        `[]` = có sheet nhưng rỗng (PM cần phân biệt "không quét" vs "quét xong,
+        sạch"). ``source_checklist_days`` nhận nguyên ``days`` rồi tự phẳng hóa.
 
     Returns:
       Path to Excel file.
@@ -276,21 +290,37 @@ def export_all_issues(
         "aging_wip": _sn("aging_wip", lang),
         "data_quality": _sn("data_quality", lang),
         "bookmark": _sn("bookmark", lang),
+        "fid": "FID_Check" if lang == "en" else "Thieu_Trung_FID",
+        "source": "Source_Checklist" if lang == "en" else "Lay_Source_Test",
+        "duration": "Long_Duration" if lang == "en" else "Thoi_Gian_Dai",
+        "weekly_gap": "Weekly_Report" if lang == "en" else "Bao_Cao_Tuan",
     }
+
+    counts = {
+        names["overdue"]: len(_dedup_by_ma_cn(overdue_list)),
+        names["unassigned"]: len(unassigned_list),
+        names["stalled"]: len(stalled_list),
+        names["high_risk"]: len(risk_list),
+        names["aging_wip"]: len(aging_wip_items),
+        names["data_quality"]: len(data_quality_issues),
+        names["bookmark"]: len(bookmark_functions),
+    }
+    if fid_issues is not None:
+        counts[names["fid"]] = len(fid_issues)
+    if source_checklist_days is not None:
+        counts[names["source"]] = sum(
+            len(d.get("items") or []) for d in source_checklist_days
+        )
+    if duration_items is not None:
+        counts[names["duration"]] = len(duration_items)
+    if weekly_gap_items is not None:
+        counts[names["weekly_gap"]] = len(weekly_gap_items)
 
     _write_cover_sheet(
         wb,
         project_name=project_name,
         slug=slug,
-        counts={
-            names["overdue"]: len(_dedup_by_ma_cn(overdue_list)),
-            names["unassigned"]: len(unassigned_list),
-            names["stalled"]: len(stalled_list),
-            names["high_risk"]: len(risk_list),
-            names["aging_wip"]: len(aging_wip_items),
-            names["data_quality"]: len(data_quality_issues),
-            names["bookmark"]: len(bookmark_functions),
-        },
+        counts=counts,
         filter_info=filter_info or {},
         lang=lang,
         sheet_names=names,
@@ -299,9 +329,23 @@ def export_all_issues(
     _write_overdue_sheet(wb, _dedup_by_ma_cn(overdue_list), lang=lang, name=names["overdue"])
     _write_unassigned_sheet(wb, unassigned_list, lang=lang, name=names["unassigned"])
     _write_stalled_sheet(wb, stalled_list, lang=lang, name=names["stalled"])
-    _write_risk_sheet(wb, risk_list, lang=lang, name=names["high_risk"])
     _write_aging_sheet(wb, aging_wip_items, lang=lang, name=names["aging_wip"])
     _write_dq_sheet(wb, data_quality_issues, lang=lang, name=names["data_quality"])
+    if fid_issues is not None:
+        _write_fid_sheet(wb, fid_issues, lang=lang, name=names["fid"])
+    if source_checklist_days is not None:
+        _write_source_checklist_sheet(
+            wb, source_checklist_days, lang=lang, name=names["source"],
+        )
+    if duration_items is not None:
+        _write_duration_sheet(
+            wb, duration_items, threshold_days=duration_threshold,
+            lang=lang, name=names["duration"],
+        )
+    if weekly_gap_items is not None:
+        _write_weekly_gap_sheet(wb, weekly_gap_items, lang=lang, name=names["weekly_gap"])
+    # Risk + Bookmark không thuộc hub Issues → để cuối, sau các tab issue.
+    _write_risk_sheet(wb, risk_list, lang=lang, name=names["high_risk"])
     _write_bookmark_sheet(wb, bookmark_functions, lang=lang, name=names["bookmark"])
 
     wb.active = 0
@@ -717,5 +761,195 @@ def _write_bookmark_sheet(wb, items: list[dict], *, lang: str = "vi", name: str 
             it.get("complexity", ""), it.get("giai_doan", ""),
             it.get("fit_gap", ""),
         ])
+    _write_data(ws, rows, n_cols=len(cols))
+    _finalize_sheet(ws, len(rows), len(cols))
+
+
+# ==========================================================================
+# 4 sheet bổ sung (2026-08d) — cho khớp đủ 9 tab của hub Issues.
+# Trước đó file "tổng hợp" thiếu FID / source checklist / duration flag /
+# weekly gap, nên PM vẫn phải xuất rời 4 file rồi gửi kèm.
+# ==========================================================================
+
+_FID_TYPE_VI = {"missing_fid": "Thiếu FID", "duplicate_fid": "Trùng FID"}
+_FID_TYPE_EN = {"missing_fid": "Missing FID", "duplicate_fid": "Duplicate FID"}
+
+
+def _write_fid_sheet(wb, items: list[dict], *, lang: str = "vi", name: str = "") -> None:
+    ws = wb.create_sheet(name or ("FID_Check" if lang == "en" else "Thieu_Trung_FID"))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Code", 16), ("Function Name", 40), ("Module", 12),
+            ("Current FID", 14), ("Issue", 14), ("Dev phase", 14), ("Detail", 46),
+        ]
+        title = "🟠 DEV CLOSED — MISSING / DUPLICATE FID"
+        labels = _FID_TYPE_EN
+    else:
+        cols = [
+            ("STT", 6), ("Mã CN", 16), ("Tên chức năng", 40), ("Module", 12),
+            ("FID hiện tại", 14), ("Loại issue", 14), ("Dev phase", 14),
+            ("Chi tiết", 46),
+        ]
+        title = "🟠 DEV CLOSED — THIẾU / TRÙNG FID"
+        labels = _FID_TYPE_VI
+    _write_banner(ws, title, len(items), "fid", len(cols), lang=lang)
+    _write_header(ws, cols)
+
+    rows = [
+        [
+            idx + 1, it.get("ma_cn", ""), it.get("ten_cn", ""), it.get("module", ""),
+            it.get("fid", "") or "",
+            labels.get(it.get("issue_type"), it.get("issue_type", "")),
+            it.get("dev_phase", ""), it.get("detail", ""),
+        ]
+        for idx, it in enumerate(items)
+    ]
+    _write_data(
+        ws, rows, n_cols=len(cols),
+        # Thiếu FID nặng hơn trùng: trùng còn tra ra được, thiếu thì mất dấu.
+        row_fill_fn=lambda i: (
+            ORANGE_FILL if items[i].get("issue_type") == "missing_fid" else YELLOW_FILL
+        ),
+    )
+    _finalize_sheet(ws, len(rows), len(cols))
+
+
+def _write_source_checklist_sheet(
+    wb, days: list[dict], *, lang: str = "vi", name: str = "",
+) -> None:
+    """Phẳng hóa days[].items[] — 1 dòng = 1 function cần lấy source."""
+    ws = wb.create_sheet(name or ("Source_Checklist" if lang == "en" else "Lay_Source_Test"))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Dev end date", 13), ("Days", 7), ("Rlog ID", 12),
+            ("Code", 16), ("Function Name", 36), ("Module", 12),
+            ("Dev PIC", 18), ("Dev status", 12),
+            ("Taker (config local)", 20), ("State", 12),
+            ("Reason", 34), ("Action", 40),
+        ]
+        title = "🟢 SOURCE TEST CHECKLIST (Dev due)"
+        state_lb = {"pending": "Pending", "done": "Done", "not_required": "N/A"}
+    else:
+        cols = [
+            ("STT", 6), ("Ngày Dev đến hạn", 15), ("Số ngày", 7), ("Rlog ID", 12),
+            ("Mã CN", 16), ("Tên chức năng", 36), ("Module", 12),
+            ("Dev PIC", 18), ("Dev status", 12),
+            ("Người lấy source (config local)", 22),
+            ("Trạng thái", 12), ("Lý do", 34), ("Việc cần làm", 40),
+        ]
+        title = "🟢 CHECKLIST LẤY SOURCE TEST (Dev đến hạn)"
+        state_lb = {"pending": "Chưa lấy", "done": "Đã lấy", "not_required": "Không cần"}
+
+    flat: list[dict] = []
+    for d in days or []:
+        for it in d.get("items") or []:
+            flat.append(it)
+
+    _write_banner(ws, title, len(flat), "source", len(cols), lang=lang)
+    _write_header(ws, cols)
+
+    rows = [
+        [
+            idx + 1, it.get("coded_date", ""), it.get("days_since_coded", 0),
+            it.get("rlog_id", ""), it.get("ma_cn", ""), it.get("ten_cn", ""),
+            it.get("module", ""), it.get("dev_pic", ""), it.get("dev_status", ""),
+            it.get("taker_pic", ""),
+            state_lb.get(it.get("state"), it.get("state", "")),
+            it.get("reason_label", ""), it.get("checklist_action", ""),
+        ]
+        for idx, it in enumerate(flat)
+    ]
+
+    def _fill(i):
+        if flat[i].get("state") != "pending":
+            return None
+        sev = (flat[i].get("severity") or "").lower()
+        return RED_FILL if sev == "high" else (
+            ORANGE_FILL if sev == "medium" else YELLOW_FILL
+        )
+
+    _write_data(ws, rows, row_fill_fn=_fill, n_cols=len(cols))
+    _finalize_sheet(ws, len(rows), len(cols))
+
+
+def _write_duration_sheet(
+    wb, items: list[dict], *, threshold_days: int = 0, lang: str = "vi", name: str = "",
+) -> None:
+    ws = wb.create_sheet(name or ("Long_Duration" if lang == "en" else "Thoi_Gian_Dai"))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Code", 16), ("Function Name", 36), ("Module", 12),
+            ("Process", 20), ("Phase", 16), ("Start", 12), ("End", 12),
+            ("Days", 8), ("Status", 12), ("PIC", 20),
+        ]
+        title = "🔵 PHASES WITH ABNORMALLY LONG DURATION"
+    else:
+        cols = [
+            ("STT", 6), ("Mã CN", 16), ("Tên chức năng", 36), ("Module", 12),
+            ("Quy trình", 20), ("Phase", 16), ("Start", 12), ("End", 12),
+            ("Số ngày", 8), ("Status", 12), ("PIC", 20),
+        ]
+        title = "🔵 PHASE CÓ THỜI GIAN DÀI BẤT THƯỜNG"
+    if threshold_days:
+        title += f" (> {threshold_days} ngày)" if lang != "en" else f" (> {threshold_days} days)"
+    _write_banner(ws, title, len(items), "duration", len(cols), lang=lang)
+    _write_header(ws, cols)
+
+    def _pic(it):
+        p = it.get("pic")
+        return ", ".join(str(x) for x in p) if isinstance(p, (list, tuple)) else (p or "")
+
+    rows = [
+        [
+            idx + 1, it.get("ma_cn", ""), it.get("ten_cn", ""), it.get("module", ""),
+            it.get("quy_trinh", ""), it.get("phase", ""),
+            it.get("start", ""), it.get("end", ""),
+            it.get("duration_days", 0), it.get("status", ""), _pic(it),
+        ]
+        for idx, it in enumerate(items)
+    ]
+    _write_data(
+        ws, rows, n_cols=len(cols),
+        row_fill_fn=lambda i: _fill_by_days(items[i].get("duration_days", 0)),
+    )
+    _finalize_sheet(ws, len(rows), len(cols))
+
+
+def _write_weekly_gap_sheet(
+    wb, items: list[dict], *, lang: str = "vi", name: str = "",
+) -> None:
+    ws = wb.create_sheet(name or ("Weekly_Report" if lang == "en" else "Bao_Cao_Tuan"))
+    if lang == "en":
+        cols = [
+            ("#", 6), ("Rlog ID", 12), ("Code", 16), ("Function Name", 36),
+            ("Module", 12), ("Process", 20), ("FIT/GAP", 10), ("Phase", 16),
+            ("Status", 12), ("PIC", 20), ("Start", 12), ("End", 12),
+        ]
+        title = "🔷 WEEKLY REPORT — DUE THIS WEEK"
+    else:
+        cols = [
+            ("STT", 6), ("Rlog ID", 12), ("Mã CN", 16), ("Tên chức năng", 36),
+            ("Module", 12), ("Quy trình", 20), ("FIT/GAP", 10), ("Phase", 16),
+            ("Status", 12), ("PIC", 20), ("Start", 12), ("End", 12),
+        ]
+        title = "🔷 BÁO CÁO TUẦN — SẼ HOÀN THÀNH TRONG TUẦN"
+    if items and items[0].get("week_label"):
+        title += f" ({items[0]['week_label']})"
+    _write_banner(ws, title, len(items), "weekly_gap", len(cols), lang=lang)
+    _write_header(ws, cols)
+
+    def _pic(it):
+        p = it.get("pic") or it.get("pics")
+        return ", ".join(str(x) for x in p) if isinstance(p, (list, tuple)) else (p or "")
+
+    rows = [
+        [
+            idx + 1, it.get("rlog_id", ""), it.get("ma_cn", ""), it.get("ten_cn", ""),
+            it.get("module", ""), process_code(it), it.get("fitgap", ""),
+            it.get("phase", ""), it.get("status", ""), _pic(it),
+            it.get("start", ""), it.get("end", ""),
+        ]
+        for idx, it in enumerate(items)
+    ]
     _write_data(ws, rows, n_cols=len(cols))
     _finalize_sheet(ws, len(rows), len(cols))

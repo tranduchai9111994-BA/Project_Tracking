@@ -6,7 +6,8 @@ Rule nghiệp vụ:
   1. Phase in-scope (chưa Closed/Cancelled + có status hoặc Start/End)
   2. Predecessor gate: phase liền trước Closed (phase đầu: luôn tới lượt)
   3. Start đã đến (start <= today). Không có Start: chỉ khi End <= today
-     hoặc status đang làm (Open / Assigned / In-progress).
+     hoặc status đang làm thật (Open / Assigned / In-progress) — **không**
+     gồm "Not Started" đã map sang Open/Assigned (chưa tới ngày bắt đầu).
   Không flag khi Start còn ở tương lai.
 """
 from __future__ import annotations
@@ -34,12 +35,18 @@ def has_phase_start_arrived(pd: PhaseData, today: date) -> bool:
 
     - Có Start → ``start <= today`` (Start tương lai → False).
     - Không có Start → End đã đến (``end <= today``) hoặc status
-      Open / Assigned / In-progress.
+      Open / Assigned / In-progress **thật** (không phải Not Started map sang).
+    - ``from_not_started`` + chưa có Start/End tới hạn → False.
+      (VD PR.FR.49: Analysis Closed, Dev = Not Started, chưa có Dev Start
+      → không đếm thiếu PIC; PRM.FR.53: Dev Start 17/08 > today → False.)
     """
     if pd.start_date is not None:
         return pd.start_date <= today
     if pd.end_date is not None and pd.end_date <= today:
         return True
+    # Not Started map → Open/Assigned nhưng chưa phải "đang làm" — đợi Start/End.
+    if getattr(pd, "from_not_started", False):
+        return False
     st = (pd.status or "").strip().lower()
     return st in _ACTIVE_NO_START_STATUSES
 

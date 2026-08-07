@@ -82,8 +82,11 @@ def compute_weekly_gap(
         if not ma:
             continue
 
-        # FIT/GAP filter
-        row_fitgap = str(row.meta.get("fitgap") or "").strip().upper()
+        # FIT/GAP filter — parser lưu key "fit_gap"; giữ "fitgap" làm fallback
+        # cho data cũ (cùng cách đọc như generic_chart).
+        row_fitgap = str(
+            row.meta.get("fit_gap") or row.meta.get("fitgap") or ""
+        ).strip().upper()
         if fg_norm == "gap" and row_fitgap != "GAP":
             continue
         if fg_norm == "fit" and row_fitgap != "FIT":
@@ -115,7 +118,7 @@ def compute_weekly_gap(
                 continue
 
             start = _safe_date(pd.start_date)
-            pic = str(pd.pic or "").strip()
+            pic = ", ".join(pd.pics or [])
             rlog_id = str(
                 row.meta.get("rlog_id") or row.meta.get("fid") or ""
             ).strip()

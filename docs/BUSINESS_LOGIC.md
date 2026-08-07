@@ -1,6 +1,6 @@
 # Business Logic — Rule nghiệp vụ end-to-end
 
-> Cập nhật: **2026-08-01**. Rule triển khai trong `analyzer/*` (+ FE filter).  
+> Cập nhật: **2026-08-04**. Rule triển khai trong `analyzer/*` (+ FE filter).  
 > Không hardcode tên cột Excel — luôn qua `ParsedData` / `PhaseGroup.task_type`.
 
 ---
@@ -11,10 +11,15 @@
 
 1. Đọc header row 1.
 2. Phase group = pattern `PhaseName - Attribute` (Start, End, Status, PIC, Estimate MH, Note, RlogID, Defect…).
-3. Meta: Module, Priority, Complexity, FIT/GAP, Giai đoạn, Tên CN, Mã CN, Quy trình, Mã dự án… (keyword match).
+3. Meta: Module, Priority, Complexity, FIT/GAP, Giai đoạn, Tên CN, Mã CN, Quy trình, FID, Mã dự án… (keyword match).
 4. Status số (1, 2, 8…) ở cột Status → bỏ qua (Estimate MH lệch cột).
 5. Estimate MH: reject datetime / outlier lớn; log `estimate_mh_rejected`.
 6. PIC: split `,` `;` `+` `\n`; blacklist token status lệch cột.
+7. **Normalize status** (`_normalize_status(value, has_pic)`):
+   - Canonical: Open, Assigned, In-progress, Resolved, Closed, Pending, Cancelled
+   - **Not Started / Chưa bắt đầu:** không PIC → `Open`; có PIC → `Assigned`
+   - Alias tĩnh: Finished/Done/Complete/Hoàn thành → `Closed`; In Progress → `In-progress`; …
+   - Status lạ / unknown → `None` (blank)
 
 **Task type** (`PhaseGroup.task_type`): map regex tên phase → Phân tích / Lập trình / Kiểm thử / Cấu hình UAT / UAT / Tài liệu / Cấu hình Golive.
 
@@ -55,16 +60,31 @@ DQ blank PIC / missing deadline cùng chiều dùng chung gate.
 
 ## 4. Stalled (đình trệ)
 
-**Module:** `analyzer/stalled.py`
+**Module:** `analyzer/stalled.py` (+ `dashboard_engine._stalled_tasks`, `drill_down._filter_stalled`, `risk_scorer`)
 
-Transition “phase trước Closed → phase chờ chưa start” chỉ **stalled** khi:
+Transition **stalled** khi:
 
-1. Phase trước = Closed  
-2. Phase chờ status None / Open (chưa làm)  
-3. **End của phase chờ tồn tại và `end < today`**  
-4. Function **chưa** fully done (phase cuối Closed **hoặc** mọi phase ∈ {Closed, Cancelled})
+1. Phase trước = **Closed**
+2. Phase sau chưa bắt đầu (`None` / `Open` / thiếu phase)
+3. Function **chưa** fully done (phase cuối Closed **hoặc** mọi phase ∈ {Closed, Cancelled})
+4. **Gate thêm:** mọi phase **trước** index hiện tại đã Closed/Cancelled (`prev_phases_all_closed`)  
+   → nếu Analysis chưa Closed thì **không** flag stalled các cặp phase phía sau
 
-**Không End** trên phase chờ → **không** stalled.
+**Nới rule (2026-08):** **không** yêu cầu End của phase chờ đã quá.  
+`waiting_phase_deadline_passed` vẫn tồn tại (helper) nhưng **không** còn là điều kiện bắt buộc của `is_stalled_transition`.
+
+---
+
+## 4b. Module overview — Còn lại & Đánh giá
+
+**Module:** `dashboard_engine._one_overview_entry` + `drill_down` (`scope`)
+
+| Trường | Ý nghĩa |
+|--------|---------|
+| **Còn lại** | Function chưa Closed **phase cuối** (Golive…) |
+| **Drill mặc định** | `scope=remaining` — chỉ list khớp cột Còn lại |
+| **Filter Tất cả** | `scope=all` — toàn module/process |
+| **risk_level** | Theo **%** overdue / stalled (không flag risk chỉ vì `stalled_count > 0`): risk nếu overdue>20% **hoặc** stalled>20%; warning nếu overdue>10% / stalled>10% / progress<50%; còn lại safe. `risk_reason` cho tooltip. |
 
 ---
 
@@ -79,7 +99,166 @@ Transition “phase trước Closed → phase chờ chưa start” chỉ **stall
 | Estimate MH lệch duration | MH vs khoảng Start–End bất thường |
 | Invalid status / duplicate… | Severity High / Medium / Low |
 
+### Bỏ qua function chưa tới deadline Analysis (rule PMO 06/08/2026b)
+
+Gate theo phase **Phân tích** (`task_type` / tên chứa `analy`):
+
+| Tình trạng Analysis | DQ |
+|---|---|
+| Có End/Start **> today** (chưa tới deadline) | **Skip toàn bộ** function — không đưa lên DQ |
+| Đã tới deadline nhưng **chưa Closed** | Chỉ flag issue của **phase Analysis** («cái gần nhất»). Không flag Config / Document / Dev overlap phía sau — phân tích chưa xong thì task sau chưa actionable |
+| **Closed** (hoặc không có phase Analysis) | Quét DQ bình thường |
+
+Áp dụng trong `compute_data_quality`, `count_missing_deadlines`, `count_anomalies`.
+
+### Bỏ qua function đã Closed toàn bộ (rule PMO 06/08/2026)
+
+`is_row_fully_done(row)` = True ⇔ có ít nhất 1 phase `Closed`/`Cancelled` **và**
+không phase nào ở trạng thái active (`Open`/`Assigned`/`In-progress`/`Resolved`/
+`Pending`). Blank status coi như "phase không áp dụng" — không cản kết luận done.
+
+Những row fully-done **bị skip toàn bộ** trong `compute_data_quality`,
+`count_missing_deadlines`, `count_anomalies`:
+
+- Không flag `missing_deadline`, `blank_pic`, `blank_priority`, `blank_complexity`,
+  `blank_fitgap`, `phase_overlap`, `estimate_vs_duration`, `closed_no_end`,
+  `end_before_start`, `invalid_status`.
+- Không tính vào `by_severity` / `by_code` / `affected_rows`; nhưng **vẫn tính
+  vào `total_rows` và `clean_rows`** để `clean_pct` phản ánh đúng "bao nhiêu
+  function không có issue".
+- Không tính vào duplicate: nếu tất cả copies của cùng `ma_cn` đều fully-done
+  thì duplicate không còn actionable → không đếm. Chỉ khi ít nhất 2 copies vẫn
+  chưa done mới flag `duplicate_ma_cn` cho các copy chưa done đó.
+
+Lý do: MPHG có 1310+ issue DQ, đa số là function đã đóng nhiều tháng trước, ép
+PM backfill Priority/FIT-GAP không còn actionable. Rule này bám sát nguyên tắc
+"DQ dùng để clean data trước khi báo cáo cấp trên" — báo cáo là cho công việc
+đang chạy, không phải xới lại kho đóng.
+
 UI: filter Module/severity; **highlight** badge trên Module overview / Matrix; help topic `dataquality`.
+
+---
+
+## 5b. FID Check (Issues hub)
+
+**Module:** `analyzer/fid_check.py` · API `/fid-check` · section `section-fid-check`
+
+Khi phase **Dev** (tên chứa dev/coding) đã **Closed**:
+
+- `missing_fid` — cột FID trống  
+- `duplicate_fid` — cùng FID trên >1 function  
+
+Export FL re-import có thể tô vàng cột FID (`fid_issues=1`).
+
+### Hai chế độ xuất cho tab issue (2026-08d)
+
+Mỗi tab issue cho chọn 2 kiểu file, **chỉ gồm record có vấn đề của đúng tab đó**:
+
+| Chế độ | Endpoint | Nội dung | Import lại được? |
+|---|---|---|---|
+| **Danh sách lỗi** | `/export-fid-issues` (FID), `/export-overdue`, `/export-stalled`, `/export-data-quality`, `/export-chart` | Đúng các cột của lưới + 1 cột trống để điền tay | ❌ sheet `Loi_FID` |
+| **FL để import** | `/export-fl-reimport?kinds=<kind>` | FL đầy đủ 65 cột, header dòng 1, tô vàng ô cần sửa | ✅ sheet `Function List` |
+
+`kinds` ∈ `overdue \| unassigned \| stalled \| dq \| fid` (comma-sep). **Không truyền
+`kinds` → union đầy đủ như trước** để nút «Xuất FL chỉnh sửa» ở Archive không đổi
+hành vi. Trước khi có `kinds`, đứng ở tab Thiếu FID bấm xuất ra **224–256 dòng**
+của mọi loại issue trong khi chỉ có **47 dòng** lỗi FID.
+
+Filter cục bộ của widget cũng được forward để file khớp bảng:
+
+| Param | Tab | Field so khớp |
+|---|---|---|
+| `l_module` | overdue / unassigned / stalled | `module` |
+| `l_phase`, `l_pic` | overdue | `phase`, `pic` |
+| `l_waiting_phase` | stalled | `waiting_phase` |
+| `fid_module`, `fid_type` | FID | `module`, `issue_type` |
+
+`pic` trong `overdue_list` là **list** nên bộ so khớp phải kiểm tra giao nhau, không
+so string — so string sẽ luôn ra 0 dòng.
+
+### Cảnh báo tụt số dòng khi upload (2026-08d)
+
+Upload **thay thế toàn bộ** dữ liệu project, **không merge** theo Mã CN. Việc thu
+nhỏ file «FL để import» xuống vài chục dòng làm rủi ro upload nhầm nặng hơn: dashboard,
+badge, EVM sai ngay mà không có dấu hiệu gì. Nay nếu file mới có số dòng
+`< ROW_DROP_WARN_RATIO` (0.70) so với bản upload trước → warning `row_count_drop`
+mức `critical`, kèm tên/số dòng bản trước và hướng dẫn khôi phục snapshot.
+
+Chỉ cảnh báo, **không chặn** — thu hẹp scope thật cũng là việc hợp lệ. Cảnh báo
+critical hiển thị bằng **banner cố định** `#uploadCriticalWarn` chứ không phải toast,
+vì toast tự tắt sau 3.5s là quá yếu cho lỗi mất dữ liệu (và chỉ có 1 element toast
+dùng chung nên nhiều cảnh báo sẽ đè nhau).
+
+### Module "không dùng FID" (2026-08d)
+
+Một số module không dùng FID (VD ở MPHG: `APP`, `ESS` — 0/14 và 0/4 row có FID),
+nên `missing_fid` cho chúng là noise. Backend trả thêm:
+
+| Field | Nội dung |
+|---|---|
+| `module_stats` | `{module: {rows, with_fid, dev_closed}}` |
+| `modules_without_fid` | module có `with_fid == 0` |
+
+UI bỏ check các module này theo mặc định. Điều kiện suy từ **dữ liệu**, không
+hardcode mã module — FL đổi mã hoặc dự án khác vẫn đúng.
+
+Đánh đổi đã chấp nhận: module nhỏ mà team chỉ *chưa kịp* điền FID cũng bị coi là
+"không dùng FID" và ẩn mặc định. Giảm thiểu bằng banner ghi rõ module bị ẩn kèm
+lý do + lựa chọn được nhớ theo project, PM chỉnh 1 lần là xong. Nếu **mọi**
+module đều `with_fid == 0` (VD file thiếu cột FID) thì check hết — thà hiện dư
+còn hơn bảng trống làm PM tưởng đã đủ FID.
+
+Filter cục bộ (`fid_module`, `fid_type`) áp cả vào `export-fl-reimport` để file
+xuất khớp bảng. Module rỗng đi qua wire bằng token `__no_module__` (CSV không
+chở được chuỗi rỗng), UI hiển thị `(Chưa có Module)`.
+
+4 card tổng hợp chạy theo filter, kèm ghi chú `toàn bộ: N`. Badge sidebar **cố
+ý** giữ số toàn bộ — badge là chỉ báo "dự án còn N vấn đề" như các tab issue khác.
+
+---
+
+## 5b2. Checklist lấy source test Rlog (Issues hub)
+
+**Module:** `analyzer/source_checklist.py` · API `/source-checklist` · section `section-source-checklist`
+
+Quy trình: mỗi Rlog có phase Dev **đến hạn** (End date rơi vào lookback, không cần Dev.Closed) đều phải làm checklist lấy source đưa lên môi trường test, **người lấy source là người config local**. Bỏ ràng buộc Dev.Closed để Config Local chuẩn bị sớm ngay khi dev push — tránh chờ dev đóng phase mới làm.
+
+| Khái niệm | Logic |
+|-----------|--------|
+| Ngày Dev đến hạn | End date của phase Dev, **không phụ thuộc Status** (chỉ loại `Cancelled`) — thay đổi Aug 2026, trước đây yêu cầu `Closed` |
+| Field payload | `coded_date` (giữ tên BC — nghĩa mới = End date Dev), thêm `dev_status` để UI phân biệt Closed vs In-progress |
+| Phase người lấy source | Auto-detect tên chứa `local` + (`config`/`cấu hình`/`cfg`); fallback phase ngay sau Dev (`taker_phase_source = next_after_dev`) |
+| Đã lấy source | Phase taker có PIC **và** đã bắt đầu (có Start, hoặc Status ∈ Assigned/In-progress/Resolved/Closed/Pending) |
+| `no_taker` | Phase taker không có PIC → severity **high** |
+| `not_started` | Có PIC nhưng chưa Start và Status Open/trống → **medium**, ≥3 ngày kể từ Dev đến hạn → **high** |
+| `no_taker_phase` | Function thiếu hẳn phase taker → **high** |
+| Không cần lấy | Dev.Status = **Cancelled** hoặc phase taker **Cancelled** → `not_required`, không cảnh báo |
+| Cửa sổ quét | `lookback_days` mặc định **14** (clamp 1–365); ngày ngoài cửa sổ (kể cả tương lai) đếm vào `out_of_window` |
+| Scope Rlog | Theo `rlog_weekly`: có RlogID filled → chỉ function có RlogID; ngược lại mọi function |
+
+Output group 2 cấp: `days[]` (sort giảm dần theo ngày, pending xếp trước done trong ngày) → `items[]`.
+
+---
+
+## 5c. Thời gian dài (Duration flag)
+
+**Module:** `analyzer/duration_flag.py` · API `/duration-flag` · section `section-duration-flag`
+
+Phase có cả Start + End, status **chưa** Closed/Cancelled, `(end - start).days > threshold` (mặc định **60**). Bỏ outlier date. Phase đã Closed dù kế hoạch dài ngày cũng **không** đưa vào (đã xong — không actionable). UI chỉnh ngưỡng + filter phase.
+
+---
+
+## 5d. Báo cáo tuần GAP
+
+**Module:** `analyzer/weekly_gap_report.py` + `exporter/weekly_gap_exporter.py`  
+API `/weekly-gap-report`, `/export-weekly-gap` · section `section-weekly-gap`
+
+**“Sẽ xong tuần này”** khi phase chưa Closed/Cancelled và:
+
+- End nằm trong tuần Mon–Fri của `week_offset`, **hoặc**
+- Status = In-progress và End ≤ cuối tuần  
+
+Filter FIT/GAP/All. Excel: Sheet1 pivot Module×Phase; Sheet2 chi tiết (vàng In-progress, cam quá hạn).
 
 ---
 
@@ -175,10 +354,75 @@ Khác `advanced_metrics.compute_baseline_variance` (Planned/Actual **cùng file*
 SV (ngày) = end_hiện_tại − end_baseline
 ```
 
-- Baseline = snapshot được đánh dấu (`baseline_snapshot_id` trong settings).  
+- Baseline = bản đã chốt trong chuỗi baseline (mục 11a); `baseline_snapshot_id` giờ
+  chỉ còn là con trỏ "baseline đang hiệu lực" cho tương thích ngược.
 - Closed → End (fallback last_updated); Cancelled bỏ qua.  
 - SV > 0 = trễ; < 0 = sớm. Chỉ khi cả hai bên có End.  
 - Có rollup theo function / milestone / module.
+
+---
+
+## 11a. Chuỗi baseline bất biến (re-baseline)
+
+**Module:** `analyzer/baseline_manager.py`
+
+Baseline không còn là một field trỏ vào `snapshots/`. Mỗi lần PM bấm «Chốt baseline»,
+file `.xlsx` và pickle được **copy** sang `uploads/projects/<slug>/baselines/` kèm
+`sha256` và `version` tăng dần (v1, v2, v3...).
+
+Lý do phải copy chứ không trỏ:
+
+| Rủi ro của cách cũ | Cách chuỗi baseline xử lý |
+|---|---|
+| Snapshot bị prune khi vượt cap (`MAX_SNAPSHOTS`) → baseline biến mất | File nằm ngoài `snapshots/` nên prune không với tới |
+| Upload lần 2 cùng ngày ghi đè snapshot → nội dung baseline âm thầm đổi | Bản chốt giữ nguyên; lệch checksum chỉ bật cờ `source_drifted` để UI cảnh báo |
+
+- `resolve_latest(as_of)` = baseline có `snapshot_date` lớn nhất mà `<= as_of`.
+  Đây chính là "baseline gần nhất" — bản mới kéo về sẽ so với nó.
+- Xóa 1 baseline → con trỏ legacy tự lùi về bản còn lại gần nhất.
+- Project cũ chỉ có `baseline_snapshot_id`: lần đầu đọc sẽ tự pin bản đó vào chuỗi
+  (migration êm). Nếu file snapshot đã mất thì fallback đường cũ, không raise.
+
+## 11b. Mốc so sánh và delta bảng Module
+
+**Module:** `analyzer/compare_base.py` + `analyzer/module_delta.py`
+
+Mốc so sánh có 4 chế độ, vì "bản trước" và "tuần trước" trong hệ thống này KHÁC nhau
+(snapshot chỉ 1 bản/ngày và chỉ sinh khi upload/sync):
+
+| mode | Chọn gì | Nhãn ví dụ |
+|---|---|---|
+| `baseline` | baseline gần nhất đã chốt | `Baseline v2 — Approved 07 · 01/07/2026` |
+| `week` | bản gần nhất có ngày `<= today − 7` | `Tuần trước · 29/07/2026` |
+| `previous` | `snapshots[1]` (quy ước cũ của function-diff) | `Bản trước · 03/08/2026` |
+| `date` | 1 bản cụ thể do user chọn | `Bản 20/07/2026` |
+
+Không tìm được mốc → trả `error` tiếng Việt, không raise; UI hiện banner và tắt delta.
+
+Delta join theo `(module, process)` trên hai list do `_overview_by()` sinh ra (không
+tự tính lại để khỏi lệch công thức với bảng gốc). Mỗi nhóm có 8 số:
+
+```
+total_delta / total_delta_pct
+progress_delta (điểm phần trăm) / progress_delta_pct (tương đối)
+overdue_delta / overdue_delta_pct
+remaining_delta / remaining_delta_pct
+```
+
+Quy ước bắt buộc:
+
+- **Tiến độ đã là phần trăm** → chiều "số lượng" của nó là **điểm phần trăm** (pp):
+  72% → 78% là `+6pp`, không phải `+6%`. Chiều "%" mới là tương đối (`+8.3%`).
+- `*_delta_pct` = `None` khi giá trị mốc bằng 0 → UI hiện `—`, không chia 0.
+- Nhóm chỉ có ở bản hiện tại → `is_new=True`, mọi delta `None` (hiện "Mới", không `+100%`).
+- Nhóm chỉ có ở bản mốc → vào `removed[]` và hiện thành ghi chú dưới bảng, không chèn
+  row giả để không phá drill-down.
+- `polarity` quyết định màu: Tiến độ tăng là tốt, Trễ tăng là xấu, Còn lại giảm là tốt,
+  SL tăng là trung tính (dấu hiệu scope creep → tô cam).
+- Global filter được áp lên **cả** bản mốc trước khi tính, nếu không hai bên so trên hai
+  tập function khác nhau.
+- Module bị **đổi tên** giữa hai bản sẽ hiện thành một nhóm mới + một nhóm đã mất
+  (chưa map tên).
 
 ---
 
@@ -334,6 +578,7 @@ Risk đa chiều: overdue, unassigned, stalled, DQ high, risk score, Rlog thiế
 - Weekly PPT: done / next / risk.  
 - Auto-hydrate nếu có file trong `pm/` thiếu JSON.  
 - Join FL optional (module/PIC).
+- **Gantt lịch trình PM (Phase A–B):** UI bars từ `plan.schedule` Start–End; overdue khi chưa xong + End < today; actual slip khi có Ngày hoàn thành.
 
 → [PM_DIMENSION_GUIDE.md](PM_DIMENSION_GUIDE.md).
 

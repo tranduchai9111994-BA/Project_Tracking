@@ -38,6 +38,18 @@ from analyzer.unassigned import is_unassigned_phase
 _DONE_STATUSES = frozenset({"Closed", "Cancelled"})
 
 
+def _multi_values(val: Any) -> list[str]:
+    """Tách filter multi-value: list, hoặc string "A,B,C" → ["A", "B", "C"]."""
+    if not val:
+        return []
+    if isinstance(val, (list, tuple, set)):
+        raw: list[str] = []
+        for it in val:
+            raw.extend(_multi_values(it))
+        return raw
+    return [x.strip() for x in str(val).split(",") if x.strip()]
+
+
 def _is_overdue(
     pd: PhaseData,
     today: date,
@@ -601,20 +613,31 @@ def _filter_unassigned(data: ParsedData, filters: dict, today: date) -> list[dic
 
     Đồng bộ ``analyzer.unassigned.is_unassigned_phase`` (in-scope + predecessor
     Closed + Start đã đến). Card summary và drill cùng rule → count khớp.
+
+    Optional filter (all support multi-value: list, hoặc "A,B,C"):
+      - ``module``: khớp giao nhau với set giá trị truyền vào.
+      - ``phase``: khớp giao nhau (mặc định UI bỏ tick Document — giữ scope
+        đang xem trên bảng «Chưa PIC»).
+      - ``status``: match Status của phase thiếu PIC (Open/Assigned/In-progress/…).
+        Đồng bộ với dropdown filter cục bộ trên section «Chưa PIC» — user
+        drill từ bảng đang lọc thì modal chi tiết cũng phải cùng scope.
     """
-    module = filters.get("module", "")
-    phase_f = filters.get("phase", "")
+    modules = set(_multi_values(filters.get("module")))
+    phases_f = set(_multi_values(filters.get("phase")))
+    status_f = str(filters.get("status") or "").strip()
     phase_order = data.all_phases
     records = []
     for row in data.rows:
-        if module and row.meta.get("module") != module:
+        if modules and str(row.meta.get("module") or "").strip() not in modules:
             continue
         for phase_name, pd in row.phases.items():
-            if phase_f and phase_name != phase_f:
+            if phases_f and phase_name not in phases_f:
                 continue
             if not is_unassigned_phase(
                 row, phase_name, pd, phase_order, today,
             ):
+                continue
+            if status_f and str(pd.status or "").strip() != status_f:
                 continue
             records.append(_row_to_dict(
                 row, phase_name=phase_name, today=today,
@@ -630,17 +653,23 @@ def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
     Function bị kẹt: phase trước Closed + phase sau None/Open = đình trệ.
     Chỉ xét cặp (curr→next) khi mọi phase TRƯỚC curr đã Closed.
     Bỏ qua function đã xong toàn trình.
-    Optional filter: phase = completed_phase hoặc waiting_phase.
+
+    Optional filter:
+      - `phase`: khớp completed_phase HOẶC waiting_phase (giữ nghĩa cũ).
+      - `waiting_phase`: chỉ khớp phase đang chờ — dùng cho filter Phase chờ
+        của section Đình trệ, để Excel/drill ra đúng tập đang hiện trên bảng.
+      - `module`: nhận nhiều giá trị cách nhau bằng dấu phẩy.
     """
     from analyzer.gantt_calendar import _is_outlier_date
     from analyzer.stalled import is_fully_closed, is_stalled_transition, prev_phases_all_closed
 
     phase_f = filters.get("phase", "")
-    module = filters.get("module", "")
+    waiting_f = _multi_values(filters.get("waiting_phase"))
+    modules = set(_multi_values(filters.get("module")))
     phase_names = [pg.name for pg in data.phase_groups]
     result = []
     for row in data.rows:
-        if module and row.meta.get("module") != module:
+        if modules and str(row.meta.get("module") or "").strip() not in modules:
             continue
         if is_fully_closed(row, phase_names):
             continue
@@ -651,6 +680,8 @@ def _filter_stalled(data: ParsedData, filters: dict, today: date) -> list[dict]:
             curr = phase_names[i]
             nxt = phase_names[i + 1]
             if phase_f and phase_f not in (curr, nxt):
+                continue
+            if waiting_f and nxt not in waiting_f:
                 continue
             curr_pd = row.phases.get(curr)
             next_pd = row.phases.get(nxt)
@@ -880,9 +911,16 @@ def build_title(chart: str, filters: dict) -> str:
             f" — Phase {filters['phase']}" if filters.get("phase") else ""
         )
     if chart == "stalled":
-        return "Task bị Đình trệ" + (
-            f" — Phase {filters['phase']}" if filters.get("phase") else ""
-        )
+        parts = []
+        if filters.get("phase"):
+            parts.append(f"Phase {filters['phase']}")
+        waiting = _multi_values(filters.get("waiting_phase"))
+        if waiting:
+            parts.append(f"Phase chờ: {', '.join(waiting)}")
+        mods = _multi_values(filters.get("module"))
+        if mods:
+            parts.append(f"Module {', '.join(mods)}")
+        return "Task bị Đình trệ" + (" — " + " · ".join(parts) if parts else "")
     if chart == "bottleneck":
         ph = filters.get("phase", "")
         parts = [f"Bottleneck (stuck) — Phase {ph}" if ph else "Bottleneck (stuck)"]

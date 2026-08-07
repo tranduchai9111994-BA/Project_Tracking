@@ -24,6 +24,22 @@ def test_summary_total_functions(metrics):
     assert metrics["summary"]["total_functions"] == 6
 
 
+def test_summary_issue_tab_counts(metrics):
+    """Badge tab Issues hub — đủ 9 key số nguyên không âm."""
+    tc = metrics["summary"].get("issue_tab_counts") or {}
+    expected_keys = {
+        "overdue", "unassigned", "stalled", "aging_wip", "dq",
+        "fid_issues", "source_checklist", "duration_flag", "weekly_gap",
+    }
+    assert expected_keys.issubset(tc.keys())
+    for k in expected_keys:
+        assert isinstance(tc[k], int)
+        assert tc[k] >= 0
+    assert tc["overdue"] == metrics["summary"]["total_overdue"]
+    assert tc["unassigned"] == metrics["summary"]["unassigned_count"]
+    assert tc["stalled"] == len(metrics["stalled_tasks"]["items"])
+
+
 def test_summary_overdue_semantics(metrics):
     """
     Function unique có overdue:

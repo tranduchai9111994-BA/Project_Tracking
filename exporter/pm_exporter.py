@@ -103,6 +103,8 @@ def export_pm_report(
     if plan:
         _write_milestones(wb, plan)
         _write_schedule(wb, plan)
+        _write_gantt_master(wb, plan)
+        _write_gantt_detail(wb, plan)
         _write_deliverables(wb, plan)
         _write_teams(wb, plan)
     if weekly:
@@ -219,12 +221,13 @@ def _write_schedule(wb, plan: dict) -> None:
     ws.sheet_view.showGridLines = False
     headers = [
         "Giai đoạn", "Công việc", "Từ ngày", "Đến ngày",
+        "Trạng thái", "Hoàn thành", "% Hoàn thành",
         "PIC FPT", "Hỗ trợ FPT", "PIC KH", "Hỗ trợ KH", "Ghi chú", "Phase header?",
     ]
-    _set_col_widths(ws, [18, 36, 12, 12, 16, 14, 14, 14, 28, 12])
+    _set_col_widths(ws, [18, 36, 12, 12, 14, 12, 10, 16, 14, 14, 14, 28, 12])
 
-    _style_title_bar(ws, 1, "LỊCH TRÌNH — KeHoachDuAn", 10)
-    ws.merge_cells("A2:J2")
+    _style_title_bar(ws, 1, "LỊCH TRÌNH — KeHoachDuAn", 13)
+    ws.merge_cells("A2:M2")
     ws["A2"] = f"Nguồn: {plan.get('source_filename') or '—'}  ·  Import: {plan.get('imported_at') or '—'}"
     ws["A2"].font = GUIDE_FONT
     ws["A2"].alignment = LEFT_CENTER
@@ -237,6 +240,9 @@ def _write_schedule(wb, plan: dict) -> None:
             item.get("name") or "",
             item.get("start") or "",
             item.get("end") or "",
+            item.get("status") or "",
+            item.get("actual_end") or "",
+            item.get("percent_complete") if item.get("percent_complete") is not None else "",
             ", ".join(item.get("pic_fpt") or []),
             ", ".join(item.get("support_fpt") or []),
             ", ".join(item.get("pic_client") or []),
@@ -248,12 +254,131 @@ def _write_schedule(wb, plan: dict) -> None:
         for c, v in enumerate(vals, 1):
             cell = ws.cell(r, c, v)
             cell.font = BODY_BOLD if is_phase else BODY_FONT
-            cell.alignment = CENTER if c in (3, 4, 10) else LEFT_CENTER
+            cell.alignment = CENTER if c in (3, 4, 6, 7, 13) else LEFT_CENTER
         fill = PHASE_FILL if is_phase else (ALT_ROW_FILL if i % 2 == 0 else None)
-        _style_body_row(ws, r, 10, fill=fill)
+        _style_body_row(ws, r, 13, fill=fill)
         ws.row_dimensions[r].height = 18
 
     ws.freeze_panes = "A4"
+    ws.print_title_rows = "1:3"
+
+
+def _write_gantt_master(wb, plan: dict) -> None:
+    """Sheet khung tuần — ô tô khi task giao tuần (Phase C export)."""
+    from analyzer.pm_plan_gantt import build_pm_gantt_view
+
+    view = build_pm_gantt_view(plan)
+    if not view or not view.get("week_axis"):
+        return
+    axis = view["week_axis"]
+    rows = (view.get("master_grid") or {}).get("rows") or []
+    n_weeks = len(axis)
+    if not rows or not n_weeks:
+        return
+
+    ws = wb.create_sheet("Gantt Master tuần")
+    ws.sheet_view.showGridLines = False
+    headers = ["STT", "Công việc"] + [w.get("label") or f"W{i+1}" for i, w in enumerate(axis)]
+    widths = [8, 42] + [5] * n_weeks
+    _set_col_widths(ws, widths)
+
+    _style_title_bar(ws, 1, "GANTT MASTER — khung tuần (từ lịch trình)", len(headers))
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+    ws["A2"] = (
+        f"Nguồn: {plan.get('source_filename') or '—'}  ·  "
+        f"Project start: {view.get('project_start') or '—'}"
+    )
+    ws["A2"].font = GUIDE_FONT
+    ws["A2"].alignment = LEFT_CENTER
+
+    _header_row(ws, headers, row=3)
+    active_fill = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
+    overdue_fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
+    done_fill = PatternFill(start_color="A9D18E", end_color="A9D18E", fill_type="solid")
+
+    for i, row in enumerate(rows, 1):
+        r = i + 3
+        ws.cell(r, 1, row.get("stt") or "")
+        ws.cell(r, 2, row.get("name") or "")
+        ws.cell(r, 1).alignment = CENTER
+        ws.cell(r, 2).alignment = LEFT_CENTER
+        is_phase = row.get("kind") == "phase_header"
+        ws.cell(r, 2).font = BODY_BOLD if is_phase else BODY_FONT
+        active_set = set(row.get("week_active") or [])
+        for wi, w in enumerate(axis):
+            c = wi + 3
+            cell = ws.cell(r, c)
+            cell.alignment = CENTER
+            if w.get("index") in active_set:
+                if row.get("done"):
+                    cell.fill = done_fill
+                    cell.value = "■"
+                elif row.get("overdue"):
+                    cell.fill = overdue_fill
+                    cell.value = "■"
+                else:
+                    cell.fill = active_fill
+                    cell.value = "■"
+        _style_body_row(ws, r, len(headers), fill=PHASE_FILL if is_phase else None)
+
+    ws.freeze_panes = "C4"
+    ws.print_title_rows = "1:3"
+
+
+def _write_gantt_detail(wb, plan: dict) -> None:
+    """Sheet lưới ngày chi tiết (Phase D export)."""
+    from analyzer.pm_plan_gantt import build_pm_gantt_view
+
+    view = build_pm_gantt_view(plan)
+    if not view or not view.get("day_axis"):
+        return
+    axis = view["day_axis"][:90]  # giới hạn cột để file nhẹ
+    rows = (view.get("day_grid") or {}).get("rows") or []
+    if not rows:
+        return
+
+    ws = wb.create_sheet("Gantt Chi tiết ngày")
+    ws.sheet_view.showGridLines = False
+    day_headers = []
+    for d in axis:
+        dt = d.get("date") or ""
+        day_headers.append(dt[5:].replace("-", "/") if len(dt) >= 10 else d.get("label") or "")
+    headers = ["STT", "Công việc"] + day_headers
+    widths = [8, 40] + [4] * len(axis)
+    _set_col_widths(ws, widths)
+
+    _style_title_bar(ws, 1, "GANTT CHI TIẾT — lưới ngày (Start–End)", len(headers))
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+    ws["A2"] = f"Nguồn: {plan.get('source_filename') or '—'}  ·  Cột ngày: {len(axis)}"
+    ws["A2"].font = GUIDE_FONT
+
+    _header_row(ws, headers, row=3)
+    active_fill = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
+    done_fill = PatternFill(start_color="A9D18E", end_color="A9D18E", fill_type="solid")
+    overdue_fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
+    axis_indices = {d["index"] for d in axis}
+
+    for i, row in enumerate(rows, 1):
+        r = i + 3
+        ws.cell(r, 1, row.get("stt") or "")
+        ws.cell(r, 2, row.get("name") or "")
+        is_phase = row.get("kind") == "phase_header"
+        ws.cell(r, 2).font = BODY_BOLD if is_phase else BODY_FONT
+        active_set = set(row.get("day_active") or []) & axis_indices
+        for wi, d in enumerate(axis):
+            c = wi + 3
+            cell = ws.cell(r, c)
+            if d.get("index") in active_set:
+                if row.get("done"):
+                    cell.fill = done_fill
+                elif row.get("overdue"):
+                    cell.fill = overdue_fill
+                else:
+                    cell.fill = active_fill
+                cell.value = "■"
+        _style_body_row(ws, r, len(headers), fill=PHASE_FILL if is_phase else None)
+
+    ws.freeze_panes = "C4"
     ws.print_title_rows = "1:3"
 
 

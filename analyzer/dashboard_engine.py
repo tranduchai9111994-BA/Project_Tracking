@@ -47,6 +47,10 @@ class DashboardEngine:
         risk_scores = pmo["risk_scores"]
         summary = self._summary(data, risk_scores)
         summary["deltas"] = self.compute_summary_deltas(summary, prev_summary)
+        stalled_tasks = self._stalled_tasks(data)
+        summary["issue_tab_counts"] = self._issue_tab_counts(
+            data, summary, len(stalled_tasks.get("items") or []),
+        )
 
         return {
             "structure": self._structure_info(data),
@@ -64,7 +68,7 @@ class DashboardEngine:
             # === V2 additions ===
             "unassigned_tasks": self._unassigned_tasks(data),
             "duration_analysis": self._duration_analysis(data, self.long_duration_threshold),
-            "stalled_tasks": self._stalled_tasks(data),
+            "stalled_tasks": stalled_tasks,
             "risk_scores": risk_scores,
             "pmo_risk": {
                 "summary": pmo["summary"],
@@ -215,8 +219,10 @@ class DashboardEngine:
         from analyzer.data_quality import (
             count_missing_deadlines, count_anomalies, compute_data_quality,
         )
-        missing_deadline_count, missing_deadline_records = count_missing_deadlines(data)
-        anomaly_count, anomaly_records = count_anomalies(data)
+        missing_deadline_count, missing_deadline_records = count_missing_deadlines(
+            data, today=self.today,
+        )
+        anomaly_count, anomaly_records = count_anomalies(data, today=self.today)
 
         # DQ High only (secondary card) — total issues đưa vào tooltip/subtitle
         dq_high_count = 0
@@ -256,6 +262,39 @@ class DashboardEngine:
             "dq_total_count": dq_total_count,
             "dq_affected_rows": dq_affected_rows,
             "deltas": {},
+        }
+
+    def _issue_tab_counts(
+        self,
+        data: ParsedData,
+        summary: dict[str, Any],
+        stalled_count: int,
+        aging_threshold: int = 14,
+    ) -> dict[str, int]:
+        """Số đếm badge trên từng tab Issues hub — toàn bộ dự án, không filter cục bộ."""
+        from analyzer.advanced_metrics import compute_aging_wip
+        from analyzer.duration_flag import compute_long_duration
+        from analyzer.fid_check import compute_fid_issues
+        from analyzer.source_checklist import compute_source_checklist
+        from analyzer.weekly_gap_report import compute_weekly_gap
+
+        aging_sm = (compute_aging_wip(data, threshold_days=aging_threshold, today=self.today)
+                    .get("summary") or {})
+        fid_sm = (compute_fid_issues(data).get("summary") or {})
+        sc_sm = (compute_source_checklist(data).get("summary") or {})
+        dur_sm = (compute_long_duration(data).get("summary") or {})
+        wg_sm = (compute_weekly_gap(data).get("summary") or {})
+
+        return {
+            "overdue": int(summary.get("total_overdue") or 0),
+            "unassigned": int(summary.get("unassigned_count") or 0),
+            "stalled": stalled_count,
+            "aging_wip": int(aging_sm.get("total_aging") or 0),
+            "dq": int(summary.get("dq_total_count") or 0),
+            "fid_issues": int(fid_sm.get("total_issues") or 0),
+            "source_checklist": int(sc_sm.get("total_pending") or 0),
+            "duration_flag": int(dur_sm.get("total") or 0),
+            "weekly_gap": int(wg_sm.get("total") or 0),
         }
 
     @staticmethod
@@ -1059,8 +1098,8 @@ class DashboardEngine:
 
     def _stalled_tasks(self, data: ParsedData) -> dict:
         """
-        Function bị kẹt: phase trước Closed, phase sau None/Open, và End
-        của phase chờ đã quá (end < today). Không End → không stalled.
+        Function bị kẹt: phase trước Closed, phase sau None/Open **và đã tới Start**
+        (Start tương lai → không đình trễ — PRM.FR.53).
         Bỏ qua function đã xong toàn trình (phase cuối Closed, hoặc mọi
         phase Closed/Cancelled). Kèm funnel Closed/phase + transition heatmap.
         """
@@ -1114,6 +1153,10 @@ class DashboardEngine:
                     "completed_phase": curr,
                     "waiting_phase": nxt,
                     "completed_date": curr_pd.end_date.isoformat() if curr_pd.end_date else "",
+                    "waiting_start_date": (
+                        next_pd.start_date.isoformat()
+                        if next_pd and next_pd.start_date else ""
+                    ),
                     "waiting_end_date": (
                         next_pd.end_date.isoformat() if next_pd and next_pd.end_date else ""
                     ),

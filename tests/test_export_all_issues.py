@@ -159,10 +159,12 @@ class TestWorkbookShape:
 
     def test_sheet_names_and_order(self, wb_path):
         wb = openpyxl.load_workbook(wb_path)
-        # Default lang=vi → tên sheet tiếng Việt (U26)
+        # Default lang=vi → tên sheet tiếng Việt (U26).
+        # Từ 2026-08d: các sheet tab Issues đứng trước, Rui_ro_cao + Bookmark
+        # (không thuộc hub Issues) dồn về cuối.
         expected = [
             "Tong_quan", "Tre_han", "Chua_PIC", "Dinh_tre",
-            "Rui_ro_cao", "Aging_WIP", "Chat_luong_DL", "Bookmark",
+            "Aging_WIP", "Chat_luong_DL", "Rui_ro_cao", "Bookmark",
         ]
         assert wb.sheetnames == expected
 
@@ -179,7 +181,7 @@ class TestWorkbookShape:
         wb = openpyxl.load_workbook(path)
         assert wb.sheetnames == [
             "Cover", "Overdue", "Unassigned", "Stalled",
-            "High_Risk", "Aging_WIP", "Data_Quality", "Bookmark",
+            "Aging_WIP", "Data_Quality", "High_Risk", "Bookmark",
         ]
 
     def test_cover_has_project_name(self, wb_path):
@@ -308,8 +310,44 @@ class TestExportAllIssuesEndpoint:
         assert r.status_code == 200
         # Load workbook từ bytes → must not raise
         wb = openpyxl.load_workbook(io.BytesIO(r.data))
-        assert len(wb.sheetnames) == 8
+        # Cover + 9 tab hub Issues + Rui_ro_cao + Bookmark
+        assert len(wb.sheetnames) == 12
         assert wb.sheetnames[0] == "Tong_quan"
+
+    def test_endpoint_co_du_sheet_cho_9_tab_issues(self, flask_client, sample_xlsx_path):
+        """Nút «Tất cả tab» phải ra file gửi được luôn — thiếu sheet nào là PM
+        lại phải xuất rời tab đó rồi gửi kèm, đúng thứ đang muốn bỏ."""
+        _upload(flask_client, sample_xlsx_path)
+        r = flask_client.get("/api/projects/default/export-all-issues")
+        assert r.status_code == 200
+        wb = openpyxl.load_workbook(io.BytesIO(r.data))
+        for name in (
+            "Tre_han", "Chua_PIC", "Dinh_tre", "Aging_WIP", "Chat_luong_DL",
+            "Thieu_Trung_FID", "Lay_Source_Test", "Thoi_Gian_Dai", "Bao_Cao_Tuan",
+        ):
+            assert name in wb.sheetnames, f"thiếu sheet {name}"
+
+    def test_sheet_moi_bi_bo_khi_caller_khong_truyen(self, tmp_path):
+        """None = không quét (bỏ sheet); [] = quét xong và sạch (giữ sheet rỗng)."""
+        path = export_all_issues(
+            project_name="P", slug="p",
+            overdue_list=[], unassigned_list=[], stalled_list=[],
+            risk_list=[], aging_wip_items=[], data_quality_issues=[],
+            bookmark_functions=[], output_dir=str(tmp_path),
+        )
+        assert "Thieu_Trung_FID" not in openpyxl.load_workbook(path).sheetnames
+
+        path2 = export_all_issues(
+            project_name="P", slug="p2",
+            overdue_list=[], unassigned_list=[], stalled_list=[],
+            risk_list=[], aging_wip_items=[], data_quality_issues=[],
+            bookmark_functions=[], output_dir=str(tmp_path),
+            fid_issues=[], source_checklist_days=[], duration_items=[],
+            weekly_gap_items=[],
+        )
+        wb2 = openpyxl.load_workbook(path2)
+        for name in ("Thieu_Trung_FID", "Lay_Source_Test", "Thoi_Gian_Dai", "Bao_Cao_Tuan"):
+            assert name in wb2.sheetnames
 
     def test_global_filter_reduces_rows(self, flask_client, sample_xlsx_path):
         _upload(flask_client, sample_xlsx_path)

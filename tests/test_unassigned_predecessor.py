@@ -154,6 +154,114 @@ def test_start_past_or_today_no_pic_flags():
     assert _ua(row_today, "Dev") is True
 
 
+def test_not_started_no_dates_no_flag():
+    """Not Started (map Open) + không Start/End → không đếm thiếu PIC.
+
+    Case PR.FR.49: Analysis Closed 03/08, Dev = Not Started, chưa có Dev Start.
+    Trước đây map Open kích hoạt fallback «đang làm» → đếm sai.
+    """
+    dev = _pd("Open", [])
+    dev.from_not_started = True
+    row = _row({
+        "Analysis": _pd("Closed", ["A"], end_off=-3),
+        "Dev": dev,
+    })
+    assert has_phase_start_arrived(dev, TODAY) is False
+    assert _ua(row, "Dev") is False
+
+
+def test_not_started_future_start_not_stalled():
+    """PRM.FR.53 — Analysis Closed, Dev Not Started Start 17/08 > today → không đình trễ."""
+    from datetime import date as _date
+    from analyzer.dashboard_engine import DashboardEngine
+    today = _date(2026, 8, 6)
+    analysis = PhaseData(
+        status="Closed", start_date=_date(2026, 8, 2), end_date=_date(2026, 8, 2),
+        pics=["NhiVN"],
+    )
+    dev = PhaseData(
+        status="Open", start_date=_date(2026, 8, 17), end_date=_date(2026, 8, 19),
+        pics=[], from_not_started=True,
+    )
+    row = FunctionRow(
+        row_num=2,
+        meta={"ma_cn": "PRM.FR.53", "ten_cn": "x", "module": "PR", "priority": "Must-have"},
+        phases={"Analysis": analysis, "Dev": dev},
+    )
+    data = ParsedData(
+        headers={}, meta_columns={},
+        phase_groups=[PhaseGroup(name="Analysis"), PhaseGroup(name="Dev")],
+        rows=[row],
+        all_phases=["Analysis", "Dev"],
+        all_modules=["PR"],
+    )
+    st = DashboardEngine(today=today)._stalled_tasks(data)
+    assert not any(i["ma_cn"] == "PRM.FR.53" for i in st["items"])
+
+
+def test_not_started_future_start_no_unassigned_flag():
+    """Not Started + Start tương lai (PRM.FR.53 pattern) → không flag thiếu PIC."""
+    from datetime import date as _date
+    today = _date(2026, 8, 6)
+    analysis = PhaseData(
+        status="Closed", start_date=_date(2026, 8, 2), end_date=_date(2026, 8, 2),
+        pics=["NhiVN"],
+    )
+    dev = PhaseData(
+        status="Open", start_date=_date(2026, 8, 17), end_date=_date(2026, 8, 19),
+        pics=[], from_not_started=True,
+    )
+    row = FunctionRow(
+        row_num=2,
+        meta={"ma_cn": "PRM.FR.53", "ten_cn": "x", "module": "PR", "priority": "Must-have"},
+        phases={"Analysis": analysis, "Dev": dev},
+    )
+    assert has_phase_start_arrived(dev, today) is False
+    assert is_unassigned_phase(row, "Dev", dev, ORDER, today) is False
+
+
+def test_not_started_past_start_still_flags():
+    """Not Started nhưng Start đã qua + thiếu PIC → vẫn flag (đã tới ngày)."""
+    from datetime import date as _date
+    today = _date(2026, 8, 20)
+    analysis = PhaseData(
+        status="Closed", end_date=_date(2026, 8, 2), pics=["A"],
+    )
+    dev = PhaseData(
+        status="Open", start_date=_date(2026, 8, 17), end_date=_date(2026, 8, 19),
+        pics=[], from_not_started=True,
+    )
+    row = FunctionRow(
+        row_num=2,
+        meta={"ma_cn": "X", "ten_cn": "x", "module": "M", "priority": "Must-have"},
+        phases={"Analysis": analysis, "Dev": dev},
+    )
+    assert has_phase_start_arrived(dev, today) is True
+    assert is_unassigned_phase(row, "Dev", dev, ORDER, today) is True
+
+
+def test_real_open_no_start_still_flags():
+    """Status Open thật (không phải Not Started) + không Start → vẫn flag.
+
+    Giữ hành vi cũ: đang Open mà quên điền Start vẫn cần báo thiếu PIC.
+    """
+    row = _row({
+        "Analysis": _pd("Closed", ["A"], end_off=-10),
+        "Dev": _pd("Open", []),
+    })
+    assert row.phases["Dev"].from_not_started is False
+    assert _ua(row, "Dev") is True
+
+
+def test_parser_sets_from_not_started_flag():
+    """Parse Excel: Not Started → status Open + from_not_started=True."""
+    from parser.excel_parser import FunctionListParser
+    p = FunctionListParser()
+    assert p._is_not_started_token("Not Started") is True
+    assert p._is_not_started_token("Open") is False
+    assert p._normalize_status("Not Started", has_pic=False) == "Open"
+
+
 def test_no_start_future_end_only_no_flag():
     """Không Start + chỉ có End tương lai (không status đang làm) → không flag."""
     row = _row({

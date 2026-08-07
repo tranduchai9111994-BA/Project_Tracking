@@ -58,3 +58,34 @@ def test_render_dashboard_still_renders_stalled_from_metrics():
     )[0]
     assert 'renderStalledSection' in rd
     assert "function renderStalledSection(" in DASHBOARD_JS
+
+
+def test_refresh_after_sync_re_fires_active_hub_tab_loaders():
+    """Sau sync, tab đang mở của mỗi hub phải re-invoke lazy loader —
+    nếu không FID / Source Checklist / Duration Flag / Weekly Gap /
+    Anomaly / EVM S-curve / PMO Risk cross-project… vẫn hiển thị data
+    cũ, buộc user hard-reload trình duyệt.
+    """
+    assert "function _refreshActiveHubTabs(" in DASHBOARD_JS
+
+    # Body của _refreshActiveHubTabs phải: quét .section-hub, tìm
+    # .tab-pane.active, gọi activateHubTab với skipStore + skipScroll
+    # (không đổi localStorage, không cuộn trang).
+    body = DASHBOARD_JS.split("function _refreshActiveHubTabs(")[1].split(
+        "function _refreshAfterSync("
+    )[0]
+    assert ".section-hub" in body
+    assert ".tab-pane.active" in body
+    assert "activateHubTab(" in body
+    assert "skipStore: true" in body
+    assert "skipScroll: true" in body
+
+    # _refreshAfterSync phải gọi _refreshActiveHubTabs SAU khi metrics
+    # đã apply (tức sau tryLoadDashboardForCurrent).
+    chunk = DASHBOARD_JS.split("async function _refreshAfterSync(")[1].split(
+        "window._refreshAfterSync"
+    )[0]
+    assert "_refreshActiveHubTabs()" in chunk
+    load_idx = chunk.index("tryLoadDashboardForCurrent(true, { cacheBust: true })")
+    hub_idx = chunk.index("_refreshActiveHubTabs()")
+    assert hub_idx > load_idx, "phải gọi _refreshActiveHubTabs SAU khi metrics đã reload"

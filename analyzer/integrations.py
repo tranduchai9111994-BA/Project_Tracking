@@ -582,6 +582,83 @@ def update_integration(project_dir: str, integration_id: str, data: dict) -> Opt
     return None
 
 
+def export_registry(project_dir: str) -> dict:
+    """Xuất toàn bộ registry JSON (không chứa secret — chỉ env prefix)."""
+    from datetime import datetime
+    items = list_integrations(project_dir)
+    return {
+        "version": 1,
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "integrations": items,
+    }
+
+
+def import_registry(project_dir: str, payload: dict, mode: str = "merge") -> dict:
+    """Import registry — merge theo id hoặc replace toàn bộ."""
+    mode = (mode or "merge").strip().lower()
+    if mode not in ("merge", "replace"):
+        raise ValueError("mode phải là merge hoặc replace")
+    if not isinstance(payload, dict):
+        raise ValueError("payload phải là object JSON")
+    incoming = payload.get("integrations")
+    if not isinstance(incoming, list):
+        raise ValueError("payload.integrations phải là array")
+    sanitized_new: list[dict] = []
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        sanitized_new.append(_sanitize_integration(item))
+    if mode == "replace":
+        _write(project_dir, {"integrations": sanitized_new})
+        return {"imported": len(sanitized_new), "mode": mode, "total": len(sanitized_new)}
+    all_data = _read(project_dir)
+    by_id = {it.get("id"): it for it in all_data.get("integrations") or [] if it.get("id")}
+    for it in sanitized_new:
+        by_id[it["id"]] = it
+    merged = list(by_id.values())
+    merged.sort(key=lambda x: (str(x.get("source_app") or "").lower(), str(x.get("name") or "").lower()))
+    _write(project_dir, {"integrations": merged})
+    return {"imported": len(sanitized_new), "mode": mode, "total": len(merged)}
+
+
+def build_curl_preview(integration: dict, endpoint: dict) -> str:
+    """Tạo curl mẫu — credential thay bằng placeholder env, không lộ secret."""
+    auth = integration.get("auth") or {}
+    method = (auth.get("method") or "").strip()
+    if method == "database":
+        return "# Database endpoint — execute SQL query (không dùng HTTP curl)"
+    base = (integration.get("base_url") or "").rstrip("/")
+    path = (endpoint.get("path") or "").strip()
+    if path and not path.startswith("/"):
+        path = "/" + path
+    url = (base + path) if base else path or "(base_url + path)"
+    http_method = (endpoint.get("http_method") or "GET").upper()
+    parts = [f"curl -sS -X {http_method}"]
+    prefix = (
+        auth.get("credential_env") or auth.get("bearer_env") or auth.get("apikey_env") or "PREFIX"
+    ).strip().upper()
+    if method == "bearer_token":
+        parts.append("-H 'Authorization: Bearer ${" + prefix + "_TOKEN}'")
+    elif method == "basic_auth":
+        parts.append("-u '${" + prefix + "_USERNAME}:${" + prefix + "_PASSWORD}'")
+    elif method == "api_key":
+        loc = (auth.get("apikey_location") or "header").lower()
+        hdr = (auth.get("apikey_header") or "X-API-Key").strip()
+        if loc == "query":
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}{hdr}=${{{prefix}_KEY}}"
+        else:
+            parts.append(f"-H '{hdr}: ${{{prefix}_KEY}}'")
+    elif method == "form_login":
+        parts.append("# form_login: curl login POST trước — session cookie dùng cho request sau")
+    params = endpoint.get("params") or {}
+    if isinstance(params, dict) and params and http_method == "GET":
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        url = f"{url}{'&' if '?' in url else '?'}{qs}"
+    parts.append(f"'{url}'")
+    return " \\\n  ".join(parts)
+
+
 def merge_endpoint_project_code_map(
     project_dir: str,
     integration_id: str,
@@ -1423,18 +1500,24 @@ def test_integration(
     if not integ:
         return {"status": "error", "message": "Không tìm thấy integration"}
 
+    import time
+    started = time.perf_counter()
+
     method = (integ.get("auth") or {}).get("method") or DEFAULT_AUTH_METHOD
     if method not in SUPPORTED_AUTH_METHODS:
         return {"status": "error",
-                "message": f"Auth method '{method}' chưa được hỗ trợ."}
+                "message": f"Auth method '{method}' chưa được hỗ trợ.",
+                "elapsed_ms": int((time.perf_counter() - started) * 1000)}
 
     # T31: database method → verify connection thay vì auth HTTP.
     if method == "database":
         result = test_database_connection(integ.get("auth") or {})
+        result["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
         _update_last_status(project_dir, integration_id, result.get("status", "error"),
                             result.get("message", ""))
         return result
 
+    session = None
     try:
         session, _extra_query, info = _prepare_authenticated_session(
             base_url=integ["base_url"],
@@ -1443,21 +1526,23 @@ def test_integration(
         )
     except AuthError as e:
         _update_last_status(project_dir, integration_id, "error", str(e))
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": str(e),
+                "elapsed_ms": int((time.perf_counter() - started) * 1000)}
     except ValueError as e:
         _update_last_status(project_dir, integration_id, "error", str(e))
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": str(e),
+                "elapsed_ms": int((time.perf_counter() - started) * 1000)}
     except requests.RequestException as e:
         msg = f"Không kết nối được: {type(e).__name__}: {str(e)[:200]}"
         _update_last_status(project_dir, integration_id, "error", msg)
-        return {"status": "error", "message": msg}
+        return {"status": "error", "message": msg,
+                "elapsed_ms": int((time.perf_counter() - started) * 1000)}
     finally:
-        # session sẽ được close ở đây nếu tồn tại — với try trên nếu raise
-        # trước khi tạo session thì cũng không sao vì Python vẫn chạy finally.
-        try:
-            session.close()  # type: ignore[has-type]
-        except Exception:
-            pass
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     ok_msg = {
         "form_login": "Đăng nhập form thành công",
@@ -1466,7 +1551,8 @@ def test_integration(
         "api_key": "API key đã nạp — thử Sync 1 endpoint để verify server chấp nhận",
     }.get(method, "OK")
     _update_last_status(project_dir, integration_id, "ok", ok_msg)
-    return {"status": "ok", "message": ok_msg, **_safe_info(info)}
+    return {"status": "ok", "message": ok_msg, "elapsed_ms": int((time.perf_counter() - started) * 1000),
+            **_safe_info(info)}
 
 
 def _fetch_endpoint(

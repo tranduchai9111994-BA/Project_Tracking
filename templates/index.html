@@ -112,6 +112,82 @@
     <select id="sidebarGroupSelect" class="hidden" aria-hidden="true" tabindex="-1"></select>
 </nav>
 
+<!-- ============ Modal: Trạng thái bản đang chạy ============
+     Trả lời 3 câu hỏi hay bị nhầm lẫn:
+       1. Server có đang chạy code mới nhất trên đĩa không? (PRODUCTION không auto-reload)
+       2. Tab này có đang giữ bundle JS cũ không? (bấm chuyển tab không nạp lại JS)
+       3. Có bản mới trên GitHub không? (chỉ báo — không tự pull)
+-->
+<div id="buildStatusModal" class="fixed inset-0 z-[70] hidden items-center justify-center bg-black/40 no-print" role="dialog" aria-modal="true" aria-labelledby="buildStatusTitle">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-[min(720px,94vw)] max-h-[88vh] flex flex-col">
+        <div class="flex items-center justify-between gap-2 px-4 py-3 border-b dark:border-slate-600">
+            <h3 id="buildStatusTitle" class="text-sm font-semibold text-gray-800 dark:text-gray-100">🔄 Bản đang chạy</h3>
+            <button type="button" onclick="closeBuildStatus()" class="text-lg leading-none px-2 text-gray-500 hover:text-gray-800" aria-label="Đóng">×</button>
+        </div>
+
+        <div class="overflow-y-auto px-4 py-3 space-y-3 text-xs flex-1">
+            <div id="buildStatusAlert" class="hidden rounded-lg border px-3 py-2 leading-relaxed"></div>
+
+            <div class="rounded-lg border border-slate-200 dark:border-slate-600 overflow-hidden">
+                <table class="w-full">
+                    <tbody id="buildStatusTable" class="divide-y divide-slate-100 dark:divide-slate-700"></tbody>
+                </table>
+            </div>
+
+            <div id="buildStatusFiles" class="hidden">
+                <div class="font-medium text-gray-700 dark:text-gray-200 mb-1">File đã sửa sau khi server khởi động</div>
+                <div id="buildStatusFilesList" class="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-3 py-2 space-y-0.5 font-mono text-[11px] max-h-40 overflow-y-auto"></div>
+            </div>
+
+            <div>
+                <div class="flex items-center justify-between gap-2 mb-1">
+                    <span class="font-medium text-gray-700 dark:text-gray-200">Bản mới trên GitHub</span>
+                    <button type="button" id="btnCheckGithub" onclick="checkGithubUpdate()"
+                            class="text-[11px] px-2 py-1 rounded border border-slate-300 dark:border-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700">
+                        Kiểm tra
+                    </button>
+                </div>
+                <div id="buildStatusGit" class="rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 text-gray-600 dark:text-gray-300 leading-relaxed">
+                    Đang tự động kiểm tra sau khi mở trang. Bấm «Kiểm tra» để check ngay — <code>git fetch</code> cần mạng và mất vài giây.
+                </div>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between gap-2 px-4 py-3 border-t dark:border-slate-600 flex-wrap">
+            <button type="button" onclick="resetUiPrefs()"
+                    class="text-xs px-2 py-1.5 rounded border border-red-300 text-red-700 dark:text-red-300 dark:border-red-700 hover:bg-red-50 dark:hover:bg-red-900/30"
+                    title="Xoá tuỳ chọn giao diện đã lưu trong trình duyệt">
+                🧹 Reset giao diện
+            </button>
+            <!-- 1 nút gộp: JS tự chọn hành động theo verdict — restart khi cần,
+                 chỉ reload khi đủ. Xem `applyUpdate()` trong dashboard.js. -->
+            <button type="button" id="btnApplyUpdate" onclick="applyUpdate()"
+                    class="text-xs px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                    title="Áp dụng bản mới — tự động chọn restart hoặc reload">
+                <span id="btnApplyUpdateIcon">🔄</span>
+                <span id="btnApplyUpdateLabel">Áp dụng bản mới</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Overlay chờ server sau khi restart. Mất kết nối trong lúc này là BÌNH THƯỜNG:
+     process cũ bị kill rồi launcher khởi động process mới. -->
+<div id="restartOverlay" class="fixed inset-0 z-[90] hidden items-center justify-center bg-slate-900/80 no-print">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl px-6 py-5 w-[min(460px,92vw)] text-center">
+        <div class="text-3xl mb-2 animate-pulse">♻️</div>
+        <div class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1">Đang khởi động lại server…</div>
+        <div id="restartOverlayMsg" class="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+            Server cũ sẽ tắt rồi bật lại. Trang tự tải lại khi xong — thường mất 10–20 giây.
+        </div>
+        <div id="restartOverlayElapsed" class="text-[11px] text-gray-400 mt-2"></div>
+        <button type="button" id="btnRestartGiveUp" onclick="cancelRestartWait()"
+                class="hidden mt-3 text-xs px-3 py-1.5 rounded border border-slate-300 dark:border-slate-500">
+            Thôi, để tôi tự tải lại
+        </button>
+    </div>
+</div>
+
 <!-- Modal hiệu chỉnh nhóm dashboard sidebar -->
 <div id="sidebarGroupsModal" class="fixed inset-0 z-[70] hidden items-center justify-center bg-black/40 no-print" role="dialog" aria-modal="true" aria-labelledby="sidebarGroupsModalTitle">
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-[min(720px,94vw)] max-h-[88vh] flex flex-col">
@@ -176,6 +252,15 @@
                             class="text-white/80 hover:text-white text-sm px-1">⚙️</button>
                 </div>
 
+                <!-- Trạng thái bản đang chạy. Bình thường chỉ là icon mờ; khi có code
+                     mới trên đĩa thì đổi màu + hiện chữ. Bấm để mở panel công cụ. -->
+                <button type="button" id="buildStatusBtn" onclick="openBuildStatus()"
+                        class="flex items-center gap-1 rounded-lg px-2 py-1 text-xs bg-white/10 hover:bg-white/20 transition-colors"
+                        title="Trạng thái bản đang chạy · tải lại · restart">
+                    <span id="buildStatusIcon">🔄</span>
+                    <span id="buildStatusText" class="hidden font-medium"></span>
+                </button>
+
                 <div id="fileInfo" class="text-right text-xs hidden leading-snug">
                     <div class="text-blue-200"><span data-i18n="hdr.file">File:</span> <span id="fileName" class="text-white font-medium"></span></div>
                     <div class="text-blue-200"><span data-i18n="hdr.total_prefix">Tổng:</span> <span id="rowCount" class="text-white font-medium"></span> <span data-i18n="hdr.total_suffix">chức năng</span></div>
@@ -227,7 +312,7 @@
                             data-i18n-title="btn.export_menu_title"
                             title="Xuất báo cáo / trình chiếu"
                             aria-haspopup="true" aria-expanded="false">
-                        📤 Xuất ▾
+                        📥 Xuất ▾
                     </button>
                     <div id="exportMenu" class="hdr-menu hidden absolute left-0 mt-1 z-40 min-w-[12rem]" role="menu">
                         <button id="btnPresentMode" type="button" role="menuitem"
@@ -525,7 +610,7 @@
                         📦 Xuất project hiện tại (.zip)
                     </button>
                     <label class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded text-sm cursor-pointer">
-                        📥 Import project từ .zip
+                        ⬆ Import project từ .zip
                         <input type="file" accept=".zip" class="hidden" onchange="importProjectFromZip(this.files[0])">
                     </label>
                     <span class="text-xs text-gray-500">Backup 1 project = 1 file zip, khôi phục sang máy khác OK.</span>
@@ -1139,7 +1224,7 @@
 
                 <!-- Digest schedule -->
                 <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40">
-                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">📥 Lịch sinh Digest tự động (T26)</h4>
+                    <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">📅 Lịch sinh Digest tự động (T26)</h4>
                     <p class="text-xs text-gray-500 mb-3">Khi app khởi động vào ngày+giờ đã cấu hình, backend tự sinh Excel digest và lưu vào <code class="text-[11px] bg-slate-200 dark:bg-slate-600 px-1 rounded">.project_store/&lt;slug&gt;/digests/</code>.</p>
                     <div class="grid grid-cols-3 gap-3">
                         <label class="col-span-3 flex items-center gap-2">
@@ -1362,7 +1447,7 @@
                 <section class="border rounded-lg p-4 bg-slate-50 dark:bg-slate-700/40 ring-1 ring-emerald-200 dark:ring-emerald-800"
                          id="setFlTemplateSection">
                     <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
-                        <h4 class="font-semibold text-gray-800 dark:text-gray-100">📥 Mẫu Function List (re-import)</h4>
+                        <h4 class="font-semibold text-gray-800 dark:text-gray-100">📄 Mẫu Function List (re-import)</h4>
                         <div class="flex gap-1 flex-wrap text-xs">
                             <button type="button" onclick="_flTplPickFile()"
                                     class="px-2 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-semibold"
@@ -1633,12 +1718,63 @@
             <div class="p-5 flex-1 overflow-y-auto space-y-4 text-sm">
                 <!-- ================ TAB: LIST ================ -->
                 <div id="integPane-list">
-                    <div class="flex items-center justify-between mb-3">
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
                         <div class="text-xs text-gray-500">Nhấn <b>➕ Thêm mới</b> để tạo integration. <b>Test</b> để verify login, <b>Sync</b> để tải Excel về snapshot.</div>
-                        <button onclick="_integOpenEditor(null)"
-                                class="bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-1.5 rounded text-sm font-semibold">
-                            ➕ Thêm mới
-                        </button>
+                        <div class="flex flex-wrap gap-2">
+                            <button type="button" onclick="_integExportRegistry()"
+                                    class="border border-slate-300 dark:border-slate-600 px-2 py-1 rounded text-xs hover:bg-slate-50 dark:hover:bg-slate-700"
+                                    title="Xuất integrations.json">📤 Export JSON</button>
+                            <button type="button" onclick="_integImportRegistryClick()"
+                                    class="border border-slate-300 dark:border-slate-600 px-2 py-1 rounded text-xs hover:bg-slate-50 dark:hover:bg-slate-700"
+                                    title="Import registry JSON (merge)">📥 Import JSON</button>
+                            <button type="button" onclick="_integImportPostmanClick()"
+                                    class="border border-slate-300 dark:border-slate-600 px-2 py-1 rounded text-xs hover:bg-slate-50 dark:hover:bg-slate-700"
+                                    title="Import Postman Collection v2.1">📥 Postman</button>
+                            <input id="integPostmanFile" type="file" accept=".json,application/json" class="hidden"
+                                   onchange="_integImportPostmanFile(this)">
+                            <input id="integImportFile" type="file" accept=".json,application/json" class="hidden"
+                                   onchange="_integImportRegistryFile(this)">
+                            <button onclick="_integOpenEditor(null)"
+                                    class="bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-1.5 rounded text-sm font-semibold">
+                                ➕ Thêm mới
+                            </button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3 p-2 bg-slate-50 dark:bg-slate-900/40 rounded border dark:border-slate-700">
+                        <label class="block text-[11px]">
+                            <span class="font-semibold text-gray-600 dark:text-gray-300">Tìm kiếm</span>
+                            <input id="integFilterQ" type="search" placeholder="Tên, URL, owner…"
+                                   oninput="_integOnFilterChange()"
+                                   class="w-full border rounded px-2 py-1 text-xs mt-0.5 dark:bg-slate-700 dark:border-slate-600">
+                        </label>
+                        <label class="block text-[11px]">
+                            <span class="font-semibold text-gray-600 dark:text-gray-300">Ứng dụng nguồn</span>
+                            <select id="integFilterSourceApp" onchange="_integOnFilterChange()"
+                                    class="w-full border rounded px-2 py-1 text-xs mt-0.5 dark:bg-slate-700 dark:border-slate-600">
+                                <option value="">Tất cả</option>
+                            </select>
+                        </label>
+                        <label class="block text-[11px]">
+                            <span class="font-semibold text-gray-600 dark:text-gray-300">Môi trường</span>
+                            <select id="integFilterEnv" onchange="_integOnFilterChange()"
+                                    class="w-full border rounded px-2 py-1 text-xs mt-0.5 dark:bg-slate-700 dark:border-slate-600">
+                                <option value="">Tất cả</option>
+                            </select>
+                        </label>
+                        <label class="block text-[11px]">
+                            <span class="font-semibold text-gray-600 dark:text-gray-300">Visibility</span>
+                            <select id="integFilterVisibility" onchange="_integOnFilterChange()"
+                                    class="w-full border rounded px-2 py-1 text-xs mt-0.5 dark:bg-slate-700 dark:border-slate-600">
+                                <option value="">Tất cả</option>
+                                <option value="internal">internal</option>
+                                <option value="external">external</option>
+                                <option value="private">private</option>
+                            </select>
+                        </label>
+                        <div class="flex items-end">
+                            <button type="button" onclick="_integClearFilters()"
+                                    class="text-xs text-cyan-700 hover:underline px-1 py-1">Xóa bộ lọc</button>
+                        </div>
                     </div>
                     <div id="integListEmpty" class="hidden text-center py-8 text-gray-500 italic">
                         Chưa có integration nào. Nhấn "➕ Thêm mới" để tạo.
@@ -1648,15 +1784,28 @@
                             <thead class="bg-slate-100 dark:bg-slate-700 text-gray-700 dark:text-gray-200">
                                 <tr>
                                     <th class="px-2 py-2 text-left">Tên</th>
+                                    <th class="px-2 py-2 text-left">Nguồn</th>
+                                    <th class="px-2 py-2 text-left">Env</th>
+                                    <th class="px-2 py-2 text-left">Visibility</th>
                                     <th class="px-2 py-2 text-left">Base URL</th>
                                     <th class="px-2 py-2 text-center">#Endpoint</th>
                                     <th class="px-2 py-2 text-left">Sync gần nhất</th>
-                                    <th class="px-2 py-2 text-left">Trạng thái</th>
+                                    <th class="px-2 py-2 text-left">Health</th>
                                     <th class="px-2 py-2 text-center">Hành động</th>
                                 </tr>
                             </thead>
                             <tbody id="integListTbody"></tbody>
                         </table>
+                    </div>
+                    <div id="integDetailPane" class="hidden mt-3 border border-cyan-200 dark:border-cyan-800 rounded-lg p-3 bg-cyan-50/40 dark:bg-cyan-900/10 text-xs space-y-2">
+                        <div class="flex items-start justify-between gap-2">
+                            <div>
+                                <div class="font-semibold text-gray-800 dark:text-gray-100" id="integDetailTitle">—</div>
+                                <div class="text-[11px] text-gray-500 mt-0.5" id="integDetailMeta"></div>
+                            </div>
+                            <button type="button" onclick="_integCloseDetail()" class="text-gray-500 hover:text-red-500">✕</button>
+                        </div>
+                        <div id="integDetailEndpoints" class="space-y-2"></div>
                     </div>
                 </div>
 
@@ -1674,6 +1823,40 @@
                                    placeholder="https://ihrp.company.com">
                         </label>
                     </div>
+
+                    <fieldset class="border rounded-lg p-3 dark:border-slate-600">
+                        <legend class="text-xs font-semibold px-2">📚 Catalog metadata (T-B)</legend>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <label class="block">
+                                <span class="text-xs">Ứng dụng nguồn (source_app)</span>
+                                <input id="integSourceApp" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                       placeholder="VD: iHRP, TaskDaily">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs">Môi trường (env)</span>
+                                <input id="integEnv" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                       placeholder="prod" value="prod">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs">Visibility</span>
+                                <select id="integVisibility" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600">
+                                    <option value="internal">internal</option>
+                                    <option value="external">external</option>
+                                    <option value="private">private</option>
+                                </select>
+                            </label>
+                            <label class="block">
+                                <span class="text-xs">Owner / liên hệ</span>
+                                <input id="integOwnerContact" type="text" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                       placeholder="VD: PMO / email">
+                            </label>
+                            <label class="block md:col-span-2">
+                                <span class="text-xs">Docs URL</span>
+                                <input id="integDocsUrl" type="url" class="w-full border rounded p-2 text-sm mt-1 dark:bg-slate-700 dark:border-slate-600"
+                                       placeholder="https://docs…/api">
+                            </label>
+                        </div>
+                    </fieldset>
 
                     <fieldset class="border rounded-lg p-3 dark:border-slate-600">
                         <legend class="text-xs font-semibold px-2">🔐 Cấu hình xác thực</legend>
@@ -2453,7 +2636,11 @@
             <button id="stickyToggleBtn" type="button" onclick="_toggleStickyCompact()"
                     class="sticky-toggle-btn no-print" title="Thu gọn / mở rộng">🔼</button>
             <button id="stickyUploadBtn" type="button" onclick="_scrollToUpload()"
-                    class="sticky-upload-btn no-print hidden" title="Upload file mới">📤</button>
+                    class="sticky-upload-btn no-print hidden" title="Upload file mới">⬆</button>
+
+        <!-- Cảnh báo critical sau upload (mất dòng / thiếu phase) — banner cố định
+             thay vì toast, vì toast tự tắt sau 3.5s là quá yếu cho lỗi mất dữ liệu. -->
+        <div id="uploadCriticalWarn" class="hidden no-print"></div>
 
         <!-- ==== SECTION: SUMMARY ====
              Header nhỏ (S1) để gắn nút ? — grid cards giữ id section-summary cho anchor. -->
@@ -2703,7 +2890,7 @@
                 <h3 class="text-lg font-semibold text-gray-800" data-help="section-ba-tasks">📋 Quản lý đầu việc BA</h3>
                 <div class="section-actions flex items-center gap-2 no-print flex-wrap">
                     <button type="button" onclick="openBaTaskModal('create')" class="text-xs bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1.5">+ Thêm</button>
-                    <button type="button" onclick="openBaImportModal()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded px-3 py-1.5">📥 Import</button>
+                    <button type="button" onclick="openBaImportModal()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded px-3 py-1.5">⬆ Import</button>
                     <button type="button" onclick="exportBaTasksAll()" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-3 py-1.5">📥 Xuất tất cả</button>
                 </div>
             </div>
@@ -2714,7 +2901,7 @@
                 <span id="baWeekLabel">—</span>
                 <button type="button" onclick="baWeekNext()" title="Tuần sau">▶</button>
                 <button type="button" onclick="baWeekReset()" title="Về tuần hiện tại" class="ml-1">Tuần này</button>
-                <button type="button" onclick="exportBaTasksWeekly()" class="ml-auto">📤 Xuất Excel tuần này</button>
+                <button type="button" onclick="exportBaTasksWeekly()" class="ml-auto">📥 Xuất Excel tuần này</button>
             </div>
 
             <div class="section-tabs mb-3" role="tablist">
@@ -2862,7 +3049,7 @@
         <div id="baImportModal" class="fixed inset-0 bg-black/60 z-50 hidden items-center justify-center p-4 no-print" onclick="if(event.target===this)closeBaImportModal()">
             <div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
                 <div class="flex items-center justify-between px-5 py-4 border-b">
-                    <h2 class="text-lg font-bold text-gray-800">📥 Import đầu việc từ Excel</h2>
+                    <h2 class="text-lg font-bold text-gray-800">⬆ Import đầu việc từ Excel</h2>
                     <button type="button" onclick="closeBaImportModal()" class="text-gray-500 hover:text-gray-800 text-2xl leading-none">×</button>
                 </div>
                 <div class="p-5 space-y-3 text-sm">
@@ -2985,12 +3172,14 @@
                                 class="px-2 py-1.5 hover:bg-slate-100"
                                 title="Đặt lại zoom 100%">Đặt lại</button>
                     </div>
-                    <label class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm cursor-pointer">
-                        📤 Kế hoạch (.xlsx)
+                    <label class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm cursor-pointer"
+                           title="Tải lên file Kế hoạch dự án (.xlsx) để hệ thống đọc milestone / lịch trình">
+                        ⬆ Nạp Kế hoạch (.xlsx)
                         <input type="file" id="pmPlanFile" accept=".xlsx,.xls" class="hidden" onchange="pmImportPlan(this)">
                     </label>
-                    <label class="bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded text-sm cursor-pointer">
-                        📤 Weekly (.pptx)
+                    <label class="bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded text-sm cursor-pointer"
+                           title="Tải lên file báo cáo tuần (.pptx) để hệ thống đọc tiến độ / risk">
+                        ⬆ Nạp Weekly (.pptx)
                         <input type="file" id="pmWeeklyFile" accept=".pptx" class="hidden" onchange="pmImportWeekly(this)">
                     </label>
                     <button type="button" onclick="exportPmReport()"
@@ -3068,6 +3257,79 @@
                 </div>
             </div>
 
+            <!-- Gantt lịch trình PM (Phase A) — bars từ plan.schedule -->
+            <div id="pmPlanGanttPanel" class="mb-4">
+                <div class="flex items-center justify-between gap-2 flex-wrap mb-2">
+                    <div>
+                        <h4 class="text-sm font-semibold text-gray-800" data-help-id="pm">📊 Gantt lịch trình PM</h4>
+                        <p class="text-[11px] text-gray-500 mt-0.5">Giai đoạn có thể thu gọn/mở rộng (▶▼). Xanh = đang làm, cam = sắp deadline, đỏ = quá hạn, ◆ giai đoạn · ⬥ milestone. Ctrl+wheel để phóng to timeline.</p>
+                    </div>
+                    <div class="flex items-center gap-2 flex-wrap no-print">
+                        <div class="inline-flex items-center rounded border border-slate-300 overflow-hidden text-xs bg-white"
+                             title="Chế độ hiển thị Gantt PM">
+                            <button type="button" id="pmGanttViewTimeline" onclick="setPmGanttViewMode('timeline')"
+                                    class="pm-gantt-view-btn px-2 py-1 hover:bg-blue-50 bg-blue-600 text-white"
+                                    title="Timeline ngày">Ngày</button>
+                            <button type="button" id="pmGanttViewMaster" onclick="setPmGanttViewMode('master')"
+                                    class="pm-gantt-view-btn px-2 py-1 border-l hover:bg-blue-50"
+                                    title="Khung tuần (Master)">Tuần</button>
+                            <button type="button" id="pmGanttViewDetail" onclick="setPmGanttViewMode('detail')"
+                                    class="pm-gantt-view-btn px-2 py-1 border-l hover:bg-blue-50"
+                                    title="Lưới ngày chi tiết">Chi tiết</button>
+                        </div>
+                        <div class="inline-flex items-center rounded border border-slate-300 overflow-hidden text-xs bg-white"
+                             title="Phóng to / thu nhỏ trục thời gian Gantt PM">
+                        <button type="button" onclick="pmGanttZoomOut()"
+                                class="px-2 py-1 hover:bg-blue-50 border-r border-slate-300"
+                                title="Thu nhỏ timeline">−</button>
+                        <span id="pmGanttScaleLabel" class="px-2 py-1 tabular-nums text-slate-600 min-w-[2.5rem] text-center">100%</span>
+                        <button type="button" onclick="pmGanttZoomIn()"
+                                class="px-2 py-1 hover:bg-blue-50 border-l border-slate-300"
+                                title="Phóng to timeline">+</button>
+                        <button type="button" onclick="pmGanttZoomReset()"
+                                class="px-2 py-1 hover:bg-blue-50 border-l border-slate-300"
+                                title="Đặt lại zoom 100%">↺</button>
+                        </div>
+                        <div class="inline-flex items-center rounded border border-slate-300 overflow-hidden text-xs bg-white"
+                             title="Mức zoom tuần/tháng">
+                        <button type="button" id="pmGanttZoomWeek" onclick="setPmGanttZoom('week')"
+                                class="pm-gantt-zoom-btn px-2 py-1 hover:bg-blue-50"
+                                title="Zoom theo tuần">Tuần</button>
+                        <button type="button" id="pmGanttZoomMonth" onclick="setPmGanttZoom('month')"
+                                class="pm-gantt-zoom-btn px-2 py-1 border-l hover:bg-blue-50 bg-blue-600 text-white"
+                                title="Zoom theo tháng">Tháng</button>
+                        </div>
+                        <select id="pmGanttFilterPic" onchange="onPmGanttFilterChange()"
+                                class="text-xs border border-slate-300 rounded px-2 py-1 bg-white max-w-[140px]"
+                                title="Lọc theo PIC FPT / org">
+                            <option value="">Tất cả PIC</option>
+                        </select>
+                        <select id="pmGanttFilterStatus" onchange="onPmGanttFilterChange()"
+                                class="text-xs border border-slate-300 rounded px-2 py-1 bg-white"
+                                title="Lọc theo trạng thái">
+                            <option value="all">Mọi TT</option>
+                            <option value="open">Đang mở</option>
+                            <option value="overdue">Quá hạn</option>
+                            <option value="done">Hoàn thành</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="pmGanttSummary" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-2"></div>
+                <div id="pmGanttHeatmap" class="mb-2 overflow-x-auto"></div>
+                <div id="pmGanttAlertBox" class="hidden mb-2 border border-red-200 bg-red-50 rounded-lg p-2 text-xs"></div>
+                <div id="pmGanttWeekSliderRow" class="flex items-center gap-2 mb-2 text-xs text-gray-600 no-print">
+                    <label for="pmGanttWeekSlider" class="shrink-0">Tuần hiển thị:</label>
+                    <input type="range" id="pmGanttWeekSlider" class="flex-1 min-w-[120px]" min="0" max="0" value="0"
+                           oninput="onPmGanttWeekSlide(this.value)" title="Trượt để pan timeline theo tuần">
+                    <span id="pmGanttWeekSliderLabel" class="tabular-nums shrink-0 text-slate-700">—</span>
+                </div>
+                <div id="pmPlanGanttWrap" class="pm-gantt-wrap border rounded overflow-auto">
+                    <p class="text-center text-gray-400 text-sm py-6">Chưa có lịch trình — nạp Kế hoạch (.xlsx)</p>
+                </div>
+                <div id="pmPlanMasterWrap" class="pm-master-wrap border rounded overflow-auto hidden max-h-[420px]"></div>
+                <div id="pmPlanDetailWrap" class="pm-detail-wrap border rounded overflow-auto hidden max-h-[420px]"></div>
+            </div>
+
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
                 <div>
                     <h4 class="text-sm font-semibold text-gray-800 mb-2">🗓 Lịch trình (KeHoachDuAn)</h4>
@@ -3078,6 +3340,9 @@
                                     <th class="px-2 py-1.5 text-left">Công việc</th>
                                     <th class="px-2 py-1.5 text-left">Từ</th>
                                     <th class="px-2 py-1.5 text-left">Đến</th>
+                                    <th class="px-2 py-1.5 text-left">TT</th>
+                                    <th class="px-2 py-1.5 text-left">Hoàn thành</th>
+                                    <th class="px-2 py-1.5 text-left">%</th>
                                     <th class="px-2 py-1.5 text-left">PIC FPT</th>
                                     <th class="px-2 py-1.5 text-left">Giai đoạn</th>
                                 </tr>
@@ -3176,7 +3441,7 @@
                     </select>
                     <div id="filterPhaseMS" class="text-sm min-w-[150px]"></div>
                     <div data-col-picker="overdue" data-col-table="#section-overdue table"></div>
-                    <button id="btnExport" onclick="openExportModePicker(event, '', exportOverdue)"
+                    <button id="btnExport" onclick="openExportModePicker(event, '', exportOverdue, {flKinds: 'overdue', extraParams: _overdueExportLocalParams})"
                             class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm"
                             data-i18n="btn.export_excel">
                         📥 Xuất Excel
@@ -3213,12 +3478,24 @@
             <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
                 <div>
                     <h3 class="text-lg font-semibold text-orange-700" data-help="section-unassigned">🚨 Task chưa có PIC phụ trách</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Chỉ báo thiếu PIC khi đã tới Start + phase liền trước Closed (không có Start: End đã đến hoặc đang Open/Assigned/In-progress).</p>
+                    <p class="text-xs text-gray-500 mt-0.5">Chỉ báo thiếu PIC khi đã tới Start + phase liền trước Closed. Không có Start: End đã đến hoặc đang Open/Assigned/In-progress thật — không đếm khi Status = Not Started (chưa bắt đầu) hoặc Start còn tương lai.</p>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 flex-wrap no-print">
+                    <!-- Local Module + Phase multi-select (giống Đình trệ / Overdue).
+                         Phase mặc định bỏ tick "Document" — task Document thiếu PIC
+                         thường là tài liệu chưa kịp phân công, không phải blocker
+                         thực sự → user phản hồi 06/08/2026: hiện dư gây nhiễu. -->
+                    <div id="unassignedModuleMS" class="text-sm min-w-[150px]"></div>
+                    <div id="unassignedPhaseMS" class="text-sm min-w-[150px]"></div>
+                    <select id="unassignedStatusFilter"
+                            class="text-sm border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600"
+                            onchange="onUnassignedStatusChange()"
+                            title="Lọc theo Status của phase thiếu PIC">
+                        <option value="">Tất cả status</option>
+                    </select>
                     <div data-col-picker="unassigned" data-col-table="#section-unassigned table"></div>
-                    <button onclick="openDrillDown('unassigned', {})" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1 no-print">Chi tiết</button>
-                    <button onclick="openExportModePicker(event, 'unassigned')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1 no-print" title="Xuất Excel">📥</button>
+                    <button onclick="openUnassignedDrill()" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1">Chi tiết</button>
+                    <button onclick="openExportModePicker(event, 'unassigned', undefined, {flKinds: 'unassigned', extraParams: _unassignedExportLocalParams})" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
                 </div>
             </div>
             <div class="overflow-x-auto">
@@ -3256,11 +3533,18 @@
                 <div class="flex items-center gap-2 flex-wrap no-print">
                     <!-- Local Module multi-select (giống Overdue / Data Quality) -->
                     <div id="stalledModuleMS" class="text-sm min-w-[150px]"></div>
+                    <!-- Filter Phase chờ — mặc định bỏ Document (xem _stalledDefaultPhases) -->
+                    <div id="stalledPhaseMS" class="text-sm min-w-[160px]"></div>
+                    <button onclick="resetStalledPhaseFilter()"
+                            class="text-xs bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded px-2 py-1"
+                            title="Trả filter Phase chờ về mặc định (tất cả phase trừ Document)">
+                        ↺ Mặc định
+                    </button>
                     <div data-col-picker="stalled" data-col-table="#section-stalled table"></div>
                     <button onclick="openStalledDrillDown()" class="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded px-2 py-1">Chi tiết</button>
-                    <button onclick="openExportModePicker(event, '', exportStalled)"
+                    <button onclick="openExportModePicker(event, '', exportStalled, {flKinds: 'stalled', extraParams: _stalledExportLocalParams})"
                             class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm"
-                            title="Xuất Excel theo filter Module (+ global filter)">
+                            title="Xuất Excel theo filter Module + Phase chờ (+ global filter)">
                         📥 Xuất Excel
                     </button>
                 </div>
@@ -3287,7 +3571,8 @@
                             <th class="px-2 py-2" data-col="module">Module</th>
                             <th class="px-2 py-2" data-col="done_phase">Phase đã xong</th>
                             <th class="px-2 py-2" data-col="wait_phase">Phase chờ</th>
-                            <th class="px-2 py-2" data-col="done_date">Xong ngày</th>
+                            <th class="px-2 py-2" data-col="done_date">Xong (phase trước)</th>
+                            <th class="px-2 py-2" data-col="wait_start">Start (phase chờ)</th>
                             <th class="px-2 py-2" data-col="wait_days">Chờ (ngày)</th>
                             <th class="px-2 py-2" data-col="priority">Priority</th>
                             <th class="px-2 py-2" data-col="view" data-col-locked="1" title="Xem chi tiết">👁</th>
@@ -3391,7 +3676,7 @@
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800" data-help-id="aging-wip" data-i18n="section.aging_title">⏳ WIP tồn đọng</h3>
-                    <p class="text-xs text-gray-500 mt-0.5" data-i18n="section.aging_sub">Task In-progress quá lâu (kể từ Start) → cần push</p>
+                    <p class="text-xs text-gray-500 mt-0.5" data-i18n="section.aging_sub">Liệt kê mọi WIP In-progress; tô cam/đỏ khi vượt ngưỡng aging</p>
                 </div>
                 <div class="flex items-center gap-3">
                     <label class="text-sm text-gray-700 flex items-center gap-2">
@@ -3488,9 +3773,10 @@
                         <option value="all">Tất cả loại</option>
                     </select>
                     <div data-col-picker="dq" data-col-table="#section-dataquality table"></div>
-                    <button onclick="exportDataQuality()"
-                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm">
-                        📥 Xuất Excel
+                    <button onclick="openExportModePicker(event, '', exportDataQuality, {singleList: true, flKinds: 'dq', extraParams: _dqExportModuleParam})"
+                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm"
+                            title="Chọn: danh sách lỗi Data Quality, hoặc FL chỉ chứa dòng lỗi (để import lại)">
+                        📥 Xuất ▾
                     </button>
                 </div>
             </div>
@@ -3530,24 +3816,28 @@
                     <p class="text-xs text-gray-500 mt-0.5">Chức năng đã có Dev phase Closed nhưng FID trống hoặc FID bị trùng với chức năng khác. Cần bổ sung FID để đảm bảo mã định danh đầy đủ.</p>
                 </div>
                 <div class="flex items-center gap-2 flex-wrap">
-                    <select id="fidModuleFilter" class="text-sm border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600">
-                        <option value="">Tất cả module</option>
-                    </select>
-                    <select id="fidTypeFilter" class="text-sm border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600">
-                        <option value="">Tất cả loại</option>
-                        <option value="missing_fid">Thiếu FID</option>
-                        <option value="duplicate_fid">Trùng FID</option>
-                    </select>
-                    <button onclick="exportFidIssuesFL()"
+                    <!-- Module multi-select — mặc định bỏ module không dùng FID -->
+                    <div id="fidModuleMS" class="text-sm min-w-[150px]"></div>
+                    <div id="fidTypeMS" class="text-sm min-w-[130px]"></div>
+                    <button onclick="resetFidFilters()"
+                            class="text-xs bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded px-2 py-1"
+                            title="Trả filter về mặc định (bỏ các module không dùng FID)">
+                        ↺ Mặc định
+                    </button>
+                    <button onclick="openFidExportPicker(event)"
                             class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded text-sm font-medium"
-                            title="Xuất FL re-import cho các function thiếu/trùng FID, tô vàng cột FID">
-                        📥 Xuất FL update FID
+                            title="Chọn: danh sách lỗi (để lọc/điền tay) hoặc FL chỉ chứa dòng lỗi FID (để import lại)">
+                        📥 Xuất ▾
                     </button>
                 </div>
             </div>
 
             <!-- Summary cards -->
             <div id="fidSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+
+            <!-- Banner: module nào đang bị ẩn và vì sao -->
+            <p id="fidScopeBanner" class="chart-scope"
+               title="Lọc cục bộ section Thiếu/Trùng FID (không đổi global filter)"></p>
 
             <!-- Cảnh báo khi không có cột FID trong file -->
             <div id="fidNoColumnWarn" class="hidden bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-3 text-sm text-amber-800">
@@ -3575,12 +3865,48 @@
             <div id="fidPagerWrap" class="mt-2"></div>
         </section>
 
+        <!-- ============ SOURCE CHECKLIST (Tab: Checklist lấy source) ============ -->
+        <section id="section-source-checklist" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="source-checklist">📦 Checklist lấy source test (Dev đến hạn)</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Mọi Rlog có phase Dev đến hạn (End date rơi vào lookback, không cần Dev.Closed) đều phải làm checklist lấy source đưa lên môi trường test. <strong>Người lấy source là người config local.</strong> Không đợi Dev đóng phase — chuẩn bị sớm khi dev push để kịp kế hoạch.</p>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap no-print">
+                    <label class="text-xs text-gray-600">Số ngày gần nhất:</label>
+                    <input id="scLookback" type="number" min="1" max="365" value="14"
+                           class="text-sm border rounded px-2 py-1 w-20 dark:bg-slate-700 dark:border-slate-600"
+                           onchange="loadSourceChecklist()">
+                    <select id="scStateFilter" class="text-sm border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600"
+                            onchange="renderSourceChecklist()">
+                        <option value="pending">Chỉ việc chưa lấy source</option>
+                        <option value="all">Tất cả Rlog Dev đến hạn</option>
+                    </select>
+                    <select id="scModuleFilter" class="text-sm border rounded px-2 py-1 dark:bg-slate-700 dark:border-slate-600"
+                            onchange="renderSourceChecklist()">
+                        <option value="">Tất cả module</option>
+                    </select>
+                    <button onclick="loadSourceChecklist()" class="text-xs bg-gray-100 hover:bg-gray-200 border rounded px-3 py-1">🔄 Làm mới</button>
+                    <button onclick="exportSourceChecklist()" class="text-xs bg-blue-600 hover:bg-blue-700 text-white border rounded px-3 py-1">📥 Xuất Excel</button>
+                </div>
+            </div>
+
+            <!-- Summary cards -->
+            <div id="scSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+
+            <!-- Cảnh báo cấu hình phase -->
+            <div id="scPhaseWarn" class="hidden bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-3 text-sm text-amber-800"></div>
+
+            <!-- Danh sách theo ngày -->
+            <div id="scDayList" class="space-y-2"></div>
+        </section>
+
         <!-- ===== DURATION FLAG: Thời gian dài ===== -->
         <section id="section-duration-flag" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
                     <h3 class="text-lg font-semibold text-gray-800" data-help-id="duration-flag">⏱️ Phase có thời gian dài bất thường</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">Các phase có khoảng cách Start → End vượt ngưỡng cho phép. Có thể do deadline chưa cập nhật hoặc task bị kéo dài quá lâu.</p>
+                    <p class="text-xs text-gray-500 mt-0.5">Các phase còn mở (chưa Closed/Cancelled) có khoảng Start → End vượt ngưỡng. Có thể do deadline chưa cập nhật hoặc task bị kéo dài quá lâu — phase đã Closed không đưa vào.</p>
                 </div>
                 <div class="flex items-center gap-2 flex-wrap">
                     <label class="text-xs text-gray-600">Ngưỡng (ngày):</label>
@@ -3592,6 +3918,7 @@
                         <option value="">Tất cả phase</option>
                     </select>
                     <button onclick="loadDurationFlag()" class="text-xs bg-gray-100 hover:bg-gray-200 border rounded px-3 py-1">🔄 Làm mới</button>
+                    <button onclick="exportDurationFlag()" class="text-xs bg-blue-600 hover:bg-blue-700 text-white border rounded px-3 py-1">📥 Xuất Excel</button>
                 </div>
             </div>
 
@@ -3679,7 +4006,7 @@
             <div id="section-module" class="bg-white dashboard-card rounded-xl shadow-md p-5">
                 <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
                     <h3 class="text-lg font-semibold text-gray-800" data-help="section-module">📊 Tổng quan theo Module</h3>
-                    <div class="flex items-center gap-2 no-print">
+                    <div class="flex items-center gap-2 no-print flex-wrap">
                         <!-- Task 17: segmented control nhóm theo -->
                         <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
                             <button data-mo-group="module" onclick="setModuleGroupBy('module')"
@@ -3689,24 +4016,58 @@
                             <button data-mo-group="both" onclick="setModuleGroupBy('both')"
                                     class="mo-group-btn px-2 py-1 border-l hover:bg-blue-50">Cả 2</button>
                 </div>
+                        <div data-col-picker="moduleOverview" data-col-table="#section-module table"></div>
                         <button onclick="openExportModePicker(event, 'module_overview')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded px-2 py-1" title="Xuất Excel">📥</button>
             </div>
                 </div>
+                <!-- Mốc so sánh cho nhóm cột tăng/giảm -->
+                <div class="flex items-center gap-2 mb-2 flex-wrap text-xs no-print">
+                    <span class="text-gray-500">So với:</span>
+                    <select id="moCompareBase" onchange="setMoCompareBase(this.value)"
+                            class="border border-gray-300 rounded px-1.5 py-1 text-xs"
+                            title="Mốc dùng để tính cột tăng/giảm">
+                        <option value="baseline">Baseline gần nhất</option>
+                        <option value="week">Tuần trước (~7 ngày)</option>
+                        <option value="previous">Bản trước</option>
+                        <option value="date">Chọn bản...</option>
+                        <option value="off">Tắt so sánh</option>
+                    </select>
+                    <select id="moCompareSnap" onchange="setMoCompareSnap(this.value)"
+                            class="border border-gray-300 rounded px-1.5 py-1 text-xs hidden"></select>
+                    <div class="inline-flex rounded border border-gray-300 overflow-hidden"
+                         title="Chiều hiển thị của nhóm cột tăng/giảm">
+                        <button data-mo-dim="count" onclick="setMoCompareDim('count')"
+                                class="mo-dim-btn px-2 py-1 bg-blue-600 text-white">Số lượng</button>
+                        <button data-mo-dim="pct" onclick="setMoCompareDim('pct')"
+                                class="mo-dim-btn px-2 py-1 border-l hover:bg-blue-50">%</button>
+                        <button data-mo-dim="both" onclick="setMoCompareDim('both')"
+                                class="mo-dim-btn px-2 py-1 border-l hover:bg-blue-50">Cả 2</button>
+                    </div>
+                    <button onclick="pinBaselineFromModule()"
+                            class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded px-2 py-1"
+                            title="Chốt bản hiện tại làm baseline — các bản kéo về sau sẽ so với baseline gần nhất">
+                        🔖 Chốt baseline
+                    </button>
+                    <span id="moCompareLabel" class="text-gray-500"></span>
+                </div>
+                <div id="moCompareBanner" class="hidden mb-2 text-xs rounded px-2 py-1.5 bg-amber-50 border border-amber-200 text-amber-800"></div>
                 <p class="chart-scope"></p>
             <div class="overflow-x-auto">
                 <table class="w-full text-sm">
                         <thead id="moduleTableHead">
                             <tr class="bg-blue-800 text-white">
-                                <th class="px-2 py-2 text-left">#</th>
-                                <th class="px-2 py-2 text-left">Module</th>
-                                <th class="px-2 py-2 text-center">SL</th>
-                                <th class="px-2 py-2 text-center">QT</th>
-                                <th class="px-2 py-2 text-center">Tiến độ</th>
-                                <th class="px-2 py-2 text-center">Đang ở</th>
-                                <th class="px-2 py-2 text-center">Trễ</th>
-                                <th class="px-2 py-2 text-center cursor-pointer" onclick="toggleModuleRiskSort()" title="Bấm để sắp xếp module rủi ro lên đầu">Đánh giá <span id="moduleRiskSortIcon">⇅</span></th>
-                                <th class="px-2 py-2 text-center" title="Function chưa Closed phase cuối. Click số → drill đúng tập còn lại. Trong modal chọn «Tất cả» để xem hết.">Còn lại</th>
+                                <th class="px-2 py-2 text-left" data-col="stt">#</th>
+                                <th class="px-2 py-2 text-left" data-col="module" data-col-locked="1">Module</th>
+                                <th class="px-2 py-2 text-center" data-col="total">SL</th>
+                                <th class="px-2 py-2 text-center" data-col="qt">QT</th>
+                                <th class="px-2 py-2 text-center" data-col="progress">Tiến độ</th>
+                                <th class="px-2 py-2 text-center" data-col="active_phase">Đang ở</th>
+                                <th class="px-2 py-2 text-center" data-col="overdue">Trễ</th>
+                                <th class="px-2 py-2 text-center cursor-pointer" data-col="risk" onclick="toggleModuleRiskSort()" title="Bấm để sắp xếp module rủi ro lên đầu">Đánh giá <span id="moduleRiskSortIcon">⇅</span></th>
+                                <th class="px-2 py-2 text-center" data-col="remaining" title="Function chưa Closed phase cuối. Click số → drill đúng tập còn lại. Trong modal chọn «Tất cả» để xem hết.">Còn lại</th>
+                                <th id="moDeltaGroupTh" class="px-2 py-2 text-center hidden" data-col-group="1"></th>
                         </tr>
+                            <tr id="moDeltaHeadRow" class="bg-blue-700 text-white hidden"></tr>
                     </thead>
                         <tbody id="moduleTable"></tbody>
                 </table>
@@ -4017,6 +4378,23 @@
                     </span>
                 </div>
             </div>
+            <!-- Chuỗi baseline đã chốt — nơi duy nhất quản lý baseline -->
+            <details id="baselineChainDetails" class="mb-3 border border-gray-200 rounded p-2" open>
+                <summary class="text-sm font-semibold text-gray-700 cursor-pointer">
+                    🔖 Các bản baseline đã chốt <span id="baselineChainCount" class="text-xs font-normal text-gray-400"></span>
+                </summary>
+                <div class="flex items-center gap-2 my-2 text-xs no-print flex-wrap">
+                    <button type="button" onclick="pinBaselineFromModule()"
+                            class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded px-2 py-1">
+                        🔖 Chốt bản hiện tại
+                    </button>
+                    <span class="text-gray-500">
+                        Mỗi lần chốt sinh 1 version mới. File được copy sang thư mục riêng nên
+                        không bị xóa khi lịch sử snapshot đầy, và không đổi nội dung khi upload lại cùng ngày.
+                    </span>
+                </div>
+                <div id="baselineChainWrap" class="overflow-x-auto text-xs"></div>
+            </details>
             <div id="bslSvMilestoneWrap" class="overflow-x-auto mb-3 text-xs"></div>
             <div id="bslSvModuleWrap" class="overflow-x-auto mb-3 text-xs"></div>
             <details class="mb-2">
@@ -4725,7 +5103,7 @@
                 <button type="button" onclick="applyErSuggestedSeeds()"
                         id="erApplyCalibBtn"
                         class="hidden px-2.5 py-1 border rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300"
-                        title="Ghi seed BA/Dev theo hệ số calibrate hợp đồng">⬇ Áp seed calibrate</button>
+                        title="Ghi seed BA/Dev theo hệ số calibrate hợp đồng">📝 Áp seed calibrate</button>
                 <button type="button" onclick="loadEstimateRatio()"
                         class="px-2.5 py-1 border rounded hover:bg-gray-50">↻ Tính lại</button>
                 <button type="button" onclick="saveEstimateRatioParams()"
@@ -5309,7 +5687,7 @@
         <section id="section-my-digests" class="bg-white dashboard-card rounded-xl shadow-md p-5 mb-6 hidden">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
-                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="my-digests">📥 Digest lưu trữ</h3>
+                    <h3 class="text-lg font-semibold text-gray-800" data-help-id="my-digests">📂 Digest lưu trữ</h3>
                     <p class="text-xs text-gray-500 mt-0.5">File Excel báo cáo tổng hợp — tự sinh theo lịch trong Cài đặt (T29) hoặc bấm nút bên phải.</p>
                 </div>
                 <div class="flex items-center gap-2">

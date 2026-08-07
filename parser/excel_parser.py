@@ -202,6 +202,9 @@ class PhaseData:
     estimate_mh: Optional[float] = None
     note: Optional[str] = None
     extra: dict[str, Any] = field(default_factory=dict)
+    # True khi raw status là "Not Started"/"Chưa bắt đầu" rồi map → Open/Assigned.
+    # Unassigned start-gate không được coi đây là "đang làm" nếu chưa tới Start/End.
+    from_not_started: bool = False
 
 
 @dataclass
@@ -635,10 +638,12 @@ class FunctionListParser:
                             })
 
                 if pc["status_idx"] is not None:
+                    raw_status = _get(pc["status_idx"])
                     pd.status = self._normalize_status(
-                        _get(pc["status_idx"]),
+                        raw_status,
                         has_pic=bool(pd.pics),
                     )
+                    pd.from_not_started = self._is_not_started_token(raw_status)
 
                 if pc["estimate_idx"] is not None:
                     est = _get(pc["estimate_idx"])
@@ -750,6 +755,13 @@ class FunctionListParser:
         if mh > ESTIMATE_MH_MAX:
             return None, f"outlier_gt_{int(ESTIMATE_MH_MAX)}"
         return mh, None
+
+    @staticmethod
+    def _is_not_started_token(value) -> bool:
+        """Raw status có phải Not Started / Chưa bắt đầu không (trước khi map)."""
+        if value is None or isinstance(value, (int, float)):
+            return False
+        return str(value).strip().lower() in _NOT_STARTED_TOKENS
 
     def _normalize_status(self, value, has_pic: bool = False) -> Optional[str]:
         """Chuẩn hóa status về VALID_STATUSES.

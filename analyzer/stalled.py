@@ -1,13 +1,13 @@
 """
 Shared stalled-task helpers.
 
-Rule nghiệp vụ:
-  Kẹt giữa 2 phase khi ALL:
+Rule nghiệp vụ (2026-08):
+  Kẹt giữa 2 phase khi:
   1. Phase trước Status = Closed
   2. Phase sau chưa bắt đầu (None / Open / thiếu phase)
-  3. Deadline (End) của phase chờ đã quá: end < today
-     (cùng convention overdue). Không có End → không stalled
-     (tránh false positive «chưa plan» / deadline chưa tới).
+  3. Không yêu cầu End của phase chờ đã quá (nới rule)
+  4. Caller nên gate thêm: mọi phase TRƯỚC curr đã Closed/Cancelled
+     (`prev_phases_all_closed`) — tránh flag khi Analysis chưa xong
   Loại khỏi stalled khi không còn việc mở:
   - Phase cuối (Golive…) Status = Closed → coi xong toàn trình
   - Hoặc mọi phase trong order đều Closed / Cancelled
@@ -125,9 +125,22 @@ def is_stalled_transition(
     today: date,
 ) -> bool:
     """
-    Phase trước Closed + phase sau chưa bắt đầu (None / Open) = đình trệ ngay.
-    Không yêu cầu End date trên phase chờ (nới rule).
+    Phase trước Closed + phase sau chưa bắt đầu (None / Open) = đình trệ.
+
+    Đồng bộ gate Start với unassigned (PRM.FR.53):
+    Dev Start tương lai → chưa đình trễ dù Analysis đã Closed.
     """
     curr_done = curr_pd is not None and (curr_pd.status or "").strip() == "Closed"
-    next_not_started = (next_pd is None) or (next_pd.status in _NOT_STARTED)
-    return curr_done and next_not_started
+    if not curr_done:
+        return False
+    if next_pd is None:
+        return True
+    from analyzer.unassigned import has_phase_start_arrived
+    if not has_phase_start_arrived(next_pd, today):
+        return False
+    if is_done_status(next_pd.status):
+        return False
+    next_not_started = (next_pd.status in _NOT_STARTED) or (
+        (next_pd.status or "").strip() == ""
+    )
+    return next_not_started

@@ -1,17 +1,35 @@
 # Dashboard Specification
 
-> Cập nhật đầu file: **2026-08-01**. Spec chi tiết từng chart V1–V4 bên dưới vẫn đúng hướng;  
-> **catalog section mới (PMO/BA)** và map API → [`FEATURE_CATALOG.md`](FEATURE_CATALOG.md).  
-> Sidebar nhóm hiện tại: Tracking / Forecast / Chất lượng / Phân tích / Chiều PM / Quản trị.
+> Cập nhật đầu file: **2026-08-04**. Spec chi tiết từng chart V1–V4 bên dưới vẫn đúng hướng;  
+> **catalog section mới (PMO/BA/Issues)** và map API → [`FEATURE_CATALOG.md`](FEATURE_CATALOG.md).  
+> Sidebar hub hiện tại: Tổng quan / **VẤN ĐỀ (Issues)** / Tiến độ / Forecast / … (`sidebar_hubs.js`).
 
-Lịch sử mở rộng: Core V1 → Advanced V2 → V3 multi-project/filter/drill-down → Forecast/PM → **PMO A–F + BA UX**.
+Lịch sử mở rộng: Core V1 → Advanced V2 → V3 multi-project/filter/drill-down → Forecast/PM → **PMO A–F + BA UX** → **Issues hub 2026-08**.
 
-UX toàn cục: sidebar nhóm, insight strip (collapse), search, dark mode, fullscreen chart, Help `?`, saved views.
+UX toàn cục: sidebar hubs, insight strip (collapse), search, dark mode, fullscreen chart, Help `?`, saved views.
+
+### Quy ước icon theo chiều dữ liệu (2026-08d)
+
+| Icon | Nghĩa | Ví dụ |
+|---|---|---|
+| 📥 | **Chiều RA** — xuất / tải về máy | `📥 Xuất ▾`, `📥 Xuất Excel`, `📥 Tải` |
+| ⬆ | **Chiều VÀO** — import / upload | `⬆ Tải Excel`, `⬆ Import`, `⬆ Nạp Kế hoạch (.xlsx)` |
+| 📤 | **Không dùng** | trông gần giống 📥 (cùng khay giấy, khác hướng mũi tên) nên luôn gây nhầm |
+| ⬇ | **Không dùng cho action** | chỉ còn ⬇️/⬆️ làm mũi tên xu hướng trong nhãn metric |
+
+Trước wave này 📥 và 📤 bị dùng lẫn cho cả hai chiều, tệ nhất là ở những hàng nút
+đứng cạnh nhau: section «Chiều PM» có `📤 Kế hoạch (.xlsx)` (upload) ngay bên
+`📥 Xuất chiều PM` (export); section «Quản lý đầu việc BA» có `📥 Import` sát
+`📥 Xuất tất cả`. Icon tĩnh không mang nghĩa hành động thì dùng icon trung tính
+theo nội dung (📅 lịch, 📂 lưu trữ, 📄 mẫu file) để 📥 chỉ còn một nghĩa duy nhất.
+
+Sửa icon **phải sửa kèm `i18n.js`** (cả `vi` và `en`) — nhãn nào có `data-i18n` sẽ bị
+ghi đè khi đổi ngôn ngữ. `tests/test_icon_convention.py` canh quy ước này.
 
 **V3+ UX:**
 - Project selector + Project Manager
 - Global filter (Module × Quy trình × PIC × Project) + **saved views**
-- Drill-down modal; chart responsive (`clamp`)
+- Drill-down modal (+ **Phạm vi: Chỉ còn lại / Tất cả**); chart responsive (`clamp`)
 - Insight strip chips (+ delta OD/UA/ST vs snapshot trước)
 
 ### Default section order (UX — tiến độ trước)
@@ -22,11 +40,13 @@ Nút **↺ Mặc định** áp lại layout này.
 | Nhóm | Sections |
 |------|----------|
 | **A — Tiến độ tổng thể** | summary (+ global filter) → module + tasktype → matrix → phase → giaidoan → gantt → forecast UAT/Golive → forecast manpower → gantt-calendar → burndown → rlog |
-| **B — Vấn đề / cảnh báo** | overdue → unassigned → stalled → risk → aging-wip → sla → dataquality → **uat-quality** |
+| **B — Vấn đề / cảnh báo** | overdue → unassigned → stalled → risk → aging-wip → sla → dataquality → **fid-check → duration-flag → weekly-gap** → **uat-quality** |
 | **C — Phân tích sâu** | process → capacity → pic-overload → **baseline** → **evm** → **scope-creep** → effort → duration → slow → deps → kanban → pic → priority → fitgap → function-diff → bookmarks |
 | **D — Chiều PM / Quản trị** | pm → digest → my-digests → compare → custom-dashboards → history |
 
-**Sidebar Tracking** cũng gồm `section-pic-upcoming`. **Forecast** gồm baseline / evm / scope-creep. **Chất lượng** gồm uat-quality.
+**Issues hub tabs:** Trễ hạn · Chưa PIC · Đình trệ · WIP · Data Quality · Thiếu FID · Thời gian dài · Báo cáo tuần.  
+**Module «Còn lại»:** click số / row → drill `scope=remaining` (khớp đếm); select «Tất cả» trong modal để xem full.  
+**Đánh giá module:** risk/warning theo % overdue & stalled (không còn `stalled_count > 0` → risk).
 
 ---
 
@@ -55,11 +75,21 @@ Nút **↺ Mặc định** áp lại layout này.
 | Phân hệ      | Tên Module                                                                  |
 | SL           | Tổng function trong module                                                  |
 | QT           | Đếm quy trình unique                                                        |
-| Tiến độ      | % function Closed ở phase cuối (progress bar)                               |
+| Tiến độ      | `closed_records / (SL × số_phase) × 100` — weighted theo phase, KHÔNG phải % Closed phase cuối |
 | Đang ở       | Phase active nhất (hoặc "✓ Hoàn thành" / "Chưa bắt đầu" / "Đang hoàn tất") |
 | Trễ          | Số function unique có overdue                                                |
+| Đánh giá     | risk / warning / safe theo % trễ và % đình trệ (xem `_one_overview_entry`)   |
+| Còn lại      | Function chưa Closed ở phase cuối (khớp drill `scope=remaining`)             |
+| So với ...   | 8 cột tăng/giảm: `±` và `±%` cho SL, Tiến độ, Trễ, Còn lại                   |
+
+**Đừng nhầm 2 con số:** `Tiến độ` là weighted theo phase (`closed_records / (SL × số_phase)`),
+còn `Còn lại` mới dựa trên phase cuối. Hai cột trả lời hai câu khác nhau.
 
 **V2 fix:** Nếu tất cả function của module đã Closed phase cuối → `active_phase = "✓ Hoàn thành"` để không confusing với hiển thị "đang ở Document" khi thực chất đã 100%.
+
+**Nhóm cột tăng/giảm (`?compare=`):** mốc so sánh do user chọn — Baseline gần nhất /
+Tuần trước (~7 ngày) / Bản trước / Bản cụ thể / Tắt. Header luôn ghi ngày thật của mốc.
+Chi tiết quy ước pp vs % tương đối: xem `docs/BUSINESS_LOGIC.md` mục 11b.
 
 **Conditional formatting progress bar:**
 - 100%: xanh lá đậm
@@ -195,6 +225,31 @@ Row highlight theo mức trễ giống overdue table.
 
 Detect function bị kẹt: phase trước Closed nhưng phase sau vẫn None/Open.
 
+### Filter cục bộ (2026-08c)
+Hai multi-select cạnh nhau, đều là filter cục bộ của section (không đổi global filter):
+
+| Filter | Lọc theo | Mặc định |
+|--------|----------|----------|
+| Module | `item.module` | Tất cả |
+| **Phase chờ** | `item.waiting_phase` — phase đang bị kẹt, KHÔNG phải phase vừa xong | Mọi phase **trừ Document** |
+
+Nhận diện phase Document bằng keyword đã bỏ dấu (`document` / `tai lieu`), không hardcode tên phase — FL đổi header vẫn chạy. Nếu project không có phase nào ngoài Document thì check tất cả (thà hiện dư hơn hiện bảng trống). Phase mới xuất hiện ở lần import sau được **tự check** trừ khi tên chứa Document.
+
+Lựa chọn lưu localStorage theo project (`stalledPhaseSel:<slug>`) kèm danh sách `known` phase, nên phân biệt được "user cố tình bỏ check" và "phase mới chưa từng thấy". Nút `↺ Mặc định` trả về trạng thái mặc định.
+
+Phạm vi ảnh hưởng của filter Phase chờ:
+
+| Thành phần | Có lọc? | Lý do |
+|------------|---------|-------|
+| Bảng chi tiết + số đếm | ✅ | |
+| Transitions bị kẹt | ✅ | rebuild từ items đã lọc |
+| Excel `export-stalled` (`waiting_phase=`) | ✅ | tránh file xuất nhiều dòng hơn bảng đang xem |
+| Drill «Chi tiết» (`waiting_phase=`) | ✅ | |
+| **Funnel Closed/Phase** | ❌ | là tiến độ Closed toàn trình, ẩn bar sẽ mất bức tranh so sánh |
+| **Badge Đình trệ (sidebar), `summary.stalled_count`, `stalled_pct`** | ❌ | còn nuôi risk level bảng Module + EVM; đổi ngầm sẽ lệch chỗ khác |
+
+Vì badge không lọc, banner scope ghi rõ tỷ lệ `hiện N/M task (badge sidebar đếm toàn bộ)` và liệt kê phase đang bị ẩn.
+
 ### Funnel chart (custom HTML, không dùng Chart.js)
 - Row cho mỗi phase, chiều rộng bar = số function Closed / max_closed
 - Gradient blue → green
@@ -206,6 +261,63 @@ Detect function bị kẹt: phase trước Closed nhưng phase sau vẫn None/Op
 ### Bảng chi tiết
 Columns: #, Mã CN, Tên CN, Module, Phase đã xong, Phase chờ, Xong ngày, Chờ (ngày), Priority.
 Row highlight nếu wait_days > 7d (orange) hoặc > 14d (red).
+
+---
+
+## 🆕 13b. Thiếu / Trùng FID — filter cục bộ (2026-08d)
+
+Section `section-fid-check`. Hai multi-select cục bộ (không đổi global filter):
+
+| Filter | Lọc theo | Mặc định |
+|--------|----------|----------|
+| **Module** | `issue.module` | Mọi module **trừ module không dùng FID** |
+| Loại | `issue.issue_type` | Tất cả |
+
+Module "không dùng FID" = `with_fid == 0` trong `module_stats` (backend trả
+`modules_without_fid`). Suy từ dữ liệu, **không hardcode** mã module — MPHG hiện
+có `APP` (0/14) và `ESS` (0/4), dự án khác sẽ khác. Nếu mọi module đều `with_fid == 0`
+(VD file thiếu cột FID) thì check tất cả. Module mới ở lần import sau được tự check
+trừ khi nó cũng không dùng FID.
+
+Options module lấy từ `module_stats` (toàn bộ module trong dữ liệu) chứ không chỉ
+module đang có issue — nếu không, module 0 issue sẽ không tick lại được và bị loại
+khỏi mẫu số card «Dev đã Closed».
+
+Lựa chọn lưu localStorage `fidModuleSel:<slug>` kèm `known`. Nút `↺ Mặc định` trả cả
+2 filter về gốc.
+
+Phạm vi ảnh hưởng:
+
+| Thành phần | Có lọc? | Lý do |
+|------------|---------|-------|
+| Bảng chi tiết + pager | ✅ | |
+| **4 card (Tổng / Thiếu / Trùng / Dev đã Closed)** | ✅ | card nằm trong section, lệch bảng thì PM đọc 47 mà đếm 30 dòng. Ghi chú `toàn bộ: N` bên dưới |
+| Export `export-fl-reimport` (`fid_module=`, `fid_type=`) | ✅ | file phải khớp bảng |
+| **Badge Thiếu FID (sidebar), `summary.total_issues`** | ❌ | badge là chỉ báo "dự án còn N vấn đề", giống các tab issue khác |
+
+Card «Dev đã Closed» chỉ thu hẹp theo **Module** (cộng `module_stats.dev_closed`);
+lọc theo Loại issue không đổi mẫu số này.
+
+Module rỗng hiển thị `(Chưa có Module)`, qua API dùng token `__no_module__` vì CSV
+không chở được chuỗi rỗng — nếu bỏ hẳn thì filter mặc định sẽ ẩn issue của nó âm thầm.
+
+Banner `#fidScopeBanner` phân biệt module ẩn vì *không dùng FID* và module do user
+tự bỏ chọn.
+
+### Nút 📥 Xuất ▾ — 2 chế độ
+
+| Chế độ | File | Dùng khi |
+|---|---|---|
+| **Theo lưới đang xem** | `Loi_FID_<slug>_<ngày>.xlsx`, sheet `Loi_FID`, 7 cột như lưới + cột trống «FID cần cập nhật» tô vàng, AutoFilter | Lọc/soi trong Excel rồi điền FID tay |
+| **FL để import → Chỉ dòng có vấn đề** | FL 65 cột, sheet `Function List`, header dòng 1 | Sửa rồi upload lại vào hệ thống |
+
+Cả 2 chỉ chứa record **có vấn đề FID** và tôn trọng `fid_module` / `fid_type`.
+Sheet của file danh sách lỗi cố ý **không** tên `Function List` để upload nhầm bị
+parser từ chối thay vì ghi đè project bằng vài chục dòng.
+
+Menu này dùng chung `openExportModePicker` với 4 tab issue còn lại (Trễ hạn, Chưa PIC,
+Đình trệ, Data Quality) — các tab đó giữ 3 mode Tổng hợp/Chi tiết/Cả hai cho nhóm
+«Danh sách lỗi» và thêm nhóm «FL để import» giới hạn theo `kinds` của tab.
 
 ---
 
@@ -961,10 +1073,17 @@ Excel" ở 7 section, chỉ cần 1 click.
   `🎬 Trình chiếu`.
 - **Command Palette** (`Ctrl+K`): entry `📊 Xuất toàn bộ vấn đề (Excel
   multi-sheet)`.
+- **Nút `📥` trên thanh tab của hub Issues** → menu, nhóm `Gộp nhiều tab` →
+  `Tất cả tab (1 file nhiều sheet)`. Mục này gọi
+  `exportAllIssues({forceFull: true})`: người bấm đã chọn "tất cả" nên phải bỏ
+  qua nhánh "focus 1 nhóm vấn đề", nếu không họ nhận đúng 1 sheet mà không
+  hiểu vì sao.
 
 ### File output
 
-Tên: `iHRP_Van_De_Tong_Hop_<slug>_YYYYMMDD.xlsx` → 8 sheet:
+Tên: `iHRP_Van_De_Tong_Hop_<slug>_YYYYMMDD.xlsx` → 12 sheet. Thứ tự: Cover →
+9 tab hub Issues (đúng thứ tự tab trên UI) → High_Risk + Bookmark (2 loại này
+không thuộc hub Issues nên dồn về cuối).
 
 | # | Sheet | Nội dung | Banner màu |
 |---|-------|----------|------------|
@@ -972,10 +1091,23 @@ Tên: `iHRP_Van_De_Tong_Hop_<slug>_YYYYMMDD.xlsx` → 8 sheet:
 | 1 | Overdue | Function trễ deadline (**dedup theo Mã CN, phase merged**) | Đỏ `C00000` |
 | 2 | Chua_Co_PIC | Function chưa assign PIC | Cam `ED7D31` |
 | 3 | Dinh_Tre | Function stalled giữa 2 phase | Vàng đậm `BF8F00` |
-| 4 | High_Risk | Risk score ≥30 | Đỏ tươi `E60000` |
-| 5 | Aging_WIP | In-progress quá threshold (default 14 ngày) | Vàng nhạt `FFC000` |
-| 6 | Data_Quality | Row có lỗi data (dup, missing, invalid) | Xám `595959` |
-| 7 | Bookmark | Function đã star (fetch từ `bookmarks.json` — cross-check với filtered data) | Tím `7030A0` |
+| 4 | Aging_WIP | In-progress quá threshold (default 14 ngày) | Vàng nhạt `FFC000` |
+| 5 | Data_Quality | Row có lỗi data (dup, missing, invalid) | Xám `595959` |
+| 6 | Thieu_Trung_FID | Dev Closed nhưng thiếu / trùng FID | Nâu cam `B45309` |
+| 7 | Lay_Source_Test | Checklist lấy source test — phẳng hóa `days[].items[]`, 1 dòng = 1 Rlog | Teal `0F766E` |
+| 8 | Thoi_Gian_Dai | Phase có Start→End vượt ngưỡng | Tím xanh `4338CA` |
+| 9 | Bao_Cao_Tuan | Function/phase sẽ hoàn thành trong tuần | Xanh dương `1D4ED8` |
+| 10 | High_Risk | Risk score ≥30 | Đỏ tươi `E60000` |
+| 11 | Bookmark | Function đã star (fetch từ `bookmarks.json` — cross-check với filtered data) | Tím `7030A0` |
+
+4 sheet 6–9 nhận qua tham số `Optional[...] = None`, nên caller cũ không phải
+sửa. Quy ước: **`None` = không quét → bỏ sheet**; **`[]` = quét xong và sạch →
+giữ sheet rỗng**. PM cần phân biệt hai trạng thái này, nếu gộp thì file thiếu
+sheet trông giống loại đó "không có vấn đề".
+
+Bốn loại này dùng **ngưỡng/lookback mặc định của analyzer**, không đọc ô nhập
+trên UI (endpoint xuất riêng từng tab mới đọc). Cần đúng ngưỡng đang xem thì
+xuất riêng tab đó.
 
 ### Layout chuẩn mỗi sheet
 
@@ -1009,7 +1141,7 @@ Sheet Overdue: gom nhiều phase-record của cùng 1 Mã CN thành 1 row:
 "g_pic": [...], "threshold": 14 }`.
 
 Filter apply **1 lần** tại `_filter_parsed_data(state["data"], ...)`, sau
-đó recompute mọi loại vấn đề trên filtered data. Tránh tính lại 8 lần.
+đó recompute mọi loại vấn đề trên filtered data. Tránh tính lại 11 lần.
 
 ### Cover sheet — hyperlink
 
@@ -1018,13 +1150,45 @@ Cột **Link** dùng `openpyxl.Hyperlink(location=f"'<sheet>'!A1")` — click
 
 ### File chính
 
-- `exporter/export_all_issues.py` (~500 LOC) — main entry
-  `export_all_issues(project_name, slug, overdue_list, ...)` + 7 per-sheet
+- `exporter/export_all_issues.py` — main entry
+  `export_all_issues(project_name, slug, overdue_list, ...)` + 11 per-sheet
   writer + helper `_dedup_by_ma_cn`.
 - `app.py::project_export_all_issues` — endpoint (GET/POST hỗ trợ).
 - `templates/index.html` — nút `📊 Xuất vấn đề` ở header (red-500).
-- `static/js/dashboard.js` — `exportAllIssues()` + Command Palette entry
+- `static/js/dashboard.js` — `exportAllIssues(opts)` + Command Palette entry
   `act.export-all-issues`.
+- `static/js/sidebar_hubs.js` — `_openTabExport()` + config `exportAllFn` của
+  hub Issues.
+
+### Xuất riêng 1 tab từ thanh tab
+
+Nút `📥` trên thanh tab đọc config tab trong `SIDEBAR_NAV_TREE`:
+
+| Key config | Ý nghĩa |
+|---|---|
+| `export` | chart key → đi qua `exportChartData(key, mode)` |
+| `exportFn` | tên hàm global nhận `(mode)` — tab issue, mỗi tab một endpoint riêng |
+| `extraParamsFn` | tên hàm global bơm filter cục bộ của section vào query, để file xuất khớp lưới đang xem |
+| `flKinds` | hiện thêm nhóm `FL để import` giới hạn đúng loại issue đó |
+| `singleList` | tab chỉ có 1 dạng danh sách → gộp 3 mode thành 1 dòng `Theo lưới đang xem` |
+| `exportAllFn` (cấp hub) | thêm nhóm `Gộp nhiều tab` |
+
+Handler cũ chỉ đọc `export`, nên toàn bộ 9 tab Issues (không tab nào khai
+`export`) rơi vào nhánh *"Tab này chưa có export riêng"* dù nút xuất trong thân
+section vẫn chạy. Vì `exportFn` / `extraParamsFn` là **string tên hàm**, sai
+chính tả sẽ chết im lặng — `tests/test_tab_bar_export.py` kiểm mọi tên trong
+config đều tồn tại thật trong `dashboard.js`.
+
+Tab lazy chưa mở lần nào thì hàm xuất chưa được định nghĩa → toast
+"Mở tab này một lần rồi xuất lại" thay vì báo thiếu tính năng.
+
+Hai endpoint xuất riêng thêm mới:
+- `GET /api/projects/<slug>/export-source-checklist?lookback=14`
+- `GET /api/projects/<slug>/export-duration-flag?threshold=60&phase=`
+
+Cả hai dùng lại đúng writer sheet của `export_all_issues` qua
+`app.py::_send_single_issue_sheet` — viết exporter riêng sẽ nhân đôi định nghĩa
+cột và hai bên lệch nhau ngay lần sửa cột đầu tiên.
 
 ---
 

@@ -1,0 +1,23 @@
+{
+  "name": "project_tracking",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tooling JS cho iHRP Function List Tracker. App chạy bằng Python/Flask — Node ở đây chỉ để lint static/js (xem eslint.config.mjs).",
+  "type": "commonjs",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "devDependencies": {
+    "eslint": "^10.8.0",
+    "globals": "^17.9.0"
+  },
+  "scripts": {
+    "lint": "eslint static/js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tranduchai9111994-BA/Project_Tracking.git"
+  },
+  "license": "ISC"
+}

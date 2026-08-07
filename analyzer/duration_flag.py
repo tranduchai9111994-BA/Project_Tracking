@@ -5,7 +5,8 @@ Nghiệp vụ:
   - Với mỗi function, quét từng phase có cả Start và End date.
   - Nếu (end - start).days > threshold → đưa vào danh sách "thời gian dài".
   - Ngưỡng mặc định: 60 ngày (khoảng 2 tháng).
-  - Chỉ tính phase đang active (không phải đã Cancelled).
+  - Chỉ phase **chưa hoàn thành** (không Closed / Cancelled) — việc đã
+    Closed dài ngày không còn actionable (rule PMO 06/08/2026).
   - Hỗ trợ filter theo module / phase_name.
 """
 from __future__ import annotations
@@ -14,8 +15,8 @@ from datetime import date
 from typing import Any
 
 from parser.excel_parser import ParsedData, FunctionRow
+from analyzer.overdue import is_done_status
 
-_EXCLUDE_STATUS = {"Cancelled"}
 _DEFAULT_THRESHOLD = 60  # ngày
 
 
@@ -71,7 +72,8 @@ def compute_long_duration(
             if phase_filter and pname != phase_filter:
                 continue
             status = (pd.status or "").strip()
-            if status in _EXCLUDE_STATUS:
+            # Closed / Cancelled → bỏ (chỉ cảnh báo phase còn mở)
+            if is_done_status(status):
                 continue
 
             start = _safe_date(pd.start_date)
@@ -87,7 +89,7 @@ def compute_long_duration(
             if duration <= threshold_days:
                 continue
 
-            pic = str(pd.pic or "").strip()
+            pic = ", ".join(pd.pics or [])
             items.append({
                 "ma_cn": ma,
                 "ten_cn": str(row.meta.get("ten_cn") or "").strip(),

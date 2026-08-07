@@ -30,6 +30,29 @@ const HELP_CATEGORIES = [
 ];
 
 const HELP_CONTENT = {
+    "buildstatus": {
+        category: "Tổng quan",
+        title: "Bản đang chạy (badge 🔄 trên header)",
+        purpose: "Cho biết server và tab này có đang chạy code mới nhất hay không. "
+            + "Chế độ PRODUCTION không auto-reload, nên sửa code xong mà quên restart "
+            + "thì backend vẫn là bản lúc khởi động — trước đây không có cách nào biết.",
+        steps: [
+            "Badge mờ = mọi thứ khớp, không cần làm gì",
+            "Badge vàng «Cần restart» = có .py hoặc template đã sửa → bấm ♻️ Restart server (8–10 giây, trang tự tải lại)",
+            "Badge xanh «Cần tải lại» = JS/CSS trên đĩa mới hơn tab này → bấm 🔄 Tải lại giao diện",
+            "Bấm badge để mở panel: xem từng file đã sửa, interpreter đang phục vụ, và kiểm tra commit mới trên GitHub",
+        ],
+        example: "Toast báo «<tên hàm> is not defined» mà grep trong repo không thấy "
+            + "tên đó ở đâu → tab đang giữ bundle JS cũ, bấm 🔄 Tải lại giao diện.",
+        tips: [
+            "«Tải lại giao diện» chỉ là reload — JS không thể xoá HTTP cache, và cũng không cần vì server đã gửi no-cache",
+            "«Reset giao diện» xoá tuỳ chọn lưu trong trình duyệt (theme, thứ tự sidebar, bộ lọc đã nhớ) — thứ mà reload không chữa được. Không ảnh hưởng dữ liệu trên server",
+            "Restart chỉ chạy trên Windows và chỉ từ localhost với quyền admin",
+            "App cố ý KHÔNG tự pull từ GitHub: pull khi đang có file chưa commit sẽ xoá việc đang làm, và endpoint pull được từ web là lỗ thực thi code tuỳ ý",
+        ],
+        learn_more: "docs/ARCHITECTURE.md",
+    },
+
     // ==================== TỔNG QUAN ====================
     "summary": {
         category: "Tổng quan",
@@ -318,6 +341,25 @@ const HELP_CONTENT = {
         example: "SPI 0.9 · creep 12% · forecast 15/09 → cần đẩy scope/CR.",
         tips: ["Cần baseline để SPI có nghĩa; mitigation hiện ở top risks nếu đã nhập"],
     },
+    "pm": {
+        category: "Chiều PM",
+        title: "Chiều PM — Kế hoạch + Weekly + Gantt",
+        purpose: "Import KeHoachDuAn (.xlsx) và Weekly PPT; xem WBS, lịch trình, risk tuần, và Gantt thanh từ Start–End.",
+        steps: [
+            "Nạp Kế hoạch (.xlsx) → chỉnh ánh xạ sheet → Chấp nhận & lưu",
+            "Xem Gantt lịch trình PM (zoom Tuần/Tháng) + bảng lịch trình bên dưới",
+            "Tuỳ chọn: nạp Weekly (.pptx) để xem Done / Tuần tới / Risk",
+            "📥 Xuất chiều PM → Excel tổng hợp",
+        ],
+        example: "Lịch trình UAT có End quá hôm nay → thanh Gantt đỏ để escalate.",
+        tips: [
+            "Gantt đọc ngày từ sheet Lịch trình — shape trên sheet Gantt Excel không parse được",
+            "Phase B: overdue chỉ khi chưa Closed; có thanh actual + slip khi có Ngày hoàn thành",
+            "Phase C: bấm «Tuần» để xem khung master; slider «Tuần hiển thị» để pan timeline",
+            "Phase D: «Chi tiết» = lưới ngày (M/T/W); slider «Ngày hiển thị» pan ~21 ngày",
+            "Phase E: heatmap tải việc theo tuần (tổng + PIC) ngay trên Gantt",
+        ],
+    },
     "risk-trend": {
         category: "Rủi ro & Chất lượng",
         title: "Risk trend + mitigation",
@@ -377,7 +419,7 @@ const HELP_CONTENT = {
         steps: [
             "Chọn quy mô · chỉnh seed / hệ số · nhập hợp đồng MD/MM (tuỳ chọn) → ↻ Tính lại",
             "Xem bảng công đoạn + banner đỏ nếu >50% seed mặc định",
-            "⬇ Áp seed calibrate nếu muốn ghi seed theo hợp đồng",
+            "📝 Áp seed calibrate nếu muốn ghi seed theo hợp đồng",
             "💾 Lưu params · 📋 Copy MH → Forecast · 📥 Xuất Excel",
         ],
         example: "Quy mô TB: Dev 1.25 MD/fn. Hợp đồng 500 MD → tổng khớp 500.",
@@ -651,6 +693,7 @@ const HELP_CONTENT = {
         example: "Estimate 4h nhưng dev 5 ngày → estimation sai hoặc dev bị block.",
         tips: [
             "Có 2 loại duration: 'planned' (có Start + End) và 'elapsed' (In-progress, chưa End)",
+            "Issues «Thời gian dài»: chỉ phase chưa Closed/Cancelled — đã xong dù kế hoạch dài ngày cũng không cảnh báo",
         ],
     },
     "deps": {
@@ -686,7 +729,7 @@ const HELP_CONTENT = {
     "unassigned": {
         category: "Danh sách vấn đề",
         title: "Unassigned Tasks (chưa có PIC)",
-        purpose: "Phase đã tới Start và tới lượt (phase trước Closed, hoặc phase đầu in-scope) nhưng chưa gán PIC. Không báo khi Start còn tương lai; không báo Dev/Config khi Analysis chưa xong.",
+        purpose: "Phase đã tới Start và tới lượt (phase trước Closed, hoặc phase đầu in-scope) nhưng chưa gán PIC. Không báo khi Start còn tương lai; không báo khi Status = Not Started mà chưa có Start/End tới hạn; không báo Dev/Config khi Analysis chưa xong.",
         steps: [
             "Sort: overdue trước, sau đó Must-have trước",
             "Xuất Excel gửi PM để phân công",
@@ -719,6 +762,27 @@ const HELP_CONTENT = {
             "Thường thiếu PIC phase sau hoặc chờ handover — xem thêm section Chưa PIC",
         ],
     },
+    "fid-check": {
+        category: "Danh sách vấn đề",
+        title: "Dev Closed — Thiếu / Trùng FID",
+        purpose: "Chức năng đã Dev Closed thì phải có FID duy nhất. Section bắt 2 lỗi: FID trống (missing_fid) và FID bị dùng cho nhiều chức năng (duplicate_fid).",
+        steps: [
+            "Quét mọi row có phase Dev (tên chứa dev/coding) ở trạng thái Closed",
+            "FID trống → Thiếu FID; FID xuất hiện ở >1 chức năng → Trùng FID",
+            "Filter Module mặc định BỎ CHECK các module không dùng FID — module không có chức năng nào điền FID (suy từ dữ liệu, không cố định tên module)",
+            "Bấm ↺ Mặc định để trả 2 filter về trạng thái gốc; lựa chọn của bạn được nhớ theo project",
+            "📥 Xuất ▾ cho chọn 2 kiểu file, cả hai chỉ chứa dòng có vấn đề FID và theo đúng filter đang lọc",
+            "«Theo lưới đang xem» = 7 cột như bảng + 1 cột trống «FID cần cập nhật» để lọc và điền tay trong Excel",
+            "«FL để import» = file Function List đầy đủ, sửa xong upload lại được",
+        ],
+        example: "Ở MPHG, APP (0/14 chức năng có FID) và ESS (0/4) không dùng FID nên 17 dòng «Thiếu FID» của 2 module này bị ẩn mặc định — còn 30 issue thật cần xử lý.",
+        tips: [
+            "4 card chạy theo filter; số toàn bộ ghi nhỏ bên dưới (toàn bộ: N)",
+            "Badge Thiếu FID ở sidebar cố ý đếm TOÀN BỘ, nên có thể lớn hơn bảng — banner phía trên bảng ghi rõ module nào đang bị ẩn",
+            "Bảng trống mà banner có ghi «đang ẩn» nghĩa là các issue còn lại đều thuộc module không dùng FID, không phải lỗi hệ thống",
+            "Trùng FID thường do copy dòng khi thêm chức năng mới — sửa trước Thiếu FID vì nó làm sai cả traceability",
+        ],
+    },
     "risk": {
         category: "Danh sách vấn đề",
         title: "High Risk (điểm rủi ro cao)",
@@ -738,15 +802,37 @@ const HELP_CONTENT = {
     "aging-wip": {
         category: "Danh sách vấn đề",
         title: "Aging WIP (In-progress quá lâu)",
-        purpose: "Function ở trạng thái In-progress quá threshold (default 14 ngày) — có thể bị forgot hoặc dev stuck.",
+        purpose: "Liệt kê mọi function In-progress; highlight khi aging vượt threshold (default 14 ngày) — tránh quên việc đang làm.",
         steps: [
             "Đặt threshold trong widget",
-            "Bảng list function + số ngày aging + PIC",
-            "Xuất Excel",
+            "Bảng list TẤT CẢ WIP + số ngày aging; badge «Trong ngưỡng» / «Aging»",
+            "Xuất Excel (chỉ các dòng vượt ngưỡng)",
         ],
-        example: "3 function In-progress 60+ ngày → cần status update từ PIC.",
+        example: "Tổng WIP=2 nhưng chưa vượt 17 ngày → vẫn thấy 2 dòng chi tiết, cột Over hiện −Xd.",
         tips: [
             "Aging tính từ Start date; fallback End date nếu Start rỗng",
+        ],
+    },
+    "source-checklist": {
+        category: "Danh sách vấn đề",
+        title: "Checklist lấy source test (Dev đến hạn)",
+        purpose: "Nhắc việc theo quy trình: mỗi Rlog có phase Dev đến hạn (End date rơi vào lookback) thì Config Local phải làm checklist lấy source đưa lên môi trường test. KHÔNG đợi Dev.Closed — để Config Local chuẩn bị sớm ngay khi dev push, tránh nghẽn kế hoạch.",
+        steps: [
+            "Đặt «Số ngày gần nhất» (default 14) — chỉ quét các End date Dev trong cửa sổ này",
+            "Mỗi dòng = 1 ngày Dev đến hạn; click để mở danh sách Rlog của ngày đó",
+            "Cột «Dev status» phân biệt Dev đã Closed (xanh) hay còn In-progress (cam) — cả 2 đều cần chuẩn bị source",
+            "Đọc cột «Người lấy source» = PIC phase Config Local; cột «Lý do» cho biết vì sao còn tồn",
+            "Chuyển sang «Tất cả Rlog Dev đến hạn» để đối chiếu cả phần đã lấy source",
+            "📥 Xuất Excel → 1 sheet phẳng (1 dòng = 1 Rlog cần lấy source), tô màu theo mức nghiêm trọng",
+        ],
+        example: "Ngày 03/08 có 5 Rlog Dev.End = 03/08 (2 Closed + 3 In-progress), 2 Rlog mà Config Local chưa có PIC → cảnh báo 2 việc chưa lấy source test — làm sớm để không đợi dev đóng phase.",
+        tips: [
+            "Nghiệp vụ MỚI: chỉ cần Dev có End date là kéo vào, KHÔNG cần Dev.Status = Closed. Trước đây phải chờ Closed → checklist làm muộn",
+            "Ngoại lệ duy nhất bỏ qua: Dev.Status = Cancelled (task hủy, không cần source)",
+            "Coi là đã lấy source khi phase Config Local có PIC VÀ đã bắt đầu (có Start date hoặc Status khác Open/trống)",
+            "Mức «Cao» = chưa có người config local, hoặc Dev đến hạn ≥ 3 ngày mà vẫn chưa ai lấy",
+            "Config Local Cancelled → không cần lấy source, không tính cảnh báo",
+            "File không có phase Config Local → fallback phase ngay sau Dev, banner vàng sẽ ghi rõ",
         ],
     },
     "dataquality": {
@@ -763,6 +849,8 @@ const HELP_CONTENT = {
             "Badge «DQ N» (cam) trên Module Overview / ô Phase Matrix = N issue DQ — click để drill vào section này đã lọc đúng module (× phase)",
             "Card tổng quan «Chưa cập nhật deadline» / «Bất thường» click → lọc đúng nhóm issue tương ứng",
             "Score Clean % = (total − affected) / total",
+            "Function <b>đã Closed/Cancelled toàn bộ phase</b> KHÔNG bị flag (rule 06/08/2026 — tránh thừa cho function đã đóng): thiếu Priority/Complexity/FIT-GAP, phase overlap, estimate lệch, trùng Mã CN của những row đã done sẽ không đếm. Row có <i>bất kỳ</i> phase còn Open/Assigned/In-progress/Resolved/Pending vẫn scan — nhưng từng phase đã Closed/Cancelled không bị flag estimate lệch; cặp overlap chỉ báo khi <i>ít nhất một</i> phase trong cặp chưa đóng.",
+            "Function <b>chưa tới deadline Analysis</b> không đưa lên DQ. Đã tới deadline nhưng Analysis chưa Closed → chỉ flag phase Analysis (không Config/Document/overlap phía sau — phân tích chưa xong thì task sau chưa có ý nghĩa).",
             "Các loại hay gặp: thiếu End khi đang làm, End < Start, phase overlap, estimate lệch, trùng Mã CN, thiếu PIC/Priority/Complexity/FIT-GAP, status không hợp lệ",
         ],
     },
@@ -895,16 +983,19 @@ const HELP_CONTENT = {
     "export-all-issues": {
         category: "Import/Export",
         title: "Xuất toàn bộ vấn đề (Excel multi-sheet)",
-        purpose: "1 nút xuất Excel workbook chứa mọi loại vấn đề (Overdue + Chưa PIC + Đình trệ + High Risk + Aging WIP + Data Quality + Bookmark) — mỗi loại 1 sheet.",
+        purpose: "1 nút xuất Excel workbook chứa mọi loại vấn đề — mỗi tab của mục Issues là 1 sheet, cộng thêm High Risk và Bookmark.",
         steps: [
-            "Bấm 📊 Xuất vấn đề trên header",
-            "File .xlsx download có 8 sheet (Cover + 7 loại)",
+            "Bấm 📊 Xuất vấn đề trên header, hoặc nút 📥 trên thanh tab của mục Issues rồi chọn «Tất cả tab»",
+            "File .xlsx có 12 sheet: Cover + 9 tab Issues (Trễ hạn, Chưa PIC, Đình trệ, WIP tồn đọng, Data Quality, Thiếu/Trùng FID, Lấy source test, Thời gian dài, Báo cáo tuần) + High Risk + Bookmark",
             "Cover có hyperlink → click nhảy đến sheet",
         ],
-        example: "Chuẩn bị họp escalation Thứ Hai → 1 file .xlsx có toàn bộ vấn đề, gửi email luôn.",
+        example: "Chuẩn bị họp escalation Thứ Hai → 1 file .xlsx có toàn bộ vấn đề, gửi email luôn thay vì gửi rời 9 file.",
         tips: [
             "Apply global filter hiện tại — VD filter Module=HR → chỉ export vấn đề của HR",
             "Sheet Overdue dedup theo Mã CN, phase merged (không lặp)",
+            "Nút 📥 trên thanh tab: chọn mục ở nhóm trên = xuất riêng tab đang mở (theo filter cục bộ của tab), chọn «Tất cả tab» = gộp cả 9 tab",
+            "«Tất cả tab» luôn ra đủ sheet, không bị co lại theo nhóm vấn đề đang focus",
+            "4 sheet mới (FID, Lấy source test, Thời gian dài, Báo cáo tuần) dùng ngưỡng mặc định của từng section, không theo ô nhập trên UI — cần đúng ngưỡng thì xuất riêng tab đó",
         ],
     },
     "export-pdf": {

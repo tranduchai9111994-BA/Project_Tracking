@@ -53,8 +53,14 @@ def compute_fid_issues(data: ParsedData) -> dict[str, Any]:
                     dev_phase, detail}, ...],
         "summary": {total_issues, missing, duplicate, affected_rows,
                     total_dev_closed_rows},
+        "module_stats": {module: {rows, with_fid, dev_closed}},
+        "modules_without_fid": [module],  # không row nào điền FID
         "fid_column_present": bool,   # cột FID/Function ID có trong file không
       }
+
+    ``modules_without_fid`` để UI bỏ check mặc định những module không dùng FID
+    (báo "thiếu FID" cho chúng là noise). Suy từ dữ liệu chứ không hardcode tên
+    module — FL đổi mã module vẫn đúng.
     """
     fid_column_present = data.meta_columns.get("fid") is not None
 
@@ -124,6 +130,24 @@ def compute_fid_issues(data: ParsedData) -> dict[str, Any]:
     dup_count = sum(1 for i in issues if i["issue_type"] == "duplicate_fid")
     total_dev_closed = sum(1 for row in data.rows if _dev_closed_phases(row))
 
+    # Thống kê FID theo module — UI dùng để dựng filter + tính lại card khi lọc.
+    module_stats: dict[str, dict[str, int]] = {}
+    for row in data.rows:
+        if not _row_ma_cn(row):
+            continue
+        st = module_stats.setdefault(
+            _row_module(row), {"rows": 0, "with_fid": 0, "dev_closed": 0}
+        )
+        st["rows"] += 1
+        if _row_fid(row):
+            st["with_fid"] += 1
+        if _dev_closed_phases(row):
+            st["dev_closed"] += 1
+
+    modules_without_fid = sorted(
+        m for m, st in module_stats.items() if st["with_fid"] == 0
+    )
+
     return {
         "issues": issues,
         "summary": {
@@ -133,5 +157,7 @@ def compute_fid_issues(data: ParsedData) -> dict[str, Any]:
             "affected_rows": len({i["ma_cn"] for i in issues}),
             "total_dev_closed_rows": total_dev_closed,
         },
+        "module_stats": module_stats,
+        "modules_without_fid": modules_without_fid,
         "fid_column_present": fid_column_present,
     }

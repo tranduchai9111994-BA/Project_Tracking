@@ -1,7 +1,14 @@
-# Data Model — Function List Excel + Project Store
+# Data Model
+
+> **Lưu ý schema FL (2026-08d):** FL của dự án bỏ cột `Analysis - RlogID` từ snapshot
+> **30/07** (68 cột → 65 cột). Vì vậy `_row_rlog_id()` trả về rỗng cho mọi dòng của các
+> bản từ 30/07 trở đi — đây là **thiếu dữ liệu nguồn**, không phải lỗi parser (chạy lại
+> bản 29/07 vẫn đọc ra 78 giá trị). Sheet Chi_tiet của export-chart tự ẩn cột `Rlog ID`
+> khi FL không khai cột. Cột `FID` (`meta_columns["fid"]`) thì có ở mọi bản, ~80% dòng
+> được điền. — Function List Excel + Project Store
 
 > Schema parse Excel (ổn định từ V2) + JSON / snapshot / **`meta.db`** (Phase F).  
-> Cập nhật: **2026-08-01**. Kiến trúc → [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> Cập nhật: **2026-08-04**. Kiến trúc → [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Cấu trúc file Excel đầu vào
 
@@ -97,21 +104,25 @@ Task type mapping (`TASK_TYPE_RULES`):
 ## Giá trị Status hợp lệ
 
 ```
-Open        → Chưa bắt đầu
-Assigned    → Đã phân công
+Open        → Chưa bắt đầu / Not Started không PIC
+Assigned    → Đã phân công / Not Started có PIC
 In-progress → Đang thực hiện
 Resolved    → Đã xử lý, chờ verify
-Closed      → Hoàn thành
+Closed      → Hoàn thành (gồm alias Finished / Done / Complete / Hoàn thành)
 Pending     → Tạm dừng
 Cancelled   → Hủy bỏ
 ```
 
 `VALID_STATUSES = {"Open", "Assigned", "In-progress", "Resolved", "Closed", "Pending", "Cancelled"}`
 
-**Data quality rules:**
+**Normalize rules (`_normalize_status`):**
 - Match case-insensitive → return canonical form
 - **Nếu ô Status chứa số (1, 2, 8, 16…) → coi như NULL** (lỗi lệch cột với Estimate MH)
-- Text không match → NULL
+- **"Not Started" / "Chưa bắt đầu"** → `Open` nếu phase không PIC; `Assigned` nếu có PIC (không dùng alias tĩnh)
+- Alias tĩnh phổ biến → canonical (vd Finished→Closed, In Progress→In-progress)
+- Text lạ / unknown → NULL (blank) — không giữ raw
+
+Parse PIC **trước** Status trong mỗi phase để rule Not Started có `has_pic` đúng.
 
 ## Date Formats cần xử lý
 
@@ -263,6 +274,9 @@ uploads/
         snapshot_index.json             # + source, archived
         YYYY-MM-DD_functionlist.xlsx|.parsed.pkl
         archive/                        # *.gz khi đã archive
+      baselines/                        # Bản đã chốt — bất biến, KHÔNG bị prune
+        baselines_index.json
+        YYYY-MM-DD_v1_functionlist.xlsx|.parsed.pkl
 ```
 
 Public tokens / PNG cache: `.project_store/<slug>/` (xem T33 bên dưới).
@@ -344,6 +358,43 @@ Data cũ vẫn giữ nguyên ở vị trí gốc (để user có thể rollback 
 | `archived_at` | ISO datetime khi archive (chỉ khi `archived=true`). |
 
 Cùng ngày upload nhiều lần → ghi đè bản cũ. Giới hạn tổng 10 snapshots gần nhất (bản cũ hơn: archive nếu enabled, else xóa). Xem [`ARCHIVE_GUIDE.md`](ARCHIVE_GUIDE.md).
+
+## Baseline format (chuỗi re-baseline bất biến)
+
+`uploads/projects/<slug>/baselines/baselines_index.json` — module `analyzer/baseline_manager.py`.
+
+```json
+[
+  {
+    "id": "2026-07-01_v2",
+    "version": 2,
+    "snapshot_date": "2026-07-01",
+    "label": "Kế hoạch approved 07/2026",
+    "note": "",
+    "created_at": "2026-07-02T09:15:00",
+    "created_by": "admin",
+    "checksum": "9f2c…",
+    "filename": "2026-07-01_v2_functionlist.xlsx",
+    "pickle": "2026-07-01_v2_functionlist.parsed.pkl",
+    "total_functions": 375,
+    "overall_pct": 50.4,
+    "source_drifted": false
+  }
+]
+```
+
+| Field | Ý nghĩa |
+|-------|---------|
+| `id` | `{snapshot_date}_v{version}` — chốt lại cùng ngày vẫn ra id khác |
+| `version` | Tăng dần toàn project (v1, v2, v3…), không reset theo ngày |
+| `checksum` | sha256 của pickle lúc chốt — dùng phát hiện snapshot gốc bị đổi |
+| `source_drifted` | `true` khi snapshot cùng ngày trong `snapshots/` đã bị ghi đè nội dung khác. **Nội dung baseline không đổi**, chỉ để UI cảnh báo. |
+| `filename` | Có thể rỗng nếu snapshot gốc đã archive (chỉ còn pickle) |
+
+Điểm quan trọng: file được **copy** chứ không trỏ. Nhờ đó prune snapshot
+(`MAX_SNAPSHOTS`) và ghi đè upload cùng ngày đều không phá được bản đã chốt.
+`baseline_snapshot_id` trong `project_settings.json` giữ lại làm con trỏ
+"baseline đang hiệu lực" cho các endpoint cũ (SV, EVM, Scope creep, Forecast Gantt).
 
 ## V4 — Bookmark / Notes / Digest / Settings
 

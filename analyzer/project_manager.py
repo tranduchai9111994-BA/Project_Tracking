@@ -11,6 +11,10 @@ Layout đĩa:
           snapshot_index.json
           YYYY-MM-DD_functionlist.xlsx
           YYYY-MM-DD_functionlist.parsed.pkl
+        baselines/                          # Baseline đã chốt — bất biến
+          baselines_index.json
+          YYYY-MM-DD_v1_functionlist.xlsx
+          YYYY-MM-DD_v1_functionlist.parsed.pkl
 
 Backward compat: nếu tồn tại `base_dir/snapshots/` từ V2 cũ,
 tự động migrate vào project "Default" khi lần đầu init.
@@ -176,6 +180,20 @@ class ProjectManager:
     def get_snapshot_manager(self, slug: str) -> SnapshotManager:
         """Trả về SnapshotManager gắn với folder snapshots của project."""
         return SnapshotManager(os.path.join(self._project_dir(slug), "snapshots"))
+
+    def get_baseline_manager(self, slug: str) -> "BaselineManager":
+        """
+        Trả về BaselineManager gắn với folder baselines của project.
+
+        `baselines/` nằm NGOÀI `snapshots/` nên không bị prune theo cap
+        snapshot — đó là lý do baseline không bị mất sau nhiều lần upload.
+        """
+        from analyzer.baseline_manager import BaselineManager
+        return BaselineManager(os.path.join(self._project_dir(slug), "baselines"))
+
+    def get_snapshot_dir(self, slug: str) -> str:
+        """Path folder `snapshots/` (cần khi copy file sang baselines)."""
+        return os.path.join(self._project_dir(slug), "snapshots")
 
     def get_current_file_path(self, slug: str) -> str:
         """Path file `current.xlsx` của project (dùng để lưu file upload)."""

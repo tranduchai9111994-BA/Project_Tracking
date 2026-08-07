@@ -1,6 +1,6 @@
 # Hệ thống iHRP Function List Tracker — Tổng quan
 
-> Cập nhật: **2026-08-01** (đồng bộ code sau PMO A–F + BA UX).  
+> Cập nhật: **2026-08-04** (Issues hub FID/Duration/Weekly GAP + stalled/status/module drill).  
 > Lối vào cho PM/BA và reviewer ngoài. Chi tiết rule → [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md); checklist → [FEATURE_CATALOG.md](FEATURE_CATALOG.md).
 
 ---
@@ -33,7 +33,7 @@ Chiều PM (KeHoach + Weekly PPT)     ├── PMO (SV, EVM, CR, Risk, UAT Qual
 |---|------|
 | 1 | **Không hardcode cột** — đọc header row 1; phase = `PhaseName - Attribute` |
 | 2 | **Overdue** = có End < today và Status ∉ {Closed, Cancelled} (+ ngoại lệ phase sau Closed) |
-| 3 | **Status** chuẩn: Open, Assigned, In-progress, Resolved, Closed, Pending, Cancelled; số ở Status = lỗi lệch cột |
+| 3 | **Status** chuẩn: Open, Assigned, In-progress, Resolved, Closed, Pending, Cancelled; số ở Status = lỗi lệch cột; **Not Started** → Open (không PIC) / Assigned (có PIC); Finished/Done → Closed; status lạ → blank |
 | 4 | **PIC** tách bởi `,` `;` `+` `\n` |
 
 ---
@@ -115,7 +115,8 @@ Sidebar lọc theo nhóm; **All** = hiện hết. Tùy chỉnh VI/EN + chuyển 
 
 | Nhóm | Mục đích | Section tiêu biểu |
 |------|----------|-------------------|
-| **Tracking** | Tiến độ → rồi vấn đề | Summary, Module (+ còn lại), Công việc, Matrix (+ bottleneck), Phase, Rlog, Overdue, Unassigned, Stalled, **PIC tuần tới** |
+| **Tracking / Tiến độ** | Tiến độ tổng thể | Summary, Module (+ còn lại + drill scope), Công việc, Matrix (+ bottleneck), Phase, Rlog, **PIC tuần tới**, Hoạt động tuần |
+| **VẤN ĐỀ / Issues hub** | Cảnh báo vận hành | Overdue, Chưa PIC, Đình trệ, WIP, Data Quality, **Thiếu FID**, **Thời gian dài**, **Báo cáo tuần GAP** |
 | **Forecast** | Thời gian & lực lượng + PMO lịch/effort | Gantt, Forecast UAT/Golive, Manpower, Calendar (+ critical path), Capacity, PIC Overload, **Baseline SV**, **EVM**, **Scope Creep** |
 | **Chất lượng** | DQ / risk / UAT | Data Quality (+ highlights), Risk, Anomaly, **UAT Quality** |
 | **Phân tích** | Sâu hơn | Quy trình, PIC, Effort, Diff, Kanban, Bookmarks… |
@@ -149,6 +150,7 @@ Forecast Gantt (milestone theo tháng) · Forecast Manpower (MH/MD/MM + tuyển)
 | E | UAT Quality (defect / feedback / reopen / cycle) |
 | F | SQLite `meta.db` dual-write (settings / bookmarks / tags) |
 | BA 1–11 | Diff, saved filters, insight trends, DQ highlights, bulk tags, critical path, FL verify, bottleneck, PIC upcoming, Rlog section/chips, Module còn lại |
+| **Issues 2026-08** | FID check (Dev Closed thiếu/trùng FID) · Duration flag (Start→End > ngưỡng) · Weekly GAP report + Excel 2-sheet · Stalled nới (không cần End; gate prev Closed) · Module risk theo % · Drill `scope=remaining\|all` |
 
 Chi tiết checklist → [FEATURE_CATALOG.md](FEATURE_CATALOG.md) · tóm tắt ship → [CHANGELOG_PMO_BA.md](CHANGELOG_PMO_BA.md).
 
@@ -160,7 +162,8 @@ Chi tiết checklist → [FEATURE_CATALOG.md](FEATURE_CATALOG.md) · tóm tắt 
 |-----------|--------|
 | Chart 📥 | Tong_hop + Chi_tiet (+ Theo_nhom nếu task_type) |
 | Xuất MoM tuần | Cover, Master, Gantt, MoM_Wxx, Risk Analysis, PM… |
-| Xuất FL chỉnh sửa | 1 sheet FL — vàng PIC/Status, xanh date-chain |
+| Xuất FL chỉnh sửa | 1 sheet FL — vàng PIC/Status/FID, xanh date-chain |
+| Báo cáo tuần GAP | Sheet Tổng quan (Module×Phase) + Chi tiết |
 | Forecast Gantt / Manpower / Overload | Excel riêng |
 | Function Diff / Rlog / All issues | Excel chuyên biệt |
 | PDF | Client html2canvas + ghi chú chart |

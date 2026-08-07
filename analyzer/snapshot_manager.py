@@ -250,7 +250,13 @@ class SnapshotManager:
         *,
         persist: bool = False,
     ) -> list[dict]:
-        """Giữ N newest (U27 configurable); retire phần còn lại. Không bao giờ cắt newest."""
+        """Giữ N newest (U27 configurable); retire phần còn lại. Không bao giờ cắt newest.
+
+        Baseline KHÔNG cần bảo vệ ở đây: `BaselineManager` copy file sang
+        `baselines/` (ngoài folder này) khi chốt, nên prune không thể xóa mất
+        bản đã chốt. Đừng "tối ưu" bằng cách trỏ baseline vào file trong
+        `snapshots/`.
+        """
         if not index:
             return index
         cap = self._max_keep()

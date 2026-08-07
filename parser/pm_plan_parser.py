@@ -93,6 +93,10 @@ def propose_sheet_mapping(sheet_names: list[str]) -> dict[str, str]:
             role = "gantt_old"
         elif "gantt" in n:
             role = "gantt"
+        elif any(k in n for k in ("chi tiết", "chi tiet", "thực hiện", "thuc hien", "detail")):
+            role = "schedule"
+        elif any(k in n for k in ("khung", "master plan", "masterplan")):
+            role = "gantt"
         elif any(k in n for k in ("lịch trình", "lich trinh", "uat", "golive")):
             role = "schedule"
         elif any(k in n for k in ("sản phẩm", "san pham", "bàn giao", "ban giao", "deliverable")):
@@ -175,7 +179,13 @@ def parse_plan(
                 result["weeks"] = weeks
                 result["milestones"] = milestones
             elif role == "schedule":
-                result["schedule"] = _parse_schedule(ws)
+                meta = _scan_project_meta(ws)
+                if meta.get("project_start"):
+                    result["project_start"] = meta["project_start"]
+                sched, day_cols = _parse_schedule(ws)
+                result["schedule"] = sched
+                if day_cols:
+                    result["day_columns"] = day_cols
             elif role == "deliverables":
                 result["deliverables"] = _parse_deliverables(ws)
             elif role == "team_vendor":
@@ -203,11 +213,17 @@ def _parse_gantt(ws) -> tuple[list[dict], list[dict]]:
     # Row 2 = tháng, row 3 = W1..; hoặc tìm row có W1
     week_row = None
     month_row = None
-    for r in range(1, 6):
-        vals = [_cell_str(ws.cell(r, c).value) for c in range(1, min(50, (ws.max_column or 1) + 1))]
+    for r in range(1, 8):
+        vals = [_cell_str(ws.cell(r, c).value) for c in range(1, min(60, (ws.max_column or 1) + 1))]
         if any(re.fullmatch(r"W\d+", v) for v in vals):
             week_row = r
             month_row = r - 1 if r > 1 else None
+            break
+        # Khung tuần kiểu Vietinak: hàng số 1,2,3… (không có W prefix)
+        num_cells = [v for v in vals if re.fullmatch(r"\d+", v)]
+        if len(num_cells) >= 4:
+            week_row = r
+            month_row = r - 2 if r > 2 else (r - 1 if r > 1 else None)
             break
     if week_row:
         current_month = ""
@@ -217,8 +233,13 @@ def _parse_gantt(ws) -> tuple[list[dict], list[dict]]:
                 m = _cell_str(ws.cell(month_row, c).value)
                 if m:
                     current_month = m
+            label = None
             if re.fullmatch(r"W\d+", wlabel):
-                weeks.append({"col": c, "label": wlabel, "month": current_month})
+                label = wlabel
+            elif re.fullmatch(r"\d+", wlabel):
+                label = f"W{wlabel}"
+            if label:
+                weeks.append({"col": c, "label": label, "month": current_month})
 
     milestones: list[dict] = []
     start_r = (week_row or 3) + 1
@@ -240,42 +261,150 @@ def _parse_gantt(ws) -> tuple[list[dict], list[dict]]:
     return weeks, milestones
 
 
-def _parse_schedule(ws) -> list[dict]:
-    """Lịch trình UAT/Golive: header có Công việc / Từ ngày / Đến ngày / PIC."""
-    # Tìm header row
+def _scan_project_meta(ws) -> dict[str, Any]:
+    """Đọc Project Start Date / meta từ vùng header sheet lịch trình."""
+    meta: dict[str, Any] = {}
+    for r in range(1, 15):
+        for c in range(1, 20):
+            label = _cell_str(ws.cell(r, c).value).lower()
+            if not label:
+                continue
+            if "project start" in label or (
+                ("ngày bắt đầu" in label or "ngay bat dau" in label)
+                and ("dự án" in label or "du an" in label)
+            ):
+                for nc in (c + 1, c):
+                    d = _to_iso_date(ws.cell(r, nc).value)
+                    if d:
+                        meta["project_start"] = d
+                        return meta
+    return meta
+
+
+from parser.excel_parser import STATUS_ALIASES
+
+
+def _normalize_pm_status(raw: Any) -> Optional[str]:
+    """Chuẩn hóa trạng thái PM plan → canonical (Open, Closed, …)."""
+    s = _cell_str(raw)
+    if not s:
+        return None
+    low = s.lower().strip()
+    if low == "overdue":
+        return "In-progress"
+    alias = STATUS_ALIASES.get(low)
+    if alias:
+        return alias
+    # Title-case fallback cho giá trị đã canonical
+    for canon in ("Open", "Assigned", "In-progress", "Resolved", "Closed", "Pending", "Cancelled"):
+        if low == canon.lower():
+            return canon
+    return s
+
+
+def _parse_percent(raw: Any) -> Optional[float]:
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (int, float)):
+        v = float(raw)
+        if 0 <= v <= 1:
+            return round(v * 100, 1)
+        if 0 <= v <= 100:
+            return round(v, 1)
+        return None
+    s = _cell_str(raw).replace("%", "").replace(",", ".").strip()
+    if not s:
+        return None
+    try:
+        v = float(s)
+        if 0 <= v <= 1:
+            return round(v * 100, 1)
+        if 0 <= v <= 100:
+            return round(v, 1)
+    except ValueError:
+        return None
+    return None
+
+
+def _detect_day_columns(ws, header_row: int) -> list[dict]:
+    """Cột ngày M/T/W… trên sheet chi tiết — date ở hàng ngay trên header."""
+    day_columns: list[dict] = []
+    date_row = header_row - 1
+    if date_row < 1:
+        return day_columns
+    max_c = min((ws.max_column or 1) + 1, 220)
+    for c in range(1, max_c):
+        lbl = _cell_str(ws.cell(header_row, c).value).upper()
+        if lbl not in ("M", "T", "W", "F", "S"):
+            continue
+        dt = _to_iso_date(ws.cell(date_row, c).value)
+        if not dt:
+            continue
+        day_columns.append({"col": c, "label": lbl, "date": dt})
+    return day_columns
+
+
+def _parse_schedule(ws) -> tuple[list[dict], list[dict]]:
+    """Lịch trình: Công việc + ngày + PIC; hỗ trợ thêm Status / Actual End / % (MasterPlan Detail)."""
     header_row = None
     col_map: dict[str, int] = {}
-    for r in range(1, min(10, (ws.max_row or 1) + 1)):
+    max_scan_row = min(20, (ws.max_row or 1) + 1)
+    max_scan_col = min(25, (ws.max_column or 1) + 1)
+
+    for r in range(1, max_scan_row):
         row_vals = {
             c: _cell_str(ws.cell(r, c).value).replace("\n", " ")
-            for c in range(1, min(15, (ws.max_column or 1) + 1))
+            for c in range(1, max_scan_col)
         }
         joined = " | ".join(row_vals.values()).lower()
-        if "công việc" in joined or "cong viec" in joined:
-            if any("ngày" in v.lower() or "ngay" in v.lower() for v in row_vals.values()):
-                header_row = r
-                for c, v in row_vals.items():
-                    vl = v.lower()
-                    if "công việc" in vl or "cong viec" in vl:
-                        col_map["name"] = c
-                    elif "từ ngày" in vl or "tu ngay" in vl or vl == "start":
+        has_task = "công việc" in joined or "cong viec" in joined or "task" in joined
+        has_date = any(
+            k in joined
+            for k in ("ngày", "ngay", "bắt đầu", "bat dau", "kết thúc", "ket thuc", "start", "end")
+        )
+        if has_task and has_date:
+            header_row = r
+            for c, v in row_vals.items():
+                vl = v.lower().strip()
+                if not vl:
+                    continue
+                if vl in ("stt", "#", "no", "no."):
+                    col_map["stt"] = c
+                elif "công việc" in vl or "cong viec" in vl or vl == "task":
+                    col_map["name"] = c
+                elif "từ ngày" in vl or "tu ngay" in vl or vl == "start" or vl == "from":
+                    col_map["start"] = c
+                elif "đến ngày" in vl or "den ngay" in vl or vl in ("end", "to"):
+                    col_map["end"] = c
+                elif vl == "bắt đầu" or vl == "bat dau" or "bắt đầu" in vl:
+                    if "start" not in col_map:
                         col_map["start"] = c
-                    elif "đến ngày" in vl or "den ngay" in vl or vl in ("end", "to"):
+                elif vl == "kết thúc" or vl == "ket thuc" or "kết thúc" in vl:
+                    if "end" not in col_map:
                         col_map["end"] = c
-                    elif "phụ trách" in vl and "fpt" in vl:
-                        col_map["pic_fpt"] = c
-                    elif "hỗ trợ" in vl and "fpt" in vl:
-                        col_map["support_fpt"] = c
-                    elif "phụ trách" in vl and ("mphg" in vl or "khách" in vl or "client" in vl):
-                        col_map["pic_client"] = c
-                    elif "hỗ trợ" in vl and ("mphg" in vl or "khách" in vl or "client" in vl):
-                        col_map["support_client"] = c
-                    elif "ghi chú" in vl or "ghi chu" in vl or "note" in vl:
-                        col_map["note"] = c
-                break
+                elif "trạng thái" in vl or "trang thai" in vl or vl == "status" or vl == "tt":
+                    col_map["status"] = c
+                elif "ngày hoàn thành" in vl or "ngay hoan thanh" in vl or "actual end" in vl:
+                    col_map["actual_end"] = c
+                elif "%" in vl and ("hoàn" in vl or "hoan" in vl or "complete" in vl):
+                    col_map["percent_complete"] = c
+                elif "phụ trách" in vl and "fpt" in vl:
+                    col_map["pic_fpt"] = c
+                elif "hỗ trợ" in vl and "fpt" in vl:
+                    col_map["support_fpt"] = c
+                elif "phụ trách" in vl and ("mphg" in vl or "khách" in vl or "client" in vl):
+                    col_map["pic_client"] = c
+                elif "hỗ trợ" in vl and ("mphg" in vl or "khách" in vl or "client" in vl):
+                    col_map["support_client"] = c
+                elif vl == "fpt" and "pic_fpt" not in col_map:
+                    col_map["pic_fpt"] = c
+                elif vl in ("vietinak", "client", "khách hàng", "khach hang", "mphg") and "pic_client" not in col_map:
+                    col_map["pic_client"] = c
+                elif "ghi chú" in vl or "ghi chu" in vl or vl == "note":
+                    col_map["note"] = c
+            break
 
     if not header_row:
-        # Fallback: col 1-8 như mẫu MPHG
         header_row = 2
         col_map = {
             "name": 1, "start": 2, "end": 3,
@@ -283,29 +412,59 @@ def _parse_schedule(ws) -> list[dict]:
             "pic_client": 6, "support_client": 7, "note": 8,
         }
 
+    def _cell_val(row: int, key: str) -> Any:
+        if key not in col_map:
+            return None
+        return ws.cell(row, col_map[key]).value
+
     items: list[dict] = []
     current_phase = ""
     for r in range(header_row + 1, (ws.max_row or 0) + 1):
-        name = _cell_str(ws.cell(r, col_map.get("name", 1)).value)
+        name = _cell_str(_cell_val(r, "name"))
         if not name:
             continue
-        start = _to_iso_date(ws.cell(r, col_map["start"]).value) if "start" in col_map else None
-        end = _to_iso_date(ws.cell(r, col_map["end"]).value) if "end" in col_map else None
-        pic_fpt = _split_pics(ws.cell(r, col_map["pic_fpt"]).value) if "pic_fpt" in col_map else []
-        support_fpt = _split_pics(ws.cell(r, col_map["support_fpt"]).value) if "support_fpt" in col_map else []
-        pic_client = _split_pics(ws.cell(r, col_map["pic_client"]).value) if "pic_client" in col_map else []
-        support_client = _split_pics(ws.cell(r, col_map["support_client"]).value) if "support_client" in col_map else []
-        note = _cell_str(ws.cell(r, col_map["note"]).value) if "note" in col_map else ""
 
+        stt_raw = _cell_val(r, "stt")
+        stt_s = _cell_str(stt_raw)
+        start = _to_iso_date(_cell_val(r, "start"))
+        end = _to_iso_date(_cell_val(r, "end"))
+        status = _normalize_pm_status(_cell_val(r, "status"))
+        actual_end = _to_iso_date(_cell_val(r, "actual_end"))
+        percent_complete = _parse_percent(_cell_val(r, "percent_complete"))
+
+        pic_fpt = _split_pics(_cell_val(r, "pic_fpt")) if "pic_fpt" in col_map else []
+        support_fpt = _split_pics(_cell_val(r, "support_fpt")) if "support_fpt" in col_map else []
+        pic_client = _split_pics(_cell_val(r, "pic_client")) if "pic_client" in col_map else []
+        support_client = _split_pics(_cell_val(r, "support_client")) if "support_client" in col_map else []
+        note = _cell_str(_cell_val(r, "note"))
+
+        # PIC cột org tag (FPT / Vietinak)
+        if "pic_fpt" in col_map and not pic_fpt:
+            org = _cell_str(_cell_val(r, "pic_fpt"))
+            if org:
+                pic_fpt = [org]
+        if "pic_client" in col_map and not pic_client:
+            org = _cell_str(_cell_val(r, "pic_client"))
+            if org:
+                pic_client = [org]
+
+        is_section_letter = bool(re.fullmatch(r"[A-Z]", stt_s))
         is_phase = bool(re.match(r"(?i)^giai\s*đoạn|^giai\s*doan|^phase\b", name))
-        # Phase header: có ngày nhưng không có PIC, hoặc tên bắt đầu bằng Giai đoạn
         has_any_pic = bool(pic_fpt or support_fpt or pic_client or support_client)
-        if is_phase or (start and end and not has_any_pic and name.lower().startswith("giai")):
+        is_header = is_section_letter or is_phase or (
+            start and end and not has_any_pic and name.lower().startswith("giai")
+        )
+
+        if is_header:
             current_phase = name
             items.append({
                 "name": name,
+                "stt": stt_s,
                 "start": start,
                 "end": end,
+                "status": status,
+                "actual_end": actual_end,
+                "percent_complete": percent_complete,
                 "pic_fpt": [],
                 "support_fpt": [],
                 "pic_client": [],
@@ -318,8 +477,12 @@ def _parse_schedule(ws) -> list[dict]:
 
         items.append({
             "name": name,
+            "stt": stt_s,
             "start": start,
             "end": end,
+            "status": status,
+            "actual_end": actual_end,
+            "percent_complete": percent_complete,
             "pic_fpt": pic_fpt,
             "support_fpt": support_fpt,
             "pic_client": pic_client,
@@ -328,7 +491,8 @@ def _parse_schedule(ws) -> list[dict]:
             "is_phase_header": False,
             "phase": current_phase,
         })
-    return items
+    day_columns = _detect_day_columns(ws, header_row) if header_row else []
+    return items, day_columns
 
 
 def _parse_deliverables(ws) -> list[dict]:

@@ -18,6 +18,18 @@ Import **2 loại file PM** vào từng project (không thay Function List):
 
 Xuất **MoM tuần** (nếu đã import kế hoạch) sẽ thêm sheet `PM Lịch trình` từ KeHoachDuAn — không ghi đè Master plan từ Function List.
 
+## Gantt lịch trình PM (Phase A)
+
+Sau khi có `plan.schedule`, section Chiều PM hiện **Gantt thanh** (ngay trên bảng lịch trình):
+
+- Mỗi hàng = 1 mục lịch trình; hàng phase header tô nền amber
+- Thanh bar theo **Start → End** (sheet Lịch trình, không phải shape trên sheet Gantt Excel)
+- Zoom **Tuần / Tháng**; đường hồng = hôm nay
+- `End < hôm nay` → thanh đỏ (cảnh báo kế hoạch quá hạn; chưa gắn Status/%)
+- Tooltip: PIC FPT + PIC KH
+
+**Phase B–E (2026-08):** status/actual/% · summary overdue · timeline + master tuần + lưới ngày · heatmap PIC/tuần · export Gantt sheets. Tô màu fill Excel (shape) chưa đọc — active day/week từ Start–End.
+
 ## Lưu trữ
 
 ```

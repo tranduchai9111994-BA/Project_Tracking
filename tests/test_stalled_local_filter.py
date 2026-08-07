@@ -152,8 +152,9 @@ def test_dashboard_js_wires_local_badge_and_override():
     assert "stalled-scope" in html
     assert "Chỉ đình trệ khi phase chờ đã quá hạn End" in html
     assert "function _updateStalledScopeBanner(" in js
-    assert "Đang lọc Module=" in js
-    assert "lọc cục bộ section" in js
+    assert "Đang lọc " in js
+    assert "Module=<b>" in js
+    assert "Lọc cục bộ section" in js
     assert "renderStalledChartsAndTable(arr)" in js
     assert "openStalledDrillDown" in js
     assert "stalled-scope" in js

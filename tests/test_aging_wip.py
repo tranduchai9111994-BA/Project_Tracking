@@ -25,12 +25,17 @@ def test_no_wip():
 
 
 def test_wip_under_threshold():
-    """In-progress mới bắt đầu 5 ngày → chưa aging (threshold=14)."""
+    """In-progress mới bắt đầu 5 ngày → chưa aging nhưng vẫn hiện trong bảng."""
     today = date(2026, 3, 1)
     r = _mk(phases={"Dev": PhaseData(status="In-progress", start_date=today - timedelta(days=5))})
     out = compute_aging_wip(_mk_data([r]), threshold_days=14, today=today)
     assert out["summary"]["total_wip"] == 1
     assert out["summary"]["total_aging"] == 0
+    assert len(out["items"]) == 1
+    it = out["items"][0]
+    assert it["is_aging"] is False
+    assert it["aging_days"] == 5
+    assert it["over_by_days"] == -9
 
 
 def test_wip_over_threshold():
@@ -52,17 +57,19 @@ def test_sort_by_aging_desc():
     r2 = _mk(row_num=3, ma_cn="B", phases={"Dev": PhaseData(status="In-progress", start_date=today - timedelta(days=50))})
     r3 = _mk(row_num=4, ma_cn="C", phases={"Dev": PhaseData(status="In-progress", start_date=today - timedelta(days=25))})
     out = compute_aging_wip(_mk_data([r1, r2, r3]), threshold_days=14, today=today)
-    codes = [it["ma_cn"] for it in out["items"]]
-    assert codes == ["B", "C", "A"]  # B=50, C=25, A=15
+    aging_codes = [it["ma_cn"] for it in out["items"] if it.get("is_aging")]
+    assert aging_codes == ["B", "C", "A"]  # B=50, C=25, A=15
 
 
-def test_wip_no_dates_skipped():
-    """In-progress nhưng không có Start/End → skip (không đủ thông tin)."""
+def test_wip_no_dates_included():
+    """In-progress không có Start/End → vẫn list (thiếu ngày)."""
     today = date(2026, 3, 1)
     r = _mk(phases={"Dev": PhaseData(status="In-progress")})
     out = compute_aging_wip(_mk_data([r]), threshold_days=14, today=today)
     assert out["summary"]["total_wip"] == 1
-    assert out["summary"]["total_aging"] == 0  # skip vì không có date anchor
+    assert out["summary"]["total_aging"] == 0
+    assert len(out["items"]) == 1
+    assert out["items"][0]["missing_date"] is True
 
 
 def test_threshold_clamped_in_endpoint():

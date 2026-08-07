@@ -73,11 +73,11 @@ ISSUE_META: dict[str, dict[str, str]] = {
         "label": "Phase overlap ngày",
         "suggestion": "Điều chỉnh Start/End để 2 phase không chồng lịch.",
     },
-    # U11 — Estimate MH lệch so với duration (ngày làm việc ≈ duration*8h)
+    # U11 — Estimate MH lệch so với duration (chỉ flag estimate QUÁ LỚN so với cửa sổ ngày)
     "estimate_vs_duration": {
         "severity": "low",
         "label": "Estimate MH lệch duration",
-        "suggestion": "Đối chiếu Estimate MH với (End−Start) — lệch > 3× thường do nhập sai hoặc lệch cột.",
+        "suggestion": "Estimate > 3× (End−Start+1)×8h — thường do nhập sai số hoặc lệch cột. Estimate nhỏ hơn cửa sổ ngày là bình thường.",
     },
 }
 
@@ -126,6 +126,126 @@ def _is_active_status(status: str) -> bool:
     return status.lower() in ("open", "assigned", "in-progress", "resolved", "pending")
 
 
+def is_row_fully_done(row: FunctionRow) -> bool:
+    """True nếu function đã coi như hoàn thành hết:
+
+    - Có ít nhất 1 phase Closed hoặc Cancelled (nghĩa là function đã đi
+      vào quy trình, không phải row rỗng).
+    - Không phase nào còn ở trạng thái active
+      (Open/Assigned/In-progress/Resolved/Pending).
+    - Blank status coi như "phase không áp dụng cho function này" — không
+      cản trở kết luận done (VD function không có phase UAT thì UAT blank).
+
+    DQ bỏ toàn bộ flag của những function này để tránh nhiễu report — user
+    đã Closed hết rồi thì flag «thiếu deadline / overlap / estimate lệch»
+    không còn actionable. Chỉ giữ scan structural (duplicate ma_cn) trên
+    những row chưa done — copies fully-done không đóng góp vào count.
+    """
+    has_done = False
+    for pd in row.phases.values():
+        status = _norm_status(pd.status)
+        if not status:
+            continue
+        if _is_active_status(status):
+            return False
+        if _is_closed_status(status):
+            has_done = True
+    return has_done
+
+
+# --------------------------------------------------------------------------
+# Analysis deadline gate (rule PMO 06/08/2026 — phản hồi screenshot DQ)
+# --------------------------------------------------------------------------
+# 1) Chưa tới deadline Analysis → KHÔNG đưa function lên DQ
+#    (VD TMS.FR.65 Analysis End=09/07 khi today=08/06 → skip hết).
+# 2) Đã tới deadline nhưng Analysis chưa Closed → chỉ flag phase Analysis
+#    («cái gần nhất»). Không flag Config/Document/Dev overlap phía sau —
+#    phân tích chưa xong thì các task sau chưa actionable.
+# 3) Analysis đã Closed → quét DQ bình thường cho các phase sau.
+# --------------------------------------------------------------------------
+
+_ANALYSIS_GATE_SKIP = "skip"
+_ANALYSIS_GATE_ONLY = "analysis_only"
+_ANALYSIS_GATE_FULL = "full"
+
+
+def find_analysis_phase_name(data: ParsedData, row: FunctionRow | None = None) -> str | None:
+    """Tên phase Phân tích — không hardcode «Analysis».
+
+    Ưu tiên: PhaseGroup.task_type == «Phân tích» → tên chứa analy/phân tích
+    → phase đầu trong all_phases nếu khớp keyword.
+    """
+    phases = set((row.phases if row else {}) or {})
+    # 1) task_type từ phase_groups
+    for pg in data.phase_groups or []:
+        if getattr(pg, "task_type", None) == "Phân tích":
+            if not phases or pg.name in phases:
+                return pg.name
+    # 2) keyword trên tên
+    order = list(data.all_phases or []) or [pg.name for pg in (data.phase_groups or [])]
+    if row is not None and not order:
+        order = list(row.phases.keys())
+    for name in order:
+        if phases and name not in phases:
+            continue
+        n = _norm_phase_name(name)
+        if "analy" in n or "phan tich" in n or "phân tích" in n:
+            return name
+    return None
+
+
+def _analysis_deadline(pd) -> date | None:
+    """Deadline Analysis = End ưu tiên, không có End thì lấy Start."""
+    if pd is None:
+        return None
+    return pd.end_date or pd.start_date
+
+
+def analysis_dq_scope(
+    data: ParsedData,
+    row: FunctionRow,
+    today: date | None = None,
+) -> tuple[str, str | None]:
+    """
+    Trả ``(scope, analysis_phase_name)``.
+
+    scope:
+      - ``skip``: chưa tới deadline Analysis → bỏ hết issue của function.
+      - ``analysis_only``: đã tới deadline, Analysis chưa Closed → chỉ
+        flag phase Analysis (+ meta row-level vẫn cho phép).
+      - ``full``: Analysis đã Closed / không có phase Analysis → quét bình thường.
+    """
+    today = today or date.today()
+    name = find_analysis_phase_name(data, row)
+    if not name:
+        return _ANALYSIS_GATE_FULL, None
+    pd = row.phases.get(name)
+    if pd is None:
+        return _ANALYSIS_GATE_FULL, name
+    status = _norm_status(pd.status)
+    if _is_closed_status(status):
+        return _ANALYSIS_GATE_FULL, name
+    deadline = _analysis_deadline(pd)
+    if deadline is not None and deadline > today:
+        return _ANALYSIS_GATE_SKIP, name
+    # Đã tới deadline (hoặc chưa có ngày — coi là cần nhìn Analysis trước)
+    return _ANALYSIS_GATE_ONLY, name
+
+
+def _phase_allowed_by_analysis_scope(
+    scope: str,
+    analysis_name: str | None,
+    phase_name: str,
+) -> bool:
+    """True nếu issue gắn ``phase_name`` được phép dưới scope hiện tại."""
+    if scope == _ANALYSIS_GATE_SKIP:
+        return False
+    if scope == _ANALYSIS_GATE_FULL:
+        return True
+    # analysis_only: chỉ đúng phase Analysis (không gồm «Dev ∩ Config…»)
+    return bool(analysis_name) and phase_name == analysis_name
+
+
 def _row_ma_cn(row: FunctionRow) -> str:
     return str(row.meta.get("ma_cn") or "").strip()
 
@@ -171,10 +291,16 @@ def compute_data_quality(
     today = today or date.today()
     issues: list[dict[str, Any]] = []
 
-    # === 1. Detect trùng Mã CN (làm 1 pass để nhóm) ===
+    # === 1. Detect trùng Mã CN (làm 1 pass để nhóm) — chỉ đếm những row
+    # CHƯA done và đã vào cửa sổ Analysis (không skip vì chưa tới deadline).
     ma_cn_counter: Counter = Counter()
     ma_cn_first_row: dict[str, int] = {}
     for row in data.rows:
+        if is_row_fully_done(row):
+            continue
+        scope, _ = analysis_dq_scope(data, row, today)
+        if scope == _ANALYSIS_GATE_SKIP:
+            continue
         mc = _row_ma_cn(row)
         if mc:
             ma_cn_counter[mc] += 1
@@ -184,6 +310,18 @@ def compute_data_quality(
 
     # === 2. Duyệt từng row → detect các issue ===
     for row in data.rows:
+        # Function đã Closed/Cancelled toàn bộ phase → bỏ qua mọi flag DQ.
+        # Rule PMO 06/08/2026: "nếu tất cả status là closed hết thì không
+        # đếm lên để tránh thừa". User đã đóng project/function rồi thì
+        # blank Priority / thiếu deadline / overlap phase không còn cần fix.
+        if is_row_fully_done(row):
+            continue
+
+        # Chưa tới deadline Analysis → không đưa function lên DQ.
+        scope, analysis_name = analysis_dq_scope(data, row, today)
+        if scope == _ANALYSIS_GATE_SKIP:
+            continue
+
         ma_cn = _row_ma_cn(row)
         ten_cn = _row_ten_cn(row)
         module = _row_module(row)
@@ -246,6 +384,8 @@ def compute_data_quality(
             or list(row.phases.keys())
         )
         for phase_name, pd in row.phases.items():
+            if not _phase_allowed_by_analysis_scope(scope, analysis_name, phase_name):
+                continue
             status = _norm_status(pd.status)
 
             # Invalid status (không rỗng nhưng không nằm trong danh sách hợp lệ)
@@ -315,16 +455,19 @@ def compute_data_quality(
                 })
 
             # U11 — Estimate MH vs duration (chỉ khi có cả Start+End+Estimate)
+            # Phase đã Closed/Cancelled → bỏ qua (việc đã xong, lệch MH không còn actionable).
             if (
                 pd.start_date and pd.end_date and pd.end_date >= pd.start_date
                 and pd.estimate_mh is not None and pd.estimate_mh > 0
+                and not _is_closed_status(status)
             ):
                 duration_days = (pd.end_date - pd.start_date).days + 1
-                # Quy đổi thô: 1 ngày làm ≈ 8 MH
+                # Quy đổi thô: 1 ngày lịch ≈ 8 MH nếu làm full ngày.
+                # Chỉ flag estimate >> cửa sổ ngày (ratio ≥ 3) — dấu hiệu nhập sai.
+                # Estimate << cửa sổ ngày (VD 1.5 MH / 1 ngày) là bình thường.
                 expected_mh = duration_days * 8.0
                 ratio = pd.estimate_mh / expected_mh if expected_mh > 0 else 0
-                # Flag khi lệch > 3× (estimate quá lớn hoặc quá nhỏ so với khoảng ngày)
-                if ratio >= 3.0 or ratio <= (1.0 / 3.0):
+                if ratio >= 3.0:
                     issues.append({
                         "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
                         "module": module, "quy_trinh": quy_trinh, "phase": phase_name,
@@ -340,32 +483,39 @@ def compute_data_quality(
 
         # ---- U10: Phase overlap trong cùng 1 function ----
         # So sánh mọi cặp phase có đủ Start+End; báo 1 issue / cặp (dedupe ma_cn ở summary).
-        phase_items = [
-            (pname, pd) for pname, pd in row.phases.items()
-            if pd.start_date and pd.end_date and pd.end_date >= pd.start_date
-        ]
-        for i in range(len(phase_items)):
-            for j in range(i + 1, len(phase_items)):
-                n1, p1 = phase_items[i]
-                n2, p2 = phase_items[j]
-                # Config Local ↔ Config UAT được phép song song — bỏ qua
-                if _is_allowed_parallel(n1, n2):
-                    continue
-                # Overlap inclusive: start1 <= end2 AND start2 <= end1
-                if p1.start_date <= p2.end_date and p2.start_date <= p1.end_date:
-                    issues.append({
-                        "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
-                        "module": module, "quy_trinh": quy_trinh,
-                        "phase": f"{n1} ∩ {n2}",
-                        "code": "phase_overlap",
-                        "severity": ISSUE_META["phase_overlap"]["severity"],
-                        "label": ISSUE_META["phase_overlap"]["label"],
-                        "detail": (
-                            f"'{n1}' [{p1.start_date.isoformat()}→{p1.end_date.isoformat()}] "
-                            f"chồng '{n2}' [{p2.start_date.isoformat()}→{p2.end_date.isoformat()}]"
-                        ),
-                        "suggestion": ISSUE_META["phase_overlap"]["suggestion"],
-                    })
+        # analysis_only/skip → không flag overlap phase sau (phân tích chưa xong).
+        if scope == _ANALYSIS_GATE_FULL:
+            phase_items = [
+                (pname, pd) for pname, pd in row.phases.items()
+                if pd.start_date and pd.end_date and pd.end_date >= pd.start_date
+            ]
+            for i in range(len(phase_items)):
+                for j in range(i + 1, len(phase_items)):
+                    n1, p1 = phase_items[i]
+                    n2, p2 = phase_items[j]
+                    # Config Local ↔ Config UAT được phép song song — bỏ qua
+                    if _is_allowed_parallel(n1, n2):
+                        continue
+                    s1 = _norm_status(p1.status)
+                    s2 = _norm_status(p2.status)
+                    # Cả 2 phase đã Closed/Cancelled → overlap lịch sử, không cần fix.
+                    if _is_closed_status(s1) and _is_closed_status(s2):
+                        continue
+                    # Overlap inclusive: start1 <= end2 AND start2 <= end1
+                    if p1.start_date <= p2.end_date and p2.start_date <= p1.end_date:
+                        issues.append({
+                            "row_num": row.row_num, "ma_cn": ma_cn, "ten_cn": ten_cn,
+                            "module": module, "quy_trinh": quy_trinh,
+                            "phase": f"{n1} ∩ {n2}",
+                            "code": "phase_overlap",
+                            "severity": ISSUE_META["phase_overlap"]["severity"],
+                            "label": ISSUE_META["phase_overlap"]["label"],
+                            "detail": (
+                                f"'{n1}' [{p1.start_date.isoformat()}→{p1.end_date.isoformat()}] "
+                                f"chồng '{n2}' [{p2.start_date.isoformat()}→{p2.end_date.isoformat()}]"
+                            ),
+                            "suggestion": ISSUE_META["phase_overlap"]["suggestion"],
+                        })
 
     # === 3. Summary ===
     by_severity: Counter = Counter()
@@ -423,7 +573,7 @@ def count_missing_deadlines(
 ) -> tuple[int, int]:
     """Đếm function/phase thiếu End khi đang làm — dùng cho summary card.
 
-    Cùng gate predecessor Closed + Start đã đến với Unassigned.
+    Cùng gate predecessor Closed + Start đã đến với Unassigned + Analysis gate.
 
     Returns:
         (function_count, phase_records) — function dedupe theo ma_cn (fallback row_num).
@@ -432,6 +582,12 @@ def count_missing_deadlines(
     func_keys: set[str] = set()
     records = 0
     for row in data.rows:
+        # Function đã done toàn bộ → không đếm (đồng bộ compute_data_quality).
+        if is_row_fully_done(row):
+            continue
+        scope, analysis_name = analysis_dq_scope(data, row, today)
+        if scope == _ANALYSIS_GATE_SKIP:
+            continue
         ma_cn = _row_ma_cn(row)
         phase_order = (
             data.all_phases
@@ -440,6 +596,8 @@ def count_missing_deadlines(
         )
         func_hit = False
         for phase_name, pd in row.phases.items():
+            if not _phase_allowed_by_analysis_scope(scope, analysis_name, phase_name):
+                continue
             if is_missing_deadline_phase(
                 row, phase_name, pd, phase_order,
                 today=today, require_active_status=True,
@@ -451,20 +609,31 @@ def count_missing_deadlines(
     return len(func_keys), records
 
 
-def count_anomalies(data: ParsedData) -> tuple[int, int]:
+def count_anomalies(
+    data: ParsedData,
+    today: date | None = None,
+) -> tuple[int, int]:
     """Đếm function/record bất thường (overlap / estimate / end<start / duplicate).
 
     Lightweight scan (không gọi full compute_data_quality) để dùng ở summary card.
+    Tôn trọng Analysis deadline gate (cùng compute_data_quality).
 
     Returns:
         (function_count, issue_records) — function dedupe theo ma_cn.
     """
+    today = today or date.today()
     func_keys: set[str] = set()
     records = 0
 
-    # Duplicate Mã CN
+    # Duplicate Mã CN — chỉ đếm những row chưa done + không skip Analysis,
+    # đồng bộ compute_data_quality.
     ma_cn_counter: Counter = Counter()
     for row in data.rows:
+        if is_row_fully_done(row):
+            continue
+        scope, _ = analysis_dq_scope(data, row, today)
+        if scope == _ANALYSIS_GATE_SKIP:
+            continue
         mc = _row_ma_cn(row)
         if mc:
             ma_cn_counter[mc] += 1
@@ -474,11 +643,19 @@ def count_anomalies(data: ParsedData) -> tuple[int, int]:
             func_keys.add(mc)
 
     for row in data.rows:
+        # Function đã done toàn bộ → skip mọi flag anomaly.
+        if is_row_fully_done(row):
+            continue
+        scope, analysis_name = analysis_dq_scope(data, row, today)
+        if scope == _ANALYSIS_GATE_SKIP:
+            continue
         ma_cn = _row_ma_cn(row)
         key = ma_cn or f"row:{row.row_num}"
         hit = False
 
-        for _pname, pd in row.phases.items():
+        for pname, pd in row.phases.items():
+            if not _phase_allowed_by_analysis_scope(scope, analysis_name, pname):
+                continue
             if pd.start_date and pd.end_date and pd.end_date < pd.start_date:
                 records += 1
                 hit = True
@@ -493,17 +670,21 @@ def count_anomalies(data: ParsedData) -> tuple[int, int]:
                     records += 1
                     hit = True
 
-        phase_items = [
-            (pname, pd) for pname, pd in row.phases.items()
-            if pd.start_date and pd.end_date and pd.end_date >= pd.start_date
-        ]
-        for i in range(len(phase_items)):
-            for j in range(i + 1, len(phase_items)):
-                _n1, p1 = phase_items[i]
-                _n2, p2 = phase_items[j]
-                if p1.start_date <= p2.end_date and p2.start_date <= p1.end_date:
-                    records += 1
-                    hit = True
+        # Overlap chỉ khi Analysis đã Closed (scope=full)
+        if scope == _ANALYSIS_GATE_FULL:
+            phase_items = [
+                (pname, pd) for pname, pd in row.phases.items()
+                if pd.start_date and pd.end_date and pd.end_date >= pd.start_date
+            ]
+            for i in range(len(phase_items)):
+                for j in range(i + 1, len(phase_items)):
+                    n1, p1 = phase_items[i]
+                    n2, p2 = phase_items[j]
+                    if _is_allowed_parallel(n1, n2):
+                        continue
+                    if p1.start_date <= p2.end_date and p2.start_date <= p1.end_date:
+                        records += 1
+                        hit = True
 
         if hit:
             func_keys.add(key)

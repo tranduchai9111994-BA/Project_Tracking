@@ -110,22 +110,22 @@ def test_stalled_adds_10():
     assert r["breakdown"].get("stalled") == 10
 
 
-def test_stalled_future_deadline_adds_points():
-    """Analysis Closed + Dev Open (dù End còn tương lai) → vẫn cộng điểm đình trệ.
-
-    Rule mới (stalled.py): không yêu cầu End đã quá hạn — phase trước Closed +
-    phase sau chưa bắt đầu = đình trệ ngay, giúp phát hiện sớm bottleneck.
-    """
+def test_stalled_future_start_no_points():
+    """Dev Start tương lai (Not Started) → không cộng điểm đình trệ."""
     row = _make_row()
     row.phases["Analysis"] = PhaseData(
-        start_date=None, end_date=None, status="Closed", pics=["A"],
+        start_date=None, end_date=TODAY - timedelta(days=3), status="Closed", pics=["A"],
     )
     row.phases["Dev"] = PhaseData(
-        start_date=None, end_date=TODAY + timedelta(days=10), status="Open", pics=[],
+        start_date=TODAY + timedelta(days=10),
+        end_date=TODAY + timedelta(days=12),
+        status="Open",
+        pics=[],
+        from_not_started=True,
     )
     r = compute_risk_score(row, TODAY, ["Analysis", "Dev"])
-    assert r["breakdown"].get("stalled") == 10
-    assert "Bị đình trệ" in r["factors"]
+    assert r["breakdown"].get("stalled", 0) == 0
+    assert "Bị đình trệ" not in r["factors"]
 
 
 def test_risk_note_adds_5():
